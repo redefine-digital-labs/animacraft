@@ -12,8 +12,8 @@
     "scan:fresh:source": "node scripts/fresh-v8-delivery-scan.mjs --source",
     "scan:fresh:dist": "node scripts/fresh-v8-delivery-scan.mjs --dist",
     "smoke:sui-grpc:mainnet": "node scripts/maker-v8-sui-grpc-mainnet-smoke.mjs",
-    "test": "node --test test/chain-error-ui.test.js test/maker-commerce-v8.test.js test/maker-v8-*.test.js test/web-v8-*.test.js",
-    "check": "node --check app.js && node --check chain-error-ui.js && node --check maker-commerce-v8.js && node --check maker-v8-actions.js && node --check maker-v8-browser.js && node --check maker-v8-chain.js && node --check maker-v8-compiler.js && node --check maker-v8-document.js && node --check maker-v8-finalized.js && node --check maker-v8-market.js && node --check maker-v8-recovery.js && node --check maker-v8-runtime.js && node --check vite.config.js && npm test && npm run build && npm run scan:fresh",
+    "test": "node --test test/chain-error-ui.test.js test/maker-commerce-v8.test.js test/mainnet-v8-release*.test.js test/maker-v8-*.test.js test/web-v8-*.test.js",
+    "check": "node --check app.js && node --check chain-error-ui.js && node --check maker-commerce-v8.js && node --check maker-v8-actions.js && node --check maker-v8-browser.js && node --check maker-v8-chain.js && node --check maker-v8-compiler.js && node --check maker-v8-document.js && node --check maker-v8-finalized.js && node --check maker-v8-market.js && node --check maker-v8-recovery.js && node --check maker-v8-runtime.js && node --check scripts/mainnet-v8-release-lib.mjs && node --check scripts/mainnet-v8-release.mjs && node --check vite.config.js && npm test && npm run build && npm run scan:fresh",
     "move:build": "for package in core seal runtime output physical market release; do sui move build --path move/animacraft_v8_$package --warnings-are-errors || exit 1; done",
     "move:build:disassemble": "for package in core seal runtime output physical market release; do sui move build --path move/animacraft_v8_$package --disassemble --warnings-are-errors || exit 1; done",
     "move:field-limits": "node scripts/verify-move-struct-field-limits.mjs",
@@ -35,6 +35,6 @@
     "vite": "8.1.4"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": "22.x"
   }
 }

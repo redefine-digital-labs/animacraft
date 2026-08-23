@@ -527,7 +527,15 @@ const CORE_ARTIFACT_FIELDS = Object.freeze([
 ]);
 const VERIFY_RECORD_FIELDS = Object.freeze([
   'kind', 'executionPlanId', 'releaseId', 'finalManifestSha256',
-  'runtimeAttestationSha256',
+  'packageVerification', 'packageVerificationSha256', 'runtimeAttestationSha256',
+]);
+const FINAL_PACKAGE_VERIFICATION_FIELDS = Object.freeze([
+  'kind', 'executionPlanId', 'releaseId', 'packages',
+]);
+const FINAL_PACKAGE_VERIFICATION_ROW_FIELDS = Object.freeze([
+  'role', 'packageId', 'packageDigest', 'packageVersion', 'publishDigest',
+  'sourceCommitment', 'packageCommitment', 'abiCommitment',
+  'moduleMapSha256', 'objectBcsSha256', 'readbackSha256',
 ]);
 const VERIFY_EXPORT_FIELDS = Object.freeze([
   'filename', 'sha256', 'protectedDecryptionReady',
@@ -3639,6 +3647,40 @@ function assertFinalityCertificate(certificate, expectedSuccess, label, ordinal,
   return certificate;
 }
 
+function assertFinalPackageVerification(value, label) {
+  exactFields(value, FINAL_PACKAGE_VERIFICATION_FIELDS, label);
+  if (value.kind !== 'FINAL_PACKAGE_REBUILD_VERIFICATION') {
+    fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label}.kind is invalid.`);
+  }
+  assertHash(value.executionPlanId, `${label}.executionPlanId`);
+  assertHash(value.releaseId, `${label}.releaseId`);
+  if (!Array.isArray(value.packages) || value.packages.length !== MAINNET_V8_ROLE_ORDER.length) {
+    fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label}.packages must contain exactly seven roles.`);
+  }
+  value.packages.forEach((entry, index) => {
+    exactFields(entry, FINAL_PACKAGE_VERIFICATION_ROW_FIELDS, `${label}.packages[${index}]`);
+    if (entry.role !== MAINNET_V8_ROLE_ORDER[index]) {
+      fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label}.packages[${index}].role is invalid.`);
+    }
+    assertFullId(entry.packageId, `${label}.packages[${index}].packageId`);
+    assertSuiDigest(entry.packageDigest, `${label}.packages[${index}].packageDigest`);
+    assertMainnetV8Decimal(
+      entry.packageVersion,
+      `${label}.packages[${index}].packageVersion`,
+      { positive: true },
+    );
+    if (entry.packageVersion !== '1') {
+      fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label}.packages[${index}] is not fresh version 1.`);
+    }
+    assertSuiDigest(entry.publishDigest, `${label}.packages[${index}].publishDigest`);
+    for (const field of [
+      'sourceCommitment', 'packageCommitment', 'abiCommitment',
+      'moduleMapSha256', 'objectBcsSha256', 'readbackSha256',
+    ]) assertHash(entry[field], `${label}.packages[${index}].${field}`);
+  });
+  return value;
+}
+
 function assertVerifyCertificate(certificate, label) {
   exactFields(certificate, VERIFY_CERTIFICATE_FIELDS, label);
   exactFields(certificate.verification, VERIFY_RECORD_FIELDS, `${label}.verification`);
@@ -3648,6 +3690,18 @@ function assertVerifyCertificate(certificate, label) {
   assertHash(certificate.verification.executionPlanId, `${label}.verification.executionPlanId`);
   assertHash(certificate.verification.releaseId, `${label}.verification.releaseId`);
   assertHash(certificate.verification.finalManifestSha256, `${label}.verification.finalManifestSha256`);
+  assertFinalPackageVerification(
+    certificate.verification.packageVerification,
+    `${label}.verification.packageVerification`,
+  );
+  assertHash(
+    certificate.verification.packageVerificationSha256,
+    `${label}.verification.packageVerificationSha256`,
+  );
+  if (certificate.verification.packageVerificationSha256
+    !== sha256MainnetV8Json(certificate.verification.packageVerification)) {
+    fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label}.verification package verification hash is invalid.`);
+  }
   assertHash(certificate.verification.runtimeAttestationSha256, `${label}.verification.runtimeAttestationSha256`);
   exactFields(certificate.exports, VERIFY_EXPORT_FIELDS, `${label}.exports`);
   boundedText(certificate.exports.filename, `${label}.exports.filename`, 255);
@@ -4389,6 +4443,21 @@ function assertStageSuccessContext(event, ready, wal, sealedManifest, successful
     if (!bootstrap || !sealedManifest) {
       fail('MAINNET_V8_WAL_INVALID', 'VERIFY_AND_EXPORT has no sealed bootstrap predecessor.');
     }
+    const packageVerification = verification.packageVerification;
+    const packageVerificationMatches = packageVerification.executionPlanId === wal.executionPlanId
+      && packageVerification.releaseId === wal.releaseId
+      && packageVerification.packages.every((entry, index) => {
+        const sealed = sealedManifest.packages[index];
+        return entry.role === sealed.role
+          && entry.packageId === sealed.packageId
+          && entry.packageDigest === sealed.packageDigest
+          && entry.packageVersion === sealed.packageVersion
+          && entry.publishDigest === sealed.publishDigest
+          && entry.sourceCommitment === sealed.sourceCommitment
+          && entry.packageCommitment === sealed.packageCommitment
+          && entry.abiCommitment === sealed.abiCommitment
+          && entry.readbackSha256 === sealed.readbackSha256;
+      });
     exactFields(stageData, VERIFY_STAGE_DATA_FIELDS, 'VERIFY_AND_EXPORT READY stageData');
     if (stageData.releaseId !== wal.releaseId
       || stageData.finalManifestSha256 !== sha256MainnetV8Json(sealedManifest)
@@ -4397,6 +4466,7 @@ function assertStageSuccessContext(event, ready, wal, sealedManifest, successful
       || verification.executionPlanId !== wal.executionPlanId
       || verification.releaseId !== wal.releaseId
       || verification.finalManifestSha256 !== sha256MainnetV8Json(sealedManifest)
+      || !packageVerificationMatches
       || verification.runtimeAttestationSha256
         !== sha256MainnetV8Json(bootstrap.readback.attestation)) {
       fail('MAINNET_V8_WAL_INVALID', 'VERIFY_AND_EXPORT certificate differs from sealed release/bootstrap inputs.');

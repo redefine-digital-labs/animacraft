@@ -1293,12 +1293,25 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
       const quote = injectQuoteDrift ? driftedQuote : inspectedQuote;
       return { $kind: 'Transaction', commandResults: [{ returnValues: [{ bcs: quoteBytes(quote) }] }] };
     },
-    async dryRunTransactionBlock() {
-      dryRunCalls += 1;
-      return { effects: { status: { status: 'success' } } };
-    },
     core: {
       async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
+      async simulateTransaction({ transaction, include }) {
+        dryRunCalls += 1;
+        assert.ok(transaction instanceof Uint8Array);
+        assert.deepEqual(include, { effects: true, events: true, commandResults: true });
+        const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transaction);
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest: transactionDigest,
+            status: { success: true, error: null },
+            effects: {
+              transactionDigest,
+              status: { success: true, error: null },
+            },
+          },
+        };
+      },
       resolveTransactionPlugin() {
         return async (transactionData, _options, next) => {
           transactionData.inputs = transactionData.inputs.map((input) => {
@@ -1516,12 +1529,25 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
       const quote = live.market.quoteMakerResale(live.registry, '1000000');
       return { $kind: 'Transaction', commandResults: [{ returnValues: [{ bcs: quoteBytes(quote) }] }] };
     },
-    async dryRunTransactionBlock() {
-      dryRunCalls += 1;
-      return { effects: { status: { status: 'success' } } };
-    },
     core: {
       async getCurrentSystemState() { return { systemState: { epoch: currentEpoch } }; },
+      async simulateTransaction({ transaction, include }) {
+        dryRunCalls += 1;
+        assert.ok(transaction instanceof Uint8Array);
+        assert.deepEqual(include, { effects: true, events: true, commandResults: true });
+        const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transaction);
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest: transactionDigest,
+            status: { success: true, error: null },
+            effects: {
+              transactionDigest,
+              status: { success: true, error: null },
+            },
+          },
+        };
+      },
       resolveTransactionPlugin() {
         return async (transactionData, _options, next) => {
           const liveVersion = finalized ? '8' : '7';

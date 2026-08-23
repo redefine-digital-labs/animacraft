@@ -1,6 +1,9 @@
 import { sha256 } from '@noble/hashes/sha2.js';
+import { blake2b } from '@noble/hashes/blake2.js';
+import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
+import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import {
-  fromBase58, fromBase64, toBase58, toBase64,
+  fromBase58, fromBase64, normalizeStructTag, toBase58, toBase64,
 } from '@mysten/sui/utils';
 
 import {
@@ -996,6 +999,76 @@ export async function loadReceivingRefV8(rpc, runtimeInput, objectIdInput, listi
   return freeze({ ...object.objectRef, network: observedNetwork, type: object.type, listingId });
 }
 
+const FINALIZED_EVENT_BCS = bcs.struct('MakerV8FinalizedEvent', {
+  package_id: bcs.Address,
+  transaction_module: bcs.string(),
+  sender: bcs.Address,
+  event_type: bcs.StructTag,
+  contents: bcs.vector(bcs.u8()),
+});
+const FINALIZED_EVENTS_BCS = bcs.struct('MakerV8FinalizedEvents', {
+  data: bcs.vector(FINALIZED_EVENT_BCS),
+});
+
+function sameBytes(left, right) {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+function canonicalBcsBytes(value, schema, label) {
+  if (!(value instanceof Uint8Array) || value.length === 0) {
+    fail('readback', 'MAKER_V8_TRANSACTION_BCS_MISSING', `${label} BCS is required.`);
+  }
+  let parsed;
+  let roundtrip;
+  try {
+    parsed = schema.parse(value);
+    roundtrip = schema.serialize(parsed).toBytes();
+  } catch (error) {
+    fail('readback', 'MAKER_V8_TRANSACTION_BCS_INVALID', `${label} BCS is invalid.`, {
+      cause: String(error?.message || error),
+    });
+  }
+  if (!sameBytes(value, roundtrip)) {
+    fail('readback', 'MAKER_V8_TRANSACTION_BCS_NONCANONICAL', `${label} BCS is not canonical.`);
+  }
+  return { bytes: value, parsed };
+}
+
+function typedBcsDigest(name, value) {
+  const domain = new TextEncoder().encode(`${name}::`);
+  const input = new Uint8Array(domain.length + value.length);
+  input.set(domain);
+  input.set(value, domain.length);
+  return toBase58(blake2b(input, { dkLen: 32 }));
+}
+
+function finalizedEventsEvidence(events) {
+  if (!Array.isArray(events)) {
+    fail('readback', 'MAKER_V8_TRANSACTION_EVENTS_INVALID', 'Finalized Core events are unavailable.');
+  }
+  let encoded;
+  try {
+    encoded = FINALIZED_EVENTS_BCS.serialize({
+      data: events.map((event, index) => ({
+        package_id: address(event?.packageId, `events[${index}].packageId`),
+        transaction_module: String(event?.module || ''),
+        sender: address(event?.sender, `events[${index}].sender`),
+        event_type: TypeTagSerializer.parseFromStr(
+          normalizeStructTag(event?.eventType),
+          true,
+        ).struct,
+        contents: event?.bcs,
+      })),
+    }).toBytes();
+  } catch (error) {
+    if (error instanceof MakerV8ChainError) throw error;
+    fail('readback', 'MAKER_V8_TRANSACTION_EVENTS_INVALID', 'Finalized Core events cannot be encoded as exact TransactionEvents BCS.', {
+      cause: String(error?.message || error),
+    });
+  }
+  return freeze({ count: events.length, digest: typedBcsDigest('TransactionEvents', encoded) });
+}
+
 export async function readFinalizedMakerV8Transaction(rpc, digestInput, {
   network: observedNetwork = MAKER_V8_CHAIN_NETWORK,
   expectedSender,
@@ -1005,30 +1078,46 @@ export async function readFinalizedMakerV8Transaction(rpc, digestInput, {
   await assertMakerV8MainnetRpc(rpc);
   const transactionDigest = digest(digestInput, 'transaction.digest');
   const sender = address(expectedSender, 'expectedSender');
-  if (typeof rpc?.getTransactionBlock !== 'function') fail('config', 'MAKER_V8_RPC_INVALID', 'RPC getTransactionBlock is required.');
-  let transaction;
+  if (typeof rpc?.getTransactionFinality !== 'function'
+    || typeof rpc?.core?.getTransaction !== 'function') {
+    fail('config', 'MAKER_V8_GRPC_INVALID', 'Raw Ledger finality and Core getTransaction are required.');
+  }
+  let finality;
+  let result;
   try {
-    transaction = await rpc.getTransactionBlock({
+    finality = await rpc.getTransactionFinality({ digest: transactionDigest });
+    result = await rpc.core.getTransaction({
       digest: transactionDigest,
-      options: { showEffects: true, showEvents: true, showObjectChanges: true, showInput: true },
+      include: { effects: true, events: true, objectTypes: true, transaction: true, bcs: true },
     });
   } catch (error) {
     fail('signed-outcome', 'MAKER_V8_SIGNED_OUTCOME_UNKNOWN', 'Signed transaction is not yet queryable; keep the exact signed bytes for query-first recovery.', { cause: String(error?.message || error) });
   }
-  if (!record(transaction) || transaction.digest !== transactionDigest || !record(transaction.effects?.status)) {
-    fail('readback', 'MAKER_V8_TRANSACTION_READBACK_INVALID', 'RPC transaction readback is malformed.');
+  const transaction = result?.$kind === 'Transaction'
+    ? result.Transaction
+    : result?.$kind === 'FailedTransaction' ? result.FailedTransaction : null;
+  if (!record(finality) || !record(result) || !record(transaction)
+    || !['Transaction', 'FailedTransaction'].includes(result.$kind)
+    || finality.digest !== transactionDigest
+    || transaction.digest !== transactionDigest
+    || !record(transaction.status)
+    || !record(transaction.effects?.status)
+    || finality.epoch !== transaction.epoch
+    || finality.status?.success !== transaction.status.success
+    || transaction.effects.transactionDigest !== transactionDigest
+    || transaction.effects.status.success !== transaction.status.success) {
+    fail('readback', 'MAKER_V8_TRANSACTION_READBACK_INVALID', 'gRPC finality/Core transaction readback is malformed or inconsistent.');
   }
-  if (address(transaction.transaction?.data?.sender, 'transaction.sender') !== sender) {
+  if (address(transaction.transaction?.sender, 'transaction.sender') !== sender) {
     fail('readback', 'MAKER_V8_TRANSACTION_SENDER_MISMATCH', 'Finalized transaction sender differs from the connected signer.');
   }
-  const status = transaction.effects.status.status;
-  if (status !== 'success') {
+  if (result.$kind !== 'Transaction' || transaction.status.success !== true) {
     fail('finalized', 'MAKER_V8_FINALIZED_FAILURE', 'Transaction finalized with a Move failure.', {
-      error: transaction.effects.status.error ?? null,
+      error: transaction.effects.status.error ?? transaction.status.error ?? finality.status.error ?? null,
     });
   }
   const events = Array.isArray(transaction.events) ? transaction.events : [];
-  const observedTypes = new Set(events.map((event) => String(event.type).replace(/\s+/g, '')));
+  const observedTypes = new Set(events.map((event) => String(event.eventType).replace(/\s+/g, '')));
   expectedEventTypes.forEach((type) => {
     if (!observedTypes.has(String(type).replace(/\s+/g, ''))) {
       fail('readback', 'MAKER_V8_FINALIZED_EVENT_MISSING', `Finalized transaction omitted expected event ${type}.`);
@@ -1038,11 +1127,12 @@ export async function readFinalizedMakerV8Transaction(rpc, digestInput, {
     network: observedNetwork,
     digest: transactionDigest,
     sender,
-    checkpoint: transaction.checkpoint ?? null,
+    checkpoint: finality.checkpoint,
     effects: transaction.effects,
     events,
-    objectChanges: Array.isArray(transaction.objectChanges) ? transaction.objectChanges : [],
-    raw: transaction,
+    objectChanges: Array.isArray(transaction.effects.changedObjects)
+      ? transaction.effects.changedObjects : [],
+    raw: freeze({ finality, result }),
   });
 }
 

@@ -74,7 +74,10 @@ function concatBytes(...values) {
   return result;
 }
 
-const HISTORICAL_CONTENT_BCS = concatBytes(fromHex(OBJECT.slice(2)), new Uint8Array([21, 22]));
+const HISTORICAL_CONTENT_BCS = concatBytes(
+  fromHex(OBJECT.slice(2)),
+  bcs.u64().serialize('8').toBytes(),
+);
 const HISTORICAL_OBJECT_BCS = bcs.Object.serialize({
   data: {
     Move: {
@@ -135,6 +138,66 @@ const TRANSACTION_EFFECTS = {
 const TRANSACTION_EFFECTS_BCS = bcs.TransactionEffects.serialize(TRANSACTION_EFFECTS).toBytes();
 const EFFECTS_DIGEST = typedDigest('TransactionEffects', TRANSACTION_EFFECTS_BCS);
 const USER_SIGNATURE_BCS = fromBase64((await SENDER_KEYPAIR.signTransaction(TRANSACTION_BCS)).signature);
+const HISTORICAL_JSON = GrpcTypes.Object.fromJson({
+  json: { id: OBJECT, version: '8' },
+}).json;
+const MOVE_TYPE = GrpcTypes.OpenSignatureBody_Type;
+const DATATYPE_KIND = GrpcTypes.DatatypeDescriptor_DatatypeKind;
+const SUI_PACKAGE = normalizeStructTag('0x2::sui::SUI').split('::')[0];
+const UID_TYPE = `${SUI_PACKAGE}::object::UID`;
+const ID_TYPE = `${SUI_PACKAGE}::object::ID`;
+const ROOT_TYPE = `${PACKAGE}::maker_v8::MakerRootV8`;
+
+const datatypeFixtures = new Map([
+  [`${PACKAGE}:maker_v8:MakerRootV8`, {
+    typeName: ROOT_TYPE,
+    definingId: PACKAGE,
+    module: 'maker_v8',
+    name: 'MakerRootV8',
+    abilities: [],
+    typeParameters: [{ constraints: [], isPhantom: true }],
+    kind: DATATYPE_KIND.STRUCT,
+    fields: [
+      {
+        name: 'id', position: 0,
+        type: { type: MOVE_TYPE.DATATYPE, typeName: UID_TYPE, typeParameterInstantiation: [] },
+      },
+      {
+        name: 'version', position: 1,
+        type: { type: MOVE_TYPE.U64, typeParameterInstantiation: [] },
+      },
+    ],
+    variants: [],
+  }],
+  [`${SUI_PACKAGE}:object:UID`, {
+    typeName: UID_TYPE,
+    definingId: SUI_PACKAGE,
+    module: 'object',
+    name: 'UID',
+    abilities: [],
+    typeParameters: [],
+    kind: DATATYPE_KIND.STRUCT,
+    fields: [{
+      name: 'id', position: 0,
+      type: { type: MOVE_TYPE.DATATYPE, typeName: ID_TYPE, typeParameterInstantiation: [] },
+    }],
+    variants: [],
+  }],
+  [`${SUI_PACKAGE}:object:ID`, {
+    typeName: ID_TYPE,
+    definingId: SUI_PACKAGE,
+    module: 'object',
+    name: 'ID',
+    abilities: [],
+    typeParameters: [],
+    kind: DATATYPE_KIND.STRUCT,
+    fields: [{
+      name: 'bytes', position: 0,
+      type: { type: MOVE_TYPE.ADDRESS, typeParameterInstantiation: [] },
+    }],
+    variants: [],
+  }],
+]);
 
 function moveObject(overrides = {}) {
   return {
@@ -182,7 +245,33 @@ function rawHistorical(overrides = {}) {
     storageRebate: 77n,
     contents: { name: normalizeStructTag(TYPE), value: HISTORICAL_CONTENT_BCS },
     bcs: { name: 'Object', value: HISTORICAL_OBJECT_BCS },
+    json: HISTORICAL_JSON,
     ...overrides,
+  };
+}
+
+function coreTransactionResult(transactionBcs = TRANSACTION_BCS, overrides = {}) {
+  const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transactionBcs);
+  return {
+    $kind: 'Transaction',
+    Transaction: {
+      digest: transactionDigest,
+      epoch: '91',
+      status: { success: true, error: null },
+      transaction: undefined,
+      bcs: transactionBcs,
+      signatures: [toBase64(USER_SIGNATURE_BCS)],
+      effects: {
+        bcs: TRANSACTION_EFFECTS_BCS,
+        transactionDigest,
+        status: { success: true, error: null },
+        eventsDigest: EVENTS_DIGEST,
+        changedObjects: [],
+      },
+      events: [],
+      objectTypes: {},
+      ...overrides,
+    },
   };
 }
 
@@ -306,6 +395,7 @@ function fixtures() {
         optional_future_limit: null,
       },
     },
+    coreTransaction: coreTransactionResult(),
     graphqlResult: {
       data: {
         chainIdentifier: MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
@@ -350,14 +440,28 @@ function fixtures() {
       calls.push(['grpc.getBalance', input]);
       return { balance: { coinType: normalizeStructTag('0x2::sui::SUI'), balance: '999', coinBalance: '999', addressBalance: '0' } };
     },
+    async simulateTransaction(input) {
+      calls.push(['grpc.simulateTransaction', input]);
+      return structuredClone(values.coreTransaction);
+    },
+    async executeTransaction(input) {
+      calls.push(['grpc.executeTransaction', input]);
+      return structuredClone(values.coreTransaction);
+    },
     core: {
       async getObjects() { return { objects: [] }; },
       async listOwnedObjects(input) { return grpcClient.listOwnedObjects(input); },
       async listCoins(input) { return grpcClient.listCoins(input); },
       async getBalance(input) { return grpcClient.getBalance(input); },
-      async getTransaction() { return { $kind: 'Transaction' }; },
+      async getTransaction(input) {
+        calls.push(['core.getTransaction', input]);
+        return structuredClone(values.coreTransaction);
+      },
+      async simulateTransaction(input) { return grpcClient.simulateTransaction(input); },
+      async executeTransaction(input) { return grpcClient.executeTransaction(input); },
       async getProtocolConfig() { return { protocolConfig: structuredClone(values.protocolConfig) }; },
       async getCurrentSystemState() { return { systemState: { epoch: '91' } }; },
+      resolveTransactionPlugin() { return async (_data, _options, next) => next(); },
     },
     ledgerService: {
       async getObject(input) {
@@ -382,6 +486,15 @@ function fixtures() {
         return { response };
       },
     },
+    movePackageService: {
+      async getDatatype(input) {
+        const descriptor = datatypeFixtures.get(`${input.packageId}:${input.moduleName}:${input.name}`);
+        if (!descriptor) throw new Error(`unexpected datatype ${JSON.stringify(input)}`);
+        const response = GrpcTypes.GetDatatypeResponse.create({ datatype: descriptor });
+        calls.push(['movePackage.getDatatype', input, response]);
+        return { response };
+      },
+    },
   };
   const graphqlClient = {
     network: 'mainnet',
@@ -398,7 +511,7 @@ function code(expected) {
   return (error) => error instanceof MakerV8SuiGrpcTransportError && error.code === expected;
 }
 
-test('production factory is official, read-only, branded, and pinned to exact default endpoints/full genesis', () => {
+test('production factory is official, branded, and exposes gRPC authority without a signing path', () => {
   assert.equal(MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT, 'https://fullnode.mainnet.sui.io:443');
   assert.equal(MAKER_V8_SUI_GRAPHQL_MAINNET_ENDPOINT, 'https://graphql.mainnet.sui.io/graphql');
   assert.equal(MAKER_V8_SUI_MAINNET_GENESIS_DIGEST, '4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S');
@@ -408,10 +521,10 @@ test('production factory is official, read-only, branded, and pinned to exact de
   assert.equal(transport.grpcEndpoint, MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT);
   assert.equal(transport.graphqlEndpoint, MAKER_V8_SUI_GRAPHQL_MAINNET_ENDPOINT);
   assert.equal(transport.chainIdentifier, MAKER_V8_SUI_MAINNET_GENESIS_DIGEST);
-  assert.equal(transport.executeTransaction, undefined);
+  assert.equal(typeof transport.executeTransaction, 'function');
   assert.equal(transport.signAndExecuteTransaction, undefined);
-  assert.equal(transport.core.executeTransaction, undefined);
-  assert.equal(transport.core.simulateTransaction, undefined);
+  assert.equal(typeof transport.core.executeTransaction, 'function');
+  assert.equal(typeof transport.core.simulateTransaction, 'function');
 });
 
 test('factory rejects non-Mainnet and incomplete clients while brand cannot be shape-forged', () => {
@@ -596,6 +709,7 @@ test('historical Object BCS binds exact version, ID, type, owner, contents, meta
   assert.equal(historical.objectId, OBJECT);
   assert.equal(historical.version, '11');
   assert.equal(historical.previousTransaction, PREVIOUS_TX);
+  assert.deepEqual(historical.parsed, { id: OBJECT, version: '8' });
   assert.deepEqual(historical.contentBcs, HISTORICAL_CONTENT_BCS);
   assert.deepEqual(historical.objectBcs, HISTORICAL_OBJECT_BCS);
   const call = fixture.calls.find(([name]) => name === 'ledger.getObject')[1];
@@ -603,9 +717,14 @@ test('historical Object BCS binds exact version, ID, type, owner, contents, meta
   assert.equal(call.version, 11n);
   assert.ok(call.readMask.paths.includes('previous_transaction'));
   assert.ok(call.readMask.paths.includes('storage_rebate'));
+  assert.ok(call.readMask.paths.includes('json'));
   const rawResponse = fixture.calls.find(([name]) => name === 'ledger.getObject')[2];
   assert.equal(Object.getPrototypeOf(rawResponse.object.bcs), GrpcTypes.Bcs.messagePrototype);
   assert.equal(Object.getPrototypeOf(rawResponse.object.contents), GrpcTypes.Bcs.messagePrototype);
+  assert.deepEqual(
+    fixture.calls.filter(([name]) => name === 'movePackage.getDatatype').map(([, input]) => input.name),
+    ['MakerRootV8', 'UID', 'ID'],
+  );
 
   fixture.values.historical.version = 12n;
   await assert.rejects(
@@ -624,6 +743,7 @@ test('historical Object BCS binds exact version, ID, type, owner, contents, meta
     [(value) => { value.owner = { kind: 1, address: OWNER }; }, 'MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT'],
     [(value) => { value.contents.value = new Uint8Array(value.contents.value).fill(0, 32); }, 'MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT'],
     [(value) => { value.bcs.value = concatBytes(value.bcs.value, Uint8Array.of(0)); }, 'MAKER_V8_SUI_GRPC_BCS_NONCANONICAL'],
+    [(value) => { value.json = GrpcTypes.Object.fromJson({ json: { id: OBJECT, version: '9' } }).json; }, 'MAKER_V8_SUI_GRPC_HISTORY_JSON_DRIFT'],
   ]) {
     const drift = fixtures();
     mutate(drift.values.historical);
@@ -665,6 +785,64 @@ test('only exact GetTransaction RpcError NOT_FOUND is digest-bound by the reques
     error.methodName = methodName;
     assert.equal(isMakerV8SuiGrpcNotFoundError(error, TX), false);
   }
+});
+
+test('Ledger finality and Core transaction reads correlate digest, epoch, status, and effects', async () => {
+  const fixture = fixtures();
+  const finality = await fixture.transport.getTransactionFinality({ digest: TX });
+  assert.deepEqual(finality, {
+    schemaVersion: 'animacraft.maker-v8-sui-grpc.v1',
+    chainIdentifier: MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
+    digest: TX,
+    checkpoint: '77',
+    epoch: '91',
+    status: { success: true, error: null },
+  });
+  const result = await fixture.transport.getTransaction({
+    digest: TX,
+    include: { effects: true },
+  });
+  assert.equal(result.$kind, 'Transaction');
+  assert.equal(result.Transaction.effects.transactionDigest, TX);
+  assert.equal(fixture.calls.filter(([name]) => name === 'ledger.getTransaction').length, 2);
+  assert.equal(fixture.calls.filter(([name]) => name === 'core.getTransaction').length, 1);
+
+  const drift = fixtures();
+  drift.values.coreTransaction.Transaction.epoch = '92';
+  await assert.rejects(
+    drift.transport.getTransaction({ digest: TX, include: { effects: true } }),
+    code('MAKER_V8_SUI_GRPC_FINALITY_DRIFT'),
+  );
+});
+
+test('official gRPC simulation and execution forward exact bytes/signatures and reject result drift', async () => {
+  const fixture = fixtures();
+  const simulated = await fixture.transport.core.simulateTransaction({
+    transaction: TRANSACTION_BCS,
+    include: { effects: true },
+  });
+  assert.equal(simulated.Transaction.digest, TX);
+  const simulationCall = fixture.calls.find(([name]) => name === 'grpc.simulateTransaction')[1];
+  assert.deepEqual(simulationCall.transaction, TRANSACTION_BCS);
+  assert.deepEqual(simulationCall.include, { effects: true });
+
+  const signature = toBase64(USER_SIGNATURE_BCS);
+  const executed = await fixture.transport.core.executeTransaction({
+    transaction: TRANSACTION_BCS,
+    signatures: [signature],
+    include: { effects: true, events: true },
+  });
+  assert.equal(executed.Transaction.digest, TX);
+  const executionCall = fixture.calls.find(([name]) => name === 'grpc.executeTransaction')[1];
+  assert.deepEqual(executionCall.transaction, TRANSACTION_BCS);
+  assert.deepEqual(executionCall.signatures, [signature]);
+
+  const drift = fixtures();
+  drift.values.coreTransaction.Transaction.digest = OTHER_DIGEST;
+  await assert.rejects(
+    drift.transport.simulateTransaction({ transaction: TRANSACTION_BCS }),
+    code('MAKER_V8_SUI_GRPC_CORE_TRANSACTION_INVALID'),
+  );
 });
 
 test('raw finalized transaction evidence binds checkpoint, transaction/signature/effects/events BCS and digests', async () => {
@@ -731,7 +909,7 @@ test('raw finalized transaction evidence binds checkpoint, transaction/signature
   );
   await rejects(
     (value) => { value.effects.status = { success: false }; },
-    'MAKER_V8_SUI_GRPC_TRANSACTION_FAILED',
+    'MAKER_V8_SUI_GRPC_FINALITY_STATUS_INVALID',
   );
   await rejects((value) => {
     const changed = structuredClone(TRANSACTION_EFFECTS);

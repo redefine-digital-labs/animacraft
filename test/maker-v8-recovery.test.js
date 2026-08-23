@@ -406,11 +406,24 @@ async function makeFixture({ offset = 0, grossAtomic = 1_000_000n, currentEpoch 
   };
   const simulationClient = {
     async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
-    async dryRunTransactionBlock() {
-      return { effects: { status: { status: 'success' } } };
-    },
     core: {
       async getCurrentSystemState() { return { systemState: { epoch: currentEpoch } }; },
+      async simulateTransaction({ transaction, include }) {
+        assert.ok(transaction instanceof Uint8Array);
+        assert.deepEqual(include, { effects: true, events: true, commandResults: true });
+        const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transaction);
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest: transactionDigest,
+            status: { success: true, error: null },
+            effects: {
+              transactionDigest,
+              status: { success: true, error: null },
+            },
+          },
+        };
+      },
       async getBalance({ coinType }) {
         return {
           balance: {
@@ -1229,7 +1242,6 @@ test('real SDK bytes and durable fields fail closed under adversarial tampering'
     inspectMarketActionOnChainV8(
       {
         async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
-        async dryRunTransactionBlock() { return { effects: { status: { status: 'success' } } }; },
       },
       primary.builtAction,
       extraBytes,

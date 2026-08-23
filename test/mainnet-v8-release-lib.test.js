@@ -2077,11 +2077,31 @@ test('all ten ordinals bind predecessor certificates and verify ordinal 9 withou
     exportFilename: 'animacraft-mainnet-v8-config.json',
   });
   await append(9, 'READY', ready);
+  const packageVerification = {
+    kind: 'FINAL_PACKAGE_REBUILD_VERIFICATION',
+    executionPlanId: wal.executionPlanId,
+    releaseId: wal.releaseId,
+    packages: wal.finalManifest.packages.map((entry, index) => ({
+      role: entry.role,
+      packageId: entry.packageId,
+      packageDigest: entry.packageDigest,
+      packageVersion: entry.packageVersion,
+      publishDigest: entry.publishDigest,
+      sourceCommitment: entry.sourceCommitment,
+      packageCommitment: entry.packageCommitment,
+      abiCommitment: entry.abiCommitment,
+      moduleMapSha256: hash(`verified-module-map-${index}`),
+      objectBcsSha256: hash(`verified-package-object-${index}`),
+      readbackSha256: entry.readbackSha256,
+    })),
+  };
   const verification = {
     kind: 'VERIFY_AND_EXPORT',
     executionPlanId: wal.executionPlanId,
     releaseId: wal.releaseId,
     finalManifestSha256: sha256MainnetV8Json(wal.finalManifest),
+    packageVerification,
+    packageVerificationSha256: sha256MainnetV8Json(packageVerification),
     runtimeAttestationSha256: sha256MainnetV8Json(
       previousCertificate.certificate.readback.attestation,
     ),
@@ -2101,6 +2121,30 @@ test('all ten ordinals bind predecessor certificates and verify ordinal 9 withou
     certificate: verifyCertificate,
     certificateSha256: sha256MainnetV8Json(verifyCertificate),
   };
+  const packageVerificationDrift = clone(verifyDetails);
+  packageVerificationDrift.certificate.verification.packageVerification
+    .packages[0].packageId = id(250);
+  packageVerificationDrift.certificate.verification.packageVerificationSha256 =
+    sha256MainnetV8Json(
+      packageVerificationDrift.certificate.verification.packageVerification,
+    );
+  packageVerificationDrift.certificate.verificationSha256 = sha256MainnetV8Json(
+    packageVerificationDrift.certificate.verification,
+  );
+  packageVerificationDrift.certificateSha256 = sha256MainnetV8Json(
+    packageVerificationDrift.certificate,
+  );
+  const packageVerificationDriftPath = join(root, 'stages-package-verification-drift.json');
+  await writeFile(packageVerificationDriftPath, `${canonicalMainnetV8Json(wal)}\n`, { mode: 0o600 });
+  await assert.rejects(() => appendMainnetV8ReleaseWal(packageVerificationDriftPath, {
+    expectedRevision: wal.revision,
+    expectedHeadEventSha256: wal.headEventSha256,
+    ordinal: '9', attempt: '0', status: 'FINALIZED_SUCCESS',
+    evidence: outcomeWalEvidence(
+      'FINALIZED_SUCCESS', ready, null, '9', '0', packageVerificationDrift,
+    ),
+    recordedAt: '2026-08-22T03:00:58.000Z',
+  }), expectCode('MAINNET_V8_WAL_INVALID'));
   const incident = {
     code: 'MAINNET_V8_VERIFY_MISMATCH',
     message: 'Cold verification differs from sealed release evidence.',

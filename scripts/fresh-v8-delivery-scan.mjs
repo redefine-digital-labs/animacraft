@@ -41,6 +41,7 @@ const allowedTests = new Set([
   'test/maker-v8-market.test.js', 'test/maker-v8-recovery.test.js',
   'test/maker-v8-publication-store.test.js', 'test/maker-v8-runtime.test.js',
   'test/maker-v8-sui-grpc.test.js',
+  'test/mainnet-v8-release-lib.test.js', 'test/mainnet-v8-release.test.js',
   'test/web-v8-controller-real.test.js',
   'test/web-v8-production-factory.test.js', 'test/web-v8-real-market.test.js',
   'test/web-v8-shell.test.js',
@@ -81,6 +82,9 @@ const allowedTests = new Set([
 ]);
 const allowedDocs = new Set([
   'docs/codex/CLIENT_V8_CUTOVER_SPEC.md',
+  'docs/codex/CURRENT.md',
+  'docs/codex/MAINNET_V8_RELEASE_SPEC.md',
+  'docs/codex/PROJECT_MEMORY.md',
 ]);
 const allowedGithub = new Set([
   '.github/CODEOWNERS', '.github/pull_request_template.md',
@@ -88,6 +92,8 @@ const allowedGithub = new Set([
 ]);
 const allowedScripts = new Set([
   'scripts/fresh-v8-delivery-scan.mjs',
+  'scripts/mainnet-v8-release-lib.mjs',
+  'scripts/mainnet-v8-release.mjs',
   'scripts/maker-v8-sui-grpc-mainnet-smoke.mjs',
   'scripts/verify-move-struct-field-limits.mjs',
 ]);
@@ -98,7 +104,7 @@ const moveRoots = new Set([
 ]);
 
 const retired = /makerV8ReleaseEnabled|OCMaker|MakerRootV5|CommerceV5|commerce_v5|composition_v6|physical_v7|publication_v[4-7]|SALE_PENDING|LegacyMakerMigrated|CreatorProfile/;
-const productionText = [
+const productionPaths = [
   'README.md', 'SECURITY.md', 'GOVERNANCE.md', 'CONTRIBUTING.md',
   'UNIFIED_MAKER_V8.md', 'docs/codex/CLIENT_V8_CUTOVER_SPEC.md',
   'app.js', 'index.html', 'styles.css', 'chain-error-ui.js', 'config.example.js',
@@ -107,11 +113,21 @@ const productionText = [
   'maker-v8-chain.js', 'maker-v8-compiler.js', 'maker-v8-document.js',
   'maker-v8-finalized.js', 'maker-v8-market.js', 'maker-v8-recovery.js',
   'maker-v8-publication-store.js', 'maker-v8-runtime.js', 'maker-v8-sui-grpc.js',
-].map((path) => readFileSync(join(root, path), 'utf8')).join('\n');
-const suiGrpcReadOnlyText = [
-  'maker-v8-sui-grpc.js',
+];
+const productionText = productionPaths
+  .map((path) => readFileSync(join(root, path), 'utf8')).join('\n');
+const productionTransportPaths = [
+  ...productionPaths.filter((path) => /(?:^|\/)\w[^/]*\.js$/.test(path)),
+  'scripts/mainnet-v8-release-lib.mjs',
+  'scripts/mainnet-v8-release.mjs',
   'scripts/maker-v8-sui-grpc-mainnet-smoke.mjs',
-].map((path) => readFileSync(join(root, path), 'utf8')).join('\n');
+];
+const forbiddenSuiTransport = /@mysten\/sui\/(?:jsonrpc|client)|SuiJsonRpcClient|getJsonRpcFullnodeUrl|JsonRpcProvider|\b(?:queryTransactionBlocks|getTransactionBlock|dryRunTransactionBlock|executeTransactionBlock|devInspectTransactionBlock|tryGetPastObject|getPastObject)\s*\(|\[\s*["'](?:queryTransactionBlocks|getTransactionBlock|dryRunTransactionBlock|executeTransactionBlock|devInspectTransactionBlock|tryGetPastObject|getPastObject)["']\s*\]\s*\(/i;
+// The official GraphQL SDK bundles a query operation named getTransactionBlock.
+// In built JavaScript, reject only executable legacy member calls, not that
+// unrelated GraphQL operation name.
+const forbiddenBundledSuiTransport = /@mysten\/sui\/(?:jsonrpc|client)|SuiJsonRpcClient|getJsonRpcFullnodeUrl|JsonRpcProvider|\.(?:queryTransactionBlocks|getTransactionBlock|dryRunTransactionBlock|executeTransactionBlock|devInspectTransactionBlock|tryGetPastObject|getPastObject)\s*\(|\[\s*["'](?:queryTransactionBlocks|getTransactionBlock|dryRunTransactionBlock|executeTransactionBlock|devInspectTransactionBlock|tryGetPastObject|getPastObject)["']\s*\]\s*\(/i;
+const handwrittenJsonRpcEnvelope = /["']jsonrpc["']\s*:\s*["']2\.0["']|\bjsonRpcClient\b/i;
 
 if (mode !== '--dist') {
   const rejected = [];
@@ -157,11 +173,17 @@ if (mode !== '--dist') {
   if (/legacy|expansion-pack|maker-(?:commerce-v5|composable|physical-v7|publication-v4)/i.test(importLines)) {
     throw new Error('A retired product module remains imported by the production surface.');
   }
-  if (/@mysten\/sui\/(?:jsonrpc|client)|SuiJsonRpcClient|JsonRpcProvider/i.test(suiGrpcReadOnlyText)) {
-    throw new Error('Maker v8 Sui gRPC transport or smoke contains a JSON-RPC dependency or fallback.');
+  const forbiddenTransportSources = productionTransportPaths.filter((path) => {
+    const contents = readFileSync(join(root, path), 'utf8');
+    return forbiddenSuiTransport.test(contents) || handwrittenJsonRpcEnvelope.test(contents);
+  });
+  if (forbiddenTransportSources.length > 0) {
+    throw new Error(`Production source contains a forbidden Sui JSON-RPC dependency, legacy call, or fallback:\n${forbiddenTransportSources.join('\n')}`);
   }
-  if (/\b(?:executeTransaction|signAndExecuteTransaction|signTransaction|simulateTransaction|broadcastTransaction)\b/.test(suiGrpcReadOnlyText)) {
-    throw new Error('Maker v8 Sui gRPC transport or smoke contains a write, signing, broadcast, or simulation path.');
+  if (/\b(?:signAndExecuteTransaction|signTransaction|broadcastTransaction)\b/.test(
+    readFileSync(join(root, 'maker-v8-sui-grpc.js'), 'utf8'),
+  )) {
+    throw new Error('Maker v8 Sui gRPC transport contains a signing path; execution accepts only external exact signatures.');
   }
   console.log(`Fresh-v8 source scan passed: ${tracked.length} tracked files.`);
 }
@@ -176,14 +198,22 @@ if (mode !== '--source') {
     throw new Error('dist is required; run the production build before the dist scan.');
   }
   const distPaths = walk(dist);
+  let distText = '';
   for (const path of distPaths) {
     const name = relative(dist, path);
     if (/makers|legacy|commerce-v5|physical-v7|composition-v6/i.test(name)) {
       throw new Error(`Retired artifact was emitted: ${name}`);
     }
-    if (/\.(?:js|css|html|json|txt|md)$/.test(path) && retired.test(readFileSync(path, 'utf8'))) {
-      throw new Error(`Retired product identifier was emitted: ${name}`);
+    if (/\.(?:js|css|html|json|txt|md)$/.test(path)) {
+      const contents = readFileSync(path, 'utf8');
+      distText += `\n${contents}`;
+      if (retired.test(contents)) {
+        throw new Error(`Retired product identifier was emitted: ${name}`);
+      }
     }
+  }
+  if (forbiddenBundledSuiTransport.test(distText) || handwrittenJsonRpcEnvelope.test(distText)) {
+    throw new Error('Production dist contains a forbidden Sui JSON-RPC dependency, legacy call, or fallback.');
   }
   console.log(`Fresh-v8 dist scan passed: ${distPaths.length} production artifacts.`);
 }

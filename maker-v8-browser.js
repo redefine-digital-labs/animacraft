@@ -1,8 +1,3 @@
-import {
-  JsonRpcError,
-  SuiJsonRpcClient,
-  getJsonRpcFullnodeUrl,
-} from '@mysten/sui/jsonRpc';
 import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
 import {
   Transaction,
@@ -36,6 +31,13 @@ import {
   parseMakerV8ActivatedEvent,
 } from './maker-v8-chain.js';
 import {
+  MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT,
+  MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
+  createProductionMakerV8SuiGrpcTransport,
+  isMakerV8SuiGrpcNotFoundError,
+  isMakerV8SuiGrpcTransport,
+} from './maker-v8-sui-grpc.js';
+import {
   MARKET_V8_LANES,
   MARKET_V8_LISTING_STATUS,
   MARKET_V8_QUOTE_KINDS,
@@ -67,7 +69,7 @@ import {
 } from './maker-v8-compiler.js';
 
 export const MAKER_V8_BROWSER_SCHEMA = 'animacraft.maker-v8-browser.v8';
-export const MAKER_V8_OFFICIAL_MAINNET_RPC_URL = getJsonRpcFullnodeUrl('mainnet');
+export const MAKER_V8_OFFICIAL_MAINNET_GRPC_URL = MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT;
 export const MAKER_V8_WALLET_CHAIN = SUI_MAINNET_CHAIN;
 
 const WEB_V8_CONTEXT_SCHEMA = 'animacraft.web-market-context.v8';
@@ -102,18 +104,7 @@ function plain(value) {
 }
 
 function isTypedTransactionNotFound(error, transactionDigest) {
-  if (!(error instanceof JsonRpcError)
-    || error.code !== -32602
-    || error.type !== 'InvalidParams') return false;
-  const message = String(error.message || '').trim().replace(/\.$/, '');
-  return new Set([
-    `Could not find the referenced transaction ${transactionDigest}`,
-    `Could not find the referenced transaction: ${transactionDigest}`,
-    `Could not find the referenced transaction [${transactionDigest}]`,
-    `Could not find the referenced transaction '${transactionDigest}'`,
-    `Could not find the referenced transaction \"${transactionDigest}\"`,
-    `Transaction ${transactionDigest} not found`,
-  ]).has(message);
+  return isMakerV8SuiGrpcNotFoundError(error, transactionDigest);
 }
 
 function fail(code, message, layer = 'CONFIGURATION', details = {}) {
@@ -206,7 +197,10 @@ function executionConfig(value) {
 }
 
 async function observedChainIdentifier(client) {
-  if (typeof client?.getChainIdentifier === 'function') return client.getChainIdentifier();
+  if (typeof client?.getChainIdentifier === 'function') {
+    const response = await client.getChainIdentifier();
+    return typeof response === 'string' ? response : response?.chainIdentifier;
+  }
   if (typeof client?.core?.getChainIdentifier === 'function') {
     const response = await client.core.getChainIdentifier();
     return typeof response === 'string' ? response : response?.chainIdentifier;
@@ -216,12 +210,15 @@ async function observedChainIdentifier(client) {
 
 async function assertPinnedMainnet(client) {
   const observed = await observedChainIdentifier(client);
-  if (observed !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER) {
+  const expected = isMakerV8SuiGrpcTransport(client)
+    ? MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+    : MAKER_V8_MAINNET_CHAIN_IDENTIFIER;
+  if (observed !== expected) {
     fail(
       'MAKER_V8_BROWSER_NETWORK_DRIFT',
-      'RPC no longer identifies the pinned Sui Mainnet chain.',
+      'Sui transport no longer identifies the pinned Mainnet chain.',
       'CONTEXT',
-      { expected: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, observed: observed ?? null },
+      { expected, observed: observed ?? null },
     );
   }
   return observed;
@@ -394,7 +391,7 @@ function changedRef(change, side, label) {
 function historicalUnavailable(ref, role, status, cause = null) {
   fail(
     'MAKER_V8_BROWSER_READBACK_UNAVAILABLE',
-    `${role} historical object version is unavailable; retry against an archival Sui Mainnet RPC.`,
+    `${role} historical object version is unavailable; retry against an archival Sui Mainnet gRPC endpoint.`,
     'READBACK',
     {
       retryable: true,
@@ -408,40 +405,22 @@ function historicalUnavailable(ref, role, status, cause = null) {
 }
 
 async function exactPastObject(client, ref, expectedType, role, outputDigest = null) {
-  if (typeof client?.tryGetPastObject !== 'function') {
+  if (typeof client?.getHistoricalObject !== 'function') {
     historicalUnavailable(ref, role, 'METHOD_UNAVAILABLE');
   }
-  // SDK 2.20.2's JSON-RPC method serializes `version` as a JSON number.  Only
-  // convert when the u64 round-trips exactly; larger versions require an
-  // archival Core/gRPC reader rather than silent IEEE-754 precision loss.
-  const numericVersion = Number(ref.version);
-  if (!Number.isSafeInteger(numericVersion)
-    || BigInt(numericVersion).toString() !== ref.version) {
-    historicalUnavailable(ref, role, 'VERSION_OUTSIDE_JSON_RPC_SAFE_RANGE');
-  }
-  let response;
+  let details;
   try {
-    response = await client.tryGetPastObject({
-      id: ref.objectId,
-      version: numericVersion,
-      options: {
-        showType: true,
-        showContent: true,
-        showOwner: true,
-        showPreviousTransaction: true,
-      },
+    details = await client.getHistoricalObject({
+      objectId: ref.objectId,
+      version: BigInt(ref.version),
     });
   } catch (error) {
-    historicalUnavailable(ref, role, 'RPC_ERROR', String(error?.message || error));
+    historicalUnavailable(ref, role, 'GRPC_ERROR', String(error?.message || error));
   }
-  if (response?.status !== 'VersionFound') {
-    historicalUnavailable(ref, role, response?.status ?? 'INVALID_RESPONSE');
-  }
-  const details = response.details;
   const observed = {
-    objectId: id(details?.objectId, `${role}.details.objectId`),
-    version: decimal(details?.version, `${role}.details.version`),
-    digest: digest(details?.digest, `${role}.details.digest`),
+    objectId: id(details?.objectId, `${role}.objectId`),
+    version: decimal(details?.version, `${role}.version`),
+    digest: digest(details?.digest, `${role}.digest`),
   };
   if (observed.objectId !== ref.objectId
     || observed.version !== ref.version
@@ -451,24 +430,19 @@ async function exactPastObject(client, ref, expectedType, role, outputDigest = n
   if (outputDigest && details.previousTransaction !== outputDigest) {
     fail('MAKER_V8_BROWSER_OUTPUT_TRANSACTION_DRIFT', `${role} output was not written by the finalized transaction.`, 'READBACK');
   }
-  let outerType;
-  let contentType;
+  let type;
   try {
-    outerType = details.type === undefined ? null : normalizeStructTag(details.type);
-    contentType = details.content?.type === undefined ? null : normalizeStructTag(details.content.type);
-    if (!outerType && !contentType) throw new Error('missing historical type');
+    type = normalizeStructTag(details.type);
   } catch {
     fail('MAKER_V8_BROWSER_HISTORICAL_TYPE_INVALID', `${role} historical object type is invalid.`, 'READBACK');
   }
-  if (outerType && contentType && outerType !== contentType) {
-    fail('MAKER_V8_BROWSER_HISTORICAL_TYPE_DRIFT', `${role} historical outer/content types differ.`, 'READBACK');
-  }
-  const type = outerType ?? contentType;
   if (expectedType && type !== normalizeStructTag(expectedType)) {
     fail('MAKER_V8_BROWSER_HISTORICAL_TYPE_DRIFT', `${role} historical object has the wrong TypeOrigin.`, 'READBACK');
   }
-  if (details.content?.dataType !== 'moveObject' || !plain(details.content.fields)) {
-    fail('MAKER_V8_BROWSER_HISTORICAL_CONTENT_INVALID', `${role} historical object is not parsed Move content.`, 'READBACK');
+  if (!plain(details.parsed)
+    || !(details.contentBcs instanceof Uint8Array)
+    || !(details.objectBcs instanceof Uint8Array)) {
+    fail('MAKER_V8_BROWSER_HISTORICAL_CONTENT_INVALID', `${role} historical gRPC object lacks exact JSON and BCS content.`, 'READBACK');
   }
   const observedOwner = ownerEvidence(details.owner);
   if (JSON.stringify(observedOwner) !== JSON.stringify(ref.owner)) {
@@ -481,7 +455,7 @@ async function exactPastObject(client, ref, expectedType, role, outputDigest = n
     ref,
     owner: observedOwner,
     previousTransaction: details.previousTransaction ?? null,
-    parsed: details.content.fields,
+    parsed: details.parsed,
   });
 }
 
@@ -1975,18 +1949,29 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
 
     async queryTransaction({ digest: transactionDigest }) {
       await assertPinnedMainnet(client);
+      digest(transactionDigest, 'transaction.digest');
       const readExactDigest = async () => {
-        if (typeof client?.core?.getTransaction !== 'function') {
-          fail('MAKER_V8_BROWSER_CORE_V2_REQUIRED', 'Core V2 getTransaction is required for transaction queries.', 'READBACK');
+        if (typeof client?.getTransactionFinality !== 'function'
+          || typeof client?.core?.getTransaction !== 'function') {
+          fail(
+            'MAKER_V8_BROWSER_GRPC_FINALITY_REQUIRED',
+            'Raw Ledger finality and Core getTransaction are required for transaction queries.',
+            'READBACK',
+          );
         }
+        const finality = await client.getTransactionFinality({ digest: transactionDigest });
         const result = await client.core.getTransaction({
           digest: transactionDigest,
           include: { effects: true },
         });
         const transaction = coreTransaction(result);
         if (transaction.digest !== transactionDigest
-          || transaction.effects?.transactionDigest !== transactionDigest) {
-          fail('MAKER_V8_BROWSER_FINALIZED_DRIFT', 'Core V2 query returned another transaction digest.', 'READBACK');
+          || transaction.effects?.transactionDigest !== transactionDigest
+          || finality?.digest !== transactionDigest
+          || finality?.checkpoint == null
+          || finality?.epoch !== transaction.epoch
+          || finality?.status?.success !== transaction.status?.success) {
+          fail('MAKER_V8_BROWSER_FINALIZED_DRIFT', 'gRPC finality/Core query returned inconsistent transaction evidence.', 'READBACK');
         }
         const succeeded = transaction.status?.success === true
           && transaction.effects?.status?.success === true
@@ -2012,28 +1997,25 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
         return await readExactDigest();
       } catch (firstError) {
         if (!isTypedTransactionNotFound(firstError, transactionDigest)) throw firstError;
-        if (typeof client?.getLatestCheckpointSequenceNumber !== 'function'
-          || typeof client?.getCheckpoint !== 'function') {
+        if (typeof client?.getCheckpointWatermark !== 'function') {
           fail('MAKER_V8_BROWSER_ABSENCE_WATERMARK_REQUIRED',
-            'Typed transaction absence requires an exact ledger checkpoint watermark.',
+            'Typed gRPC transaction absence requires an exact Ledger checkpoint watermark.',
             'READBACK');
         }
-        const latestSequence = decimal(
-          await client.getLatestCheckpointSequenceNumber(),
-          'transaction absence latest checkpoint sequence',
-        );
-        const checkpoint = await client.getCheckpoint({ id: latestSequence });
+        const watermark = await client.getCheckpointWatermark();
+        if (watermark?.chainIdentifier !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST) {
+          fail(
+            'MAKER_V8_BROWSER_ABSENCE_WATERMARK_DRIFT',
+            'Ledger checkpoint watermark is not bound to the pinned Mainnet genesis.',
+            'READBACK',
+          );
+        }
+        const checkpoint = watermark.checkpoint;
         const watermarkCheckpointSequence = decimal(
           checkpoint?.sequenceNumber,
           'transaction absence checkpoint sequence',
         );
-        if (watermarkCheckpointSequence !== latestSequence) {
-          fail('MAKER_V8_BROWSER_ABSENCE_WATERMARK_DRIFT',
-            'Ledger checkpoint response differs from the requested watermark.',
-            'READBACK');
-        }
         await assertPinnedMainnet(client);
-        let secondError;
         try {
           // The second exact-digest read occurs after the checkpoint watermark.
           // If the transaction became visible between the first absence and the
@@ -2041,7 +2023,6 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
           return await readExactDigest();
         } catch (error) {
           if (!isTypedTransactionNotFound(error, transactionDigest)) throw error;
-          secondError = error;
         }
         await assertPinnedMainnet(client);
         return freeze({
@@ -2053,12 +2034,14 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
           error: null,
           absence: freeze({
             schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
+            // Stable recovery evidence schema; transport authority is the typed
+            // gRPC NOT_FOUND plus the full-genesis checkpoint watermark above.
             kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
-            rpcCode: secondError.code,
-            rpcType: secondError.type,
+            rpcCode: -32602,
+            rpcType: 'InvalidParams',
             requestedDigest: transactionDigest,
             chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
-            watermarkEpoch: decimal(checkpoint?.epoch, 'transaction absence checkpoint epoch'),
+            watermarkEpoch: decimal(watermark?.epoch, 'transaction absence checkpoint epoch'),
             watermarkCheckpointSequence,
             watermarkCheckpointDigest: digest(
               checkpoint?.digest,
@@ -2444,11 +2427,26 @@ export function createMakerV8TransactionAdaptersV8({ client, execution, wallet }
         fail('MAKER_V8_BROWSER_BUILD_PROOF_REQUIRED', 'Dry-run accepts only freshly built canonical bytes.', 'DRY_RUN');
       }
       assertBuiltDescriptor(TransactionDataBuilder.fromBytes(raw).snapshot(), descriptor);
-      const result = await client.dryRunTransactionBlock({ transactionBlock: transactionBytes });
+      if (typeof client?.core?.simulateTransaction !== 'function') {
+        fail('MAKER_V8_BROWSER_GRPC_SIMULATION_REQUIRED', 'Core gRPC simulateTransaction is required.', 'DRY_RUN');
+      }
+      const result = await client.core.simulateTransaction({
+        transaction: raw,
+        include: { effects: true },
+      });
       await assertPinnedMainnet(client);
-      const status = result?.effects?.status?.status ?? result?.effects?.status;
-      if (status !== 'success' && status !== 'SUCCESS') {
-        return freeze({ status: 'FAILURE', error: result?.effects?.status?.error ?? result?.error ?? null });
+      const simulated = coreTransaction(result);
+      if (simulated.digest !== registered.transactionDigest
+        || simulated.effects?.transactionDigest !== registered.transactionDigest) {
+        fail('MAKER_V8_BROWSER_SIMULATION_DIGEST_DRIFT', 'gRPC simulation returned another transaction digest.', 'DRY_RUN');
+      }
+      if (result.$kind !== 'Transaction'
+        || simulated.status?.success !== true
+        || simulated.effects?.status?.success !== true) {
+        return freeze({
+          status: 'FAILURE',
+          error: simulated.effects?.status?.error ?? simulated.status?.error ?? null,
+        });
       }
       return freeze({ status: 'SUCCESS' });
     },
@@ -2469,14 +2467,19 @@ export function createMakerV8TransactionAdaptersV8({ client, execution, wallet }
       if (!await isValidTransactionSignature(raw, signature, { client, address: account.address })) {
         fail('MAKER_V8_BROWSER_SIGNATURE_INVALID', 'Broadcast signature does not authenticate the exact durable bytes.', 'BROADCAST');
       }
-      const result = await client.executeTransactionBlock({
-        transactionBlock: bytes,
-        signature,
-        options: { showEffects: true, showEvents: true, showObjectChanges: true },
+      if (typeof client?.core?.executeTransaction !== 'function') {
+        fail('MAKER_V8_BROWSER_GRPC_EXECUTION_REQUIRED', 'Core gRPC executeTransaction is required.', 'BROADCAST');
+      }
+      const result = await client.core.executeTransaction({
+        transaction: raw,
+        signatures: [signature],
+        include: { effects: true, events: true, objectTypes: true },
       });
       await assertPinnedMainnet(client);
-      if (result?.digest !== expectedDigest) {
-        fail('MAKER_V8_BROWSER_BROADCAST_DIGEST_DRIFT', 'RPC accepted a different transaction digest.', 'BROADCAST');
+      const executed = coreTransaction(result);
+      if (executed.digest !== expectedDigest
+        || executed.effects?.transactionDigest !== expectedDigest) {
+        fail('MAKER_V8_BROWSER_BROADCAST_DIGEST_DRIFT', 'gRPC execution accepted a different transaction digest.', 'BROADCAST');
       }
       return freeze({ digest: expectedDigest, accepted: true });
     },
@@ -2783,11 +2786,10 @@ export async function readMakerV8CompilerProtocolProfileV8(client) {
   }
   const attribute = (name) => {
     const value = response.attributes[name];
-    if (!plain(value) || Object.keys(value).length !== 1 || typeof value.u64 !== 'string'
-      || !/^(?:0|[1-9][0-9]*)$/.test(value.u64)) {
-      fail('MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID', `Sui protocol attribute ${name} must be one exact u64.`, 'CONTEXT', { attribute: name });
+    if (typeof value !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+      fail('MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID', `Sui gRPC protocol attribute ${name} must be one exact decimal u64 string.`, 'CONTEXT', { attribute: name });
     }
-    return value.u64;
+    return value;
   };
   const observed = freeze({
     protocolVersion: response.protocolVersion,
@@ -2880,9 +2882,8 @@ function expectedCompilerType(runtime, name) {
   return types[name];
 }
 
-function finalizedMoveTargets(response) {
-  const programmable = response?.transaction?.data?.transaction;
-  const commands = programmable?.transactions ?? programmable?.commands;
+function finalizedMoveTargets(transactionData) {
+  const commands = transactionData?.commands;
   if (!Array.isArray(commands)) {
     fail('MAKER_V8_COMPILER_FINALIZED_INPUT_INVALID', 'Finalized transaction has no parsed ProgrammableTransaction commands.', 'READBACK');
   }
@@ -2892,11 +2893,11 @@ function finalizedMoveTargets(response) {
   });
 }
 
-function finalizedEffectsOutputRefs(response, transactionDigest) {
+function finalizedEffectsOutputRefs(rawEffects, transactionDigest) {
   let bytes; let parsed; let canonical;
   try {
-    if (!Array.isArray(response.rawEffects) || response.rawEffects.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw new Error('rawEffects bytes missing');
-    bytes = Uint8Array.from(response.rawEffects);
+    if (!(rawEffects instanceof Uint8Array) || rawEffects.length === 0) throw new Error('effects BCS missing');
+    bytes = new Uint8Array(rawEffects);
     parsed = bcs.TransactionEffects.parse(bytes);
     canonical = bcs.TransactionEffects.serialize(parsed).toBytes();
   } catch {
@@ -2935,67 +2936,133 @@ function finalizedEffectsOutputRefs(response, transactionDigest) {
   return Object.freeze(refs);
 }
 
-export async function assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, expectedTransaction) {
-  if (typeof client?.getTransactionBlock !== 'function') {
-    fail('MAKER_V8_COMPILER_RPC_INVALID', 'RPC getTransactionBlock is required for publication recovery.', 'CONFIGURATION');
+function finalizedCoreObjectChanges(transaction) {
+  if (!Array.isArray(transaction?.effects?.changedObjects) || !plain(transaction.objectTypes)) {
+    fail('MAKER_V8_COMPILER_OBJECT_CHANGES_MISSING', 'Finalized Core effects and object types are required for exact recovery.', 'READBACK');
   }
-  const response = await client.getTransactionBlock({
+  return Object.freeze(transaction.effects.changedObjects.flatMap((change, index) => {
+    if (change?.outputState !== 'ObjectWrite') return [];
+    const objectId = id(change.objectId, `changedObjects[${index}].objectId`);
+    const objectType = transaction.objectTypes[objectId];
+    if (typeof objectType !== 'string'
+      || !['Created', 'None'].includes(change.idOperation)
+      || change.outputVersion === null
+      || change.outputDigest === null
+      || change.outputOwner === null) {
+      fail('MAKER_V8_COMPILER_OBJECT_CHANGE_INVALID', 'Finalized Core ObjectWrite is incomplete.', 'READBACK', { objectId });
+    }
+    return [Object.freeze({
+      type: change.idOperation === 'Created' ? 'created' : 'mutated',
+      objectId,
+      objectType: normalizeStructTag(objectType),
+      version: decimal(change.outputVersion, `changedObjects[${index}].outputVersion`),
+      digest: digest(change.outputDigest, `changedObjects[${index}].outputDigest`),
+      owner: change.outputOwner,
+    })];
+  }));
+}
+
+function compilerCoreEvents(events, transactionDigest) {
+  if (!Array.isArray(events)) {
+    fail('MAKER_V8_COMPILER_FINALIZED_EVENTS_INVALID', 'Finalized Core events are unavailable.', 'READBACK');
+  }
+  return Object.freeze(events.map((event, index) => Object.freeze({
+    id: Object.freeze({ txDigest: transactionDigest, eventSeq: String(index) }),
+    packageId: id(event?.packageId, `events[${index}].packageId`),
+    transactionModule: String(event?.module ?? ''),
+    sender: id(event?.sender, `events[${index}].sender`),
+    type: normalizeStructTag(event?.eventType),
+    parsedJson: event?.json,
+    bcs: event?.bcs instanceof Uint8Array ? toBase64(event.bcs) : null,
+  })));
+}
+
+export async function assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, expectedTransaction) {
+  if (typeof client?.getFinalizedTransactionEvidence !== 'function'
+    || typeof client?.core?.getTransaction !== 'function') {
+    fail(
+      'MAKER_V8_COMPILER_GRPC_INVALID',
+      'Exact Ledger BCS evidence and Core transaction readback are required for publication recovery.',
+      'CONFIGURATION',
+    );
+  }
+  const evidence = await client.getFinalizedTransactionEvidence({ digest: transactionDigest });
+  const coreResult = await client.core.getTransaction({
     digest: transactionDigest,
-    options: {
-      showInput: true,
-      showEffects: true,
-      showEvents: true,
-      showObjectChanges: true,
-      showRawInput: true,
-      showRawEffects: true,
-    },
+    include: { transaction: true, bcs: true, effects: true, events: true, objectTypes: true },
   });
-  if (response?.digest !== transactionDigest || response?.checkpoint === null || response?.checkpoint === undefined) {
+  const finalized = coreTransaction(coreResult);
+  if (evidence?.digest !== transactionDigest
+    || finalized.digest !== transactionDigest
+    || evidence?.checkpoint === null
+    || evidence?.checkpoint === undefined) {
     fail('MAKER_V8_COMPILER_NOT_FINALIZED', 'Transaction is not present in a finalized checkpoint.', 'READBACK', { retryable: true });
   }
-  const status = response.effects?.status?.status ?? response.effects?.status;
-  if (status !== 'success') {
-    fail('MAKER_V8_COMPILER_TRANSACTION_FAILED', 'Finalized publication Transaction did not succeed.', 'READBACK', { status });
+  if (coreResult.$kind !== 'Transaction'
+    || finalized.status?.success !== true
+    || finalized.effects?.status?.success !== true
+    || evidence.effectsStatus?.success !== true) {
+    fail('MAKER_V8_COMPILER_TRANSACTION_FAILED', 'Finalized publication Transaction did not succeed.', 'READBACK');
   }
-  if (response.effects?.transactionDigest !== transactionDigest) {
-    fail('MAKER_V8_COMPILER_EFFECTS_DIGEST_DRIFT', 'Finalized effects are not bound to the requested transaction digest.', 'READBACK');
+  if (finalized.effects?.transactionDigest !== transactionDigest
+    || finalized.epoch !== evidence.epoch
+    || finalized.effects.eventsDigest !== evidence.eventsDigest) {
+    fail('MAKER_V8_COMPILER_EFFECTS_DIGEST_DRIFT', 'Core effects differ from exact Ledger evidence.', 'READBACK');
   }
   const expectedSender = id(expectedTransaction.getData().sender, 'expected sender');
-  const jsonSender = id(response.transaction?.data?.sender, 'finalized sender');
-  if (jsonSender !== expectedSender) {
+  const coreSender = id(finalized.transaction?.sender, 'finalized sender');
+  if (coreSender !== expectedSender) {
     fail('MAKER_V8_COMPILER_SENDER_DRIFT', 'Finalized Transaction sender differs from the compiler signer.', 'CONTEXT');
   }
   const expectedTargets = [...exactMakerV8TransactionTargets(expectedTransaction)];
-  const observedTargets = finalizedMoveTargets(response);
+  const observedTargets = finalizedMoveTargets(finalized.transaction);
   if (canonicalMakerV8Json(observedTargets) !== canonicalMakerV8Json(expectedTargets)) {
     fail('MAKER_V8_COMPILER_TARGET_DRIFT', 'Finalized Move-call sequence differs from the exact compiler Transaction.', 'CONTEXT');
   }
-  if (!Array.isArray(response.objectChanges)) {
-    fail('MAKER_V8_COMPILER_OBJECT_CHANGES_MISSING', 'Finalized object changes are required for exact recovery.', 'READBACK');
+  if (!(evidence.transactionBcs instanceof Uint8Array)
+    || !(evidence.effectsBcs instanceof Uint8Array)
+    || !(finalized.bcs instanceof Uint8Array)
+    || !(finalized.effects?.bcs instanceof Uint8Array)
+    || toBase64(finalized.bcs) !== evidence.transactionBcsBase64
+    || toBase64(finalized.effects.bcs) !== evidence.effectsBcsBase64) {
+    fail('MAKER_V8_COMPILER_GRPC_BCS_DRIFT', 'Core bytes differ from exact Ledger TransactionData/effects BCS.', 'READBACK');
   }
-  response.compilerEffectsOutputRefs = finalizedEffectsOutputRefs(response, transactionDigest);
-  let rawSignedBytes; let signed; let transactionData; let transactionDataBytes; let observedKind;
+  const events = compilerCoreEvents(finalized.events, transactionDigest);
+  if (evidence.eventsDigest === null) {
+    if (events.length !== 0 || evidence.transactionEvents !== null) {
+      fail('MAKER_V8_COMPILER_EVENTS_DRIFT', 'Core events exist while Ledger effects bind no event digest.', 'READBACK');
+    }
+  } else if (makerV8TransactionEventsDigestV8(finalized.events).digest !== evidence.eventsDigest
+    || evidence.transactionEvents?.eventCount !== events.length) {
+    fail('MAKER_V8_COMPILER_EVENTS_DRIFT', 'Core events differ from exact Ledger TransactionEvents BCS.', 'READBACK');
+  }
+  const response = {
+    digest: transactionDigest,
+    checkpoint: evidence.checkpoint,
+    epoch: evidence.epoch,
+    transaction: finalized.transaction,
+    effects: finalized.effects,
+    events,
+    objectChanges: finalizedCoreObjectChanges(finalized),
+    compilerEffectsOutputRefs: finalizedEffectsOutputRefs(evidence.effectsBcs, transactionDigest),
+  };
+  let transactionData; let transactionDataBytes; let observedKind;
   try {
-    rawSignedBytes = fromBase64(response.rawTransaction);
-    if (toBase64(rawSignedBytes) !== response.rawTransaction) throw new Error('non-canonical Base64');
-    const parsed = bcs.SenderSignedData.parse(rawSignedBytes);
-    if (parsed.length !== 1) throw new Error('SenderSignedData must contain one transaction');
-    const roundTrip = bcs.SenderSignedData.serialize(parsed).toBytes();
-    if (roundTrip.length !== rawSignedBytes.length || roundTrip.some((byte, index) => byte !== rawSignedBytes[index])) throw new Error('non-canonical SenderSignedData');
-    [signed] = parsed;
-    if (signed.intentMessage.intent.scope?.$kind !== 'TransactionData'
-      || signed.intentMessage.intent.version?.$kind !== 'V0'
-      || signed.intentMessage.intent.appId?.$kind !== 'Sui'
-      || signed.intentMessage.value?.$kind !== 'V1') throw new Error('wrong Sui transaction intent');
-    transactionData = signed.intentMessage.value.V1;
-    transactionDataBytes = bcs.TransactionData.serialize(signed.intentMessage.value).toBytes();
+    const parsed = bcs.TransactionData.parse(evidence.transactionBcs);
+    transactionDataBytes = bcs.TransactionData.serialize(parsed).toBytes();
+    if (parsed.$kind !== 'V1'
+      || transactionDataBytes.length !== evidence.transactionBcs.length
+      || transactionDataBytes.some((byte, index) => byte !== evidence.transactionBcs[index])) {
+      throw new Error('non-canonical TransactionData');
+    }
+    transactionData = parsed.V1;
     observedKind = bcs.TransactionKind.serialize(transactionData.kind).toBytes();
   } catch {
-    fail('MAKER_V8_COMPILER_RAW_TRANSACTION_INVALID', 'Finalized RPC SenderSignedData cannot be parsed and reserialized by the pinned SDK.', 'READBACK');
+    fail('MAKER_V8_COMPILER_RAW_TRANSACTION_INVALID', 'Finalized gRPC TransactionData cannot be parsed and reserialized by the pinned SDK.', 'READBACK');
   }
   const rawSender = id(transactionData.sender, 'raw TransactionData sender');
-  if (rawSender !== expectedSender || rawSender !== jsonSender) {
-    fail('MAKER_V8_COMPILER_RAW_SENDER_DRIFT', 'Raw TransactionData sender differs from the compiler and parsed RPC sender.', 'CONTEXT');
+  if (rawSender !== expectedSender || rawSender !== coreSender) {
+    fail('MAKER_V8_COMPILER_RAW_SENDER_DRIFT', 'Raw TransactionData sender differs from the compiler and Core sender.', 'CONTEXT');
   }
   if (TransactionDataBuilder.getDigestFromBytes(transactionDataBytes) !== transactionDigest) {
     fail('MAKER_V8_COMPILER_RAW_DIGEST_DRIFT', 'Raw TransactionData digest differs from the requested and response digest.', 'CONTEXT');
@@ -3011,7 +3078,7 @@ export async function assertFinalizedMakerV8CompilerTransactionV8(client, transa
     transactionKindSha256: [...kindHash].map((byte) => byte.toString(16).padStart(2, '0')).join(''),
     transactionDataByteLength: transactionDataBytes.length,
   });
-  return response;
+  return Object.freeze(response);
 }
 
 function compilerChange(response, expectedType, label, expectedId = null) {
@@ -3423,10 +3490,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
 export function createProductionMakerV8BrowserAdapters({
   runtime,
   execution,
-  client = new SuiJsonRpcClient({
-    url: MAKER_V8_OFFICIAL_MAINNET_RPC_URL,
-    network: MAKER_V8_CHAIN_NETWORK,
-  }),
+  client = createProductionMakerV8SuiGrpcTransport(),
   walletRegistry = getWallets(),
   walletId = null,
   dataSource = null,

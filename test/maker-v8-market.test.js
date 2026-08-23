@@ -722,12 +722,25 @@ function canonicalSigningClient({
   ]);
   return {
     async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
-    async dryRunTransactionBlock({ transactionBlock }) {
-      onDryRun?.(transactionBlock);
-      return { effects: { status: { status: 'success' } } };
-    },
     core: {
       async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
+      async simulateTransaction({ transaction, include }) {
+        assert.ok(transaction instanceof Uint8Array);
+        assert.deepEqual(include, { effects: true, events: true, commandResults: true });
+        onDryRun?.(toBase64(transaction));
+        const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transaction);
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest: transactionDigest,
+            status: { success: true, error: null },
+            effects: {
+              transactionDigest,
+              status: { success: true, error: null },
+            },
+          },
+        };
+      },
       async getBalance({ coinType }) {
         if (coinType === normalizeStructTag('0x2::sui::SUI')) {
           return { balance: { balance: gasAddressBalance, coinBalance: '0', addressBalance: gasAddressBalance, coinType } };
@@ -981,8 +994,11 @@ test('quote review runs a real Market PTB dry-run, decodes BCS, and rejects drif
   };
   const drift = { ...driftFields, commitment: deriveMarketQuoteCommitmentV8(driftFields) };
   await assert.rejects(() => client.inspectQuoteOnChain({
-    async devInspectTransactionBlock() {
-      return { effects: { status: { status: 'success' } }, results: [{ returnValues: [[[...quoteBytes(drift)], '0x0::market::MarketQuoteV8']] }] };
+    async simulateTransaction() {
+      return {
+        $kind: 'Transaction',
+        commandResults: [{ returnValues: [{ bcs: quoteBytes(drift) }] }],
+      };
     },
   }, input), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_QUOTE_DRIFT');
 });
@@ -1835,11 +1851,15 @@ function finalizedCoreFixture(built, evidence, index) {
   const remember = (objectId, version, type, owner, fields, previousTransaction = 'prior-transaction') => {
     objectTypes[objectId] = type;
     past.set(`${objectId}:${version}`, {
-      status: 'VersionFound',
-      details: {
-        objectId, version, digest, type, owner: historicalOwner(owner), previousTransaction,
-        content: { dataType: 'moveObject', type, fields },
-      },
+      objectId,
+      version,
+      digest,
+      type,
+      owner: historicalOwner(owner),
+      previousTransaction,
+      parsed: fields,
+      contentBcs: new Uint8Array([1, 2, 3]),
+      objectBcs: new Uint8Array([4, 5, 6]),
     });
   };
   const readonly = (objectId, type, fields) => {
@@ -2119,10 +2139,11 @@ function finalizedCoreFixture(built, evidence, index) {
         };
       },
     },
-    async tryGetPastObject({ id: objectId, version, options }) {
-      assert.equal(Number.isSafeInteger(version), true);
-      assert.equal(options.showPreviousTransaction, true);
-      return past.get(`${objectId}:${version}`) ?? { status: 'VersionNotFound' };
+    async getHistoricalObject({ objectId, version }) {
+      assert.equal(typeof version, 'bigint');
+      const historical = past.get(`${objectId}:${version}`);
+      if (!historical) throw new Error('historical object version was pruned');
+      return historical;
     },
   };
   return { rpc, request, descriptor, listingId, rawEvents, transactionEvents, past };
@@ -2311,9 +2332,9 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
 
   const browserPhysicalFixture = fixtures.get('listBasePhysical');
   for (const [key, historical] of browserPhysicalFixture.past) {
-    if (historical?.details?.type !== types.physicalAsset) continue;
+    if (historical?.type !== types.physicalAsset) continue;
     const tampered = structuredClone(historical);
-    tampered.details.content.fields.sourceKind = tampered.details.content.fields.source.fields.source_kind;
+    tampered.parsed.sourceKind = tampered.parsed.source.fields.source_kind;
     browserPhysicalFixture.past.set(key, tampered);
   }
   await assert.rejects(

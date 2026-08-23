@@ -682,27 +682,51 @@ test('Receiving uses exact child object ID/version/digest and rejects tx.object 
   );
 });
 
-test('finalized readback is query-first, sender-bound, event-bound, and failure-layered', async () => {
+test('gRPC finalized readback is query-first, sender-bound, event-bound, and failure-layered', async () => {
   const eventType = makerV8ChainTypes(runtime()).activationEvent;
-  const success = {
-    digest: txDigest(), checkpoint: '10',
-    transaction: { data: { sender: wallet } },
-    effects: { status: { status: 'success' } },
-    events: [{ type: eventType }], objectChanges: [],
+  const finalizedRpc = ({ success = true } = {}) => {
+    const transaction = {
+      digest: txDigest(),
+      epoch: '7',
+      status: { success, error: success ? null : { message: 'MoveAbort(...)' } },
+      transaction: { sender: wallet },
+      effects: {
+        transactionDigest: txDigest(),
+        status: { success, error: success ? null : { message: 'MoveAbort(...)' } },
+        changedObjects: [],
+      },
+      events: [{ eventType }],
+    };
+    return mainnetRpc({
+      async getTransactionFinality() {
+        return {
+          digest: txDigest(), checkpoint: '10', epoch: '7',
+          status: transaction.status,
+        };
+      },
+      core: {
+        async getTransaction() {
+          return success
+            ? { $kind: 'Transaction', Transaction: transaction }
+            : { $kind: 'FailedTransaction', FailedTransaction: transaction };
+        },
+      },
+    });
   };
-  const result = await readFinalizedMakerV8Transaction(mainnetRpc({ async getTransactionBlock() { return success; } }), txDigest(), {
+  const result = await readFinalizedMakerV8Transaction(finalizedRpc(), txDigest(), {
     expectedSender: wallet, expectedEventTypes: [eventType],
   });
   assert.equal(result.digest, txDigest());
 
-  const failed = structuredClone(success);
-  failed.effects.status = { status: 'failure', error: 'MoveAbort(...)' };
   await assert.rejects(
-    () => readFinalizedMakerV8Transaction(mainnetRpc({ async getTransactionBlock() { return failed; } }), txDigest(), { expectedSender: wallet }),
+    () => readFinalizedMakerV8Transaction(finalizedRpc({ success: false }), txDigest(), { expectedSender: wallet }),
     (error) => error.layer === 'finalized' && error.code === 'MAKER_V8_FINALIZED_FAILURE',
   );
   await assert.rejects(
-    () => readFinalizedMakerV8Transaction(mainnetRpc({ async getTransactionBlock() { throw new Error('not indexed'); } }), txDigest(), { expectedSender: wallet }),
+    () => readFinalizedMakerV8Transaction(mainnetRpc({
+      async getTransactionFinality() { throw new Error('not indexed'); },
+      core: { async getTransaction() { throw new Error('must not run'); } },
+    }), txDigest(), { expectedSender: wallet }),
     (error) => error.layer === 'signed-outcome' && error.code === 'MAKER_V8_SIGNED_OUTCOME_UNKNOWN',
   );
 });

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
+  mkdir,
   mkdtemp,
   readFile,
   rm,
@@ -10,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
 import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
@@ -25,6 +28,7 @@ import { blake2b } from '@noble/hashes/blake2.js';
 
 import {
   MAINNET_V8_PACKAGE_NAMES,
+  MAINNET_V8_ROLE_DEPENDENCIES,
   MAINNET_V8_ROLE_ORDER,
   appendReleaseWal,
   buildMainnetV8AbiArtifact,
@@ -45,7 +49,9 @@ import {
 } from '../scripts/mainnet-v8-release-lib.mjs';
 import {
   MAINNET_V8_PLAN_FILENAME,
+  MAINNET_V8_DEFAULT_COMMITTEE,
   MAINNET_V8_RELEASE_TOOLCHAIN,
+  MAINNET_V8_RELEASE_SIGNER,
   MAINNET_V8_RELEASE_RUNNER_SCHEMA,
   MAINNET_V8_USDC_TYPE,
   MAINNET_V8_WAL_FILENAME,
@@ -66,15 +72,19 @@ import {
   durableMainnetV8UnsignedEnvelope,
   executeMainnetV8Release,
   hydrateMainnetV8UnsignedEnvelope,
+  inspectMainnetV8FreshSourceArchive,
   inspectMainnetV8Transaction,
   parseMainnetV8ReleaseArgs,
   verifyExactMainnetV8SignedArtifact,
   writtenReferencesFromEffects,
 } from '../scripts/mainnet-v8-release.mjs';
 
+const execFileAsync = promisify(execFile);
+
 const RELEASE_KEYPAIR = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(0x17));
 const ATTACKER_KEYPAIR = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(0x29));
 const RELEASE_SENDER = RELEASE_KEYPAIR.toSuiAddress();
+const PRODUCTION_SENDER = MAINNET_V8_RELEASE_SIGNER;
 
 const objectId = (byte) => `0x${byte.toString(16).padStart(2, '0').repeat(32)}`;
 const objectDigest = (byte) => toBase58(new Uint8Array(32).fill(byte));
@@ -135,7 +145,7 @@ const COMMITMENTS = Object.freeze(Object.fromEntries(
   })]),
 ));
 const SEAL_POLICY_TEMPLATE = buildSealPolicy({
-  keyServers: [{ objectId: objectId(40), weight: '1' }],
+  keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }],
   threshold: '1',
 });
 const SEAL_POLICY = buildMainnetV8FinalSealPolicy({
@@ -208,6 +218,32 @@ const SEAL_POLICY_CREATED_EVENT_BCS = bcs.struct('SealPolicyCreatedEventTest', {
   key_server_set_commitment: bcs.byteVector(),
   commitment: bcs.byteVector(),
 });
+const UPGRADE_CAP_OBJECT_BCS = bcs.struct('UpgradeCapObjectTest', {
+  id: bcs.Address,
+  package: bcs.Address,
+  version: bcs.u64(),
+  policy: bcs.u8(),
+});
+const PROTOCOL_CONFIG_OBJECT_BCS = bcs.struct('ProtocolConfigObjectTest', {
+  id: bcs.Address,
+  version: bcs.u64(),
+  core_original_package_id: bcs.Address,
+  core_callable_package_id: bcs.Address,
+  revision: bcs.u64(),
+  treasury_id: bcs.option(bcs.Address),
+  payment_coin_type: bcs.string(),
+  primary_content_fee_bps: bcs.u16(),
+  fixed_complete_fee_atomic: bcs.u64(),
+  maker_market_fee_bps: bcs.u16(),
+  soul_market_fee_bps: bcs.u16(),
+  enabled: bcs.bool(),
+  commitment: bcs.byteVector(),
+});
+const PROTOCOL_ADMIN_CAP_OBJECT_BCS = bcs.struct('ProtocolAdminCapObjectTest', {
+  id: bcs.Address,
+  version: bcs.u64(),
+  config_id: bcs.Address,
+});
 const RAW_PACKAGE_CALL_CAP_BCS = bcs.struct('RawPackageCallCapTest', {
   version: bcs.u64(),
   authority_id: bcs.Address,
@@ -272,13 +308,13 @@ const PLAN_TOOLCHAIN = Object.freeze({
   suiVersion: '1.77.2',
   suiVersionOutput: 'sui 1.77.2-51d177ad7d65',
   suiSourceCommit: '51d177ad7d65102fc368b582408f466d97b31548',
-  suiBinarySha256: 'c'.repeat(64),
+  suiBinarySha256: MAINNET_V8_RELEASE_TOOLCHAIN.suiBinarySha256,
   frameworkRevision: '73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1',
 });
 
 function releasePlanFixture() {
   return buildMainnetV8ReleasePlan({
-    sender: RELEASE_SENDER,
+    sender: PRODUCTION_SENDER,
     sourceRevision: SOURCE_REVISION,
     toolchain: PLAN_TOOLCHAIN,
     sealPolicy: SEAL_POLICY_TEMPLATE,
@@ -317,6 +353,13 @@ function transactionContext(sender = RELEASE_SENDER) {
 
 function expectCode(code) {
   return (error) => error instanceof MainnetV8ReleaseError && error.code === code;
+}
+
+async function acceptFixtureSignedArtifact(artifact) {
+  return Object.freeze({
+    digest: artifact.digest,
+    transactionBytes: fromBase64(artifact.transactionBase64),
+  });
 }
 
 function bootstrapCatalogRawBcsFixture() {
@@ -441,7 +484,7 @@ function readyGateFields(envelope, ordinal) {
       wrapped: [],
       gasObject: [{
         objectId: objectId(79), version: '1', digest: objectDigest(79),
-      }, { AddressOwner: RELEASE_SENDER }],
+      }, { AddressOwner: envelope.sender }],
       eventsDigest: null,
       dependencies: [],
     },
@@ -483,7 +526,7 @@ async function matcherFixture(ordinal) {
     const envelope = await inspectMainnetV8Transaction(buildMainnetV8PublishTransaction({
       modules,
       dependencies,
-      transactionContext: transactionContext(),
+      transactionContext: transactionContext(RELEASE_PLAN.sender),
     }));
     return Object.freeze({
       ordinal: '0',
@@ -505,7 +548,7 @@ async function matcherFixture(ordinal) {
       packageIds: PACKAGE_IDS,
       protocolConfig: PROTOCOL_CONFIG,
       protocolAdminCap: PROTOCOL_ADMIN_CAP,
-      transactionContext: transactionContext(),
+      transactionContext: transactionContext(RELEASE_PLAN.sender),
     }));
     const stageData = Object.freeze({
       packageIds: PACKAGE_IDS,
@@ -531,7 +574,7 @@ async function matcherFixture(ordinal) {
     protocolAdminCap: PROTOCOL_ADMIN_CAP,
     commitments: COMMITMENTS,
     sealPolicy: SEAL_POLICY,
-    transactionContext: transactionContext(),
+    transactionContext: transactionContext(RELEASE_PLAN.sender),
   }));
   const stageData = Object.freeze({
     packageIds: PACKAGE_IDS,
@@ -600,6 +643,7 @@ async function signEnvelopeFixture(input) {
     : input;
   const { signature } = await RELEASE_KEYPAIR.signTransaction(envelope.transactionBytes);
   const transactionData = bcs.TransactionData.parse(envelope.transactionBytes);
+  const transactionSigner = transactionData.V1.sender;
   const senderSignedDataBytes = bcs.SenderSignedData.serialize([{
     intentMessage: {
       intent: {
@@ -622,7 +666,7 @@ async function signEnvelopeFixture(input) {
     signatureSha256: sha256(signatureBytes),
     senderSignedDataBase64: toBase64(senderSignedDataBytes),
     senderSignedDataSha256: sha256(senderSignedDataBytes),
-    signer: RELEASE_SENDER,
+    signer: transactionSigner,
   });
 }
 
@@ -658,7 +702,7 @@ function successfulFinalityFixture(signedArtifact, gasByte = 84, created = []) {
         objectId: objectId(gasByte),
         version: '7',
         digest: objectDigest(gasByte),
-      }, { AddressOwner: RELEASE_SENDER }],
+      }, { AddressOwner: signedArtifact.signer }],
       eventsDigest: null,
       dependencies: [],
     },
@@ -705,13 +749,17 @@ async function createExecutionState(t) {
 
 async function publishReadyFixture(ordinal, predecessor) {
   const role = MAINNET_V8_ROLE_ORDER[ordinal];
+  const roleDependencies = MAINNET_V8_ROLE_DEPENDENCIES[role].map((dependencyRole) => {
+    const dependencyOrdinal = MAINNET_V8_ROLE_ORDER.indexOf(dependencyRole);
+    return objectId(88 + dependencyOrdinal * 5);
+  });
   const packageArtifact = buildMainnetV8PackageArtifact({
     role,
     modules: [
       { name: 'alpha', bytes: Uint8Array.of(ordinal, 1) },
       { name: 'beta', bytes: Uint8Array.of(ordinal, 2) },
     ],
-    dependencies: [objectId(1), objectId(2)],
+    dependencies: [objectId(1), objectId(2), ...roleDependencies],
     buildDigest: hash32(40 + ordinal),
   });
   const modules = packageArtifact.modules.map(({ bytesBase64 }) => bytesBase64);
@@ -719,7 +767,7 @@ async function publishReadyFixture(ordinal, predecessor) {
   const envelope = await inspectMainnetV8Transaction(buildMainnetV8PublishTransaction({
     modules,
     dependencies,
-    transactionContext: transactionContext(),
+    transactionContext: transactionContext(RELEASE_PLAN.sender),
   }));
   const readyArtifact = Object.freeze({
     kind: 'PUBLISH',
@@ -904,10 +952,10 @@ function publishCertificationFixture(fixture, signedArtifact, ordinal = 0) {
   });
   const created = [
     [references.package, { Immutable: true }],
-    [references.upgradeCap, { AddressOwner: RELEASE_SENDER }],
+    [references.upgradeCap, { AddressOwner: fixture.plan.sender }],
     ...(role === 'core' ? [
       [references.protocolConfig, { Shared: { initialSharedVersion: '1' } }],
-      [references.protocolAdminCap, { AddressOwner: RELEASE_SENDER }],
+      [references.protocolAdminCap, { AddressOwner: fixture.plan.sender }],
     ] : []),
   ];
   const finalityEvidence = successfulFinalityFixture(signedArtifact, base + 4, created);
@@ -921,19 +969,16 @@ function publishCertificationFixture(fixture, signedArtifact, ordinal = 0) {
     role,
     descriptor,
   });
-  const moveBytes = Uint8Array.of(1, 2, 3);
-  const moveBytesBase64 = toBase64(moveBytes);
-  const moveBytesSha256 = sha256(moveBytes);
-  const moveOutput = ({ reference, type, owner, fields }) => Object.freeze({
+  const moveOutput = ({ reference, type, owner, fields, contentBytes }) => Object.freeze({
     reference,
     type,
     owner,
     previousTransaction: signedArtifact.digest,
     fields,
-    contentBcsBase64: moveBytesBase64,
-    contentBcsSha256: moveBytesSha256,
-    objectBcsBase64: moveBytesBase64,
-    objectBcsSha256: moveBytesSha256,
+    contentBcsBase64: toBase64(contentBytes),
+    contentBcsSha256: sha256(contentBytes),
+    objectBcsBase64: toBase64(contentBytes),
+    objectBcsSha256: sha256(contentBytes),
   });
   const readback = Object.freeze({
     schemaVersion: MAINNET_V8_RELEASE_RUNNER_SCHEMA,
@@ -957,14 +1002,26 @@ function publishCertificationFixture(fixture, signedArtifact, ordinal = 0) {
       )),
       objectBcsSha256: hash32(base),
       typeOrigins: Object.freeze([]),
-      linkage: Object.freeze([]),
+      linkage: Object.freeze(fixture.readyArtifact.packageArtifact.dependencies.map(
+        (dependency) => Object.freeze({
+          originalId: dependency,
+          upgradedId: dependency,
+          upgradedVersion: '1',
+        }),
+      )),
       descriptor,
       abiArtifact,
     }),
     upgradeCap: moveOutput({
       reference: references.upgradeCap,
       type: `${`0x${'0'.repeat(63)}2`}::package::UpgradeCap`,
-      owner: Object.freeze({ AddressOwner: RELEASE_SENDER }),
+      owner: Object.freeze({ AddressOwner: fixture.plan.sender }),
+      contentBytes: UPGRADE_CAP_OBJECT_BCS.serialize({
+        id: upgradeCapId,
+        package: packageId,
+        version: '1',
+        policy: 0,
+      }).toBytes(),
       fields: Object.freeze({
         id: Object.freeze({ id: upgradeCapId }),
         package: packageId,
@@ -976,6 +1033,28 @@ function publishCertificationFixture(fixture, signedArtifact, ordinal = 0) {
       reference: references.protocolConfig,
       type: `${packageId}::protocol_config_v8::ProtocolConfigV8`,
       owner: Object.freeze({ Shared: Object.freeze({ initial_shared_version: '1' }) }),
+      contentBytes: PROTOCOL_CONFIG_OBJECT_BCS.serialize({
+        id: protocolConfigId,
+        version: '8',
+        core_original_package_id: packageId,
+        core_callable_package_id: packageId,
+        revision: '0',
+        treasury_id: null,
+        payment_coin_type: MAINNET_V8_USDC_TYPE,
+        primary_content_fee_bps: 1000,
+        fixed_complete_fee_atomic: '0',
+        maker_market_fee_bps: 250,
+        soul_market_fee_bps: 250,
+        enabled: false,
+        commitment: fromHex(deriveMainnetV8ProtocolConfigCommitment({
+          configId: protocolConfigId,
+          coreOriginalPackageId: packageId,
+          coreCallablePackageId: packageId,
+          revision: '0',
+          treasuryId: null,
+          enabled: false,
+        })),
+      }).toBytes(),
       fields: Object.freeze({
         id: Object.freeze({ id: protocolConfigId }),
         version: '8',
@@ -1002,7 +1081,12 @@ function publishCertificationFixture(fixture, signedArtifact, ordinal = 0) {
     protocolAdminCap: role === 'core' ? moveOutput({
       reference: references.protocolAdminCap,
       type: `${packageId}::protocol_config_v8::ProtocolAdminCapV8`,
-      owner: Object.freeze({ AddressOwner: RELEASE_SENDER }),
+      owner: Object.freeze({ AddressOwner: fixture.plan.sender }),
+      contentBytes: PROTOCOL_ADMIN_CAP_OBJECT_BCS.serialize({
+        id: protocolAdminCapId,
+        version: '8',
+        config_id: protocolConfigId,
+      }).toBytes(),
       fields: Object.freeze({
         id: Object.freeze({ id: protocolAdminCapId }),
         version: '8',
@@ -1082,7 +1166,7 @@ test('write gate requires the exact conjunction of confirmation, signing, and br
 test('protocol-133 toolchain identity remains pinned in the runner-facing contract', () => {
   assert.deepEqual(MAINNET_V8_RELEASE_TOOLCHAIN, {
     suiVersion: '1.77.2',
-    suiCommit: '51d177ad7d65102fc368b582408f466d97b31548',
+    suiSourceCommit: '51d177ad7d65102fc368b582408f466d97b31548',
     suiVersionOutput: 'sui 1.77.2-51d177ad7d65',
     suiBinarySha256: '91ec4642a3650d65af334728c09e19972833c12f27eafeccc3ce8cc2ac3e007c',
     protocolVersion: '133',
@@ -1090,6 +1174,91 @@ test('protocol-133 toolchain identity remains pinned in the runner-facing contra
     objectRuntimeMaxStoreEntries: '1000',
     frameworkRevision: '73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1',
   });
+});
+
+test('fresh source archive ignores mutable checkout state and validates all seven plan artifacts', async (t) => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'animacraft-mainnet-v8-source-'));
+  t.after(async () => rm(repositoryRoot, { recursive: true, force: true }));
+  const contents = Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role) => {
+    const packageName = MAINNET_V8_PACKAGE_NAMES[role];
+    return [role, Object.freeze({
+      moveToml: `[package]\nname = "${packageName}"\nedition = "2024"\n`,
+      moveLock: '[move]\nversion = 3\n',
+      source: `module 0x0::${role}_v8 { public fun role(): u8 { ${role.length} } }\n`,
+    })];
+  }));
+  await Promise.all(MAINNET_V8_ROLE_ORDER.map(async (role) => {
+    const packageDirectory = join(repositoryRoot, 'move', MAINNET_V8_PACKAGE_NAMES[role]);
+    await mkdir(join(packageDirectory, 'sources'), { recursive: true });
+    await Promise.all([
+      writeFile(join(packageDirectory, 'Move.toml'), contents[role].moveToml),
+      writeFile(join(packageDirectory, 'Move.lock'), contents[role].moveLock),
+      writeFile(join(packageDirectory, 'sources', `${role}_v8.move`), contents[role].source),
+    ]);
+  }));
+  await execFileAsync('git', ['init', '-q'], { cwd: repositoryRoot });
+  await execFileAsync('git', ['add', '.'], { cwd: repositoryRoot });
+  await execFileAsync('git', [
+    '-c', 'user.name=Animacraft Test',
+    '-c', 'user.email=animacraft-test@example.invalid',
+    'commit', '-qm', 'fixture',
+  ], { cwd: repositoryRoot });
+  const [{ stdout: commitOutput }, { stdout: treeOutput }] = await Promise.all([
+    execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot }),
+    execFileAsync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: repositoryRoot }),
+  ]);
+  const sourceRevision = Object.freeze({
+    gitCommit: commitOutput.trim(),
+    gitTree: treeOutput.trim(),
+    clean: true,
+  });
+  const planFor = (coreSource = contents.core.source) => buildMainnetV8ReleasePlan({
+    sender: PRODUCTION_SENDER,
+    sourceRevision,
+    toolchain: PLAN_TOOLCHAIN,
+    sealPolicy: SEAL_POLICY_TEMPLATE,
+    packages: MAINNET_V8_ROLE_ORDER.map((role) => ({
+      role,
+      packageName: MAINNET_V8_PACKAGE_NAMES[role],
+      sourceArtifact: buildMainnetV8SourceArtifact({
+        role,
+        release: {
+          gitCommit: sourceRevision.gitCommit,
+          gitTree: sourceRevision.gitTree,
+        },
+        toolchain: PLAN_TOOLCHAIN,
+        files: [
+          mainnetV8SourceFileRecord('Move.toml', contents[role].moveToml),
+          mainnetV8SourceFileRecord('Move.lock', contents[role].moveLock),
+          mainnetV8SourceFileRecord(
+            `sources/${role}_v8.move`,
+            role === 'core' ? coreSource : contents[role].source,
+          ),
+        ],
+      }),
+    })),
+  });
+  const plan = planFor();
+  const first = await inspectMainnetV8FreshSourceArchive({ repositoryRoot, plan });
+  assert.deepEqual(first.git, {
+    commit: sourceRevision.gitCommit,
+    tree: sourceRevision.gitTree,
+  });
+  assert.deepEqual(first.sourceCommitments, Object.fromEntries(
+    plan.packages.map((entry) => [entry.role, entry.sourceCommitment]),
+  ));
+
+  const tamperedCore = `${contents.core.source}// mutable working-tree drift\n`;
+  await writeFile(
+    join(repositoryRoot, 'move', MAINNET_V8_PACKAGE_NAMES.core, 'sources', 'core_v8.move'),
+    tamperedCore,
+  );
+  const second = await inspectMainnetV8FreshSourceArchive({ repositoryRoot, plan });
+  assert.deepEqual(second, first, 'approved commit archive must ignore later working-tree mutation');
+  await assert.rejects(
+    inspectMainnetV8FreshSourceArchive({ repositoryRoot, plan: planFor(tamperedCore) }),
+    expectCode('MAINNET_V8_SOURCE_ARTIFACT_DRIFT'),
+  );
 });
 
 test('ProtocolConfig commitments match independent initial/enabled BCS and bind every mutable input', () => {
@@ -1871,6 +2040,7 @@ test('execute runner rejects absent or mismatched external approvals before ever
     assertProtocolProfile: sideEffect('assertProtocolProfile'),
     assertReadyBuild: sideEffect('assertReadyBuild'),
     signExactTransaction: sideEffect('signExactTransaction'),
+    verifySignedArtifact: sideEffect('verifySignedArtifact'),
     queryFinalizedOutcome: sideEffect('queryFinalizedOutcome'),
     broadcastExactTransaction: sideEffect('broadcastExactTransaction'),
     getCheckpointWatermark: sideEffect('getCheckpointWatermark'),
@@ -1928,6 +2098,7 @@ test('execute runner seals the final manifest then requires a separately approve
     assertProtocolProfile: unreachable('assertProtocolProfile'),
     assertReadyBuild: unreachable('assertReadyBuild'),
     signExactTransaction: unreachable('signExactTransaction'),
+    verifySignedArtifact: unreachable('verifySignedArtifact'),
     queryFinalizedOutcome: unreachable('queryFinalizedOutcome'),
     broadcastExactTransaction: unreachable('broadcastExactTransaction'),
     getCheckpointWatermark: unreachable('getCheckpointWatermark'),
@@ -2001,6 +2172,7 @@ test('execute runner cold-rebuilds READY publish bytes before signing and fails 
           signCount += 1;
           assert.fail('signing must remain unreachable after cold rebuild drift');
         },
+        verifySignedArtifact: acceptFixtureSignedArtifact,
         queryFinalizedOutcome: async () => assert.fail('READY drift cannot query'),
         broadcastExactTransaction: async () => assert.fail('READY drift cannot broadcast'),
         getCheckpointWatermark: async () => assert.fail('READY drift cannot read watermark'),
@@ -2051,14 +2223,20 @@ test('execute runner durably orders signing, double NOT_FOUND, broadcast, and qu
       assert.equal(event.status, 'READY');
       return Object.freeze({ kind: 'PUBLISH_BUILD_VERIFIED' });
     },
+    assertReadyAuthority: async () => {
+      const event = await observe('authority');
+      assert.equal(event.status, 'READY');
+      return Object.freeze({ kind: 'NO_STAGE_AUTHORITY', ordinal: '0' });
+    },
     signExactTransaction: async ({ sender, envelope }) => {
       const event = await observe('sign');
       assert.equal(event.status, 'READY');
-      assert.equal(sender, RELEASE_SENDER);
+      assert.equal(sender, fixture.plan.sender);
       assert.equal(envelope.digest, fixture.unsignedEnvelope.digest);
       signCount += 1;
       return signedArtifact;
     },
+    verifySignedArtifact: acceptFixtureSignedArtifact,
     queryFinalizedOutcome: async ({ digest, signedArtifact: durableSigned }) => {
       const event = await observe('query');
       assert.equal(durableState(event), 'OUTCOME_PENDING/QUERY_INTENT');
@@ -2137,6 +2315,8 @@ test('execute runner durably orders signing, double NOT_FOUND, broadcast, and qu
     'inspect:READY',
     'profile:READY',
     'rebuild:READY',
+    'authority:READY',
+    'inspect:READY',
     'sign:READY',
     'inspect:SIGNED',
     'inspect:OUTCOME_PENDING/QUERY_INTENT',
@@ -2172,6 +2352,7 @@ test('execute runner durably orders signing, double NOT_FOUND, broadcast, and qu
     assertProtocolProfile: async () => assert.fail('legacy intent resume must not broadcast'),
     assertReadyBuild: async () => assert.fail('legacy intent resume must not rebuild or re-sign'),
     signExactTransaction: async () => assert.fail('legacy intent resume must not re-sign'),
+    verifySignedArtifact: acceptFixtureSignedArtifact,
     queryFinalizedOutcome: async () => {
       const event = await observeResume('query');
       assert.equal(durableState(event), 'OUTCOME_PENDING/QUERY_INTENT');
@@ -2241,12 +2422,18 @@ test('execute runner persists pending readback before certification and advances
       assert.equal(event.status, 'READY');
       return Object.freeze({ kind: 'PUBLISH_BUILD_VERIFIED' });
     },
+    assertReadyAuthority: async () => {
+      const event = await observe('authority');
+      assert.equal(event.status, 'READY');
+      return Object.freeze({ kind: 'NO_STAGE_AUTHORITY', ordinal: '0' });
+    },
     signExactTransaction: async () => {
       const event = await observe('sign');
       assert.equal(event.status, 'READY');
       signCount += 1;
       return signedArtifact;
     },
+    verifySignedArtifact: acceptFixtureSignedArtifact,
     queryFinalizedOutcome: async () => {
       const event = await observe('query');
       assert.equal(durableState(event), 'OUTCOME_PENDING/QUERY_INTENT');
@@ -2303,6 +2490,8 @@ test('execute runner persists pending readback before certification and advances
     'inspect:READY',
     'profile:READY',
     'rebuild:READY',
+    'authority:READY',
+    'inspect:READY',
     'sign:READY',
     'inspect:SIGNED',
     'inspect:OUTCOME_PENDING/QUERY_INTENT',

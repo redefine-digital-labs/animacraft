@@ -471,19 +471,28 @@ async function productionFixture() {
         commandResults: [{ returnValues: [{ bcs: quoteBytes(quote) }] }],
       };
     },
-    async dryRunTransactionBlock({ transactionBlock }) {
-      const snapshot = TransactionDataBuilder.fromBytes(fromBase64(transactionBlock)).snapshot();
-      const calls = snapshot.commands.filter((command) => command.MoveCall);
-      assert.equal(calls.length, 1, 'cancel/recover dry-run must contain one Market action');
-      actionDryRunFunctions.push(calls[0].MoveCall.function);
-      return { effects: { status: { status: 'success' } } };
-    },
-    async executeTransactionBlock() {
-      broadcastCalls += 1;
-      throw new Error('offline test must never broadcast');
-    },
     core: {
       async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
+      async simulateTransaction({ transaction }) {
+        const transactionBytes = typeof transaction === 'string' ? fromBase64(transaction) : transaction;
+        const snapshot = TransactionDataBuilder.fromBytes(transactionBytes).snapshot();
+        const calls = snapshot.commands.filter((command) => command.MoveCall);
+        assert.equal(calls.length, 1, 'cancel/recover dry-run must contain one Market action');
+        actionDryRunFunctions.push(calls[0].MoveCall.function);
+        const digest = TransactionDataBuilder.getDigestFromBytes(transactionBytes);
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest,
+            status: { success: true, error: null },
+            effects: { transactionDigest: digest, status: { success: true, error: null } },
+          },
+        };
+      },
+      async executeTransaction() {
+        broadcastCalls += 1;
+        throw new Error('offline test must never broadcast');
+      },
       resolveTransactionPlugin() {
         return async (transactionData, _options, next) => {
           transactionData.inputs = transactionData.inputs.map((input) => {

@@ -1976,33 +1976,25 @@ export async function inspectMarketActionOnChainV8(client, builtActionInput) {
   }
   const checked = validateCanonicalMarketV8TransactionBytes(builtAction, transactionBytes, currentEpoch);
   const gasData = await attestGasFunding(client, checked.gasData);
-  let result;
-  if (typeof client?.dryRunTransactionBlock === 'function') {
-    result = await client.dryRunTransactionBlock({ transactionBlock: checked.transactionBytes });
-  } else if (typeof client?.core?.simulateTransaction === 'function') {
-    result = await client.core.simulateTransaction({
-      transaction: checked.transactionBytes,
-      include: { effects: true, events: true, commandResults: true },
-    });
-  } else if (typeof client?.simulateTransaction === 'function') {
-    result = await client.simulateTransaction({
-      transaction: checked.transactionBytes,
-      include: { effects: true, events: true, commandResults: true },
-    });
-  } else {
-    fail(MarketV8BuildError, 'MARKET_V8_ACTION_DRY_RUN_CLIENT_MISSING', 'client', 'A Mainnet Sui client with transaction simulation is required immediately before signing.');
+  if (typeof client?.core?.simulateTransaction !== 'function') {
+    fail(MarketV8BuildError, 'MARKET_V8_ACTION_DRY_RUN_CLIENT_MISSING', 'client', 'Core gRPC transaction simulation is required immediately before signing.');
   }
-  const status = result?.effects?.status?.status
-    ?? result?.effects?.status
-    ?? (result?.$kind === 'FailedTransaction' || result?.FailedTransaction ? 'failure' : 'success');
-  if (status !== 'success' && status !== 'SUCCESS') {
+  const result = await client.core.simulateTransaction({
+    transaction: fromBase64(checked.transactionBytes),
+    include: { effects: true, events: true, commandResults: true },
+  });
+  const simulated = result?.$kind === 'Transaction'
+    ? (result.Transaction ?? result)
+    : result?.FailedTransaction;
+  if (result?.$kind !== 'Transaction'
+    || simulated?.status?.success !== true
+    || simulated?.effects?.status?.success !== true) {
     fail(
       MarketV8EligibilityError,
       'MARKET_V8_ACTION_DRY_RUN_FAILED',
       'transaction',
-      result?.effects?.status?.error
-        ?? result?.FailedTransaction?.status?.error?.message
-        ?? result?.error
+      simulated?.effects?.status?.error
+        ?? simulated?.status?.error?.message
         ?? 'The exact Market Transaction failed Mainnet simulation.',
     );
   }
@@ -2228,34 +2220,32 @@ export async function inspectMarketQuoteOnChainV8(client, runtimeInput, input) {
       include: { commandResults: true },
     });
   } else if (typeof client?.core?.simulateTransaction === 'function') {
+    const transaction = await built.transaction.build({ client });
     result = await client.core.simulateTransaction({
-      transaction: built.transaction,
+      transaction,
       include: { commandResults: true },
     });
-  } else if (typeof client?.devInspectTransactionBlock === 'function') {
-    result = await client.devInspectTransactionBlock({
-      sender: built.descriptor.sender,
-      transactionBlock: built.transaction,
-    });
   } else {
-    fail(MarketV8BuildError, 'MARKET_V8_QUOTE_CLIENT_MISSING', 'client', 'A Sui client with simulateTransaction or devInspectTransactionBlock is required.');
+    fail(MarketV8BuildError, 'MARKET_V8_QUOTE_CLIENT_MISSING', 'client', 'A gRPC Sui client with transaction simulation is required.');
   }
+  const simulated = result?.$kind === 'Transaction'
+    ? (result.Transaction ?? result)
+    : result?.FailedTransaction;
   const failed = result?.$kind === 'FailedTransaction'
     || Boolean(result?.FailedTransaction)
-    || result?.effects?.status?.status === 'failure'
-    || result?.error !== undefined;
+    || simulated?.status?.success === false
+    || simulated?.effects?.status?.success === false;
   if (failed) {
     fail(
       MarketV8EligibilityError,
       'MARKET_V8_QUOTE_DRY_RUN_FAILED',
       'quote',
-      result?.FailedTransaction?.status?.error?.message
-        || result?.effects?.status?.error
-        || result?.error
+      simulated?.status?.error?.message
+        || simulated?.effects?.status?.error
         || 'Chain-authoritative Market quote dry-run failed.',
     );
   }
-  const quote = parseMarketQuoteV8Bcs(marketQuoteReturnBytes(result, built.commandIndex));
+  const quote = parseMarketQuoteV8Bcs(marketQuoteReturnBytes(simulated, built.commandIndex));
   assertChainQuoteMatches(built.localQuote, quote);
   const proof = freezeRecord({
     ...quote,

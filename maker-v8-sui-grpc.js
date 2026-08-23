@@ -633,6 +633,294 @@ async function unary(call, label, responseType) {
   return sdkMessage(result.response, responseType, `${label}.response`);
 }
 
+function immutableCanonicalJson(value, label, state = { nodes: 0 }, depth = 0) {
+  state.nodes += 1;
+  if (state.nodes > 100_000 || depth > 64) {
+    fail('MAKER_V8_SUI_GRPC_JSON_BOUNDS_EXCEEDED', `${label} exceeds bounded JSON depth or size.`);
+  }
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      fail('MAKER_V8_SUI_GRPC_JSON_NUMBER_INVALID', `${label} contains a non-integer or unsafe JSON number.`);
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((entry, index) => (
+      immutableCanonicalJson(entry, `${label}[${index}]`, state, depth + 1)
+    )));
+  }
+  if (!plain(value)) {
+    fail('MAKER_V8_SUI_GRPC_JSON_INVALID', `${label} contains a non-JSON value.`);
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors).sort();
+  const normalized = {};
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value') || descriptor.value === undefined) {
+      fail('MAKER_V8_SUI_GRPC_JSON_INVALID', `${label}.${key} is not one exact enumerable JSON value.`);
+    }
+    normalized[key] = immutableCanonicalJson(descriptor.value, `${label}.${key}`, state, depth + 1);
+  }
+  return Object.freeze(normalized);
+}
+
+function moveTypeNodeFromTag(tag, label) {
+  if (!plain(tag)) fail('MAKER_V8_SUI_GRPC_MOVE_TYPE_INVALID', `${label} is not one Move type tag.`);
+  const keys = Object.keys(tag).filter((key) => key !== '$kind');
+  if (keys.length !== 1) fail('MAKER_V8_SUI_GRPC_MOVE_TYPE_INVALID', `${label} is not one exact Move type tag.`);
+  const kind = keys[0];
+  if (['address', 'bool', 'u8', 'u16', 'u32', 'u64', 'u128', 'u256'].includes(kind)) {
+    return Object.freeze({ kind });
+  }
+  if (kind === 'vector') {
+    return Object.freeze({ kind, element: moveTypeNodeFromTag(tag.vector, `${label}.vector`) });
+  }
+  if (kind !== 'struct' || !plain(tag.struct)) {
+    fail('MAKER_V8_SUI_GRPC_MOVE_TYPE_INVALID', `${label} contains an unsupported Move type tag.`);
+  }
+  const struct = tag.struct;
+  const structAddress = address(struct.address, `${label}.struct.address`);
+  if (!MODULE_NAME.test(struct.module) || !MODULE_NAME.test(struct.name)
+    || !Array.isArray(struct.typeParams)) {
+    fail('MAKER_V8_SUI_GRPC_MOVE_TYPE_INVALID', `${label}.struct is malformed.`);
+  }
+  return Object.freeze({
+    kind: 'datatype',
+    address: structAddress,
+    module: struct.module,
+    name: struct.name,
+    typeArguments: Object.freeze(struct.typeParams.map((entry, index) => (
+      moveTypeNodeFromTag(entry, `${label}.struct.typeParams[${index}]`)
+    ))),
+  });
+}
+
+function moveTypeNodeName(node) {
+  if (node.kind === 'vector') return `vector<${moveTypeNodeName(node.element)}>`;
+  if (node.kind !== 'datatype') return node.kind;
+  const base = `${node.address}::${node.module}::${node.name}`;
+  return node.typeArguments.length === 0
+    ? base
+    : `${base}<${node.typeArguments.map(moveTypeNodeName).join(',')}>`;
+}
+
+function historicalMoveSchema(node, cache = new WeakMap()) {
+  if (cache.has(node)) return cache.get(node);
+  let schema;
+  if (node.kind === 'address') schema = bcs.Address;
+  else if (node.kind === 'bool') schema = bcs.bool();
+  else if (node.kind === 'u8') schema = bcs.u8();
+  else if (node.kind === 'u16') schema = bcs.u16();
+  else if (node.kind === 'u32') schema = bcs.u32();
+  else if (node.kind === 'u64') schema = bcs.u64();
+  else if (node.kind === 'u128') schema = bcs.u128();
+  else if (node.kind === 'u256') schema = bcs.u256();
+  else if (node.kind === 'vector') schema = bcs.vector(historicalMoveSchema(node.element, cache));
+  else if (node.kind === 'datatype') {
+    schema = bcs.struct(
+      moveTypeNodeName(node),
+      Object.fromEntries(node.fields.map((field) => [field.name, historicalMoveSchema(field.type, cache)])),
+    );
+  } else {
+    fail('MAKER_V8_SUI_GRPC_MOVE_TYPE_INVALID', 'Historical Move layout contains an unsupported kind.');
+  }
+  cache.set(node, schema);
+  return schema;
+}
+
+const STD_ADDRESS = normalizeSuiAddress('0x1');
+const SUI_ADDRESS = normalizeSuiAddress('0x2');
+const MOVE_SPECIAL_TYPES = Object.freeze({
+  id: `${SUI_ADDRESS}::object::ID`,
+  uid: `${SUI_ADDRESS}::object::UID`,
+  balance: `${SUI_ADDRESS}::balance::Balance`,
+  option: `${STD_ADDRESS}::option::Option`,
+  string: `${STD_ADDRESS}::string::String`,
+  ascii: `${STD_ADDRESS}::ascii::String`,
+});
+
+function historicalMoveJson(node, value, label) {
+  if (node.kind === 'address') return address(value, label);
+  if (['bool', 'u8', 'u16', 'u32', 'u64', 'u128', 'u256'].includes(node.kind)) return value;
+  if (node.kind === 'vector') {
+    if (!Array.isArray(value)) fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} is not one BCS vector.`);
+    return value.map((entry, index) => historicalMoveJson(node.element, entry, `${label}[${index}]`));
+  }
+  if (node.kind !== 'datatype' || !plain(value)) {
+    fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} is not one decoded Move datatype.`);
+  }
+  const base = `${node.address}::${node.module}::${node.name}`;
+  if (base === MOVE_SPECIAL_TYPES.id) return historicalMoveJson(node.fields[0].type, value.bytes, `${label}.bytes`);
+  if (base === MOVE_SPECIAL_TYPES.uid) return historicalMoveJson(node.fields[0].type, value.id, `${label}.id`);
+  if (base === MOVE_SPECIAL_TYPES.balance) return historicalMoveJson(node.fields[0].type, value.value, `${label}.value`);
+  if (base === MOVE_SPECIAL_TYPES.option) {
+    const items = historicalMoveJson(node.fields[0].type, value.vec, `${label}.vec`);
+    if (!Array.isArray(items) || items.length > 1) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} is not one canonical Move Option.`);
+    }
+    return items;
+  }
+  if (base === MOVE_SPECIAL_TYPES.string || base === MOVE_SPECIAL_TYPES.ascii) {
+    const raw = value.bytes;
+    if (!Array.isArray(raw) || raw.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+      || (base === MOVE_SPECIAL_TYPES.ascii && raw.some((byte) => byte > 0x7f))) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} contains invalid Move string bytes.`);
+    }
+    try {
+      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(raw));
+      if (!sameBytes(new TextEncoder().encode(decoded), Uint8Array.from(raw))) throw new Error('non-canonical');
+      return decoded;
+    } catch {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} contains non-canonical UTF-8.`);
+    }
+  }
+  return Object.fromEntries(node.fields.map((field) => [
+    field.name,
+    historicalMoveJson(field.type, value[field.name], `${label}.${field.name}`),
+  ]));
+}
+
+function createHistoricalMoveDecoder(grpc) {
+  const layoutCache = new Map();
+  const openType = GrpcTypes.OpenSignatureBody_Type;
+  const datatypeKind = GrpcTypes.DatatypeDescriptor_DatatypeKind;
+  const primitives = new Map([
+    [openType.ADDRESS, 'address'], [openType.BOOL, 'bool'],
+    [openType.U8, 'u8'], [openType.U16, 'u16'], [openType.U32, 'u32'],
+    [openType.U64, 'u64'], [openType.U128, 'u128'], [openType.U256, 'u256'],
+  ]);
+
+  const resolveNode = async (node, depth = 0, trail = []) => {
+    if (depth > 64) fail('MAKER_V8_SUI_GRPC_MOVE_LAYOUT_INVALID', 'Historical Move layout exceeds bounded depth.');
+    if (node.kind === 'vector') {
+      return Object.freeze({ kind: 'vector', element: await resolveNode(node.element, depth + 1, trail) });
+    }
+    if (node.kind !== 'datatype') return node;
+    const requested = node;
+    const key = moveTypeNodeName(requested);
+    if (trail.includes(key)) fail('MAKER_V8_SUI_GRPC_MOVE_LAYOUT_INVALID', 'Recursive historical Move layouts are unsupported.');
+    if (layoutCache.has(key)) return layoutCache.get(key);
+    const pending = (async () => {
+      const response = await unary(grpc.movePackageService.getDatatype({
+        packageId: requested.address,
+        moduleName: requested.module,
+        name: requested.name,
+      }), `movePackageService.getDatatype(${key})`, GrpcTypes.GetDatatypeResponse);
+      const descriptor = sdkMessage(response.datatype, GrpcTypes.DatatypeDescriptor, `datatype(${key})`);
+      const expectedBase = `${requested.address}::${requested.module}::${requested.name}`;
+      if (typeName(descriptor.typeName, `datatype(${key}).typeName`) !== expectedBase
+        || address(descriptor.definingId, `datatype(${key}).definingId`) !== requested.address
+        || descriptor.module !== requested.module
+        || descriptor.name !== requested.name
+        || descriptor.kind !== datatypeKind.STRUCT
+        || !Array.isArray(descriptor.typeParameters)
+        || descriptor.typeParameters.length !== requested.typeArguments.length
+        || !Array.isArray(descriptor.fields)
+        || descriptor.fields.length > 256
+        || (Array.isArray(descriptor.variants) && descriptor.variants.length !== 0)) {
+        fail('MAKER_V8_SUI_GRPC_MOVE_LAYOUT_INVALID', `Datatype descriptor for ${key} is malformed or drifted.`);
+      }
+      const names = new Set();
+      const fields = [];
+      const resolveBody = async (body, fieldLabel) => {
+        sdkMessage(body, GrpcTypes.OpenSignatureBody, fieldLabel);
+        if (primitives.has(body.type)) return Object.freeze({ kind: primitives.get(body.type) });
+        if (body.type === openType.TYPE_PARAMETER) {
+          if (!Number.isInteger(body.typeParameter)
+            || body.typeParameter < 0
+            || body.typeParameter >= requested.typeArguments.length) {
+            fail('MAKER_V8_SUI_GRPC_MOVE_LAYOUT_INVALID', `${fieldLabel} has an invalid type parameter.`);
+          }
+          return resolveNode(requested.typeArguments[body.typeParameter], depth + 1, [...trail, key]);
+        }
+        if (body.type === openType.VECTOR) {
+          if (!Array.isArray(body.typeParameterInstantiation) || body.typeParameterInstantiation.length !== 1) {
+            fail('MAKER_V8_SUI_GRPC_MOVE_LAYOUT_INVALID', `${fieldLabel} has an invalid vector layout.`);
+          }
+          return Object.freeze({
+            kind: 'vector',
+            element: await resolveBody(body.typeParameterInstantiation[0], `${fieldLabel}.vector`),
+          });
+        }
+        if (body.type === openType.DATATYPE) {
+          const tag = parseStructTag(typeName(body.typeName, `${fieldLabel}.typeName`));
+          const instantiation = Array.isArray(body.typeParameterInstantiation)
+            ? body.typeParameterInstantiation : [];
+          const argumentsForType = await Promise.all(instantiation.map((entry, index) => (
+            resolveBody(entry, `${fieldLabel}.typeArguments[${index}]`)
+          )));
+          return resolveNode(Object.freeze({
+            kind: 'datatype',
+            address: tag.address,
+            module: tag.module,
+            name: tag.name,
+            typeArguments: Object.freeze(argumentsForType),
+          }), depth + 1, [...trail, key]);
+        }
+        fail('MAKER_V8_SUI_GRPC_MOVE_LAYOUT_INVALID', `${fieldLabel} has an unsupported Move layout kind.`);
+      };
+      for (let index = 0; index < descriptor.fields.length; index += 1) {
+        const field = sdkMessage(descriptor.fields[index], GrpcTypes.FieldDescriptor, `datatype(${key}).fields[${index}]`);
+        if (!MODULE_NAME.test(field.name) || field.position !== index || names.has(field.name)) {
+          fail('MAKER_V8_SUI_GRPC_MOVE_LAYOUT_INVALID', `Datatype ${key} has invalid ordered fields.`);
+        }
+        names.add(field.name);
+        fields.push(Object.freeze({
+          name: field.name,
+          type: await resolveBody(field.type, `datatype(${key}).fields[${index}].type`),
+        }));
+      }
+      return Object.freeze({ ...requested, fields: Object.freeze(fields) });
+    })();
+    layoutCache.set(key, pending);
+    try {
+      const resolved = await pending;
+      layoutCache.set(key, resolved);
+      return resolved;
+    } catch (error) {
+      layoutCache.delete(key);
+      throw error;
+    }
+  };
+
+  return async (type, contentBcs, serverJson) => {
+    let unresolved;
+    try {
+      unresolved = moveTypeNodeFromTag(TypeTagSerializer.parseFromStr(type, true), 'historical.type');
+    } catch (cause) {
+      if (cause instanceof MakerV8SuiGrpcTransportError) throw cause;
+      fail('MAKER_V8_SUI_GRPC_MOVE_TYPE_INVALID', 'Historical Move type cannot be parsed.', {
+        cause: String(cause?.message ?? cause),
+      });
+    }
+    const layout = await resolveNode(unresolved);
+    let decoded;
+    let roundtrip;
+    try {
+      const schema = historicalMoveSchema(layout);
+      const raw = schema.parse(contentBcs);
+      roundtrip = schema.serialize(raw).toBytes();
+      decoded = historicalMoveJson(layout, raw, 'historical.json');
+    } catch (cause) {
+      if (cause instanceof MakerV8SuiGrpcTransportError) throw cause;
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', 'Historical Move contents cannot be decoded by their exact datatype layout.', {
+        cause: String(cause?.message ?? cause),
+      });
+    }
+    if (!sameBytes(contentBcs, roundtrip)) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_NONCANONICAL', 'Historical Move contents are not canonical BCS.');
+    }
+    const canonicalDecoded = immutableCanonicalJson(decoded, 'historical.decodedJson');
+    const canonicalServer = immutableCanonicalJson(serverJson, 'historical.serverJson');
+    if (JSON.stringify(canonicalDecoded) !== JSON.stringify(canonicalServer)) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_JSON_DRIFT', 'Historical gRPC JSON differs from locally decoded exact Move BCS.');
+    }
+    return canonicalDecoded;
+  };
+}
+
 function serviceInfo(response) {
   sdkMessage(response, GrpcTypes.GetServiceInfoResponse, 'serviceInfo');
   if (response.chainId !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST || response.chain !== 'mainnet') {
@@ -680,6 +968,59 @@ function checkpoint(response, requested) {
     sequenceNumber: sequenceNumber.toString(),
     digest: checkpointDigest,
     epoch: epoch.toString(),
+  });
+}
+
+export function normalizeMakerV8TransactionFinality(transaction, expectedDigest) {
+  sdkMessage(transaction, GrpcTypes.ExecutedTransaction, 'transactionFinality');
+  const observedDigest = digest(transaction.digest, 'transactionFinality.digest');
+  const inner = sdkMessage(
+    transaction.transaction,
+    GrpcTypes.Transaction,
+    'transactionFinality.transaction',
+  );
+  const effects = sdkMessage(
+    transaction.effects,
+    GrpcTypes.TransactionEffects,
+    'transactionFinality.effects',
+  );
+  const status = sdkMessage(
+    effects.status,
+    GrpcTypes.ExecutionStatus,
+    'transactionFinality.effects.status',
+  );
+  if (observedDigest !== expectedDigest
+    || digest(inner.digest, 'transactionFinality.transaction.digest') !== expectedDigest
+    || digest(effects.transactionDigest, 'transactionFinality.effects.transactionDigest') !== expectedDigest) {
+    fail('MAKER_V8_SUI_GRPC_TRANSACTION_DRIFT', 'Transaction finality returned another digest.');
+  }
+  if (typeof status.success !== 'boolean'
+    || (status.success && status.error !== undefined)
+    || (!status.success && status.error === undefined)) {
+    fail('MAKER_V8_SUI_GRPC_FINALITY_STATUS_INVALID', 'Transaction finality has an invalid exact execution status.');
+  }
+  let error = null;
+  if (!status.success) {
+    const executionError = sdkMessage(
+      status.error,
+      GrpcTypes.ExecutionError,
+      'transactionFinality.effects.status.error',
+    );
+    error = Object.freeze({
+      message: boundedText(
+        executionError.description,
+        'transactionFinality.effects.status.error.description',
+        16 * 1024,
+      ),
+    });
+  }
+  return Object.freeze({
+    schemaVersion: MAKER_V8_SUI_GRPC_SCHEMA,
+    chainIdentifier: MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
+    digest: expectedDigest,
+    checkpoint: uint64(transaction.checkpoint, 'transactionFinality.checkpoint').toString(),
+    epoch: uint64(effects.epoch, 'transactionFinality.effects.epoch').toString(),
+    status: Object.freeze({ success: status.success, error }),
   });
 }
 
@@ -771,8 +1112,10 @@ export async function normalizeMakerV8FinalizedTransactionEvidence(transaction, 
   }
   const effects = sdkMessage(transaction.effects, GrpcTypes.TransactionEffects, 'transaction.effects');
   const effectsStatus = sdkMessage(effects.status, GrpcTypes.ExecutionStatus, 'transaction.effects.status');
-  if (effectsStatus.success !== true || effectsStatus.error !== undefined) {
-    fail('MAKER_V8_SUI_GRPC_TRANSACTION_FAILED', 'Finalized transaction did not execute successfully.');
+  if (typeof effectsStatus.success !== 'boolean'
+    || (effectsStatus.success && effectsStatus.error !== undefined)
+    || (!effectsStatus.success && effectsStatus.error === undefined)) {
+    fail('MAKER_V8_SUI_GRPC_FINALITY_STATUS_INVALID', 'Finalized transaction has an invalid exact execution status.');
   }
   if (digest(effects.transactionDigest, 'transaction.effects.transactionDigest') !== expectedDigest) {
     fail('MAKER_V8_SUI_GRPC_TRANSACTION_DRIFT', 'Raw effects bind another transaction digest.');
@@ -787,9 +1130,12 @@ export async function normalizeMakerV8FinalizedTransactionEvidence(transaction, 
   const parsedEffects = effectsEvidence.parsed.V1 ?? effectsEvidence.parsed.V2;
   const expectedEffectsVersion = effectsEvidence.parsed.$kind === 'V1' ? 1
     : effectsEvidence.parsed.$kind === 'V2' ? 2 : null;
+  const parsedSuccess = parsedEffects?.status?.$kind === 'Success';
+  const parsedFailure = parsedEffects?.status?.$kind === 'Failure';
   if (!parsedEffects || expectedEffectsVersion === null
     || effects.version !== expectedEffectsVersion
-    || parsedEffects.status?.$kind !== 'Success'
+    || (!parsedSuccess && !parsedFailure)
+    || parsedSuccess !== effectsStatus.success
     || parsedEffects.transactionDigest !== expectedDigest) {
     fail('MAKER_V8_SUI_GRPC_EFFECTS_DRIFT', 'Canonical TransactionEffects version, status, or transaction digest drifted.');
   }
@@ -841,13 +1187,28 @@ export async function normalizeMakerV8FinalizedTransactionEvidence(transaction, 
     digest: expectedDigest,
     checkpoint: checkpointHeight.toString(),
     epoch: epoch.toString(),
+    sender,
+    gasOwner,
     transactionBcs,
     transactionBcsBase64: toBase64(transactionBcs),
     signatureBcs: Object.freeze(signatureBcs),
     signatures: Object.freeze(signatureBcs.map((value) => toBase64(value))),
     effectsBcs,
     effectsBcsBase64: toBase64(effectsBcs),
-    effectsStatus: Object.freeze({ success: true }),
+    effectsStatus: Object.freeze({
+      success: effectsStatus.success,
+      error: effectsStatus.success ? null : Object.freeze({
+        message: boundedText(
+          sdkMessage(
+            effectsStatus.error,
+            GrpcTypes.ExecutionError,
+            'transaction.effects.status.error',
+          ).description,
+          'transaction.effects.status.error.description',
+          16 * 1024,
+        ),
+      }),
+    }),
     effectsDigest: observedEffectsDigest,
     eventsDigest: parsedEventsDigest,
     transactionEvents,
@@ -893,11 +1254,18 @@ export function normalizeMakerV8GraphQLEvent(event, expectedType) {
 }
 
 function assertGrpcClient(client) {
-  const methods = ['getObject', 'listOwnedObjects', 'listCoins', 'getBalance'];
+  const methods = [
+    'getObject', 'listOwnedObjects', 'listCoins', 'getBalance',
+    'executeTransaction', 'simulateTransaction',
+  ];
   if (!client || client.network !== 'mainnet' || !client.core || typeof client.core !== 'object'
     || !client.ledgerService || typeof client.ledgerService !== 'object'
+    || !client.movePackageService || typeof client.movePackageService.getDatatype !== 'function'
     || methods.some((name) => typeof client[name] !== 'function')
-    || ['getTransaction', 'getProtocolConfig', 'getCurrentSystemState'].some((name) => typeof client.core[name] !== 'function')
+    || [
+      'getTransaction', 'executeTransaction', 'simulateTransaction',
+      'getProtocolConfig', 'getCurrentSystemState', 'resolveTransactionPlugin',
+    ].some((name) => typeof client.core[name] !== 'function')
     || ['getObject', 'getTransaction', 'getServiceInfo', 'getCheckpoint'].some((name) => typeof client.ledgerService[name] !== 'function')) {
     fail('MAKER_V8_SUI_GRPC_CLIENT_INVALID', 'An exact read-capable SuiGrpcClient surface is required.');
   }
@@ -933,6 +1301,7 @@ export function createMakerV8SuiGrpcTransport({
 } = {}) {
   const grpc = assertGrpcClient(grpcClient);
   const graphql = assertGraphQLClient(graphqlClient);
+  const decodeHistoricalMove = createHistoricalMoveDecoder(grpc);
   const authoritativeEndpoint = endpoint(grpcEndpoint, 'grpcEndpoint');
   const discoveryEndpoint = endpoint(graphqlEndpoint, 'graphqlEndpoint');
 
@@ -1128,29 +1497,27 @@ export function createMakerV8SuiGrpcTransport({
       readMask: {
         paths: [
           'object_id', 'version', 'digest', 'owner', 'object_type', 'has_public_transfer',
-          'previous_transaction', 'storage_rebate', 'contents', 'bcs',
+          'previous_transaction', 'storage_rebate', 'contents', 'bcs', 'json',
         ],
       },
     }), 'ledgerService.getObject(historical)', GrpcTypes.GetObjectResponse);
-    return normalizeMakerV8HistoricalObject(response.object, requested);
+    const historical = normalizeMakerV8HistoricalObject(response.object, requested);
+    if (historical.type === 'package') return Object.freeze({ ...historical, parsed: null });
+    const serverJson = GrpcTypes.Object.toJson(response.object)?.json;
+    if (!plain(serverJson)) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_JSON_INVALID', 'Historical Move object has no exact gRPC JSON rendering.');
+    }
+    const parsed = await decodeHistoricalMove(historical.type, historical.contentBcs, serverJson);
+    return Object.freeze({ ...historical, parsed });
   };
 
-  const getFinalizedTransactionEvidence = async (input) => {
-    await ensurePinnedMainnet();
-    if (!plain(input)) fail('MAKER_V8_SUI_GRPC_TRANSACTION_REQUEST_INVALID', 'Transaction request is required.');
-    const expectedDigest = digest(input.digest, 'transaction.digest');
+  const readRawTransaction = async (expectedDigest, paths, label) => {
     let response;
     try {
       response = await unary(grpc.ledgerService.getTransaction({
         digest: expectedDigest,
-        readMask: {
-          paths: [
-            'digest', 'checkpoint', 'transaction.digest', 'transaction.bcs', 'signatures.bcs',
-            'effects.bcs', 'effects.digest', 'effects.version', 'effects.status', 'effects.epoch',
-            'effects.transaction_digest', 'effects.events_digest', 'events.bcs', 'events.digest',
-          ],
-        },
-      }), 'ledgerService.getTransaction', GrpcTypes.GetTransactionResponse);
+        readMask: { paths },
+      }), label, GrpcTypes.GetTransactionResponse);
     } catch (error) {
       if (error instanceof RpcError
         && error.name === 'RpcError'
@@ -1161,7 +1528,85 @@ export function createMakerV8SuiGrpcTransport({
       }
       throw error;
     }
-    return await normalizeMakerV8FinalizedTransactionEvidence(response.transaction, expectedDigest);
+    return response.transaction;
+  };
+
+  const getTransactionFinality = async (input) => {
+    await ensurePinnedMainnet();
+    if (!plain(input)) fail('MAKER_V8_SUI_GRPC_TRANSACTION_REQUEST_INVALID', 'Transaction finality request is required.');
+    const expectedDigest = digest(input.digest, 'transaction.digest');
+    const transaction = await readRawTransaction(expectedDigest, [
+      'digest', 'checkpoint', 'transaction.digest', 'effects.status',
+      'effects.epoch', 'effects.transaction_digest',
+    ], 'ledgerService.getTransaction(finality)');
+    return normalizeMakerV8TransactionFinality(transaction, expectedDigest);
+  };
+
+  const assertCoreTransactionResult = (result, expectedDigest, finality = null) => {
+    const transaction = result?.$kind === 'Transaction'
+      ? result.Transaction
+      : result?.$kind === 'FailedTransaction' ? result.FailedTransaction : null;
+    if (!plain(result) || !plain(transaction)
+      || !['Transaction', 'FailedTransaction'].includes(result.$kind)
+      || transaction.digest !== expectedDigest
+      || typeof transaction.status?.success !== 'boolean') {
+      fail('MAKER_V8_SUI_GRPC_CORE_TRANSACTION_INVALID', 'Core transaction result has an invalid exact shape.');
+    }
+    if (finality && (transaction.epoch !== finality.epoch
+      || transaction.status.success !== finality.status.success
+      || (transaction.status.success && result.$kind !== 'Transaction')
+      || (!transaction.status.success && result.$kind !== 'FailedTransaction'))) {
+      fail('MAKER_V8_SUI_GRPC_FINALITY_DRIFT', 'Core transaction result differs from raw Ledger finality.');
+    }
+    if (transaction.effects !== undefined && transaction.effects !== null
+      && (transaction.effects.transactionDigest !== expectedDigest
+        || transaction.effects.status?.success !== transaction.status.success)) {
+      fail('MAKER_V8_SUI_GRPC_EFFECTS_DRIFT', 'Core transaction effects differ from the exact transaction result.');
+    }
+    return result;
+  };
+
+  const getTransaction = async (input) => {
+    if (!plain(input)) fail('MAKER_V8_SUI_GRPC_TRANSACTION_REQUEST_INVALID', 'Transaction request is required.');
+    const expectedDigest = digest(input.digest, 'transaction.digest');
+    const finality = await getTransactionFinality({ digest: expectedDigest });
+    const result = await grpc.core.getTransaction({ ...input, digest: expectedDigest });
+    return assertCoreTransactionResult(result, expectedDigest, finality);
+  };
+
+  const simulateTransaction = async (input) => {
+    await ensurePinnedMainnet();
+    if (!plain(input)) fail('MAKER_V8_SUI_GRPC_SIMULATION_REQUEST_INVALID', 'Simulation request is required.');
+    const transaction = bytes(input.transaction, 'simulation.transaction');
+    const expectedDigest = TransactionDataBuilder.getDigestFromBytes(transaction);
+    const result = await grpc.simulateTransaction({ ...input, transaction });
+    return assertCoreTransactionResult(result, expectedDigest);
+  };
+
+  const executeTransaction = async (input) => {
+    await ensurePinnedMainnet();
+    if (!plain(input) || !Array.isArray(input.signatures) || input.signatures.length === 0) {
+      fail('MAKER_V8_SUI_GRPC_EXECUTION_REQUEST_INVALID', 'Execution requires exact transaction bytes and signatures.');
+    }
+    const transaction = bytes(input.transaction, 'execution.transaction');
+    const signatures = input.signatures.map((signature, index) => (
+      canonicalBase64(signature, `execution.signatures[${index}]`)
+    ));
+    const expectedDigest = TransactionDataBuilder.getDigestFromBytes(transaction);
+    const result = await grpc.executeTransaction({ ...input, transaction, signatures });
+    return assertCoreTransactionResult(result, expectedDigest);
+  };
+
+  const getFinalizedTransactionEvidence = async (input) => {
+    await ensurePinnedMainnet();
+    if (!plain(input)) fail('MAKER_V8_SUI_GRPC_TRANSACTION_REQUEST_INVALID', 'Transaction request is required.');
+    const expectedDigest = digest(input.digest, 'transaction.digest');
+    const transaction = await readRawTransaction(expectedDigest, [
+      'digest', 'checkpoint', 'transaction.digest', 'transaction.bcs', 'signatures.bcs',
+      'effects.bcs', 'effects.digest', 'effects.version', 'effects.status', 'effects.epoch',
+      'effects.transaction_digest', 'effects.events_digest', 'events.bcs', 'events.digest',
+    ], 'ledgerService.getTransaction(evidence)');
+    return await normalizeMakerV8FinalizedTransactionEvidence(transaction, expectedDigest);
   };
 
   const discoverEvents = async ({ type, cursor = null, limit = 50, order = 'descending', signal } = {}) => {
@@ -1258,7 +1703,7 @@ export function createMakerV8SuiGrpcTransport({
     });
   };
 
-  const readOnlyCore = Object.freeze({
+  const authoritativeCore = Object.freeze({
     getObjects: grpc.core.getObjects && (async (input) => {
       await ensurePinnedMainnet();
       return grpc.core.getObjects(input);
@@ -1275,10 +1720,9 @@ export function createMakerV8SuiGrpcTransport({
       await ensurePinnedMainnet();
       return grpc.core.getBalance(input);
     }),
-    getTransaction: async (input) => {
-      await ensurePinnedMainnet();
-      return grpc.core.getTransaction(input);
-    },
+    getTransaction,
+    executeTransaction,
+    simulateTransaction,
     getProtocolConfig: async () => {
       await ensurePinnedMainnet();
       return grpc.core.getProtocolConfig();
@@ -1287,6 +1731,11 @@ export function createMakerV8SuiGrpcTransport({
       await ensurePinnedMainnet();
       return grpc.core.getCurrentSystemState();
     },
+    getReferenceGasPrice: grpc.core.getReferenceGasPrice && (async () => {
+      await ensurePinnedMainnet();
+      return grpc.core.getReferenceGasPrice();
+    }),
+    resolveTransactionPlugin: () => grpc.core.resolveTransactionPlugin(),
     getChainIdentifier,
   });
 
@@ -1299,7 +1748,7 @@ export function createMakerV8SuiGrpcTransport({
     eventDiscoverySource: 'SuiGraphQLClient',
     grpcEndpoint: authoritativeEndpoint,
     graphqlEndpoint: discoveryEndpoint,
-    core: readOnlyCore,
+    core: authoritativeCore,
     getChainIdentifier,
     getObject,
     getOwnedObjects,
@@ -1319,7 +1768,11 @@ export function createMakerV8SuiGrpcTransport({
     getProtocolConfig,
     getLatestSuiSystemState,
     getHistoricalObject,
+    getTransaction,
+    getTransactionFinality,
     getFinalizedTransactionEvidence,
+    simulateTransaction,
+    executeTransaction,
     getServiceInfo,
     getCheckpoint,
     getCheckpointWatermark,
