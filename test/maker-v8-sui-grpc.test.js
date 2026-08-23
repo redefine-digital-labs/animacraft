@@ -817,6 +817,7 @@ test('Ledger finality and Core transaction reads correlate digest, epoch, status
 
 test('official gRPC simulation and execution forward exact bytes/signatures and reject result drift', async () => {
   const fixture = fixtures();
+  fixture.values.coreTransaction.Transaction.digest = null;
   const simulated = await fixture.transport.core.simulateTransaction({
     transaction: TRANSACTION_BCS,
     include: { effects: true },
@@ -824,8 +825,9 @@ test('official gRPC simulation and execution forward exact bytes/signatures and 
   assert.equal(simulated.Transaction.digest, TX);
   const simulationCall = fixture.calls.find(([name]) => name === 'grpc.simulateTransaction')[1];
   assert.deepEqual(simulationCall.transaction, TRANSACTION_BCS);
-  assert.deepEqual(simulationCall.include, { effects: true });
+  assert.deepEqual(simulationCall.include, { effects: true, bcs: true });
 
+  fixture.values.coreTransaction.Transaction.digest = TX;
   const signature = toBase64(USER_SIGNATURE_BCS);
   const executed = await fixture.transport.core.executeTransaction({
     transaction: TRANSACTION_BCS,
@@ -842,6 +844,14 @@ test('official gRPC simulation and execution forward exact bytes/signatures and 
   await assert.rejects(
     drift.transport.simulateTransaction({ transaction: TRANSACTION_BCS }),
     code('MAKER_V8_SUI_GRPC_CORE_TRANSACTION_INVALID'),
+  );
+
+  const byteDrift = fixtures();
+  byteDrift.values.coreTransaction.Transaction.digest = null;
+  byteDrift.values.coreTransaction.Transaction.bcs = new Uint8Array([1]);
+  await assert.rejects(
+    byteDrift.transport.simulateTransaction({ transaction: TRANSACTION_BCS }),
+    code('MAKER_V8_SUI_GRPC_SIMULATION_DRIFT'),
   );
 });
 

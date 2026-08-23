@@ -1308,7 +1308,9 @@ export async function simulateMainnetV8Transaction(client, envelope) {
     include: { effects: true, events: true, objectTypes: true, bcs: true, transaction: true },
   });
   const value = result?.$kind === 'Transaction' ? result.Transaction : result?.FailedTransaction;
-  if (!value || value.digest !== envelope.digest || value.effects?.transactionDigest !== envelope.digest) {
+  if (!value
+    || (value.digest !== null && value.digest !== undefined && value.digest !== envelope.digest)
+    || value.effects?.transactionDigest !== envelope.digest) {
     fail('MAINNET_V8_SIMULATION_DRIFT', 'Simulation did not bind the exact transaction digest.');
   }
   if (value.status?.success !== true || value.effects?.status?.success !== true) {

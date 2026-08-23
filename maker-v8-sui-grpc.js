@@ -1542,13 +1542,20 @@ export function createMakerV8SuiGrpcTransport({
     return normalizeMakerV8TransactionFinality(transaction, expectedDigest);
   };
 
-  const assertCoreTransactionResult = (result, expectedDigest, finality = null) => {
+  const assertCoreTransactionResult = (
+    result,
+    expectedDigest,
+    finality = null,
+    { allowMissingDigest = false } = {},
+  ) => {
     const transaction = result?.$kind === 'Transaction'
       ? result.Transaction
       : result?.$kind === 'FailedTransaction' ? result.FailedTransaction : null;
+    const digestMatches = transaction?.digest === expectedDigest
+      || (allowMissingDigest && (transaction?.digest === null || transaction?.digest === undefined));
     if (!plain(result) || !plain(transaction)
       || !['Transaction', 'FailedTransaction'].includes(result.$kind)
-      || transaction.digest !== expectedDigest
+      || !digestMatches
       || typeof transaction.status?.success !== 'boolean') {
       fail('MAKER_V8_SUI_GRPC_CORE_TRANSACTION_INVALID', 'Core transaction result has an invalid exact shape.');
     }
@@ -1563,7 +1570,12 @@ export function createMakerV8SuiGrpcTransport({
         || transaction.effects.status?.success !== transaction.status.success)) {
       fail('MAKER_V8_SUI_GRPC_EFFECTS_DRIFT', 'Core transaction effects differ from the exact transaction result.');
     }
-    return result;
+    if (transaction.digest === expectedDigest) return result;
+    const field = result.$kind;
+    return Object.freeze({
+      ...result,
+      [field]: Object.freeze({ ...transaction, digest: expectedDigest }),
+    });
   };
 
   const getTransaction = async (input) => {
@@ -1579,8 +1591,28 @@ export function createMakerV8SuiGrpcTransport({
     if (!plain(input)) fail('MAKER_V8_SUI_GRPC_SIMULATION_REQUEST_INVALID', 'Simulation request is required.');
     const transaction = bytes(input.transaction, 'simulation.transaction');
     const expectedDigest = TransactionDataBuilder.getDigestFromBytes(transaction);
-    const result = await grpc.simulateTransaction({ ...input, transaction });
-    return assertCoreTransactionResult(result, expectedDigest);
+    const result = await grpc.simulateTransaction({
+      ...input,
+      transaction,
+      include: { ...(input.include ?? {}), effects: true, bcs: true },
+    });
+    const normalized = assertCoreTransactionResult(
+      result,
+      expectedDigest,
+      null,
+      { allowMissingDigest: true },
+    );
+    const value = normalized.$kind === 'Transaction'
+      ? normalized.Transaction
+      : normalized.FailedTransaction;
+    if (!(value.bcs instanceof Uint8Array) || !sameBytes(value.bcs, transaction)
+      || value.effects?.transactionDigest !== expectedDigest) {
+      fail(
+        'MAKER_V8_SUI_GRPC_SIMULATION_DRIFT',
+        'Core simulation did not return the exact input TransactionData and effects digest.',
+      );
+    }
+    return normalized;
   };
 
   const executeTransaction = async (input) => {
