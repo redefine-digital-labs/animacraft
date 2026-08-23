@@ -589,7 +589,7 @@ function moveContentBytes(type, fields) {
   if (type.endsWith('::protocol_config_v8::ProtocolConfigV8')) {
     return TEST_PROTOCOL_CONFIG_BCS.serialize({
       ...fields,
-      treasury_id: fields.treasury_id.length === 0 ? null : fields.treasury_id[0],
+      treasury_id: fields.treasury_id,
       primary_content_fee_bps: Number(fields.primary_content_fee_bps),
       maker_market_fee_bps: Number(fields.maker_market_fee_bps),
       soul_market_fee_bps: Number(fields.soul_market_fee_bps),
@@ -659,7 +659,7 @@ function protocolConfigFields(corePackageId, configId, {
     core_original_package_id: corePackageId,
     core_callable_package_id: corePackageId,
     revision,
-    treasury_id: treasuryId === null ? [] : [treasuryId],
+    treasury_id: treasuryId,
     payment_coin_type: MAINNET_V8_PAYMENT_COIN_TYPE,
     primary_content_fee_bps: '1000',
     fixed_complete_fee_atomic: '0',

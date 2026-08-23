@@ -746,6 +746,12 @@ function historicalMoveJson(node, value, label) {
   if (['bool', 'u8', 'u16', 'u32', 'u64', 'u128', 'u256'].includes(node.kind)) return value;
   if (node.kind === 'vector') {
     if (!Array.isArray(value)) fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} is not one BCS vector.`);
+    if (node.element.kind === 'u8') {
+      if (value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+        fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} is not one byte vector.`);
+      }
+      return toBase64(Uint8Array.from(value));
+    }
     return value.map((entry, index) => historicalMoveJson(node.element, entry, `${label}[${index}]`));
   }
   if (node.kind !== 'datatype' || !plain(value)) {
@@ -756,11 +762,13 @@ function historicalMoveJson(node, value, label) {
   if (base === MOVE_SPECIAL_TYPES.uid) return historicalMoveJson(node.fields[0].type, value.id, `${label}.id`);
   if (base === MOVE_SPECIAL_TYPES.balance) return historicalMoveJson(node.fields[0].type, value.value, `${label}.value`);
   if (base === MOVE_SPECIAL_TYPES.option) {
-    const items = historicalMoveJson(node.fields[0].type, value.vec, `${label}.vec`);
-    if (!Array.isArray(items) || items.length > 1) {
+    const vector = node.fields[0].type;
+    if (vector?.kind !== 'vector' || !Array.isArray(value.vec) || value.vec.length > 1) {
       fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} is not one canonical Move Option.`);
     }
-    return items;
+    return value.vec.length === 0
+      ? null
+      : historicalMoveJson(vector.element, value.vec[0], `${label}.vec[0]`);
   }
   if (base === MOVE_SPECIAL_TYPES.string || base === MOVE_SPECIAL_TYPES.ascii) {
     const raw = value.bytes;

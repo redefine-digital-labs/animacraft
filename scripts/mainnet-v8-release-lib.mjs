@@ -2535,15 +2535,18 @@ function moveHash(value, label) {
     && [...value].every((entry) => Number.isSafeInteger(entry) && entry >= 0 && entry <= 255)) {
     return [...value].map((entry) => entry.toString(16).padStart(2, '0')).join('');
   }
+  if (typeof value === 'string' && /^[A-Za-z0-9+/]{43}=$/.test(value)) {
+    const decoded = decodeCanonicalBase64(value, label);
+    if (decoded.length === 32) return Buffer.from(decoded).toString('hex');
+  }
   const normalized = typeof value === 'string' ? value.replace(/^0x/, '') : value;
   return assertHash(normalized, label);
 }
 
 function moveOptionId(value, label) {
-  if (!Array.isArray(value) || value.length > 1) {
-    fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} must be one exact Move Option<ID>.`);
-  }
-  return value.length === 0 ? null : moveObjectId(value[0], label);
+  if (value === null) return null;
+  if (typeof value === 'string') return moveObjectId(value, label);
+  fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} must be exact gRPC Move Option<ID> JSON.`);
 }
 
 function findWrite(writes, output, operation, label) {
@@ -4187,7 +4190,8 @@ function assertWalTransition(previous, current) {
   const repairsKnownReadbackIncident = previousIncident !== null
     && currentPending !== null
     && previous.ordinal !== '9'
-    && previousIncident.incident.code === 'MAINNET_V8_CREATED_OUTPUT_INVALID'
+    && ['MAINNET_V8_CREATED_OUTPUT_INVALID', 'MAINNET_V8_PACKAGE_BYTES_DRIFT']
+      .includes(previousIncident.incident.code)
     && previousIncident.finalityEvidenceSha256 === currentPending.finalityEvidenceSha256
     && canonicalMainnetV8Json(previousIncident.finalityEvidence)
       === canonicalMainnetV8Json(currentPending.finalityEvidence);

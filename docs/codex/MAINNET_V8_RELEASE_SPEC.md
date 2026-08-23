@@ -174,7 +174,7 @@ artifact 文件必须保存 canonical JSON 原文、其 UTF-8 byte length 和 SH
 - `dependencies` 是 build dump 的全部 normalized dependency package IDs，去重后按规范化 ID 排序；其中产品依赖必须等于先前 ordinal 已回读的 package ID；
 - `buildDigest` 是官方 build dump 返回的 32 bytes，不采用日志文本、路径或时间戳；
 - document 不包含本包新创建的 package ID，因此其承诺的是精确代码和依赖；发布 ID 由链上 transaction/readback evidence 另行绑定；
-- bootstrap 前，必须把本地 module bytes 与 Mainnet package object 的每个同名 module 做 byte-for-byte 比较。
+- bootstrap 前，必须把本地 module bytes 与 Mainnet package object 的每个同名 module 做精确比较：仅允许 Sui publish 把 module 中唯一一段连续 32-byte `0x0` self address 替换为 effects 认证的 package ID；归一化该协议变换后必须 byte-for-byte 相等，current/historical package module maps 也必须原样相等。
 
 ### 4.4 ABI artifact
 
@@ -508,7 +508,7 @@ bootstrap 后必须从 pinned Core gRPC 回读并重算：
 1. 重新枚举并哈希 source artifact 文件；
 2. 按已发布依赖 ID 重新 build 七包；
 3. 比较 build digest、module names、module bytes、module SHA 和 dependency set；
-4. 从 Mainnet gRPC 重新取 package object，比较 raw modules、linkage 和 type origins；
+4. 从 Mainnet gRPC 重新取 package object，按上述唯一 self-address publication substitution 规则比较 raw modules，并精确比较 linkage 和 type origins；
 5. 重新规范化 ABI descriptor并比较 ABI canonical bytes/hash；
 6. 重新计算七组 source/package/ABI commitments、exact bindings、product binding、call-cap set、Seal policy和 protocol config commitment；
 7. 比较 catalog/config 的全部链上字段。
@@ -542,7 +542,7 @@ verify-source 运行目录不得复用发布时的 build cache；cache hit 不�
 - typed not-found 以外的错误不是“未上链”证据；
 - 过期且 typed not-found 时 abandon 整个 release，不为同 release 重签；
 - 链上 success 但对象/事件/readback 不满足本规格时，标为 `INCIDENT_STOPPED`，保留全部证据，禁止自动继续或 Web 切流；
-- 唯一允许的 readback repair 是已锁定的本地证书解析器缺陷 `MAINNET_V8_CREATED_OUTPUT_INVALID`：必须由显式 `--repair-readback-incident` 触发，在同一 ordinal/attempt/digest/signature/finality bytes 上 append-only 地重新进入 `FINALIZED_SUCCESS_PENDING_READBACK`，不得 query、签名、广播或替换交易；WAL 必须拒绝任何 finality 漂移，修复调用在得到 `FINALIZED_SUCCESS` 后立即停止，下一 ordinal 只能由后续独立 resume 启动。其他 incident 一律保持 terminal；
+- 唯一允许的 readback repair 是本轮已锁定的两个本地证书解析器缺陷：`MAINNET_V8_CREATED_OUTPUT_INVALID`（把 V2 `AccumulatorWriteV1` 误当 created object）和 `MAINNET_V8_PACKAGE_BYTES_DRIFT`（未按 Sui publish 规则把每个 module 唯一的 32-byte `0x0` self address 与新 package ID 归一化比较）。必须由显式 `--repair-readback-incident` 触发，在同一 ordinal/attempt/digest/signature/finality bytes 上 append-only 地重新进入 `FINALIZED_SUCCESS_PENDING_READBACK`，不得 query、签名、广播或替换交易；module 比较只允许恰好一段连续 32 bytes 从全零变为 effects 认证的 package ID，任何其他 byte drift 仍 fail closed。WAL 必须拒绝任何 finality 漂移，修复调用在得到 `FINALIZED_SUCCESS` 后立即停止，下一 ordinal 只能由后续独立 resume 启动。其他 incident 一律保持 terminal；
 - effects-certified failure 后停止；不得跳过、重排或把新交易冒充同 ordinal；
 - 已有部分 package 成功时不能删除。放弃 release 会留下未被 production config 引用的 orphan packages/UpgradeCaps，必须明确登记，未来 release 使用新 releaseId 从头认证；
 - AdminCap、UpgradeCaps 是高价值权威对象；不得在自动恢复中转移、销毁或更改 upgrade policy。

@@ -58,6 +58,7 @@ import {
   MainnetV8ReleaseError,
   assertMainnetV8BootstrapRawBcs,
   assertMainnetV8BootstrapEvents,
+  assertMainnetV8PublishedModuleBytes,
   assertDurableMainnetV8FinalityEvidence,
   assertMainnetV8ProtocolInitEvents,
   assertMainnetV8ReadyWalContext,
@@ -74,6 +75,7 @@ import {
   hydrateMainnetV8UnsignedEnvelope,
   inspectMainnetV8FreshSourceArchive,
   inspectMainnetV8Transaction,
+  normalizeMainnetV8MovePackageDescriptor,
   parseMainnetV8ReleaseArgs,
   verifyExactMainnetV8SignedArtifact,
   writtenReferencesFromEffects,
@@ -1062,7 +1064,7 @@ function publishCertificationFixture(fixture, signedArtifact, ordinal = 0) {
         core_original_package_id: packageId,
         core_callable_package_id: packageId,
         revision: '0',
-        treasury_id: Object.freeze([]),
+        treasury_id: null,
         payment_coin_type: MAINNET_V8_USDC_TYPE,
         primary_content_fee_bps: '1000',
         fixed_complete_fee_atomic: '0',
@@ -2535,8 +2537,8 @@ test('execute runner re-certifies the exact known readback incident without sign
     certifyReadback: async () => {
       certifyCount += 1;
       if (!repairParser) {
-        const error = new Error('Created effects entry has no object/package output.');
-        error.code = 'MAINNET_V8_CREATED_OUTPUT_INVALID';
+        const error = new Error('core on-chain modules differ from clean build bytes.');
+        error.code = 'MAINNET_V8_PACKAGE_BYTES_DRIFT';
         throw error;
       }
       return readback;
@@ -2822,5 +2824,61 @@ test('TransactionEffects V2 returns object and package writes with correct versi
   assert.throws(
     () => writtenReferencesFromEffects(impossibleBytes, transactionDigest),
     expectCode('MAINNET_V8_CREATED_OUTPUT_INVALID'),
+  );
+});
+
+test('published module bytes allow only the one exact Sui self-address substitution', () => {
+  const packageId = objectId(76);
+  const source = new Uint8Array(96).fill(7);
+  source.fill(0, 24, 56);
+  const published = Uint8Array.from(source);
+  published.set(fromHex(packageId), 24);
+  assert.deepEqual(assertMainnetV8PublishedModuleBytes({
+    role: 'core',
+    moduleName: 'core_v8',
+    packageId,
+    sourceBase64: toBase64(source),
+    publishedBase64: toBase64(published),
+  }), {
+    sourceSha256: sha256(source),
+    publishedSha256: sha256(published),
+    selfAddressOffset: '24',
+  });
+
+  for (const mutate of [
+    (bytes) => { bytes[10] ^= 1; },
+    (bytes) => { bytes[24] ^= 1; },
+    (bytes) => { bytes[56] ^= 1; },
+  ]) {
+    const drifted = Uint8Array.from(published);
+    mutate(drifted);
+    assert.throws(() => assertMainnetV8PublishedModuleBytes({
+      role: 'core',
+      moduleName: 'core_v8',
+      packageId,
+      sourceBase64: toBase64(source),
+      publishedBase64: toBase64(drifted),
+    }), expectCode('MAINNET_V8_PACKAGE_BYTES_DRIFT'));
+  }
+});
+
+test('official package descriptor canonicalization restores omitted empty repeated fields', () => {
+  assert.deepEqual(normalizeMainnetV8MovePackageDescriptor({
+    storageId: objectId(77),
+    originalId: objectId(77),
+    version: '1',
+    modules: [
+      { name: 'empty' },
+      { name: 'functions_only', functions: [{ name: 'f' }] },
+      { name: 'datatypes_only', datatypes: [{ name: 'T' }] },
+    ],
+  }).modules, [
+    { name: 'empty', datatypes: [], functions: [] },
+    { name: 'functions_only', datatypes: [], functions: [{ name: 'f' }] },
+    { name: 'datatypes_only', datatypes: [{ name: 'T' }], functions: [] },
+  ]);
+  assert.throws(
+    () => normalizeMainnetV8MovePackageDescriptor({ modules: {} }),
+    expectCode('MAINNET_V8_PACKAGE_DESCRIPTOR_DRIFT'),
   );
 });

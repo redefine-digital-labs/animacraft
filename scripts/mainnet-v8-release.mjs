@@ -97,8 +97,10 @@ export const MAINNET_V8_MINIMUM_GAS_CUSHION = 100_000_000n;
 export const MAINNET_V8_WAL_FILENAME = 'release-wal.json';
 export const MAINNET_V8_PLAN_FILENAME = 'release-plan.json';
 export const MAINNET_V8_PUBLISHED_FILENAME = 'Published.toml';
-export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENT =
-  'MAINNET_V8_CREATED_OUTPUT_INVALID';
+export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS = Object.freeze([
+  'MAINNET_V8_CREATED_OUTPUT_INVALID',
+  'MAINNET_V8_PACKAGE_BYTES_DRIFT',
+]);
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, '..');
@@ -1845,6 +1847,66 @@ function normalizeMoveDescriptor(value) {
   return value;
 }
 
+export function normalizeMainnetV8MovePackageDescriptor(value) {
+  const descriptor = normalizeMoveDescriptor(value);
+  if (!plain(descriptor) || !Array.isArray(descriptor.modules)) {
+    fail('MAINNET_V8_PACKAGE_DESCRIPTOR_DRIFT', 'Move package descriptor has no module array.');
+  }
+  return Object.freeze({
+    ...descriptor,
+    modules: Object.freeze(descriptor.modules.map((module, index) => {
+      if (!plain(module)) {
+        fail('MAINNET_V8_PACKAGE_DESCRIPTOR_DRIFT', `Move package module[${index}] is invalid.`);
+      }
+      return Object.freeze({
+        ...module,
+        datatypes: Object.freeze([...(module.datatypes ?? [])]),
+        functions: Object.freeze([...(module.functions ?? [])]),
+      });
+    })),
+  });
+}
+
+export function assertMainnetV8PublishedModuleBytes({
+  role,
+  moduleName,
+  packageId,
+  sourceBase64,
+  publishedBase64,
+}) {
+  const label = `${role}.${moduleName}`;
+  const source = fromBase64(sourceBase64);
+  const published = fromBase64(publishedBase64);
+  const publishedAddress = fromHex(address(packageId, `${label}.packageId`));
+  if (source.length !== published.length || publishedAddress.length !== 32) {
+    fail('MAINNET_V8_PACKAGE_BYTES_DRIFT', `${label} published module length is invalid.`);
+  }
+  const differing = [];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== published[index]) differing.push(index);
+  }
+  const start = differing[0];
+  if (differing.length !== 32 || !Number.isInteger(start)
+    || differing.some((index, offset) => index !== start + offset)
+    || differing.some((index) => source[index] !== 0)
+    || differing.some((index, offset) => published[index] !== publishedAddress[offset])) {
+    fail(
+      'MAINNET_V8_PACKAGE_BYTES_DRIFT',
+      `${label} differs from clean bytecode beyond the one Sui self-address publication substitution.`,
+    );
+  }
+  const expectedPublished = Uint8Array.from(source);
+  expectedPublished.set(publishedAddress, start);
+  if (!sameBytes(expectedPublished, published)) {
+    fail('MAINNET_V8_PACKAGE_BYTES_DRIFT', `${label} published module bytes are invalid.`);
+  }
+  return Object.freeze({
+    sourceSha256: sha256Hex(source),
+    publishedSha256: sha256Hex(published),
+    selfAddressOffset: String(start),
+  });
+}
+
 export async function readMainnetV8PackageCertificate({ client, transport, role, build, reference, transactionDigest }) {
   const historical = await transport.getHistoricalObject({
     objectId: reference.objectId,
@@ -1899,14 +1961,24 @@ export async function readMainnetV8PackageCertificate({ client, transport, role,
   }
   const onchainModules = current.data.bcs.moduleMap;
   const expectedModules = Object.fromEntries(build.modules.map((module) => [module.name, module.base64]));
-  if (canonicalJson(onchainModules) !== canonicalJson(expectedModules)
-    || canonicalJson(packageModuleMap) !== canonicalJson(expectedModules)) {
-    fail('MAINNET_V8_PACKAGE_BYTES_DRIFT', `${role} on-chain modules differ from clean build bytes.`);
+  if (canonicalJson(onchainModules) !== canonicalJson(packageModuleMap)
+    || canonicalJson(Object.keys(packageModuleMap).sort())
+      !== canonicalJson(Object.keys(expectedModules).sort())) {
+    fail('MAINNET_V8_PACKAGE_BYTES_DRIFT', `${role} current/historical module maps differ.`);
   }
+  Object.keys(expectedModules).sort().forEach((moduleName) => {
+    assertMainnetV8PublishedModuleBytes({
+      role,
+      moduleName,
+      packageId: reference.objectId,
+      sourceBase64: expectedModules[moduleName],
+      publishedBase64: packageModuleMap[moduleName],
+    });
+  });
   const call = client.movePackageService.getPackage({ packageId: reference.objectId });
   const response = await call.response;
   const packageMessage = officialMessage(response.package, GrpcTypes.Package, `${role} movePackageService.package`);
-  const descriptor = normalizeMoveDescriptor(GrpcTypes.Package.toJson(packageMessage, {
+  const descriptor = normalizeMainnetV8MovePackageDescriptor(GrpcTypes.Package.toJson(packageMessage, {
     enumAsInteger: false,
     useProtoFieldName: false,
   }));
@@ -1960,7 +2032,7 @@ export async function readMainnetV8PackageCertificate({ client, transport, role,
     role,
     transactionDigest,
     reference,
-    moduleMapSha256: sha256Hex(new TextEncoder().encode(canonicalJson(onchainModules))),
+    moduleMapSha256: sha256Hex(new TextEncoder().encode(canonicalJson(expectedModules))),
     objectBcsSha256: sha256Hex(historical.objectBcs),
     typeOrigins,
     linkage,
@@ -1995,6 +2067,10 @@ function moveHash(value, label) {
   if ((value instanceof Uint8Array || Array.isArray(value)) && value.length === 32
     && [...value].every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255)) {
     return [...value].map((entry) => entry.toString(16).padStart(2, '0')).join('');
+  }
+  if (typeof value === 'string' && /^[A-Za-z0-9+/]{43}=$/.test(value)) {
+    const decoded = fromBase64(value);
+    if (decoded.length === 32 && toBase64(decoded) === value) return toHex(decoded);
   }
   const observed = String(value ?? '').replace(/^0x/, '').toLowerCase();
   return hash32(observed, label);
@@ -2493,10 +2569,9 @@ function expectedProtocolConfigCommitment(fields, output, {
 }
 
 function moveOptionId(value, label) {
-  if (!Array.isArray(value) || value.length > 1) {
-    fail('MAINNET_V8_MOVE_OPTION_INVALID', `${label} must be an exact Move Option<ID>.`);
-  }
-  return value.length === 0 ? null : moveId(value[0], label);
+  if (value === null) return null;
+  if (typeof value === 'string') return moveId(value, label);
+  fail('MAINNET_V8_MOVE_OPTION_INVALID', `${label} must be exact gRPC Move Option<ID> JSON.`);
 }
 
 function canonicalOwner(value, label) {
@@ -4689,8 +4764,9 @@ async function certifyPendingReadback({ paths, wal, client, transport, operation
 function repairableReadbackIncident(event) {
   return event?.status === 'INCIDENT_STOPPED'
     && event.ordinal !== '9'
-    && event.evidence?.observation?.details?.incident?.code
-      === MAINNET_V8_REPAIRABLE_READBACK_INCIDENT;
+    && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(
+      event.evidence?.observation?.details?.incident?.code,
+    );
 }
 
 function pendingReadbackRepair(wal) {

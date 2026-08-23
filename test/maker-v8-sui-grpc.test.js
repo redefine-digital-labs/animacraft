@@ -74,10 +74,18 @@ function concatBytes(...values) {
   return result;
 }
 
-const HISTORICAL_CONTENT_BCS = concatBytes(
-  fromHex(OBJECT.slice(2)),
-  bcs.u64().serialize('8').toBytes(),
-);
+const HISTORICAL_COMMITMENT = new Uint8Array(32).fill(0x45);
+const HISTORICAL_CONTENT_BCS = bcs.struct('HistoricalMakerRootV8', {
+  id: bcs.Address,
+  version: bcs.u64(),
+  commitment: bcs.vector(bcs.u8()),
+  treasury_id: bcs.option(bcs.Address),
+}).serialize({
+  id: OBJECT,
+  version: '8',
+  commitment: HISTORICAL_COMMITMENT,
+  treasury_id: null,
+}).toBytes();
 const HISTORICAL_OBJECT_BCS = bcs.Object.serialize({
   data: {
     Move: {
@@ -139,13 +147,20 @@ const TRANSACTION_EFFECTS_BCS = bcs.TransactionEffects.serialize(TRANSACTION_EFF
 const EFFECTS_DIGEST = typedDigest('TransactionEffects', TRANSACTION_EFFECTS_BCS);
 const USER_SIGNATURE_BCS = fromBase64((await SENDER_KEYPAIR.signTransaction(TRANSACTION_BCS)).signature);
 const HISTORICAL_JSON = GrpcTypes.Object.fromJson({
-  json: { id: OBJECT, version: '8' },
+  json: {
+    id: OBJECT,
+    version: '8',
+    commitment: toBase64(HISTORICAL_COMMITMENT),
+    treasury_id: null,
+  },
 }).json;
 const MOVE_TYPE = GrpcTypes.OpenSignatureBody_Type;
 const DATATYPE_KIND = GrpcTypes.DatatypeDescriptor_DatatypeKind;
 const SUI_PACKAGE = normalizeStructTag('0x2::sui::SUI').split('::')[0];
+const STD_PACKAGE = normalizeStructTag('0x1::option::Option').split('::')[0];
 const UID_TYPE = `${SUI_PACKAGE}::object::UID`;
 const ID_TYPE = `${SUI_PACKAGE}::object::ID`;
+const OPTION_TYPE = `${STD_PACKAGE}::option::Option`;
 const ROOT_TYPE = `${PACKAGE}::maker_v8::MakerRootV8`;
 
 const datatypeFixtures = new Map([
@@ -165,6 +180,25 @@ const datatypeFixtures = new Map([
       {
         name: 'version', position: 1,
         type: { type: MOVE_TYPE.U64, typeParameterInstantiation: [] },
+      },
+      {
+        name: 'commitment', position: 2,
+        type: {
+          type: MOVE_TYPE.VECTOR,
+          typeParameterInstantiation: [{ type: MOVE_TYPE.U8, typeParameterInstantiation: [] }],
+        },
+      },
+      {
+        name: 'treasury_id', position: 3,
+        type: {
+          type: MOVE_TYPE.DATATYPE,
+          typeName: OPTION_TYPE,
+          typeParameterInstantiation: [{
+            type: MOVE_TYPE.DATATYPE,
+            typeName: ID_TYPE,
+            typeParameterInstantiation: [],
+          }],
+        },
       },
     ],
     variants: [],
@@ -197,6 +231,27 @@ const datatypeFixtures = new Map([
     }],
     variants: [],
   }],
+  [`${STD_PACKAGE}:option:Option`, {
+    typeName: OPTION_TYPE,
+    definingId: STD_PACKAGE,
+    module: 'option',
+    name: 'Option',
+    abilities: [],
+    typeParameters: [{ constraints: [], isPhantom: false }],
+    kind: DATATYPE_KIND.STRUCT,
+    fields: [{
+      name: 'vec', position: 0,
+      type: {
+        type: MOVE_TYPE.VECTOR,
+        typeParameterInstantiation: [{
+          type: MOVE_TYPE.TYPE_PARAMETER,
+          typeParameter: 0,
+          typeParameterInstantiation: [],
+        }],
+      },
+    }],
+    variants: [],
+  }],
 ]);
 
 function moveObject(overrides = {}) {
@@ -209,7 +264,12 @@ function moveObject(overrides = {}) {
     content: new Uint8Array([1, 2, 3]),
     previousTransaction: PREVIOUS_TX,
     objectBcs: new Uint8Array([4, 5, 6]),
-    json: { id: OBJECT, version: '8' },
+    json: {
+      id: OBJECT,
+      version: '8',
+      commitment: toBase64(HISTORICAL_COMMITMENT),
+      treasury_id: null,
+    },
     display: undefined,
     ...overrides,
   };
@@ -567,7 +627,12 @@ test('Core current Move object becomes the exact existing-parser envelope and Gr
   assert.deepEqual(response.data.content, {
     dataType: 'moveObject',
     type: normalizeStructTag(TYPE),
-    fields: { id: OBJECT, version: '8' },
+    fields: {
+      id: OBJECT,
+      version: '8',
+      commitment: toBase64(HISTORICAL_COMMITMENT),
+      treasury_id: null,
+    },
   });
   assert.deepEqual(response.data.owner, { AddressOwner: OWNER });
   assert.equal(response.data.bcs.bcsBytes, toBase64(new Uint8Array([1, 2, 3])));
@@ -709,7 +774,12 @@ test('historical Object BCS binds exact version, ID, type, owner, contents, meta
   assert.equal(historical.objectId, OBJECT);
   assert.equal(historical.version, '11');
   assert.equal(historical.previousTransaction, PREVIOUS_TX);
-  assert.deepEqual(historical.parsed, { id: OBJECT, version: '8' });
+  assert.deepEqual(historical.parsed, {
+    id: OBJECT,
+    version: '8',
+    commitment: toBase64(HISTORICAL_COMMITMENT),
+    treasury_id: null,
+  });
   assert.deepEqual(historical.contentBcs, HISTORICAL_CONTENT_BCS);
   assert.deepEqual(historical.objectBcs, HISTORICAL_OBJECT_BCS);
   const call = fixture.calls.find(([name]) => name === 'ledger.getObject')[1];
@@ -723,7 +793,7 @@ test('historical Object BCS binds exact version, ID, type, owner, contents, meta
   assert.equal(Object.getPrototypeOf(rawResponse.object.contents), GrpcTypes.Bcs.messagePrototype);
   assert.deepEqual(
     fixture.calls.filter(([name]) => name === 'movePackage.getDatatype').map(([, input]) => input.name),
-    ['MakerRootV8', 'UID', 'ID'],
+    ['MakerRootV8', 'UID', 'ID', 'Option'],
   );
 
   fixture.values.historical.version = 12n;
