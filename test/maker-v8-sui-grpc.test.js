@@ -818,6 +818,7 @@ test('Ledger finality and Core transaction reads correlate digest, epoch, status
 test('official gRPC simulation and execution forward exact bytes/signatures and reject result drift', async () => {
   const fixture = fixtures();
   fixture.values.coreTransaction.Transaction.digest = null;
+  fixture.values.coreTransaction.Transaction.effects.transactionDigest = OTHER_DIGEST;
   const simulated = await fixture.transport.core.simulateTransaction({
     transaction: TRANSACTION_BCS,
     include: { effects: true },
@@ -828,6 +829,7 @@ test('official gRPC simulation and execution forward exact bytes/signatures and 
   assert.deepEqual(simulationCall.include, { effects: true, bcs: true });
 
   fixture.values.coreTransaction.Transaction.digest = TX;
+  fixture.values.coreTransaction.Transaction.effects.transactionDigest = TX;
   const signature = toBase64(USER_SIGNATURE_BCS);
   const executed = await fixture.transport.core.executeTransaction({
     transaction: TRANSACTION_BCS,

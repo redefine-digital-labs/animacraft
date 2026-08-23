@@ -1105,7 +1105,7 @@ function assertMainnetV8ReadyExecutionGates(plan, readyArtifact, envelope) {
 
   const simulation = readyArtifact.simulation;
   exactKeys(simulation, [
-    'digest', 'effectsBcsBase64', 'gasUsed', 'recommendedGasBudget',
+    'digest', 'effectsTransactionDigest', 'effectsBcsBase64', 'gasUsed', 'recommendedGasBudget',
     'changedObjects', 'objectTypes',
   ], 'READY simulation');
   exactKeys(simulation.gasUsed, [
@@ -1128,7 +1128,7 @@ function assertMainnetV8ReadyExecutionGates(plan, readyArtifact, envelope) {
   const gasUsed = Object.fromEntries(Object.entries(simulation.gasUsed)
     .map(([field, amount]) => [field, decimal(String(amount), `READY simulation.gasUsed.${field}`)]));
   if (!value || !sameBytes(effectsBytes, roundtrip) || value.status?.$kind !== 'Success'
-    || value.transactionDigest !== envelope.digest
+    || value.transactionDigest !== simulation.effectsTransactionDigest
     || String(value.executedEpoch) !== profile.epoch
     || simulation.digest !== envelope.digest
     || canonicalJson(gasUsed) !== canonicalJson(canonicalizeSdk(value.gasUsed))
@@ -1309,8 +1309,7 @@ export async function simulateMainnetV8Transaction(client, envelope) {
   });
   const value = result?.$kind === 'Transaction' ? result.Transaction : result?.FailedTransaction;
   if (!value
-    || (value.digest !== null && value.digest !== undefined && value.digest !== envelope.digest)
-    || value.effects?.transactionDigest !== envelope.digest) {
+    || (value.digest !== null && value.digest !== undefined && value.digest !== envelope.digest)) {
     fail('MAINNET_V8_SIMULATION_DRIFT', 'Simulation did not bind the exact transaction digest.');
   }
   if (value.status?.success !== true || value.effects?.status?.success !== true) {
@@ -1322,12 +1321,17 @@ export async function simulateMainnetV8Transaction(client, envelope) {
   if (!(value.bcs instanceof Uint8Array) || !sameBytes(value.bcs, envelope.transactionBytes)) {
     fail('MAINNET_V8_SIMULATION_TRANSACTION_DRIFT', 'Simulation changed exact TransactionData bytes.');
   }
+  const effectsTransactionDigest = digest(
+    value.effects?.transactionDigest,
+    'simulation.effects.transactionDigest',
+  );
   const gasUsed = value.effects.gasUsed;
   const gross = BigInt(gasUsed.computationCost) + BigInt(gasUsed.storageCost)
     + BigInt(gasUsed.nonRefundableStorageFee);
   const net = gross > BigInt(gasUsed.storageRebate) ? gross - BigInt(gasUsed.storageRebate) : gross;
   return Object.freeze({
     digest: envelope.digest,
+    effectsTransactionDigest,
     effectsBcsBase64: value.effects.bcs ? toBase64(value.effects.bcs) : null,
     gasUsed: Object.freeze({ ...gasUsed }),
     recommendedGasBudget: (net * 2n + MAINNET_V8_MINIMUM_GAS_CUSHION).toString(),

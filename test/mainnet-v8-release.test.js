@@ -493,6 +493,7 @@ function readyGateFields(envelope, ordinal) {
     publishedTomlSha256: sha256(`published-${ordinal}`),
     simulation: Object.freeze({
       digest: envelope.digest,
+      effectsTransactionDigest: envelope.digest,
       effectsBcsBase64,
       gasUsed,
       recommendedGasBudget: envelope.gasBudget,

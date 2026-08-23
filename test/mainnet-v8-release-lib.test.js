@@ -362,6 +362,7 @@ function transactionEffectsBytes(success = true, writes = [], eventsDigest = nul
 const successfulEffectsBytes = transactionEffectsBytes(true);
 const simulation = Object.freeze({
   digest: unsignedEnvelope.digest,
+  effectsTransactionDigest: unsignedEnvelope.digest,
   effectsBcsBase64: toBase64(successfulEffectsBytes),
   gasUsed: Object.freeze({
     computationCost: '1', storageCost: '2', storageRebate: '0', nonRefundableStorageFee: '0',

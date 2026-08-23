@@ -373,7 +373,7 @@ const PROTOCOL_ATTRIBUTES_FIELDS = Object.freeze([
   'objectRuntimeMaxNumCachedObjects', 'objectRuntimeMaxNumStoreEntries',
 ]);
 const SIMULATION_FIELDS = Object.freeze([
-  'digest', 'effectsBcsBase64', 'gasUsed', 'recommendedGasBudget',
+  'digest', 'effectsTransactionDigest', 'effectsBcsBase64', 'gasUsed', 'recommendedGasBudget',
   'changedObjects', 'objectTypes',
 ]);
 const GAS_USED_FIELDS = Object.freeze([
@@ -1739,9 +1739,15 @@ function effectsChangedObjectCount(parsed, value) {
 function assertSimulation(simulation, envelope, profile, label = 'READY simulation') {
   exactFields(simulation, SIMULATION_FIELDS, label);
   assertSuiDigest(simulation.digest, `${label}.digest`);
+  assertSuiDigest(simulation.effectsTransactionDigest, `${label}.effectsTransactionDigest`);
   const effects = decodeCanonicalBase64(simulation.effectsBcsBase64, `${label}.effectsBcsBase64`);
   if (effects.length === 0) fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} must bind non-empty effects BCS.`);
-  const parsedEffects = parseTransactionEffects(effects, envelope.digest, true, `${label}.effectsBcsBase64`);
+  const parsedEffects = parseTransactionEffects(
+    effects,
+    simulation.effectsTransactionDigest,
+    true,
+    `${label}.effectsBcsBase64`,
+  );
   exactFields(simulation.gasUsed, GAS_USED_FIELDS, `${label}.gasUsed`);
   GAS_USED_FIELDS.forEach((field) => assertMainnetV8Decimal(
     simulation.gasUsed[field], `${label}.gasUsed.${field}`,

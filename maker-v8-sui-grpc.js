@@ -1546,7 +1546,7 @@ export function createMakerV8SuiGrpcTransport({
     result,
     expectedDigest,
     finality = null,
-    { allowMissingDigest = false } = {},
+    { allowMissingDigest = false, allowIndependentEffectsDigest = false } = {},
   ) => {
     const transaction = result?.$kind === 'Transaction'
       ? result.Transaction
@@ -1566,7 +1566,8 @@ export function createMakerV8SuiGrpcTransport({
       fail('MAKER_V8_SUI_GRPC_FINALITY_DRIFT', 'Core transaction result differs from raw Ledger finality.');
     }
     if (transaction.effects !== undefined && transaction.effects !== null
-      && (transaction.effects.transactionDigest !== expectedDigest
+      && ((!allowIndependentEffectsDigest
+          && transaction.effects.transactionDigest !== expectedDigest)
         || transaction.effects.status?.success !== transaction.status.success)) {
       fail('MAKER_V8_SUI_GRPC_EFFECTS_DRIFT', 'Core transaction effects differ from the exact transaction result.');
     }
@@ -1600,18 +1601,19 @@ export function createMakerV8SuiGrpcTransport({
       result,
       expectedDigest,
       null,
-      { allowMissingDigest: true },
+      { allowMissingDigest: true, allowIndependentEffectsDigest: true },
     );
     const value = normalized.$kind === 'Transaction'
       ? normalized.Transaction
       : normalized.FailedTransaction;
     if (!(value.bcs instanceof Uint8Array) || !sameBytes(value.bcs, transaction)
-      || value.effects?.transactionDigest !== expectedDigest) {
+      || typeof value.effects?.transactionDigest !== 'string') {
       fail(
         'MAKER_V8_SUI_GRPC_SIMULATION_DRIFT',
-        'Core simulation did not return the exact input TransactionData and effects digest.',
+        'Core simulation did not return the exact input TransactionData and simulation effects digest.',
       );
     }
+    digest(value.effects.transactionDigest, 'simulation.effects.transactionDigest');
     return normalized;
   };
 
