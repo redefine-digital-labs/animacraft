@@ -107,6 +107,7 @@ export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS = Object.freeze([
   'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
   'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
   'MAKER_V8_CHAIN_HASH_INVALID',
+  'MAKER_V8_CORE_ARTIFACT_UNMEASURED',
 ]);
 const MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT = Object.freeze({
   code: 'MAINNET_V8_MOVE_FIELDS_INVALID',
@@ -124,6 +125,13 @@ const MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT = Object.freeze({
   code: 'MAKER_V8_CHAIN_HASH_INVALID',
   message: 'catalog.binding.core.source_commitment must contain exactly 32 bytes.',
   label: 'catalog.binding.core.source_commitment',
+});
+const MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT = Object.freeze({
+  code: 'MAKER_V8_CORE_ARTIFACT_UNMEASURED',
+  message: 'Core base_registry_v8 module bytes do not match the metered seal-cap artifact.',
+  expectedSha256: '89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7',
+  observedSha256: 'e2d9c684426838f37a5798ad6ec24d34c8d599b6f6dc3bd2907aee20742d7484',
+  byteLength: 9412,
 });
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
@@ -4837,6 +4845,14 @@ function repairableReadbackIncident(event) {
     && plain(incident?.details)
     && Object.keys(incident.details).length === 1
     && incident.details.label === MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.label;
+  const exactCorePublishedModuleIncident = event?.ordinal === '8'
+    && incident?.code === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.code
+    && incident?.message === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.message
+    && plain(incident?.details)
+    && Object.keys(incident.details).length === 3
+    && incident.details.expectedSha256 === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.expectedSha256
+    && incident.details.observedSha256 === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.observedSha256
+    && incident.details.byteLength === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.byteLength;
   return event?.status === 'INCIDENT_STOPPED'
     && event.ordinal !== '9'
     && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(incident?.code)
@@ -4847,7 +4863,9 @@ function repairableReadbackIncident(event) {
     && (incident.code !== MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.code
       || exactBootstrapOptionJsonIncident)
     && (incident.code !== MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.code
-      || exactBootstrapHashJsonIncident);
+      || exactBootstrapHashJsonIncident)
+    && (incident.code !== MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.code
+      || exactCorePublishedModuleIncident);
 }
 
 function pendingReadbackRepair(wal) {

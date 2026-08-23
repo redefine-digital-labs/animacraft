@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { toBase64 } from '@mysten/sui/utils';
+import { fromBase64, fromHex, toBase64 } from '@mysten/sui/utils';
 
 import {
   MAKER_V8_CLOCK_OBJECT_ID,
@@ -362,6 +362,26 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
     },
   }), rt);
   assert.equal(grpcAttested.catalog.productBindingCommitment, '3c'.repeat(32));
+
+  const publishedCore = catalogAndConfigResponses(rt);
+  const publishedCoreBytes = Uint8Array.from(fromBase64(CORE_BASE_REGISTRY_MODULE_BASE64));
+  publishedCoreBytes.set(fromHex(rt.roles.core.callablePackageId), 4646);
+  publishedCore.packages.core.data.bcs.moduleMap.base_registry_v8 = toBase64(publishedCoreBytes);
+  const publishedAttested = await attestMakerV8Runtime(mainnetRpc({
+    async getObject({ id: objectId }) {
+      if (objectId === rt.catalogId) return publishedCore.catalog;
+      const packageRole = Object.keys(rt.roles)
+        .find((candidate) => rt.roles[candidate].callablePackageId === objectId);
+      if (packageRole) return publishedCore.packages[packageRole];
+      const role = Object.keys(rt.roleConfigIds)
+        .find((candidate) => rt.roleConfigIds[candidate] === objectId);
+      return publishedCore.configs[role];
+    },
+  }), rt);
+  assert.equal(
+    publishedAttested.coreArtifact.baseRegistryModuleSha256,
+    MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
+  );
   assert.throws(
     () => makerV8AttestedCoreArtifact(rt),
     (error) => error.code === 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED',

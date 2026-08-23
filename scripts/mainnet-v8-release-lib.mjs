@@ -4296,6 +4296,7 @@ function assertWalTransition(previous, current) {
       'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
       'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
       'MAKER_V8_CHAIN_HASH_INVALID',
+      'MAKER_V8_CORE_ARTIFACT_UNMEASURED',
     ]
       .includes(previousIncident.incident.code)
     && (previousIncident.incident.code !== 'MAINNET_V8_MOVE_FIELDS_INVALID'
@@ -4321,6 +4322,16 @@ function assertWalTransition(previous, current) {
         && Object.keys(previousIncident.incident.details).length === 1
         && previousIncident.incident.details.label
           === 'catalog.binding.core.source_commitment')
+    && (previousIncident.incident.code !== 'MAKER_V8_CORE_ARTIFACT_UNMEASURED'
+      || previous.ordinal === '8'
+        && previousIncident.incident.message
+          === 'Core base_registry_v8 module bytes do not match the metered seal-cap artifact.'
+        && Object.keys(previousIncident.incident.details).length === 3
+        && previousIncident.incident.details.expectedSha256
+          === '89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7'
+        && previousIncident.incident.details.observedSha256
+          === 'e2d9c684426838f37a5798ad6ec24d34c8d599b6f6dc3bd2907aee20742d7484'
+        && previousIncident.incident.details.byteLength === 9412)
     && previousIncident.finalityEvidenceSha256 === currentPending.finalityEvidenceSha256
     && canonicalMainnetV8Json(previousIncident.finalityEvidence)
       === canonicalMainnetV8Json(currentPending.finalityEvidence);

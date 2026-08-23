@@ -3,7 +3,7 @@ import { blake2b } from '@noble/hashes/blake2.js';
 import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import {
-  fromBase58, fromBase64, normalizeStructTag, toBase58, toBase64,
+  fromBase58, fromBase64, fromHex, normalizeStructTag, toBase58, toBase64,
 } from '@mysten/sui/utils';
 
 import {
@@ -448,11 +448,27 @@ function parseCallablePackageIdentity(response, runtime, role) {
     } catch {
       fail('readback', 'MAKER_V8_CORE_ARTIFACT_UNMEASURED', 'Core base_registry_v8 module bytes are missing or not canonical Base64.');
     }
-    const moduleSha256 = [...sha256(moduleBytes)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    const digestHex = (bytes) => [...sha256(bytes)]
+      .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    const publishedModuleSha256 = digestHex(moduleBytes);
+    let moduleSha256 = publishedModuleSha256;
+    if (moduleSha256 !== MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256) {
+      const packageBytes = fromHex(packageId);
+      const matchingOffsets = [];
+      for (let offset = 0; offset <= moduleBytes.length - packageBytes.length; offset += 1) {
+        if (!packageBytes.every((byte, index) => moduleBytes[offset + index] === byte)) continue;
+        const sourceModuleBytes = Uint8Array.from(moduleBytes);
+        sourceModuleBytes.fill(0, offset, offset + packageBytes.length);
+        if (digestHex(sourceModuleBytes) === MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256) {
+          matchingOffsets.push(offset);
+        }
+      }
+      if (matchingOffsets.length === 1) moduleSha256 = MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256;
+    }
     if (moduleSha256 !== MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256) {
       fail('readback', 'MAKER_V8_CORE_ARTIFACT_UNMEASURED', 'Core base_registry_v8 module bytes do not match the metered seal-cap artifact.', {
         expectedSha256: MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
-        observedSha256: moduleSha256,
+        observedSha256: publishedModuleSha256,
         byteLength: moduleBytes.length,
       });
     }
