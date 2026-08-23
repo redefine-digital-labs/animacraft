@@ -2244,6 +2244,9 @@ export function renderFreshV8App(root, controller) {
     }
   });
   return controller.subscribe((state) => {
+    const executionNotice = state.execution.allowWalletSignature && state.execution.allowBroadcast
+      ? 'Wallet signing and exact-byte broadcast are enabled for this certified Mainnet deployment.'
+      : 'Wallet signing and broadcast are disabled for this deployment.';
     const detail = state.route.kind === 'market' ? browseMarkup(state) : `
       <section class="object-hero">
         <p class="eyebrow">${escapeHtml(state.view?.listingKind || 'Maker v8 Root')}</p>
@@ -2264,7 +2267,7 @@ export function renderFreshV8App(root, controller) {
         </header>
         <div class="status-strip" role="status" aria-live="polite"><span class="status-dot"></span><strong>${escapeHtml(state.status)}</strong><span>${escapeHtml(state.account ? shortId(state.account.address) : 'wallet not connected')}</span></div>
         <main>${issueMarkup(state.issue)}${detail}</main>
-        <footer><p>Only verified MakerV8Activated Roots and typed Market listings appear. Signing and broadcast are deployment-disabled by default.</p></footer>
+        <footer><p>Only verified MakerV8Activated Roots and typed Market listings appear. ${executionNotice}</p></footer>
       </div>`;
   });
 }

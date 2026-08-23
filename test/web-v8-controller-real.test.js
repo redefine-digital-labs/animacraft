@@ -157,6 +157,17 @@ test('production UI exposes the exact durable-state liveness buttons', () => {
   });
   assert.equal(button(ready, 'discard').enabled, true);
   assert.equal(button(ready, 'sign').enabled, true);
+  assert.match(ready, /Wallet signing and exact-byte broadcast are enabled for this certified Mainnet deployment/);
+  assert.doesNotMatch(ready, /deployment-disabled by default/);
+
+  const disabled = render({
+    execution: {
+      ...base.execution,
+      allowWalletSignature: false,
+      allowBroadcast: false,
+    },
+  });
+  assert.match(disabled, /Wallet signing and broadcast are disabled for this deployment/);
 
   const terminal = render({
     status: 'OUTCOME_PENDING',
