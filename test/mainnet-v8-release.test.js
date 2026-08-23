@@ -57,6 +57,7 @@ import {
   MAINNET_V8_USDC_TYPE,
   MAINNET_V8_WAL_FILENAME,
   MainnetV8ReleaseError,
+  abandonMainnetV8Release,
   assertMainnetV8BootstrapRawBcs,
   assertMainnetV8BootstrapEvents,
   assertMainnetV8PublishedModuleBytes,
@@ -1120,6 +1121,19 @@ test('release CLI parsing keeps all three Mainnet write gates explicit and rejec
       json: true,
     },
   });
+  assert.deepEqual(parseMainnetV8ReleaseArgs([
+    'abandon', '--state-dir', '/tmp/release-state',
+    '--execution-plan-id', hash32(1), '--release-id', hash32(2),
+    '--reason-code', 'PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH',
+  ]), {
+    command: 'abandon',
+    options: {
+      'state-dir': '/tmp/release-state',
+      'execution-plan-id': hash32(1),
+      'release-id': hash32(2),
+      'reason-code': 'PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH',
+    },
+  });
 
   assert.throws(
     () => parseMainnetV8ReleaseArgs(['destroy']),
@@ -2144,6 +2158,70 @@ test('execute runner seals the final manifest then requires a separately approve
   );
   assert.equal(await readFile(walPath, 'utf8'), sealedBytes);
   assert.deepEqual(calls, []);
+});
+
+test('sealed pre-init release records the reviewed payment-type incident as terminal abandonment', async (t) => {
+  const { stateDir } = await createSevenPublishFinalizedState(t);
+  const walPath = join(stateDir, MAINNET_V8_WAL_FILENAME);
+  const sealed = await executeMainnetV8Release({
+    stateDir,
+    suiBinary: '/offline/fake-sui',
+    expectedExecutionPlanId: RELEASE_PLAN.executionPlanId,
+    maximumTransitions: 1,
+    dependencies: {
+      inspectToolchain: async () => RELEASE_PLAN.toolchain,
+    },
+  });
+  assert.equal(sealed.status, 'FINAL_MANIFEST_REVIEW_REQUIRED');
+  const sealedBytes = await readFile(walPath, 'utf8');
+
+  await assert.rejects(abandonMainnetV8Release({
+    stateDir,
+    expectedExecutionPlanId: RELEASE_PLAN.executionPlanId,
+    expectedReleaseId: sealed.wal.releaseId,
+    reasonCode: 'UNREVIEWED_REASON',
+  }), expectCode('MAINNET_V8_ABANDON_REASON_INVALID'));
+  assert.equal(await readFile(walPath, 'utf8'), sealedBytes);
+
+  await assert.rejects(abandonMainnetV8Release({
+    stateDir,
+    expectedExecutionPlanId: RELEASE_PLAN.executionPlanId,
+    expectedReleaseId: hash32(203),
+    reasonCode: 'PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH',
+  }), expectCode('MAINNET_V8_RELEASE_ID_NOT_APPROVED'));
+  assert.equal(await readFile(walPath, 'utf8'), sealedBytes);
+
+  const result = await abandonMainnetV8Release({
+    stateDir,
+    expectedExecutionPlanId: RELEASE_PLAN.executionPlanId,
+    expectedReleaseId: sealed.wal.releaseId,
+    reasonCode: 'PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH',
+  });
+  const head = result.wal.events.at(-1);
+  assert.equal(result.status, 'RELEASE_ABANDONED');
+  assert.equal(head.status, 'RELEASE_ABANDONED');
+  assert.equal(head.evidence.releaseId, sealed.wal.releaseId);
+  assert.equal(head.evidence.reason.failedOrdinal, '7');
+  assert.equal(head.evidence.reason.errorCode, 'MAINNET_V8_SIMULATION_FAILED');
+  assert.equal(head.evidence.reason.moveAbort.abortCode, '3');
+  assert.equal(
+    head.evidence.reason.moveAbort.packageId,
+    sealed.wal.finalManifest.packages.find((entry) => entry.role === 'core').packageId,
+  );
+
+  let externalCalls = 0;
+  const resumed = await executeMainnetV8Release({
+    stateDir,
+    suiBinary: '/offline/fake-sui',
+    expectedExecutionPlanId: RELEASE_PLAN.executionPlanId,
+    expectedReleaseId: sealed.wal.releaseId,
+    maximumTransitions: 1,
+    dependencies: {
+      inspectToolchain: async () => { externalCalls += 1; },
+    },
+  });
+  assert.equal(resumed.status, 'RELEASE_ABANDONED');
+  assert.equal(externalCalls, 0);
 });
 
 test('execute runner cold-rebuilds READY publish bytes before signing and fails closed on drift', async (t) => {

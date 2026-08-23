@@ -48,6 +48,7 @@ import {
   assertReleasePlan,
   buildAbiArtifact,
   buildFinalManifest,
+  buildMainnetV8AbandonEvidence,
   buildMainnetV8ManifestEvidence,
   buildMainnetV8OutcomeEvidence,
   buildMainnetV8ReadyEvidence,
@@ -110,7 +111,9 @@ const BASE58_DIGEST_LENGTH = 32;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const LEDGER_SERVICE = 'sui.rpc.v2.LedgerService';
 const GET_TRANSACTION = 'GetTransaction';
-const COMMANDS = new Set(['prepare', 'run', 'resume', 'status', 'verify', 'export-config']);
+const COMMANDS = new Set([
+  'prepare', 'run', 'resume', 'abandon', 'status', 'verify', 'export-config',
+]);
 const CONFIG_ROLE_MODULES = Object.freeze({
   seal: 'seal_v8',
   runtime: 'runtime_binding_v8',
@@ -3429,10 +3432,11 @@ function releaseTransactionContext(
 
 function printUsage() {
   process.stdout.write(`Usage: node scripts/mainnet-v8-release.mjs <command> [options]\n\n`);
-  process.stdout.write(`Commands: prepare, run, resume, status, verify, export-config\n`);
+  process.stdout.write(`Commands: prepare, run, resume, abandon, status, verify, export-config\n`);
   process.stdout.write(`Required for prepare: --state-dir PATH --sui-binary PATH --sender 0x...\n`);
   process.stdout.write(`Required for run/resume: --state-dir PATH --sui-binary PATH --execution-plan-id SHA256\n`);
   process.stdout.write(`After manifest seal, run/resume also requires --release-id SHA256\n`);
+  process.stdout.write(`Abandon requires both IDs plus --reason-code PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH; it never signs or broadcasts.\n`);
   process.stdout.write(`Known parser incidents may be reopened with --repair-readback-incident; this never signs or broadcasts by itself.\n`);
   process.stdout.write(`Writes require all three gates: --confirm-mainnet --allow-signing --allow-broadcast\n`);
 }
@@ -5319,6 +5323,10 @@ export async function executeMainnetV8Release({
       );
     }
   }
+  const approvedHead = headEvent(wal);
+  if (approvedHead.status === 'RELEASE_ABANDONED') {
+    return Object.freeze({ status: 'RELEASE_ABANDONED', wal, writesComplete: false });
+  }
   const toolchain = await operations.inspectToolchain({ suiBinary });
   if (toolchain.suiVersion !== wal.plan.toolchain.suiVersion
     || toolchain.suiVersionOutput !== wal.plan.toolchain.suiVersionOutput
@@ -5327,7 +5335,7 @@ export async function executeMainnetV8Release({
     || toolchain.frameworkRevision !== wal.plan.toolchain.frameworkRevision) {
     fail('MAINNET_V8_TOOLCHAIN_DRIFT', 'Resume toolchain differs from the immutable release plan.');
   }
-  const initialEvent = headEvent(wal);
+  const initialEvent = approvedHead;
   if (repairReadbackIncident !== false
     && (repairReadbackIncident !== true
       || !(repairableReadbackIncident(initialEvent) || pendingReadbackRepair(wal)))) {
@@ -5343,7 +5351,8 @@ export async function executeMainnetV8Release({
       wal = await reopenReadbackIncident({ paths, wal });
       continue;
     }
-    if (['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'INCIDENT_STOPPED'].includes(event.status)) {
+    if (['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'INCIDENT_STOPPED', 'RELEASE_ABANDONED']
+      .includes(event.status)) {
       return Object.freeze({ status: event.status, wal, writesComplete: false });
     }
     if (event.status === 'READY') {
@@ -5441,6 +5450,59 @@ export async function executeMainnetV8Release({
   return Object.freeze({ status: 'TRANSITION_LIMIT_REACHED', wal, writesComplete: false });
 }
 
+export async function abandonMainnetV8Release({
+  stateDir,
+  expectedExecutionPlanId,
+  expectedReleaseId,
+  reasonCode,
+}) {
+  const paths = mainnetV8ReleasePaths(stateDir);
+  const approvedExecutionPlanId = hash32(
+    expectedExecutionPlanId, 'abandon expectedExecutionPlanId',
+  );
+  const approvedReleaseId = hash32(expectedReleaseId, 'abandon expectedReleaseId');
+  if (reasonCode !== 'PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH') {
+    fail('MAINNET_V8_ABANDON_REASON_INVALID', 'Only the reviewed pre-sign protocol-init incident can abandon this release.');
+  }
+  const wal = await readReleaseWal({ path: paths.wal });
+  if (wal.executionPlanId !== approvedExecutionPlanId) {
+    fail('MAINNET_V8_EXECUTION_PLAN_NOT_APPROVED', 'Release abandonment differs from the externally approved executionPlanId.');
+  }
+  if (wal.releaseId !== approvedReleaseId) {
+    fail('MAINNET_V8_RELEASE_ID_NOT_APPROVED', 'Release abandonment differs from the externally approved releaseId.');
+  }
+  const head = headEvent(wal);
+  if (head.status !== 'FINAL_MANIFEST_SEALED' || head.ordinal !== '6') {
+    fail('MAINNET_V8_ABANDON_STATE_INVALID', 'Only a sealed, pre-init release may be abandoned by this incident path.');
+  }
+  const core = wal.finalManifest.packages.find((entry) => entry.role === 'core');
+  if (!core) fail('MAINNET_V8_WAL_INVALID', 'Sealed manifest has no Core package.');
+  const evidence = buildMainnetV8AbandonEvidence({
+    ordinal: head.ordinal,
+    attempt: head.attempt,
+    finalManifest: wal.finalManifest,
+    plan: wal.plan,
+    reason: {
+      code: reasonCode,
+      failedOrdinal: '7',
+      errorCode: 'MAINNET_V8_SIMULATION_FAILED',
+      moveAbort: {
+        packageId: core.packageId,
+        module: 'protocol_config_v8',
+        function: 'initialize_protocol_treasury_v8',
+        abortCode: '3',
+      },
+    },
+  });
+  const abandoned = await appendAndColdRead(paths, wal, {
+    ordinal: head.ordinal,
+    attempt: head.attempt,
+    status: 'RELEASE_ABANDONED',
+    evidence,
+  });
+  return Object.freeze({ status: 'RELEASE_ABANDONED', wal: abandoned, writesComplete: false });
+}
+
 export function assertMainnetV8WriteGates(options) {
   if (options['confirm-mainnet'] !== true || options['allow-signing'] !== true
     || options['allow-broadcast'] !== true) {
@@ -5479,6 +5541,22 @@ async function main(argv = process.argv.slice(2)) {
       executionPlanId: prepared.executionPlanId,
       signer: prepared.plan.sender,
       chainIdentifier: prepared.plan.chain.chainIdentifier,
+    }, null, 2)}\n`);
+    return;
+  }
+  if (command === 'abandon') {
+    const result = await abandonMainnetV8Release({
+      stateDir,
+      expectedExecutionPlanId: options['execution-plan-id'],
+      expectedReleaseId: options['release-id'],
+      reasonCode: options['reason-code'],
+    });
+    process.stdout.write(`${JSON.stringify({
+      status: result.status,
+      writes: 0,
+      revision: result.wal.revision,
+      executionPlanId: result.wal.executionPlanId,
+      releaseId: result.wal.releaseId,
     }, null, 2)}\n`);
     return;
   }

@@ -86,7 +86,7 @@ export const MAINNET_V8_RELEASE_STEPS = Object.freeze([
 export const MAINNET_V8_WAL_STATUSES = Object.freeze([
   'READY', 'SIGNED', 'OUTCOME_PENDING', 'BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN',
   'FINALIZED_SUCCESS_PENDING_READBACK', 'FINALIZED_SUCCESS', 'FINALIZED_FAILURE',
-  'EXPIRED_NOT_FOUND', 'INCIDENT_STOPPED', 'FINAL_MANIFEST_SEALED',
+  'EXPIRED_NOT_FOUND', 'INCIDENT_STOPPED', 'FINAL_MANIFEST_SEALED', 'RELEASE_ABANDONED',
 ]);
 
 export const MAINNET_V8_SEAL_APPROVALS = Object.freeze([
@@ -354,6 +354,16 @@ const WAL_VERIFY_EVIDENCE_FIELDS = Object.freeze([
 ]);
 const WAL_MANIFEST_EVIDENCE_FIELDS = Object.freeze([
   'schemaVersion', 'kind', 'cursor', 'finalManifest', 'releaseId',
+]);
+const WAL_ABANDON_EVIDENCE_FIELDS = Object.freeze([
+  'schemaVersion', 'kind', 'cursor', 'releaseId', 'finalManifestSha256',
+  'reason', 'reasonSha256',
+]);
+const WAL_ABANDON_REASON_FIELDS = Object.freeze([
+  'code', 'failedOrdinal', 'errorCode', 'moveAbort',
+]);
+const WAL_ABANDON_MOVE_ABORT_FIELDS = Object.freeze([
+  'packageId', 'module', 'function', 'abortCode',
 ]);
 const FINAL_MANIFEST_FIELDS = Object.freeze([
   'schemaVersion', 'executionPlanId', 'chainIdentifier', 'sender', 'packages',
@@ -4019,6 +4029,37 @@ export function buildMainnetV8ManifestEvidence({
   });
 }
 
+export function buildMainnetV8AbandonEvidence({
+  ordinal = '6', attempt = '0', finalManifest, plan, reason,
+}) {
+  const cursor = walCursor(ordinal, attempt);
+  if (cursor.ordinal !== '6') {
+    fail('MAINNET_V8_WAL_EVIDENCE_INVALID', 'A sealed release can only be abandoned at package ordinal 6.');
+  }
+  assertMainnetV8FinalManifest(finalManifest, plan);
+  exactFields(reason, WAL_ABANDON_REASON_FIELDS, 'RELEASE_ABANDONED reason');
+  exactFields(reason.moveAbort, WAL_ABANDON_MOVE_ABORT_FIELDS, 'RELEASE_ABANDONED moveAbort');
+  if (reason.code !== 'PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH'
+    || reason.failedOrdinal !== '7'
+    || reason.errorCode !== 'MAINNET_V8_SIMULATION_FAILED'
+    || reason.moveAbort.module !== 'protocol_config_v8'
+    || reason.moveAbort.function !== 'initialize_protocol_treasury_v8'
+    || reason.moveAbort.abortCode !== '3') {
+    fail('MAINNET_V8_WAL_EVIDENCE_INVALID', 'Release abandonment reason is not the approved pre-sign init incident.');
+  }
+  assertFullId(reason.moveAbort.packageId, 'RELEASE_ABANDONED moveAbort.packageId');
+  const canonicalReason = cloneJson(reason);
+  return deepFreeze({
+    schemaVersion: MAINNET_V8_WAL_EVIDENCE_SCHEMA,
+    kind: 'RELEASE_ABANDONED',
+    cursor,
+    releaseId: finalManifest.releaseId,
+    finalManifestSha256: sha256MainnetV8Json(finalManifest),
+    reason: canonicalReason,
+    reasonSha256: sha256MainnetV8Json(canonicalReason),
+  });
+}
+
 function assertWalEvidence(event) {
   const evidence = event.evidence;
   if (evidence.schemaVersion !== MAINNET_V8_WAL_EVIDENCE_SCHEMA || evidence.kind !== event.status) {
@@ -4057,6 +4098,26 @@ function assertWalEvidence(event) {
     assertMainnetV8DeterministicJson(evidence.finalManifest, 'FINAL_MANIFEST_SEALED finalManifest');
     if (evidence.releaseId !== evidence.finalManifest?.releaseId) {
       fail('MAINNET_V8_WAL_EVIDENCE_INVALID', 'Final manifest evidence releaseId is inconsistent.');
+    }
+    return;
+  }
+  if (event.status === 'RELEASE_ABANDONED') {
+    exactFields(evidence, WAL_ABANDON_EVIDENCE_FIELDS, 'RELEASE_ABANDONED evidence');
+    assertEvidenceCursor(evidence.cursor, event, 'RELEASE_ABANDONED evidence');
+    assertHash(evidence.releaseId, 'RELEASE_ABANDONED releaseId');
+    assertHash(evidence.finalManifestSha256, 'RELEASE_ABANDONED finalManifestSha256');
+    exactFields(evidence.reason, WAL_ABANDON_REASON_FIELDS, 'RELEASE_ABANDONED reason');
+    exactFields(evidence.reason.moveAbort, WAL_ABANDON_MOVE_ABORT_FIELDS, 'RELEASE_ABANDONED moveAbort');
+    assertFullId(evidence.reason.moveAbort.packageId, 'RELEASE_ABANDONED moveAbort.packageId');
+    assertHash(evidence.reasonSha256, 'RELEASE_ABANDONED reasonSha256');
+    if (evidence.reasonSha256 !== sha256MainnetV8Json(evidence.reason)
+      || evidence.reason.code !== 'PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH'
+      || evidence.reason.failedOrdinal !== '7'
+      || evidence.reason.errorCode !== 'MAINNET_V8_SIMULATION_FAILED'
+      || evidence.reason.moveAbort.module !== 'protocol_config_v8'
+      || evidence.reason.moveAbort.function !== 'initialize_protocol_treasury_v8'
+      || evidence.reason.moveAbort.abortCode !== '3') {
+      fail('MAINNET_V8_WAL_EVIDENCE_INVALID', 'RELEASE_ABANDONED evidence is not the approved pre-sign init incident.');
     }
     return;
   }
@@ -4239,6 +4300,8 @@ function assertWalTransition(previous, current) {
       && repairsKnownReadbackIncident && sameCursor
     || previous.status === 'FINALIZED_SUCCESS' && previous.ordinal === '6'
       && current.status === 'FINAL_MANIFEST_SEALED' && sameCursor
+    || previous.status === 'FINAL_MANIFEST_SEALED'
+      && current.status === 'RELEASE_ABANDONED' && sameCursor
     || previous.status === 'FINAL_MANIFEST_SEALED' && current.status === 'READY'
       && current.ordinal === '7' && current.attempt === '0'
     || previous.status === 'FINALIZED_SUCCESS' && previous.ordinal !== '6'
@@ -4557,6 +4620,15 @@ export function assertMainnetV8ReleaseWal(wal) {
         fail('MAINNET_V8_WAL_INVALID', `WAL event ${index} releaseId is outside its sealed generation.`);
       }
     }
+    if (event.status === 'RELEASE_ABANDONED') {
+      const core = sealedManifest?.packages?.[MAINNET_V8_ROLE_ORDER.indexOf('core')];
+      if (!core || event.ordinal !== '6'
+        || event.evidence.releaseId !== sealedManifest.releaseId
+        || event.evidence.finalManifestSha256 !== sha256MainnetV8Json(sealedManifest)
+        || event.evidence.reason.moveAbort.packageId !== core.packageId) {
+        fail('MAINNET_V8_WAL_INVALID', 'Release abandonment differs from the sealed Core/init boundary.');
+      }
+    }
     const ordinal = Number(BigInt(event.ordinal));
     if (ordinal >= 7 && sealedManifest === null) {
       fail('MAINNET_V8_WAL_INVALID', `WAL ordinal ${ordinal} cannot start before final manifest sealing.`);
@@ -4643,7 +4715,9 @@ export function assertMainnetV8ReleaseWal(wal) {
     const verifyOnlyTerminal = ['FINALIZED_SUCCESS', 'INCIDENT_STOPPED'].includes(event.status)
       && event.ordinal === '9';
     const manifestSeal = event.status === 'FINAL_MANIFEST_SEALED';
-    if (!['READY', 'SIGNED'].includes(event.status) && !verifyOnlyTerminal && !manifestSeal) {
+    const releaseAbandoned = event.status === 'RELEASE_ABANDONED';
+    if (!['READY', 'SIGNED'].includes(event.status)
+      && !verifyOnlyTerminal && !manifestSeal && !releaseAbandoned) {
       const signed = signedEvidence.get(cursor);
       if (!signed || event.evidence.readyArtifactSha256 !== signed.readyArtifactSha256
         || event.evidence.signedArtifactSha256 !== signed.signedArtifactSha256
