@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 import {
   MARKET_V8_ACTIONS,
@@ -248,6 +249,34 @@ test('production entry files have no retired imports, aliases, routes, or pendin
   assert.match(source, /UNSUPPORTED_LEGACY_PRODUCT/);
   assert.match(source, /publicDir:\s*['"]public-v8['"]/);
   assert.deepEqual(await readdir(new URL('../public-v8/', import.meta.url)), ['config.js']);
+});
+
+test('production config is the certified Mainnet release and enables exact wallet execution', async () => {
+  const source = await readFile(new URL('../public-v8/config.js', import.meta.url), 'utf8');
+  const context = { window: {} };
+  runInNewContext(source, context);
+  const runtime = assertMakerV8Runtime(JSON.parse(JSON.stringify(context.window.SoulidityMakerV8)));
+  const execution = assertWebV8ExecutionConfig(JSON.parse(JSON.stringify(context.window.SoulidityV8Execution)));
+  assert.equal(runtime.enabled, true);
+  assert.equal(runtime.catalogId, '0x98c4172b00ef802b801c01348ad9da640424ddbaee61a33eb835091305502498');
+  assert.equal(runtime.protocolConfigId, '0x598d25ca56848bfe0d51acc054784d186a81f827e791f2d523c197e0c7a89334');
+  assert.equal(runtime.protocolTreasuryId, '0x40a47df4956b33461163ba803d520156187fcf4c954a04984744f9a8b4c82736');
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(runtime.roles)
+      .map(([role, identity]) => [role, identity.callablePackageId])),
+    {
+      core: '0xca762c5432604d6680fbdc87367c3956a2e7536eb2d12222eb929945d97c9e6e',
+      seal: '0x0f12dc22b720dc9d87cde8d76952ab252959cced372e8511abb54cbaa177e2a3',
+      runtime: '0xa2d7c3c289d884d5899eb0afdfae8abca7555fb8640b493016502196a7500476',
+      output: '0x09bb4c47e26b4cfa94d4c309ee9ba6d734cca6dc36111067c388deab12e20438',
+      physical: '0x88abc74b3e3ba58f96cd3bc23ccccb774b489657ddd7f64b959210a08e056936',
+      market: '0x85c13a96e7f5a90f9d9da9fe7ab0cd11b6b9d48366b376b07aa962c43d67ac0c',
+      release: '0x4ce1a661a5a427d607ec486ce8aaa7f7bb8e8c1f7f30770eca55e4a079a89297',
+    },
+  );
+  assert.equal(execution.allowWalletSignature, true);
+  assert.equal(execution.allowBroadcast, true);
+  assert.doesNotMatch(source, /placeholderId|0x(?:10|11|12|13|14|15|16|80|81|82|83|84|85|86|87|88){32}/);
 });
 
 test('CI pins the verified Sui CLI and gates all fresh web and Move artifacts', async () => {
