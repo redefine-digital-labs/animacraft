@@ -4295,6 +4295,7 @@ function assertWalTransition(previous, current) {
       'MAINNET_V8_MOVE_FIELDS_INVALID',
       'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
       'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
+      'MAKER_V8_CHAIN_HASH_INVALID',
     ]
       .includes(previousIncident.incident.code)
     && (previousIncident.incident.code !== 'MAINNET_V8_MOVE_FIELDS_INVALID'
@@ -4313,6 +4314,13 @@ function assertWalTransition(previous, current) {
         && previousIncident.incident.message
           === 'ProductReleaseCatalogV8.seal_call_cap must be an exact Move Option<PackageCallCapV8>.'
         && Object.keys(previousIncident.incident.details).length === 0)
+    && (previousIncident.incident.code !== 'MAKER_V8_CHAIN_HASH_INVALID'
+      || previous.ordinal === '8'
+        && previousIncident.incident.message
+          === 'catalog.binding.core.source_commitment must contain exactly 32 bytes.'
+        && Object.keys(previousIncident.incident.details).length === 1
+        && previousIncident.incident.details.label
+          === 'catalog.binding.core.source_commitment')
     && previousIncident.finalityEvidenceSha256 === currentPending.finalityEvidenceSha256
     && canonicalMainnetV8Json(previousIncident.finalityEvidence)
       === canonicalMainnetV8Json(currentPending.finalityEvidence);

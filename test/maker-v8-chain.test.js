@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { toBase64 } from '@mysten/sui/utils';
+
 import {
   MAKER_V8_CLOCK_OBJECT_ID,
   MAKER_V8_PAYMENT_COIN_TYPE,
@@ -338,6 +340,28 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
     () => makerV8AttestedPackageTuple(rt),
     (error) => error.code === 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED',
   );
+
+  const grpcProjected = catalogAndConfigResponses(rt);
+  const projectBytes = (value) => {
+    if (Array.isArray(value) && value.length === 32) return toBase64(Uint8Array.from(value));
+    if (!value || typeof value !== 'object') return value;
+    Object.keys(value).forEach((key) => { value[key] = projectBytes(value[key]); });
+    return value;
+  };
+  projectBytes(grpcProjected.catalog.data.content.fields);
+  Object.values(grpcProjected.configs).forEach((response) => projectBytes(response.data.content.fields));
+  const grpcAttested = await attestMakerV8Runtime(mainnetRpc({
+    async getObject({ id: objectId }) {
+      if (objectId === rt.catalogId) return grpcProjected.catalog;
+      const packageRole = Object.keys(rt.roles)
+        .find((candidate) => rt.roles[candidate].callablePackageId === objectId);
+      if (packageRole) return grpcProjected.packages[packageRole];
+      const role = Object.keys(rt.roleConfigIds)
+        .find((candidate) => rt.roleConfigIds[candidate] === objectId);
+      return grpcProjected.configs[role];
+    },
+  }), rt);
+  assert.equal(grpcAttested.catalog.productBindingCommitment, '3c'.repeat(32));
   assert.throws(
     () => makerV8AttestedCoreArtifact(rt),
     (error) => error.code === 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED',

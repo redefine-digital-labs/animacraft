@@ -106,6 +106,7 @@ export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS = Object.freeze([
   'MAINNET_V8_MOVE_FIELDS_INVALID',
   'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
   'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
+  'MAKER_V8_CHAIN_HASH_INVALID',
 ]);
 const MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT = Object.freeze({
   code: 'MAINNET_V8_MOVE_FIELDS_INVALID',
@@ -118,6 +119,11 @@ const MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT = Object.freeze({
 const MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT = Object.freeze({
   code: 'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
   message: 'ProductReleaseCatalogV8.seal_call_cap must be an exact Move Option<PackageCallCapV8>.',
+});
+const MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT = Object.freeze({
+  code: 'MAKER_V8_CHAIN_HASH_INVALID',
+  message: 'catalog.binding.core.source_commitment must contain exactly 32 bytes.',
+  label: 'catalog.binding.core.source_commitment',
 });
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
@@ -4825,6 +4831,12 @@ function repairableReadbackIncident(event) {
     && incident?.code === MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.code
     && incident?.message === MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.message
     && plain(incident?.details) && Object.keys(incident.details).length === 0;
+  const exactBootstrapHashJsonIncident = event?.ordinal === '8'
+    && incident?.code === MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.code
+    && incident?.message === MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.message
+    && plain(incident?.details)
+    && Object.keys(incident.details).length === 1
+    && incident.details.label === MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.label;
   return event?.status === 'INCIDENT_STOPPED'
     && event.ordinal !== '9'
     && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(incident?.code)
@@ -4833,7 +4845,9 @@ function repairableReadbackIncident(event) {
     && (incident.code !== MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.code
       || exactBootstrapAdminWriteIncident)
     && (incident.code !== MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.code
-      || exactBootstrapOptionJsonIncident);
+      || exactBootstrapOptionJsonIncident)
+    && (incident.code !== MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.code
+      || exactBootstrapHashJsonIncident);
 }
 
 function pendingReadbackRepair(wal) {

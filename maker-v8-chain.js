@@ -118,6 +118,16 @@ function hash(value, label) {
     && value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255)) {
     return value.map((entry) => entry.toString(16).padStart(2, '0')).join('');
   }
+  if (typeof value === 'string') {
+    try {
+      const bytes = fromBase64(value);
+      if (bytes.length === 32 && toBase64(bytes) === value) {
+        return [...bytes].map((entry) => entry.toString(16).padStart(2, '0')).join('');
+      }
+    } catch {
+      // Continue to the canonical hex projection below.
+    }
+  }
   const text = String(value || '').replace(/^0x/i, '').toLowerCase();
   if (!HASH_HEX.test(text)) fail('schema', 'MAKER_V8_CHAIN_HASH_INVALID', `${label} must contain exactly 32 bytes.`, { label });
   return text;
