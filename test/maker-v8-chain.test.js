@@ -207,7 +207,7 @@ function rootResponse(overrides = {}) {
       rights: {},
       product_release_binding: [{}],
       pack_admission_binding: [{}],
-      capability_registry_binding: [{ fields: capabilityFields(rt, b) }],
+      capability_registry_binding: { fields: capabilityFields(rt, b) },
       created_at_ms: '1',
       ...overrides,
     },
@@ -254,7 +254,7 @@ function catalogAndConfigResponses(rt, overrides = {}) {
       ...Object.fromEntries(companionRoles.map((role) => [`${role}_authority_id`, authority[role]])),
       commitment: callCapSetCommitment,
     } },
-    ...Object.fromEntries(companionRoles.map((role) => [`${role}_call_cap`, []])),
+    ...Object.fromEntries(companionRoles.map((role) => [`${role}_call_cap`, null])),
     ...overrides,
   }, { Shared: { initial_shared_version: '1' } });
   const typeNames = {
@@ -439,7 +439,7 @@ test('Root readback verifies lifecycle, immutable snapshot, and every capability
   assert.equal(root.creatorAddress, wallet);
   assert.equal(root.capabilityBindingCommitment, '07'.repeat(32));
   const corrupted = rootResponse();
-  corrupted.data.content.fields.capability_registry_binding[0].fields.market_registry_id = sid(999);
+  corrupted.data.content.fields.capability_registry_binding.fields.market_registry_id = sid(999);
   assert.throws(
     () => parseMakerRootV8(corrupted, runtime(), activationEvent()),
     (error) => error.code === 'MAKER_V8_CAPABILITY_BINDING_MISMATCH',
@@ -467,7 +467,7 @@ test('ProtocolConfig and MakerTreasury readback provide live eligibility facts',
       core_original_package_id: rt.roles.core.typeOriginPackageId,
       core_callable_package_id: rt.roles.core.callablePackageId,
       revision: '7',
-      treasury_id: [rt.protocolTreasuryId],
+      treasury_id: rt.protocolTreasuryId,
       payment_coin_type: rt.paymentCoinType,
       enabled: true,
       commitment: hash(4),
@@ -507,7 +507,7 @@ test('ProtocolConfig and MakerTreasury readback provide live eligibility facts',
   const wrong = moveObject(makerV8ChainTypes(rt).protocolConfig, rt.protocolConfigId, {
     version: '8', core_original_package_id: rt.roles.core.typeOriginPackageId,
     core_callable_package_id: rt.roles.core.callablePackageId, revision: '7',
-    treasury_id: [rt.protocolTreasuryId], payment_coin_type: `${sid(999)}::coin::BAD`,
+    treasury_id: rt.protocolTreasuryId, payment_coin_type: `${sid(999)}::coin::BAD`,
     enabled: true, commitment: hash(4),
   });
   assert.throws(() => parseProtocolConfigV8(wrong, rt, root), (error) => error.code === 'MAKER_V8_PROTOCOL_CONFIG_MISMATCH');
@@ -565,7 +565,7 @@ function physicalResponse(sourceKind = 0) {
     source: { fields: {
       source_kind: String(sourceKind), source_id: sourceKind ? sid(400) : root.binding.baseRegistryId,
       source_semantic_id: sourceKind ? 'pack-alpha' : '', source_content_commitment: hash(20),
-      source_treasury_id: sourceKind ? [sid(401)] : [], pack_registry_id: sourceKind ? [root.binding.packRegistryId] : [],
+      source_treasury_id: sourceKind ? sid(401) : null, pack_registry_id: sourceKind ? [root.binding.packRegistryId] : [],
       pack_registry_revision: '0', registered_pack_owner: [], registered_pack_control_epoch: '0',
       registered_pack_admin_cap_id: [],
     } },
@@ -587,7 +587,7 @@ test('Physical inventory infers Base versus Pack only from verified custody fiel
   assert.equal(pack.source, 'PACK');
   assert.equal(pack.sourceTreasuryId, sid(401));
   const forged = physicalResponse(0);
-  forged.data.content.fields.source.fields.source_treasury_id = [sid(401)];
+  forged.data.content.fields.source.fields.source_treasury_id = sid(401);
   assert.throws(
     () => parsePhysicalAssetV8(forged, runtime(), wallet, root),
     (error) => error.code === 'MAKER_V8_PHYSICAL_SOURCE_MISMATCH',

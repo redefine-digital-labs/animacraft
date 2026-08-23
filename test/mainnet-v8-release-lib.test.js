@@ -1024,8 +1024,8 @@ function setFixtureBootstrapRawBcs(catalog, configs) {
       commitment: bytes32(callCapSet.commitment),
     },
     ...Object.fromEntries(MAINNET_V8_ROLE_ORDER.slice(1).map((role) => [
-      `${role}_call_cap`, catalogFields[`${role}_call_cap`].length === 0
-        ? null : fixtureCallCapBcs(catalogFields[`${role}_call_cap`][0]),
+      `${role}_call_cap`, catalogFields[`${role}_call_cap`] === null
+        ? null : fixtureCallCapBcs(catalogFields[`${role}_call_cap`]),
     ])),
   }).toBytes());
 
@@ -1187,7 +1187,7 @@ function bootstrapReadback() {
       ])),
       commitment: attestedCatalog.callCapSetCommitment,
     } },
-    ...Object.fromEntries(configRoles.map((role) => [`${role}_call_cap`, []])),
+    ...Object.fromEntries(configRoles.map((role) => [`${role}_call_cap`, null])),
   };
   attestedCatalog.fields = clone(catalog.fields);
   configRoles.forEach((role) => {

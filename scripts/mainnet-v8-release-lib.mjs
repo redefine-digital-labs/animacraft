@@ -3138,10 +3138,10 @@ function normalizeRawCallCapSet(value, label, fromMove) {
 
 function normalizeRawOptionalCallCap(value, label, fromMove) {
   if (!fromMove) return value === null ? null : normalizeRawCallCap(value, label, false);
-  if (!Array.isArray(value) || value.length > 1) {
+  if (value !== null) {
     fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} must be one exact Move Option<PackageCallCapV8>.`);
   }
-  return value.length === 0 ? null : normalizeRawCallCap(value[0], label, true);
+  return null;
 }
 
 function normalizeRawCatalog(value, label, fromMove) {
@@ -3360,8 +3360,7 @@ function assertBootstrapCatalogFields(attestation, runtimeConfig, output) {
       callCaps[`${role}_authority_id`], `${label}.call_cap_set.${role}_authority_id`,
     );
     if (value !== catalog.authorities[role]
-      || !Array.isArray(fields[`${role}_call_cap`])
-      || fields[`${role}_call_cap`].length !== 0) {
+      || fields[`${role}_call_cap`] !== null) {
       fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `Bootstrap catalog ${role} authority/cap state drifted.`);
     }
     return value;
@@ -4295,6 +4294,7 @@ function assertWalTransition(previous, current) {
       'MAINNET_V8_INIT_WRITE_SET_INVALID',
       'MAINNET_V8_MOVE_FIELDS_INVALID',
       'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
+      'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
     ]
       .includes(previousIncident.incident.code)
     && (previousIncident.incident.code !== 'MAINNET_V8_MOVE_FIELDS_INVALID'
@@ -4308,6 +4308,11 @@ function assertWalTransition(previous, current) {
           === 'Bootstrap effects must contain exactly seven created shared outputs.'
         && Array.isArray(previousIncident.incident.details.writes)
         && previousIncident.incident.details.writes.length === 8)
+    && (previousIncident.incident.code !== 'MAINNET_V8_BOOTSTRAP_BCS_DRIFT'
+      || previous.ordinal === '8'
+        && previousIncident.incident.message
+          === 'ProductReleaseCatalogV8.seal_call_cap must be an exact Move Option<PackageCallCapV8>.'
+        && Object.keys(previousIncident.incident.details).length === 0)
     && previousIncident.finalityEvidenceSha256 === currentPending.finalityEvidenceSha256
     && canonicalMainnetV8Json(previousIncident.finalityEvidence)
       === canonicalMainnetV8Json(currentPending.finalityEvidence);

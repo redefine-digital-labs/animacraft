@@ -159,11 +159,11 @@ function fieldsOf(value, label) {
 }
 
 function moveOption(value, label) {
-  if (!Array.isArray(value) || value.length > 1) {
-    fail('schema', 'MAKER_V8_CHAIN_OPTION_INVALID', `${label} is not an exact Move Option.`);
+  if (value === null) return null;
+  if (Array.isArray(value)) {
+    fail('schema', 'MAKER_V8_CHAIN_OPTION_INVALID', `${label} uses a retired JSON-RPC Move Option projection.`);
   }
-  if (!value.length) return null;
-  return record(value[0]) ? fieldsOf(value[0], label) : value[0];
+  return record(value) ? fieldsOf(value, label) : value;
 }
 
 function typeEquals(observed, expected) {

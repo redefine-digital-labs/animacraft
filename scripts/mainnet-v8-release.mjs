@@ -105,6 +105,7 @@ export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS = Object.freeze([
   'MAINNET_V8_INIT_WRITE_SET_INVALID',
   'MAINNET_V8_MOVE_FIELDS_INVALID',
   'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
+  'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
 ]);
 const MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT = Object.freeze({
   code: 'MAINNET_V8_MOVE_FIELDS_INVALID',
@@ -113,6 +114,10 @@ const MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT = Object.freeze({
 const MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT = Object.freeze({
   code: 'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
   message: 'Bootstrap effects must contain exactly seven created shared outputs.',
+});
+const MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT = Object.freeze({
+  code: 'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
+  message: 'ProductReleaseCatalogV8.seal_call_cap must be an exact Move Option<PackageCallCapV8>.',
 });
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
@@ -2240,10 +2245,10 @@ function normalizedCallCapSetFromMove(value, label) {
 }
 
 function moveOptionalCallCap(value, label) {
-  if (!Array.isArray(value) || value.length > 1) {
+  if (value !== null) {
     fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label} must be an exact Move Option<PackageCallCapV8>.`);
   }
-  return value.length === 0 ? null : normalizedPackageCallCapFromMove(value[0], label);
+  return null;
 }
 
 function assertCatalogRawBcs(output) {
@@ -4816,13 +4821,19 @@ function repairableReadbackIncident(event) {
     && incident?.message === MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.message
     && Array.isArray(incident?.details?.writes)
     && incident.details.writes.length === 8;
+  const exactBootstrapOptionJsonIncident = event?.ordinal === '8'
+    && incident?.code === MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.code
+    && incident?.message === MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.message
+    && plain(incident?.details) && Object.keys(incident.details).length === 0;
   return event?.status === 'INCIDENT_STOPPED'
     && event.ordinal !== '9'
     && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(incident?.code)
     && (incident.code !== MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.code
       || exactTreasuryBalanceIncident)
     && (incident.code !== MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.code
-      || exactBootstrapAdminWriteIncident);
+      || exactBootstrapAdminWriteIncident)
+    && (incident.code !== MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.code
+      || exactBootstrapOptionJsonIncident);
 }
 
 function pendingReadbackRepair(wal) {

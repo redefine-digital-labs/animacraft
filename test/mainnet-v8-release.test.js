@@ -413,7 +413,6 @@ function bootstrapCatalogRawBcsFixture() {
   };
   const contentBcs = RAW_PRODUCT_RELEASE_CATALOG_BCS.serialize(raw).toBytes();
   const fields = structuredClone(raw);
-  for (const role of MAINNET_V8_ROLE_ORDER.slice(1)) fields[`${role}_call_cap`] = [];
   return Object.freeze({
     reference: Object.freeze({ objectId: catalogId }),
     fields,
@@ -1579,6 +1578,14 @@ test('bootstrap historical raw BCS rejects decoded JSON, object identity, and by
     () => assertMainnetV8BootstrapRawBcs({ catalog: identityDrift, configs: {} }),
     expectCode('MAINNET_V8_BOOTSTRAP_BCS_DRIFT'),
     'object reference must equal the raw UID',
+  );
+
+  const retiredOptionArray = clone(catalog);
+  retiredOptionArray.fields.seal_call_cap = [];
+  assert.throws(
+    () => assertMainnetV8BootstrapRawBcs({ catalog: retiredOptionArray, configs: {} }),
+    expectCode('MAINNET_V8_BOOTSTRAP_BCS_DRIFT'),
+    'fresh gRPC Move Option JSON is null, never a retired vector projection',
   );
 
   const truncated = clone(catalog);

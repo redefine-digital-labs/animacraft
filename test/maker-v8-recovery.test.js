@@ -152,7 +152,7 @@ function runtimeAttestationRpc(runtime) {
         ...Object.fromEntries(roles.map((role) => [`${role}_authority_id`, authority[role]])),
         commitment: callSetCommitment,
       } },
-      ...Object.fromEntries(roles.map((role) => [`${role}_call_cap`, []])),
+      ...Object.fromEntries(roles.map((role) => [`${role}_call_cap`, null])),
     },
   );
   const typeNames = {

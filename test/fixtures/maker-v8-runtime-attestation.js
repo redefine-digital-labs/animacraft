@@ -65,7 +65,7 @@ export function runtimeAttestationRpc(runtime, methods = {}) {
         ...Object.fromEntries(companionRoles.map((role) => [`${role}_authority_id`, authorities[role]])),
         commitment: callCapSetCommitment,
       } },
-      ...Object.fromEntries(companionRoles.map((role) => [`${role}_call_cap`, []])),
+      ...Object.fromEntries(companionRoles.map((role) => [`${role}_call_cap`, null])),
     },
   );
   const configTypes = {
