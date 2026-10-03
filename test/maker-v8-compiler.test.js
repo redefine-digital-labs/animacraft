@@ -8,7 +8,8 @@ import { compileMakerV8RuleRows } from '../maker-v8-compiler.js';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { makerV8ActivationAuthorityFixture, makerV8LivingBlobIdFixture } from './fixtures/maker-v8-activation-authority-fixture.js';
-import { Transaction } from '@mysten/sui/transactions';
+import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
+import { toBase64 } from '@mysten/sui/utils';
 import { deriveMakerV8SealStorageV2 } from '../maker-v8-seal-compiler.js';
 import { bcs } from '@mysten/sui/bcs';
 import {
@@ -21,7 +22,7 @@ import {
   assertMakerV8Document,
   compareMakerV8ProtocolText,
 } from '../maker-v8-document.js';
-import { assertMakerV8CompilerContextFreshV8 } from '../maker-v8-browser.js';
+import { assertMakerV8CompilerContextFreshV8, createMakerV8CompilerRpcAdapterV8 } from '../maker-v8-browser.js';
 import { assertMakerV8Manifest } from '../maker-v8-manifest-adapter.js';
 
 import {
@@ -251,6 +252,111 @@ function rootObjects(publication) {
 }
 
 const testBaseProgress = new WeakMap();
+// Exercise the public browser adapter against exact synthetic finalized BCS and
+// historical snapshots, then feed its result into the real compiler certifier.
+async function publicationHistoricalBridge(publication, transaction, objects, mutateHistory = null) {
+  const sender = publication.context.signerAddress;
+  const kind = bcs.TransactionKind.parse(await transaction.build({ onlyTransactionKind: true }));
+  const transactionBcs = bcs.TransactionData.serialize({ V1: { kind, sender,
+    gasData: { payment: [{ objectId: nid('0x9999'), version: '1', digest: DIGEST }], owner: sender, price: '1', budget: '1000000' },
+    expiration: { None: true },
+  } }).toBytes();
+  const digest = TransactionDataBuilder.getDigestFromBytes(transactionBcs);
+  const rows = Object.values(objects).filter(object => object?.reference).map(object => {
+    const reference = object.reference;
+    const owner = reference.kind === 'shared' ? { Shared: { initialSharedVersion: reference.initialSharedVersion } } : { AddressOwner: sender };
+    const parsed = clone(object.fields);
+    if (object.type.includes('::maker_v8::MakerRootV8<')) {
+      parsed.content = Object.fromEntries(['rendererCommitment', 'manifestBlobId', 'manifestSha256', 'contentCommitment'].map(key => [key, parsed[key]]));
+      parsed.economics = { ...Object.fromEntries(['protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment'].map(key => [key, parsed[key]])), commitment: parsed.economicsCommitment };
+      parsed.rights = { commitment: parsed.rightsCommitment };
+      parsed.publication = { catalogId: parsed.catalogId, sealedBaseRegistryCommitment: parsed.sealedBaseRegistryCommitment,
+        releaseCommitments: { productBindingCommitment: parsed.productBindingCommitment, callCapSetCommitment: parsed.callCapSetCommitment } };
+    }
+    const normalizeIds = value => {
+      if (typeof value === 'string' && /^0x[0-9a-f]+$/.test(value)) return nid(value);
+      if (Array.isArray(value)) return value.map(normalizeIds);
+      if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, normalizeIds(entry)]));
+      return value;
+    };
+    return { objectId: nid(reference.objectId), version: reference.version ?? '1', digest: reference.digest ?? DIGEST,
+      owner, type: object.type, parsed: normalizeIds(parsed), previousTransaction: digest,
+      contentBcs: Uint8Array.of(1), objectBcs: Uint8Array.of(2) };
+  });
+  const effectsBcs = bcs.TransactionEffects.serialize({ V1: {
+    status: { Success: true }, executedEpoch: '1', gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
+    modifiedAtVersions: [], sharedObjects: [], transactionDigest: digest,
+    created: rows.map(row => [{ objectId: row.objectId, version: row.version, digest: row.digest }, row.owner]),
+    mutated: [], unwrapped: [], deleted: [], unwrappedThenDeleted: [], wrapped: [],
+    gasObject: [{ objectId: nid('0x9999'), version: '2', digest: DIGEST }, { AddressOwner: sender }], eventsDigest: null, dependencies: [],
+  } }).toBytes();
+  const evidence = { digest, checkpoint: '7', epoch: '1', transactionBcs, transactionBcsBase64: toBase64(transactionBcs),
+    effectsBcs, effectsBcsBase64: toBase64(effectsBcs), effectsStatus: { success: true }, eventsDigest: null, transactionEvents: null };
+  const client = {
+    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async getFinalizedTransactionEvidence() { return evidence; },
+    core: { async getTransaction() { return { $kind: 'Transaction', Transaction: {
+      digest, epoch: '1', status: { success: true }, transaction: { sender, commands: transaction.getData().commands }, bcs: transactionBcs,
+      effects: { status: { success: true }, transactionDigest: digest, bcs: effectsBcs, eventsDigest: null,
+        changedObjects: rows.map(row => ({ objectId: row.objectId, outputState: 'ObjectWrite', idOperation: 'Created',
+          outputVersion: row.version, outputDigest: row.digest, outputOwner: row.owner })) },
+      events: [], objectTypes: Object.fromEntries(rows.map(row => [row.objectId, row.type])),
+    } }; } },
+    async getHistoricalObject({ objectId, version }) {
+      const row = clone(rows.find(row => row.objectId === objectId));
+      assert.equal(version, BigInt(row.version));
+      mutateHistory?.(row);
+      return row;
+    },
+  };
+  return { adapter: createMakerV8CompilerRpcAdapterV8({ client, runtime: {} }), digest, transaction };
+}
+
+test('publication browser historical readbacks cross scaffold, Base, companion and activation compiler certificate boundaries', async () => {
+  const context = await trustedContext(fixture.document, fixture.assets);
+  const publication = await compileMakerV8Publication(fixture.document, context);
+  const seed = await scaffoldReadback(publication);
+  const transaction = buildMakerV8ScaffoldTransaction(publication);
+  const bridge = await publicationHistoricalBridge(publication, transaction, seed);
+  const readback = await bridge.adapter.recoverCheckpoint({ ...bridge, kind: 'SCAFFOLD', publication });
+  const certified = await certifyMakerV8ScaffoldReadback(publication, readback);
+  assert.equal(certified.root.reference.objectId, nid(fixture.ids.root));
+  for (const key of ['root', 'baseRegistry', 'makerTreasury', 'adminCap']) assert.deepEqual(Object.keys(readback[key]).sort(), ['fields', 'reference', 'type']);
+  for (const mutate of [
+    row => { row.owner = { AddressOwner: nid('0x999') }; },
+    row => { row.version = '999'; },
+    row => { row.digest = '2'.repeat(44); },
+  ]) {
+    const bad = await publicationHistoricalBridge(publication, transaction, seed, mutate);
+    await assert.rejects(bad.adapter.recoverCheckpoint({ ...bad, kind: 'SCAFFOLD', publication }));
+  }
+  let prior = null, build;
+  do {
+    build = await buildMakerV8BaseChunkTransaction(publication, certified, prior);
+    const raw = await baseChunkRaw(publication, certified, build);
+    const stage = await publicationHistoricalBridge(publication, build.transaction, raw);
+    const projected = await stage.adapter.recoverCheckpoint({ ...stage, kind: 'BASE_CHUNK', build, publication, scaffold: certified });
+    prior = await certifyMakerV8BaseChunkReadback(publication, certified, build, projected);
+  } while (!build.checkpoint.final);
+  assert.ok(prior.base);
+  const base = prior.base;
+  const companionBuild = await buildMakerV8CompanionObjectsTransaction(publication, base);
+  const rawCompanion = await companionReadback(publication, base, companionBuild.expected, companionBuild.transaction);
+  const companionStage = await publicationHistoricalBridge(publication, companionBuild.transaction, rawCompanion);
+  const projectedCompanion = await companionStage.adapter.recoverCheckpoint({ ...companionStage, kind: 'COMPANION_OBJECTS', publication });
+  const companion = await certifyMakerV8CompanionReadback(publication, base, projectedCompanion);
+  let activationPrior = null, activationCount = 0;
+  while (true) {
+    const activationBuild = await buildMakerV8ActivationChunkTransaction(publication, base, companion, activationPrior);
+    if (activationBuild.checkpoint.final) break; // Finalize consumes events, not compilerChangedObject.
+    const raw = await activationChunkRaw(activationBuild, companion);
+    const stage = await publicationHistoricalBridge(publication, activationBuild.transaction, raw);
+    const projected = await stage.adapter.recoverCheckpoint({ ...stage, kind: 'ACTIVATION_CHUNK', build: activationBuild, publication, companion });
+    activationPrior = await certifyMakerV8ActivationChunkReadback(publication, base, companion, activationBuild, projected);
+    activationCount++;
+  }
+  assert.ok(activationCount > 0);
+});
 async function actualBaseProgress(publication, rootId = fixture.ids.root, registryId = fixture.ids.baseRegistry) {
   const rules = await compileMakerV8RuleRows(publication.document.rules);
   const entries = MAKER_V8_BASE_CATEGORIES_V2.flatMap(([kind]) => publication.rows[kind].map((row, i) => ({

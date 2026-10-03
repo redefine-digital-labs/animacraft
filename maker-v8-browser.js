@@ -3281,9 +3281,12 @@ function compilerEffectsRefForChange(response, change, label) {
 async function compilerChangedObject(client, response, expectedType, label, fields, expectedId = null) {
   const change = compilerChange(response, expectedType, label, expectedId);
   const ref = compilerEffectsRefForChange(response, change, label);
-  return readMakerV8CompilerHistoricalObjectV8(
+  const historical = await readMakerV8CompilerHistoricalObjectV8(
     client, ref, expectedType, label, fields, response.digest,
   );
+  // Publication certificates consume this exact shape. The shared historical
+  // reader keeps owner evidence for Native custody checks in other callers.
+  return { type: historical.type, reference: historical.reference, fields: historical.fields };
 }
 
 function companionTypes(runtime) {
