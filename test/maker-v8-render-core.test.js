@@ -18,6 +18,18 @@ const hash = bytes => [...sha256(bytes)].map(byte => byte.toString(16).padStart(
 const content = new Uint8Array([1, 2, 3]);
 const bytesBase64 = toBase64(content);
 const swatch = (key, rgba) => ({ key, rgba, stops: [] });
+
+test('native source extent and center rotation never stretch a layer to the document canvas', async () => {
+  const h = harness([layer(0, { transform: { x: -10.5, y: 20.25, scale: 0.5, rotation: 90 } })]);
+  const source = { width: 800, height: 400 };
+  h.input.document.canvas = { width: 1080, height: 1920, pixelMode: 'smooth' };
+  h.input.decodeImage = async () => ({ source, close() {} });
+  await h.render();
+  assert.deepEqual(h.calls.filter(row => ['translate', 'rotate', 'scale', 'draw'].includes(row[0])), [
+    ['translate', 189.5, 120.25], ['rotate', Math.PI / 2], ['scale', 0.5, 0.5],
+    ['translate', -400, -200], ['draw', source, 0, 0, 800, 400],
+  ]);
+});
 const originalBlendModes = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten',
   'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion',
   'hue', 'saturation', 'color', 'luminosity', 'linear-dodge'];
@@ -41,7 +53,7 @@ function harness(layers = [layer()]) {
     translate(...args) { calls.push(['translate', ...args]); },
     rotate(value) { calls.push(['rotate', value]); },
     scale(...args) { calls.push(['scale', ...args]); },
-    drawImage(source, ...args) { calls.push(['draw', source, ...args]); },
+    drawImage(source, ...args) { calls.push(['draw', source.label ?? source, ...args]); },
   };
   const input = {
     document: { canvas: { width: 800, height: 600, pixelMode: 'pixelated' } }, layers,
@@ -52,11 +64,11 @@ function harness(layers = [layer()]) {
     },
     async decodeImage(bytes, mediaType) {
       calls.push(['decode', [...bytes], mediaType]);
-      return { source: 'decoded', close() { calls.push(['close-image']); } };
+      return { source: { label: 'decoded', width: 80, height: 40 }, close() { calls.push(['close-image']); } };
     },
     async colorizeImage({ source, swatch: chosen }) {
       calls.push(['color', chosen.key]);
-      return { source: `${source}:${chosen.key}`, close() { calls.push(['close-color']); } };
+      return { source: { ...source, label: `${source.label}:${chosen.key}` }, close() { calls.push(['close-color']); } };
     },
   };
   return { calls, context, input, render: () => renderResolvedMakerV8RecipePngV8(input) };
@@ -84,8 +96,8 @@ test('standard export scales the entire original scene before layer transforms a
   const png = await h.render();
   assert.deepEqual([png.width, png.height], [1024, 768]);
   assert.deepEqual(h.calls.filter(row => ['scale', 'translate', 'rotate', 'draw'].includes(row[0])), [
-    ['scale', .5, .5], ['translate', 1, 2], ['rotate', Math.PI / 4], ['scale', 1.5, 1.5],
-    ['draw', 'decoded:red', 0, 0, 2048, 1536],
+    ['scale', .5, .5], ['translate', 61, 32], ['rotate', Math.PI / 4], ['scale', 1.5, 1.5],
+    ['translate', -40, -20], ['draw', 'decoded:red', 0, 0, 80, 40],
   ]);
   assert.equal(h.context.imageSmoothingEnabled, false);
   assert.deepEqual({ document: h.input.document, layers: h.input.layers }, before);
@@ -126,11 +138,11 @@ test('unknown blend modes and historical aliases reject before rendering', async
   }
 });
 
-test('exact core retains original transforms, full-canvas geometry, opacity, blend and PNG evidence', async () => {
+test('exact core retains original transforms, native source geometry, opacity, blend and PNG evidence', async () => {
   const f = harness(); const result = await f.render();
   assert.deepEqual(f.calls, [['canvas'], ['clear', 0, 0, 800, 600], ['load', 'hat'], ['decode', [1, 2, 3], 'image/png'],
-    ['save'], ['translate', 1, 2], ['rotate', Math.PI / 4], ['scale', 1.5, 1.5],
-    ['draw', 'decoded', 0, 0, 800, 600], ['restore'], ['close-image']]);
+    ['save'], ['translate', 61, 32], ['rotate', Math.PI / 4], ['scale', 1.5, 1.5],
+    ['translate', -40, -20], ['draw', 'decoded', 0, 0, 80, 40], ['restore'], ['close-image']]);
   assert.equal(f.context.imageSmoothingEnabled, false);
   assert.equal(f.context.globalAlpha, 0.5); assert.equal(f.context.globalCompositeOperation, 'multiply');
   assert.deepEqual(result, { schemaVersion: 'animacraft.maker-v8-player-render.v1', mediaType: 'image/png',
@@ -173,7 +185,7 @@ test('core snapshots original slots, canvas, transform and swatch before asynchr
     assert.equal(selectionIndex, 4); return { selectionIndex, bytesBase64, byteLength: 3 };
   };
   const result = await f.render(); assert.equal(result.width, 800);
-  assert.deepEqual(f.calls.find(call => call[0] === 'translate'), ['translate', 1, 2]);
+  assert.deepEqual(f.calls.find(call => call[0] === 'translate'), ['translate', 61, 32]);
   assert.deepEqual(f.calls.find(call => call[0] === 'color'), ['color', 'blue']);
 });
 
@@ -238,4 +250,43 @@ test('drawing failure always restores canvas and closes decoded and tinted image
   f.context.drawImage = () => { throw new Error('draw failure'); };
   await assert.rejects(f.render(), /draw failure/);
   assert.deepEqual(f.calls.slice(-3), [['restore'], ['close-color'], ['close-image']]);
+});
+
+test('bad decoded native dimensions fail before drawing and close acquired images', async () => {
+  for (const source of [null, 'decoded', {}, { width: 0, height: 10 }, { width: '10', height: 10 },
+    { width: 1.5, height: 10 }, { width: 8193, height: 1 }, { width: 8192, height: 8192 }]) {
+    const h = harness(); let closed = 0;
+    h.input.decodeImage = async () => ({ source, close() { closed++; } });
+    await assert.rejects(h.render(), { code: 'MAKER_V8_PLAYER_JOURNEY_IMAGE_SOURCE_INVALID' });
+    assert.equal(closed, 1);
+    assert.equal(h.calls.some(row => row[0] === 'save' || row[0] === 'draw'), false);
+  }
+  const h = harness(); h.input.decodeImage = async () => null;
+  await assert.rejects(h.render(), { code: 'MAKER_V8_PLAYER_JOURNEY_IMAGE_SOURCE_INVALID' });
+});
+
+test('Smart Color must preserve source extent, and both resources close on invalid output', async () => {
+  const h = harness([layer(0, { swatch: swatch('red', '#ff0000ff') })]);
+  h.input.colorizeImage = async () => ({ source: { width: 800, height: 600 }, close() { h.calls.push(['close-color']); } });
+  await assert.rejects(h.render(), { code: 'MAKER_V8_PLAYER_JOURNEY_SMART_COLOR_PROCESSOR_INVALID' });
+  assert.deepEqual(h.calls.slice(-2), [['close-color'], ['close-image']]);
+  assert.equal(h.calls.some(row => row[0] === 'draw'), false);
+});
+
+test('Smart Color retains transparent margins and native dimensions instead of cropping to visible pixels', async () => {
+  const data = new Uint8ClampedArray(4 * 3 * 4);
+  data.set([100, 100, 100, 128], (1 * 4 + 2) * 4);
+  const calls = [];
+  const canvas = { getContext: () => ({ drawImage(...args) { calls.push(args); },
+    getImageData: () => ({ width: 4, height: 3, data }), putImageData() {},
+  }) };
+  const source = { width: 40, height: 30, naturalWidth: 4, naturalHeight: 3 };
+  const colored = await colorizeMakerV8ImageSourceV8({ source, swatch: swatch('red', '#ff0000ff'), canvasFactory: () => canvas });
+  assert.deepEqual([colored.source.width, colored.source.height], [4, 3]);
+  assert.deepEqual(calls, [[source, 0, 0, 4, 3]]);
+  assert.equal(data[3], 0);
+  assert.equal(data[(1 * 4 + 2) * 4 + 3], 128);
+  const h = harness(); h.input.decodeImage = async () => ({ source, close() {} });
+  await h.render();
+  assert.deepEqual(h.calls.find(row => row[0] === 'draw'), ['draw', source, 0, 0, 4, 3]);
 });

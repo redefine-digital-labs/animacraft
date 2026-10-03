@@ -322,9 +322,9 @@ test('new pending-PNG structure cold-reopens, renders existing layers and upload
   const bridge = createMakerV8ProductBridge({ productRuntime: runtimeHarness().productRuntime, drafts,
     rendering: {
       canvasFactory: () => ({ getContext: () => ({ clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
-        drawImage(source) { draws.push(source); } }),
+        drawImage(source) { draws.push(source.label); } }),
       convertToBlob: async () => new Blob([Uint8Array.of(9, 8, 7)], { type: 'image/png' }) }),
-      decodeImage: async () => ({ source: 'saved-layer', close() {} }),
+      decodeImage: async () => ({ source: { label: 'saved-layer', width: 1, height: 1 }, close() {} }),
     } });
   try {
     const a = await seedMinimalArtworkDraft(drafts, { draftId: 'pending-png', name: 'Pending PNG' });
@@ -700,7 +700,7 @@ test('real New Maker character skeleton cold-reopens at either canvas size and f
     const rendering = {
       canvasFactory: () => ({ getContext: () => ({ clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
         drawImage() { draws += 1; } }), convertToBlob: async () => new Blob([Uint8Array.of(9, 8, 7)], { type: 'image/png' }) }),
-      decodeImage: async () => ({ source: 'uploaded-png', close() {} }),
+      decodeImage: async () => ({ source: { width: 1, height: 1 }, close() {} }),
     };
     let bridge = createMakerV8ProductBridge({ productRuntime: runtimeHarness().productRuntime, drafts, rendering });
     try {
@@ -1933,7 +1933,7 @@ test('bridge Player and Creator previews return canonical PNG records from the s
     clearRect() { operations.push('clear'); }, save() { operations.push('save'); },
     restore() { operations.push('restore'); }, translate() { operations.push('translate'); },
     rotate() { operations.push('rotate'); }, scale() { operations.push('scale'); },
-    drawImage(source) { operations.push(`draw:${source}`); },
+    drawImage(source) { operations.push(`draw:${source.label}`); },
   };
   const bridge = createMakerV8ProductBridge({
     productRuntime,
@@ -1947,7 +1947,7 @@ test('bridge Player and Creator previews return canonical PNG records from the s
           async convertToBlob() { return new Blob([Uint8Array.from([9, 8, 7])], { type: 'image/png' }); },
         };
       },
-      async decodeImage() { return { source: 'exact-image', close() { operations.push('close'); } }; },
+      async decodeImage() { return { source: { label: 'exact-image', width: 1, height: 1 }, close() { operations.push('close'); } }; },
     },
   });
   await bridge.openPlayerSession({ rootId });

@@ -206,8 +206,8 @@ export function mapMakerV8SmartColorPixelsV8(imageData, swatch) {
 
 function imageSize(source) {
   return {
-    width: Number(source?.width || source?.naturalWidth || source?.videoWidth || 0),
-    height: Number(source?.height || source?.naturalHeight || source?.videoHeight || 0),
+    width: source?.naturalWidth ?? source?.videoWidth ?? source?.width ?? 0,
+    height: source?.naturalHeight ?? source?.videoHeight ?? source?.height ?? 0,
   };
 }
 
@@ -432,6 +432,11 @@ export async function renderResolvedMakerV8RecipePngV8({
     let colored = null;
     let saved = false;
     try {
+      const { width, height } = imageSize(image?.source);
+      if (![width, height].every(value => Number.isSafeInteger(value) && value > 0 && value <= MAX_DIMENSION)
+        || width * height > 32 * 1024 * 1024) {
+        fail('MAKER_V8_PLAYER_JOURNEY_IMAGE_SOURCE_INVALID', 'Decoded image dimensions are unavailable or outside the source bounds.', 'RENDER');
+      }
       if (layer.swatch !== null) {
         if (typeof colorizeImage !== 'function') {
           fail('MAKER_V8_PLAYER_JOURNEY_SMART_COLOR_PROCESSOR_INVALID', 'Smart Color renderer is unavailable.', 'RENDER');
@@ -441,7 +446,8 @@ export async function renderResolvedMakerV8RecipePngV8({
           swatch: layer.swatch,
           canvasFactory,
         });
-        if (!colored?.source) {
+        const coloredSize = imageSize(colored?.source);
+        if (!colored?.source || coloredSize.width !== width || coloredSize.height !== height) {
           fail('MAKER_V8_PLAYER_JOURNEY_SMART_COLOR_PROCESSOR_INVALID', 'Smart Color renderer returned no exact source.', 'RENDER');
         }
       }
@@ -455,14 +461,16 @@ export async function renderResolvedMakerV8RecipePngV8({
       if (canvas.width !== document.canvas.width || canvas.height !== document.canvas.height) {
         context.scale(canvas.width / document.canvas.width, canvas.height / document.canvas.height);
       }
-      context.translate(layer.transform.x, layer.transform.y);
+      context.translate(layer.transform.x + width * layer.transform.scale / 2,
+        layer.transform.y + height * layer.transform.scale / 2);
       context.rotate(layer.transform.rotation * Math.PI / 180);
       context.scale(layer.transform.scale, layer.transform.scale);
-      context.drawImage(colored?.source ?? image.source, 0, 0, document.canvas.width, document.canvas.height);
+      context.translate(-width / 2, -height / 2);
+      context.drawImage(colored?.source ?? image.source, 0, 0, width, height);
     } finally {
       if (saved) context.restore();
       colored?.close?.();
-      image.close?.();
+      image?.close?.();
     }
   }
   const bytes = await pngBytes(canvas);

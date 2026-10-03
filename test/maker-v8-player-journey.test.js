@@ -111,10 +111,10 @@ test('draft PNG hides condition-false layers using the complete recipe without d
   const input = {
     document, assets,
     canvasFactory() { return {
-      getContext() { return { clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, drawImage(source) { drawn.push(source); } }; },
+      getContext() { return { clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, drawImage(source) { drawn.push(source.label); } }; },
       async convertToBlob() { return new Blob([new Uint8Array([1])], { type: 'image/png' }); },
     }; },
-    async decodeImage() { return { source: 'base-image', close() {} }; },
+    async decodeImage() { return { source: { label: 'base-image', width: 1, height: 1 }, close() {} }; },
   };
   const original = structuredClone({ document, assets });
   await renderMakerV8DraftRecipePngV8(input);
@@ -145,7 +145,7 @@ test('transparent draft export preserves background dependencies, all selections
   const input = { document, assets, exportOptions: { sizeMode: 'standard', transparent: true },
     canvasFactory: () => ({ getContext: () => ({ clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, drawImage() { draws++; } }),
       convertToBlob: async () => new Blob([new Uint8Array([1])], { type: 'image/png' }) }),
-    decodeImage: async () => ({ source: 'image', close() {} }) };
+    decodeImage: async () => ({ source: { width: 1, height: 1 }, close() {} }) };
   const before = structuredClone({ document, assets });
   assert.equal((await renderMakerV8DraftRecipePngV8(input)).width, 1024);
   assert.equal(draws, 1, 'Hidden background still satisfies the visible figure dependency.');
@@ -1060,7 +1060,7 @@ test('bridge-shaped Pack and External players exact-dedupe live certified assets
           getContext() {
             return {
               clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
-              drawImage(source) { drawn.push(source); },
+              drawImage(source) { drawn.push(source.label); },
             };
           },
           async convertToBlob() {
@@ -1069,7 +1069,7 @@ test('bridge-shaped Pack and External players exact-dedupe live certified assets
         };
       },
       async decodeImage() {
-        return { source: `${scenario.label.toLowerCase()}-image`, close() {} };
+        return { source: { label: `${scenario.label.toLowerCase()}-image`, width: 1, height: 1 }, close() {} };
       },
     });
     assert.equal(liveLoads, 1);
@@ -1678,7 +1678,7 @@ test('renderer draws one certified external composable from the contextual Playe
     translate() {},
     rotate() {},
     scale() {},
-    drawImage(source) { operations.push(`draw:${source}`); },
+    drawImage(source) { operations.push(`draw:${source.label}`); },
   };
   const result = await renderMakerV8PlayerRecipePngV8({
     player: playerFixture(),
@@ -1713,7 +1713,7 @@ test('renderer draws one certified external composable from the contextual Playe
         async convertToBlob() { return new Blob([Uint8Array.from([9, 8, 7])], { type: 'image/png' }); },
       };
     },
-    async decodeImage() { return { source: 'external-image', close() { operations.push('close'); } }; },
+    async decodeImage() { return { source: { label: 'external-image', width: 1, height: 1 }, close() { operations.push('close'); } }; },
   });
   assert.equal(result.mediaType, 'image/png');
   assert.equal(result.byteLength, 3);
@@ -1769,7 +1769,7 @@ test('final PNG renderer uses the recipe swatch instead of silently drawing the 
   const applied = [];
   const context = {
     clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
-    drawImage(source) { drawn.push(source); },
+    drawImage(source) { drawn.push(source.label); },
   };
   await renderMakerV8PlayerRecipePngV8({
     player,
@@ -1798,10 +1798,10 @@ test('final PNG renderer uses the recipe swatch instead of silently drawing the 
         async convertToBlob() { return new Blob([Uint8Array.from([1])], { type: 'image/png' }); },
       };
     },
-    async decodeImage() { return { source: 'base-image', close() {} }; },
+    async decodeImage() { return { source: { label: 'base-image', width: 1, height: 1 }, close() {} }; },
     async colorizeImage({ source, swatch }) {
-      applied.push({ source, swatchKey: swatch.key });
-      return { source: 'mint-image', close() {} };
+      applied.push({ source: source.label, swatchKey: swatch.key });
+      return { source: { label: 'mint-image', width: 1, height: 1 }, close() {} };
     },
   });
   assert.deepEqual(applied, [{ source: 'base-image', swatchKey: 'mint' }]);
@@ -1829,10 +1829,10 @@ test('Player Pack renderer uses authenticated authored placement and appearance'
       assets: { async load() { assetLoads++; return { ...player.certifiedAssets[0], bytesBase64: RENDER_BYTES }; } } },
     canvasFactory: () => ({ getContext: () => context,
       async convertToBlob() { return new Blob([new Uint8Array([1])], { type: 'image/png' }); } }),
-    decodeImage: async () => ({ source: {}, width: 1, height: 1, close() {} }),
+    decodeImage: async () => ({ source: { width: 1, height: 1 }, close() {} }),
   };
   await renderMakerV8PlayerRecipePngV8(input);
-  assert.ok(calls.some(row => row[0] === 'translate' && row[1] === 12.5 && row[2] === -8));
+  assert.ok(calls.some(row => row[0] === 'translate' && row[1] === 12.75 && row[2] === -7.75));
   assert.ok(calls.some(row => row[0] === 'scale' && row[1] === 0.5 && row[2] === 0.5));
   assert.ok(calls.some(row => row[0] === 'rotate' && Math.abs(row[1] - Math.PI / 12) < 1e-12));
   assert.ok(calls.some(row => row[0] === 'draw' && row[1] === 0.75 && row[2] === 'multiply'));
@@ -1911,7 +1911,7 @@ test('owned-Part PNG visibility and transparent export do not mix same-name Part
     }; } }, assets: { async load(asset) { loaded.push(asset.assetId); return { ...asset, bytesBase64: RENDER_BYTES }; } } },
     canvasFactory: () => ({ getContext: () => ({ clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, drawImage() {} }),
       async convertToBlob() { return new Blob([new Uint8Array([1])], { type: 'image/png' }); } }),
-    decodeImage: async () => ({ source: {}, width: 1, height: 1, close() {} }),
+    decodeImage: async () => ({ source: { width: 1, height: 1 }, close() {} }),
   };
   await renderMakerV8PlayerRecipePngV8(input);
   assert.deepEqual(loaded, ['73-target'], 'Foreign target cannot reveal this Pack plume');
@@ -2004,7 +2004,7 @@ test('preview rendering rejects SHA drift and protected Base bytes without an ex
     async decodeImage(bytes, mediaType) {
       assert.equal(mediaType, 'image/png');
       assert.deepEqual([...bytes], [1, 2, 3, 4]);
-      return { source: {}, width: 1, height: 1, close() {} };
+      return { source: { width: 1, height: 1 }, close() {} };
     },
   });
   await assert.rejects(renderProtected('AQIDBQ=='), { code: 'MAKER_V8_PLAYER_PROTECTED_SOURCE_MISMATCH' });

@@ -77,6 +77,12 @@ export function prepareCreatorStylePng({ document, assets, partKey, itemKey, sty
   const item = part?.items.find((row) => row.key === itemKey);
   const style = item?.styles.find((row) => row.key === styleKey);
   if (!style) fail('MAKER_V8_CREATOR_STYLE_NOT_FOUND', 'The selected Style no longer exists.');
+  const editor = style.payload.animacraftEditor;
+  if (editor !== undefined && (!editor || typeof editor !== 'object' || Array.isArray(editor)
+    || ['styleLocked', 'positionLocked', 'positionConfirmed'].some(key => editor[key] !== undefined && typeof editor[key] !== 'boolean'))) {
+    fail('MAKER_V8_CREATOR_STYLE_INVALID', 'The existing Style editor metadata cannot be overwritten.');
+  }
+  if (editor?.styleLocked === true) fail('MAKER_V8_CREATOR_STYLE_LOCKED', 'Unlock this Style before replacing its PNG.');
   const { width, height } = pngDimensions(bytes);
   const firstUpload = style.assetId === null;
   const descriptor = document.assets.find((row) => row.id === style.assetId);
@@ -95,13 +101,22 @@ export function prepareCreatorStylePng({ document, assets, partKey, itemKey, sty
   const commands = [{ type: 'asset.upsert', row: {
     id: assetId, kind, mediaType: 'image/png', byteLength: bytes.byteLength,
   } }];
-  if (firstUpload || shared || Object.hasOwn(style.payload, MAKER_V8_SOURCE_ASSET_KEY)) {
+  if (firstUpload || shared || !editor?.positionLocked || Object.hasOwn(style.payload, MAKER_V8_SOURCE_ASSET_KEY)) {
     const nextPart = structuredClone(part);
     const nextStyle = nextPart.items.find((row) => row.key === itemKey).styles.find((row) => row.key === styleKey);
     nextStyle.assetId = assetId;
     // Replacing source art invalidates its prior publication identity. The next
     // publication derives the replacement from durable bytes before hashing.
     delete nextStyle.payload[MAKER_V8_SOURCE_ASSET_KEY];
+    if (!editor?.positionLocked) {
+      // Preserve full PNG extent (including transparent margins), never upscale.
+      // Quantize downward to the existing six-place scale contract so a rounded
+      // ratio never grows the fitted source beyond the authored canvas.
+      const scale = Math.floor(Math.min(1, document.canvas.width / width, document.canvas.height / height) * 1e6) / 1e6;
+      nextStyle.transform = { x: Math.round((document.canvas.width - width * scale) / 2),
+        y: Math.round((document.canvas.height - height * scale) / 2), scale, rotation: 0 };
+      nextStyle.payload.animacraftEditor = { ...editor, positionConfirmed: false };
+    }
     commands.push({ type: 'part.upsert', row: nextPart });
   }
   // Each command is independently valid, matching the bridge's sequential checks.

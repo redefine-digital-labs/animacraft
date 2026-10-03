@@ -26,6 +26,73 @@ function fixture() {
     partKey: 'base', itemKey: 'default', styleKey: 'default', bytes: png() };
 }
 
+test('new source PNG keeps native aspect and is centered without upscaling', () => {
+  const input = fixture();
+  input.document.canvas = { width: 1080, height: 1920, pixelMode: 'smooth' };
+  input.bytes = png(800, 800);
+  const result = prepareCreatorStylePng(input);
+  const next = result.commands.reduce(applyMakerV8WorkspaceCommand, input.document);
+  assert.deepEqual(next.parts[0].items[0].styles[0].transform, { x: 140, y: 560, scale: 1, rotation: 0 });
+});
+
+test('upload and replacement fit full PNG extent only when position is unlocked', () => {
+  for (const first of [false, true]) for (const locked of [false, true]) for (const [width, height, transform] of [
+    [800, 800, { x: 140, y: 560, scale: 1, rotation: 0 }],
+    [2160, 800, { x: 0, y: 760, scale: 0.5, rotation: 0 }],
+    [400, 3840, { x: 440, y: 0, scale: 0.5, rotation: 0 }],
+    [1080, 1920, { x: 0, y: 0, scale: 1, rotation: 0 }],
+  ]) {
+    const input = fixture();
+    input.document.canvas = { width: 1080, height: 1920, pixelMode: 'smooth' };
+    input.bytes = png(width, height);
+    const style = input.document.parts[0].items[0].styles[0];
+    if (first) style.assetId = null;
+    style.transform = { x: -12.125, y: 18.5, scale: 0.75, rotation: 90 };
+    style.payload.animacraftEditor = { positionLocked: locked, positionConfirmed: true, custom: 'keep' };
+    const original = structuredClone(input);
+    const prepared = prepareCreatorStylePng(input);
+    const result = prepared.commands.reduce(applyMakerV8WorkspaceCommand, input.document).parts[0].items[0].styles[0];
+    assert.deepEqual(result.transform, locked ? style.transform : transform);
+    assert.deepEqual(result.payload.animacraftEditor, { positionLocked: locked, positionConfirmed: locked, custom: 'keep' });
+    assert.equal(prepared.assetUpserts[0].bytesBase64, Buffer.from(input.bytes).toString('base64'));
+    assert.deepEqual(input, original);
+  }
+});
+
+test('whole-style lock and malformed editor metadata cannot be bypassed by PNG replacement', () => {
+  for (const editor of [{ styleLocked: true }, { positionLocked: 'true' }, null]) {
+    const input = fixture(); input.document.parts[0].items[0].styles[0].payload.animacraftEditor = editor;
+    const original = structuredClone(input);
+    assert.throws(() => prepareCreatorStylePng(input));
+    assert.deepEqual(input, original);
+  }
+});
+
+test('nonintegral initial fit uses the nearest six-place scale that never exceeds the canvas', () => {
+  for (const [canvasWidth, canvasHeight, width, height, expectedScale] of [
+    [1000, 1000, 1500, 500, 0.666666],
+    [1000, 1000, 500, 1500, 0.666666],
+    [1080, 1920, 2161, 800, 0.499768],
+    [1, 1, 8192, 1, 0.000122],
+  ]) {
+    const input = fixture();
+    input.document.canvas = { width: canvasWidth, height: canvasHeight, pixelMode: 'smooth' };
+    input.bytes = png(width, height);
+    const prepared = prepareCreatorStylePng(input);
+    const next = prepared.commands.reduce(applyMakerV8WorkspaceCommand, input.document);
+    const transform = next.parts[0].items[0].styles[0].transform;
+    assert.equal(transform.scale, expectedScale);
+    assert.ok(width * transform.scale <= canvasWidth);
+    assert.ok(height * transform.scale <= canvasHeight);
+    assert.ok(width * (transform.scale + 0.000001) > canvasWidth
+      || height * (transform.scale + 0.000001) > canvasHeight);
+    assert.equal(transform.x, Math.round((canvasWidth - width * transform.scale) / 2));
+    assert.equal(transform.y, Math.round((canvasHeight - height * transform.scale) / 2));
+    assert.equal(transform.rotation, 0);
+    assert.equal(prepared.assetUpserts[0].bytesBase64, Buffer.from(input.bytes).toString('base64'));
+  }
+});
+
 test('PNG replacement clears only the replaced Style source binding before republication', () => {
   const input = fixture();
   const style = input.document.parts[0].items[0].styles[0];
@@ -33,12 +100,13 @@ test('PNG replacement clears only the replaced Style source binding before repub
   style.payload.note = 'keep';
   const result = prepareCreatorStylePng(input);
   const next = result.commands.reduce(applyMakerV8WorkspaceCommand, input.document);
-  assert.deepEqual(next.parts[0].items[0].styles[0].payload, { note: 'keep' });
+  assert.deepEqual(next.parts[0].items[0].styles[0].payload, { note: 'keep', animacraftEditor: { positionConfirmed: false } });
   assert.ok(style.payload.animacraftSourceAsset, 'input stays untouched');
 });
 
-test('exclusive replacement preserves document, coordinates and exact durable CAS shape', () => {
+test('position-locked exclusive replacement preserves document, coordinates and exact durable CAS shape', () => {
   const input = fixture();
+  input.document.parts[0].items[0].styles[0].payload.animacraftEditor = { positionLocked: true, positionConfirmed: true };
   const before = structuredClone(input);
   const result = prepareCreatorStylePng(input);
   assert.equal(result.width, 24);
@@ -80,6 +148,8 @@ for (const reference of ['style', 'cover', 'rights', 'payload']) {
     const expected = structuredClone(document);
     expected.assets.push({ id: 'base-default-style-3', kind: 'layer', mediaType: 'image/png', byteLength: 33 });
     expected.parts[0].items[0].styles[0].assetId = 'base-default-style-3';
+    expected.parts[0].items[0].styles[0].transform = { x: 500, y: 496, scale: 1, rotation: 0 };
+    expected.parts[0].items[0].styles[0].payload.animacraftEditor = { positionConfirmed: false };
     assert.deepEqual(next, expected);
     assert.deepEqual(input, before);
   });
@@ -117,7 +187,7 @@ test('missing selection, lock and missing or mismatched durable data fail withou
   assert.deepEqual(input, before);
 });
 
-test('first PNG creates an exclusive layer descriptor and byte upsert atomically without changing placement', () => {
+test('first PNG creates an exclusive layer descriptor and byte upsert atomically with native placement', () => {
   const input = fixture();
   const structure = prepareCreatorStructure({ document: input.document, action: 'add-style', partKey: 'base', itemKey: 'default' });
   input.document = structure.document;
@@ -135,7 +205,9 @@ test('first PNG creates an exclusive layer descriptor and byte upsert atomically
   assert.equal(result.assetUpserts[0].assetId, `base-default-${style.key}-style-3`);
   const next = result.commands.reduce(applyMakerV8WorkspaceCommand, input.document);
   const nextStyle = next.parts[0].items[0].styles.at(-1);
-  assert.deepEqual(nextStyle, { ...style, assetId: result.assetUpserts[0].assetId });
+  assert.deepEqual(nextStyle, { ...style, assetId: result.assetUpserts[0].assetId,
+    transform: { x: 500, y: 496, scale: 1, rotation: 0 },
+    payload: { ...style.payload, animacraftEditor: { ...style.payload.animacraftEditor, positionConfirmed: false } } });
   assert.deepEqual(next.parts[0].items[0].styles[0], input.document.parts[0].items[0].styles[0]);
   assert.deepEqual(next.defaultRecipe, input.document.defaultRecipe);
   assert.deepEqual(input, before);
