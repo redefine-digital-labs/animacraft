@@ -25,17 +25,17 @@ function fail(code, message) {
 export function createMakerV8LocalPlayerControls({
   session, locale = 'en', assetUrls = {}, onChange = () => {}, pngExport = null, recipeExport = null,
 } = {}) {
-  for (const method of ['getSnapshot', 'setRecipe', 'setPersonalization', 'reset', 'undo', 'redo', 'renderPreview', 'dispose']) {
+  for (const method of ['getSnapshot', 'setRecipe', 'setPersonalization', 'setImageExport', 'reset', 'undo', 'redo', 'renderPreview', 'dispose']) {
     if (typeof session?.[method] !== 'function') throw new TypeError(`Local Player requires ${method}.`);
   }
   let disposed = false;
   let renderTicket = 0;
   let rendered = null;
   let renderedRevision = null;
+  let pendingPreviewRevision = null;
   let exportTicket = 0;
   let exportRecord = null;
   let exportRevision = null;
-  let exportSettings = Object.freeze({ sizeMode: 'standard', transparent: false });
   const exportEnabled = ['createUrl', 'revokeUrl', 'download'].every((key) => typeof pngExport?.[key] === 'function');
   const recipeExportEnabled = typeof session.exportCheckpoint === 'function' && typeof recipeExport === 'function';
   const state = {
@@ -69,7 +69,9 @@ export function createMakerV8LocalPlayerControls({
     if (persistence && !persistence.isReady()) for (const action of Object.keys(controls)) controls[action] = false;
     controls['player-none'] = false;
     for (const part of snapshot.document.parts) controls[`player-none:${part.key}`] = !part.required;
-    return projectMakerV8LocalPlayerView(snapshot, state, { default: false, controls });
+    return projectMakerV8LocalPlayerView(snapshot, { ...state,
+      export: { ...state.export, ...snapshot.imageExport },
+    }, { default: false, controls });
   };
   const emit = () => {
     const next = view();
@@ -81,6 +83,7 @@ export function createMakerV8LocalPlayerControls({
     const revision = current().revision;
     clearExport();
     const ticket = ++renderTicket;
+    pendingPreviewRevision = revision;
     rendered = null;
     renderedRevision = null;
     state.render = { state: 'pending' };
@@ -100,15 +103,27 @@ export function createMakerV8LocalPlayerControls({
       state.playerTest = { state: 'error', message: state.render.message };
       emit();
       throw error;
+    } finally {
+      if (ticket === renderTicket) pendingPreviewRevision = null;
     }
   };
-  const openExport = async (settings = exportSettings) => {
+  const openExport = async (settings = current().imageExport) => {
     if (persistence && !persistence.isReady()) fail('LOCAL_PLAYER_NOT_RECOVERED', 'Wait for local checkpoint recovery.');
-    const snapshot = current();
-    const options = exactMakerV8ExportOptions(snapshot.document.canvas, settings);
+    const before = current();
+    const options = exactMakerV8ExportOptions(before.document.canvas, settings);
+    const snapshot = session.setImageExport(options, before.revision);
+    // Preference-only edits do not change the already rendered editing pixels.
+    if (renderedRevision === before.revision) renderedRevision = snapshot.revision;
+    // Capture durable intent before starting rendering. Closing/disposal and
+    // render failure must not cancel this save; errors remain retryable in UI.
+    if (snapshot.revision !== before.revision) {
+      persistence?.save().catch(() => {});
+      // A still-running preview belongs to the old revision. Replace it, rather
+      // than accepting stale pixels or leaving the editing canvas pending.
+      if (pendingPreviewRevision !== null) refresh().catch(() => {});
+    }
     const sizes = makerV8ExportSizes(snapshot.document.canvas);
     clearExport();
-    exportSettings = options;
     const ticket = exportTicket;
     state.export = { ...sizes, ...options, open: true, state: 'rendering', previewUrl: '' };
     emit();
@@ -230,7 +245,7 @@ export function createMakerV8LocalPlayerControls({
         if (action === 'player-export-background' && !['true', 'false'].includes(data.transparent)) {
           fail('MAKER_V8_LOCAL_PLAYER_EXPORT_OPTIONS_INVALID', 'Export background must be true or false.');
         }
-        return openExport({ ...exportSettings, ...(action === 'player-export-size'
+        return openExport({ ...current().imageExport, ...(action === 'player-export-size'
           ? { sizeMode: data.sizeMode } : { transparent: data.transparent === 'true' }) });
       }
       if (action === 'close-player-export' || action === 'close-player-export-backdrop') { clearExport(); return emit(); }

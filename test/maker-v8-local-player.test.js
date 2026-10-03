@@ -15,12 +15,49 @@ function source() {
   return document;
 }
 const hat = () => ({ partKey: 'hat', itemKey: 'default', styleKey: 'default' });
+const canonical = value => JSON.stringify((function ordered(item) {
+  if (Array.isArray(item)) return item.map(ordered);
+  if (item && typeof item === 'object') return Object.fromEntries(Object.keys(item).sort().map(key => [key, ordered(item[key])]));
+  return item;
+})(value));
 const open = (document = source()) => createMakerV8LocalPlayer({ draftId: 'local-test', draftRevision: 3, document });
 const withHat = (session) => {
   const recipe = clone(session.getSnapshot().recipe);
   recipe.selections.push(hat());
   return recipe;
 };
+
+test('image export is one validated CAS/history field and omitted canonical checkpoints default without losing content', () => {
+  const model = open();
+  const defaults = model.getSnapshot();
+  const selected = { sizeMode: 'original', transparent: true };
+  model.setImageExport(selected, 0);
+  assert.throws(() => model.setImageExport(selected, 0), { code: 'MAKER_V8_LOCAL_PLAYER_CAS_MISMATCH' });
+  assert.deepEqual(model.undo(1).imageExport, defaults.imageExport);
+  assert.deepEqual(model.redo(2).imageExport, selected);
+  const before = model.getSnapshot();
+  model.setPersonalization({ profile: { ...before.profile, name: 'Retained' }, soulDocuments: before.soulDocuments }, before.revision);
+  assert.deepEqual(model.getSnapshot().imageExport, selected);
+  model.setRecipe(withHat(model), model.getSnapshot().revision);
+  const serialized = model.exportCheckpoint();
+  const cold = open(); cold.restoreCheckpoint(serialized, 0);
+  assert.equal(cold.exportCheckpoint(), serialized);
+  const omitted = JSON.parse(serialized); delete omitted.imageExport;
+  const old = canonical(omitted);
+  cold.restoreCheckpoint(old, cold.getSnapshot().revision);
+  assert.deepEqual(cold.getSnapshot().imageExport, defaults.imageExport);
+  assert.equal(cold.getSnapshot().profile.name, 'Retained');
+  assert.deepEqual(cold.getSnapshot().recipe, model.getSnapshot().recipe);
+  for (const imageExport of [null, {}, { sizeMode: 'original' }, { sizeMode: 'giant', transparent: false },
+    { sizeMode: 'original', transparent: 'true' }, { ...selected, unknown: 1 }]) {
+    const state = cold.getSnapshot();
+    assert.throws(() => cold.setImageExport(imageExport, state.revision));
+    assert.throws(() => cold.restoreCheckpoint(canonical({ ...omitted, imageExport }), state.revision));
+    assert.deepEqual(cold.getSnapshot(), state);
+  }
+  assert.throws(() => cold.restoreCheckpoint(` ${old}`, cold.getSnapshot().revision));
+  assert.deepEqual(model.reset(model.getSnapshot().revision).imageExport, defaults.imageExport);
+});
 
 test('visibility-invalid draft opens, repairs in steps, and preserves local history without weakening strict recipes', async () => {
   const document = source();
@@ -146,7 +183,7 @@ test('local Player has only draft identity and cannot impersonate a certified Pl
   for (const key of ['rootId', 'player', 'loadout', 'execution', 'wallet', 'evidence']) {
     assert.equal(Object.hasOwn(initial, key), false);
   }
-  assert.deepEqual(Object.keys(session).sort(), ['dispose', 'exportCheckpoint', 'getSnapshot', 'redo', 'reset', 'restoreCheckpoint', 'setPersonalization', 'setRecipe', 'undo']);
+  assert.deepEqual(Object.keys(session).sort(), ['dispose', 'exportCheckpoint', 'getSnapshot', 'redo', 'reset', 'restoreCheckpoint', 'setImageExport', 'setPersonalization', 'setRecipe', 'undo']);
   assert.throws(() => projectMakerV8PlayerView(initial), /READY/);
   document.metadata.name = 'mutated caller';
   assert.equal(session.getSnapshot().document.metadata.name, original.metadata.name);

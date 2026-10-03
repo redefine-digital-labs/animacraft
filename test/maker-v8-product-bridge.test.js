@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { IDBFactory } from 'fake-indexeddb';
 import { createMakerV8LocalPlayerStore } from '../maker-v8-local-player-store.js';
+import { createMakerV8LocalPlayerControls } from '../maker-v8-local-player-controls.js';
 import { createMakerV8DraftPersistence } from '../maker-v8-draft-store.js';
 import { canonicalMakerV8Json } from '../maker-v8-compiler.js';
 
@@ -914,14 +915,24 @@ test('local bridge checkpoint persistence cold-recovers exact content without re
     assert.equal(await first.loadCheckpoint(), null);
     const state = first.getSnapshot();
     first.setPersonalization({ profile: { ...state.profile, name: 'Saved local OC' }, soulDocuments: state.soulDocuments }, 0);
-    const saved = await first.captureCheckpointSave().commit(null);
-    assert.equal(saved.revision, 1);
+    const controls = createMakerV8LocalPlayerControls({ session: { ...first,
+      async renderPreview() { return { ...first.getSnapshot().document.canvas }; },
+    }, pngExport: { createUrl: () => 'blob:local-export', revokeUrl() {}, download() {} } });
+    await controls.initialize();
+    await controls.dispatch('player-preview-export');
+    await controls.dispatch('player-export-size', { sizeMode: 'original' });
+    await controls.dispatch('player-export-background', { transparent: 'true' });
+    await controls.flush();
+    const saved = await first.loadCheckpoint();
+    assert.ok(saved, 'Export option changes automatically persist through the real bundle store.');
+    await controls.dispose();
     const second = await bridge.openLocalPlayer({ draftId: 'local-player', expectedRevision: 1 });
     assert.equal(second.getSnapshot().profile.name, '');
     const recovered = await second.loadCheckpoint();
     assert.deepEqual(recovered, saved);
     await second.restoreCheckpoint(recovered.checkpoint, 0);
     assert.equal(second.getSnapshot().profile.name, 'Saved local OC');
+    assert.deepEqual(second.getSnapshot().imageExport, { sizeMode: 'original', transparent: true });
     await assert.rejects(second.captureCheckpointSave().commit(null), { code: 'LOCAL_PLAYER_STORE_CAS_CONFLICT' });
     assert.deepEqual(await second.captureCheckpointSave().commit({ revision: saved.revision, contentHash: saved.contentHash }), saved);
     assert.equal(runtime.calls.ready, 0);

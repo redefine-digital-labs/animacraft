@@ -4,6 +4,7 @@ import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import { createCharacterMakerV8Starter } from '../maker-v8-document.js';
 import { createMakerV8LocalPlayer } from '../maker-v8-local-player.js';
 import { createMakerV8LocalPlayerStore } from '../maker-v8-local-player-store.js';
+import { canonicalMakerV8Json } from '../maker-v8-compiler.js';
 
 function fixture() {
   const model = createMakerV8LocalPlayer({ draftId: 'local', draftRevision: 1,
@@ -18,6 +19,34 @@ function edit(model, name) {
   const current = model.getSnapshot();
   model.setPersonalization({ profile: { ...current.profile, name }, soulDocuments: current.soulDocuments }, current.revision);
 }
+
+test('omitted preference keeps its original durable hash and CAS while malformed explicit preferences reject', async () => {
+  const indexedDB = new IDBFactory();
+  const store = createMakerV8LocalPlayerStore(indexedDB);
+  const f = fixture(); edit(f.model, 'Existing user');
+  const outer = JSON.parse(f.checkpoint()), inner = JSON.parse(outer.checkpoint);
+  delete inner.imageExport;
+  const checkpoint = canonicalMakerV8Json({ ...outer, checkpoint: canonicalMakerV8Json(inner) });
+  const old = await store.save({ binding: f.binding, checkpoint, expected: null });
+  store.close();
+  const cold = createMakerV8LocalPlayerStore(indexedDB);
+  assert.deepEqual(await cold.load(f.binding), old);
+  const model = fixture().model; model.restoreCheckpoint(JSON.parse(old.checkpoint).checkpoint, 0);
+  assert.equal(model.getSnapshot().profile.name, 'Existing user');
+  assert.deepEqual(model.getSnapshot().imageExport, { sizeMode: 'standard', transparent: false });
+  for (const imageExport of [null, {}, { sizeMode: 'original' }, { sizeMode: 'wrong', transparent: true },
+    { sizeMode: 'standard', transparent: 1 }, { sizeMode: 'original', transparent: false, extra: 1 }]) {
+    const malformed = canonicalMakerV8Json({ ...outer, checkpoint: canonicalMakerV8Json({ ...inner, imageExport }) });
+    await assert.rejects(cold.save({ binding: f.binding, checkpoint: malformed, expected: expected(old) }));
+    assert.deepEqual(await cold.load(f.binding), old);
+  }
+  const explicit = canonicalMakerV8Json({ ...outer, checkpoint: model.exportCheckpoint() });
+  await assert.rejects(cold.save({ binding: f.binding, checkpoint: explicit, expected: null }), { code: 'LOCAL_PLAYER_STORE_CAS_CONFLICT' });
+  const updated = await cold.save({ binding: f.binding, checkpoint: explicit, expected: expected(old) });
+  assert.equal(updated.revision, old.revision + 1);
+  assert.notEqual(updated.contentHash, old.contentHash);
+  cold.close();
+});
 
 test('local checkpoint storage atomically saves, verifies, no-ops and cold-reopens independently', async () => {
   const indexedDB = new IDBFactory();
