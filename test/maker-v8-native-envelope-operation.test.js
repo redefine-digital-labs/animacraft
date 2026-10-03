@@ -10,6 +10,7 @@ import { EncryptedObject } from '@mysten/seal';
 import { fromBase64, fromHex, toBase64, toBase58, toHex, deriveDynamicFieldID } from '@mysten/sui/utils';
 import { blake2b } from '@noble/hashes/blake2.js';
 import { nativeIntegrationFixture } from './fixtures/maker-v8-native-integration.js';
+import { moveModuleIdentityBytesFixture } from './fixtures/walrus-execution-fixture.js';
 import { MAKER_V8_RUNTIME_SCHEMA, MAKER_V8_PAYMENT_COIN_TYPE, MAKER_V8_CLOCK_OBJECT_ID } from '../maker-v8-runtime.js';
 import { createMakerV8SuiGrpcTransport, MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from '../maker-v8-sui-grpc.js';
 import { MakerV8DAppKitWalletError } from '../maker-v8-dapp-kit-wallet.js';
@@ -62,7 +63,7 @@ function setup(options = {}) {
   const ledger = createMakerV8SuiGrpcTransport({ grpcClient: grpc, graphqlClient: { network: 'mainnet', query() { throw new Error('unexpected GraphQL'); } } });
   for (const [moduleName, datatypeName] of [['soul', 'SoulState'], ['content', 'SoulContent'], ['content', 'ContentKey'], ['content', 'ContentSlot']]) {
     f.objects.get(f.pin.soulidityCallablePackageId).data.bcs.typeOriginTable.push({ moduleName, datatypeName, packageId: f.pin.soulidityOriginalPackageId });
-    f.objects.get(f.pin.soulidityCallablePackageId).data.bcs.moduleMap[moduleName] = toBase64(new Uint8Array([0xa1, 0x1c, 0xeb, 0x0b, 7, 0, 0, 0]));
+    f.objects.get(f.pin.soulidityCallablePackageId).data.bcs.moduleMap[moduleName] = toBase64(moveModuleIdentityBytesFixture(moduleName, f.pin.soulidityOriginalPackageId));
   }
   const slot = { contentObjectId: contentId, kind: 0, name: 'soul', versionIndex: '0', blobObjectId: id(400) };
   const input = { rootId, signer, action: { actionId: 'complete-1', action: 'completeOutput', status: 'FINALIZED_SUCCESS', transactionDigest: hash(19),

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bcs } from '@mysten/sui/bcs';
 import { toBase64,fromBase64,deriveDynamicFieldID,normalizeStructTag } from '@mysten/sui/utils';
-import { WALRUS_MINIMUM_DEPENDENCY_FIXTURE, makerV8WalrusExecutionFixture } from './fixtures/walrus-execution-fixture.js';
+import { WALRUS_MINIMUM_DEPENDENCY_FIXTURE, makerV8WalrusExecutionFixture, moveModuleIdentityBytesFixture } from './fixtures/walrus-execution-fixture.js';
 import { makerV8ActivationAuthorityFixture,makerV8LivingBlobIdFixture } from './fixtures/maker-v8-activation-authority-fixture.js';
 import { MakerV8ActivationAuthorityBcs as B,MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID as W,validateMakerV8ActivationAuthorityV8 as validate,readMakerV8ActivationAuthorityV8 as read } from '../maker-v8-activation-authority.js';
 import { assertMakerV8CompilerContextFreshV8 } from '../maker-v8-browser.js';
@@ -13,6 +13,9 @@ async function fixture(){
   const options={catalogId:id(1),productBindingCommitment:'34'.repeat(32),callCapSetCommitment:'56'.repeat(32),roles,configIds:Object.fromEntries(names.slice(1).map((r,i)=>[r,id(40+i)])),
     signerAddress:id(2),livingBlobObjectId:id(3),livingBytes,livingByteLength:3,livingBlobId:await makerV8LivingBlobIdFixture(livingBytes)};
   const authority=await makerV8ActivationAuthorityFixture(options);const objects=new Map();
+  authority.walrusSystemState.fields.value.future_accounting={current_index:0,length:1,ring_buffer:[{
+    epoch:5,used_capacity:'42',rewards_to_distribute:{value:'150795928019641'},
+  }]};
   for(const [name,value]of Object.entries(authority)){
     if(name==='walrusExecution')continue;
     const r=value.reference;const owner=r.kind==='shared'?{Shared:{initial_shared_version:r.initialSharedVersion}}:r.kind==='immutable'?{Immutable:true}:name==='livingBlob'?{AddressOwner:options.signerAddress}:{ObjectOwner:authority.walrusSystem.fields.id};
@@ -20,12 +23,15 @@ async function fixture(){
       bcs:{dataType:'moveObject',type:value.type,bcsBytes:toBase64(B[name].serialize(value.fields).toBytes())},content:{dataType:'moveObject',type:value.type,fields:structuredClone(value.fields)}});
   }
   Object.assign(objects.get(authority.walrusSystem.reference.objectId),authority.walrusExecution.system.reference);
+  objects.get(authority.walrusSystemState.reference.objectId).content.fields.value.future_accounting
+    .ring_buffer[0].rewards_to_distribute='150795928019641';
   const kt=`${roles.core.originalPackageId}::core_v8::WalrusCertificationBootstrapKeyV1`;const vt=`${roles.core.originalPackageId}::core_v8::WalrusCertificationBootstrapSlotV1`;
   const fid=deriveDynamicFieldID(options.catalogId,kt,new Uint8Array([0]));const type=normalizeStructTag(`0x2::dynamic_field::Field<${kt},${vt}>`);
   const fields={id:fid,name:{dummy_field:false},value:{policy_id:authority.walrusPolicy.fields.id,system_id:authority.walrusSystem.fields.id}};
   objects.set(fid,{objectId:fid,version:'2',digest:authority.replacement.reference.digest,owner:{ObjectOwner:options.catalogId},type,
     bcs:{dataType:'moveObject',type,bcsBytes:toBase64(B.policySlot.serialize(fields).toBytes())},content:{dataType:'moveObject',type,fields}});
-  const pkg=(objectId,originalId)=>({objectId,version:'2',digest:authority.replacement.reference.digest,owner:{Immutable:true},bcs:{dataType:'package',id:objectId,version:'2',originalId,linkageTable:[],typeOriginTable:[]}});
+  const pkg=(objectId,originalId)=>({objectId,version:'2',digest:authority.replacement.reference.digest,owner:{Immutable:true},bcs:{dataType:'package',id:objectId,version:'2',originalId:null,
+    moduleMap:Object.fromEntries((originalId===W?['blob','system','system_state_inner']:['core_v8','package_binding_v8']).map(name=>[name,toBase64(moveModuleIdentityBytesFixture(name,originalId))])),linkageTable:[],typeOriginTable:[]}});
   const corePackage=pkg(roles.core.callablePackageId,roles.core.originalPackageId);corePackage.bcs.linkageTable=[{originalId:W,upgradedId:WALRUS_MINIMUM_DEPENDENCY_FIXTURE.publishedAt,upgradedVersion:'2'}];
   const walrusPackage=pkg(WALRUS_MINIMUM_DEPENDENCY_FIXTURE.publishedAt,W);walrusPackage.bcs.typeOriginTable=[['blob','Blob'],['system','System'],['system_state_inner','SystemStateInnerV1']].map(([moduleName,datatypeName])=>({moduleName,datatypeName,packageId:W}));
   objects.set(corePackage.objectId,corePackage);objects.set(walrusPackage.objectId,walrusPackage);
@@ -46,6 +52,42 @@ test('pure replay verifies actual offline Walrus encoding and deep freezes an in
 });
 test('reads exact typed objects and dummy-false slot, with a final reference readset and no wallet discovery',async()=>{
   const f=await fixture();assert.deepEqual(await read(f.input),f.authority);assert.equal(f.calls.filter(id=>id===f.fid).length,2);assert.equal(f.calls.filter(id=>id===f.options.livingBlobObjectId).length,2);
+});
+test('package identity accepts absent or matching optional metadata, proven by Move bytes',async()=>{
+  for(const metadata of ['absent','matching']){
+    const f=await fixture();
+    for(const [pkg,original]of [[f.corePackage,f.options.roles.core.originalPackageId],[f.walrusPackage,W]]){
+      if(metadata==='absent')delete pkg.bcs.originalId;else pkg.bcs.originalId=original;
+    }
+    assert.deepEqual(await read(f.input),f.authority);
+  }
+});
+test('Balance JSON normalization remains exact, bounded and limited to its schema field',async()=>{
+  for(const bad of ['150795928019642','0150795928019641','-1','18446744073709551616',150795928019641,{value:'150795928019641',extra:true}]){
+    const f=await fixture();
+    f.objects.get(f.authority.walrusSystemState.reference.objectId).content.fields.value.future_accounting.ring_buffer[0].rewards_to_distribute=bad;
+    await assert.rejects(read(f.input));
+  }
+  const f=await fixture();
+  const fields=f.objects.get(f.authority.walrusSystemState.reference.objectId).content.fields;
+  fields.value.future_accounting.ring_buffer[0].rewards_to_distribute={value:'150795928019641'};
+  assert.deepEqual(await read(f.input),f.authority);
+  fields.value.deny_list_sizes=f.authority.walrusSystemState.fields.value.deny_list_sizes.id;
+  await assert.rejects(read(f.input));
+});
+for(const role of ['corePackage','walrusPackage'])for(const issue of ['metadata','empty','wrong-original','wrong-name','malformed','missing-required-module','owner','version'])test(`${role} rejects ${issue} despite optional originalId`,async()=>{
+  const f=await fixture(),pkg=f[role],name=Object.keys(pkg.bcs.moduleMap)[0];
+  if(issue==='metadata')pkg.bcs.originalId=id(999);
+  if(issue==='empty')pkg.bcs.moduleMap={};
+  if(issue==='wrong-original')pkg.bcs.moduleMap[name]=toBase64(moveModuleIdentityBytesFixture(name,id(999)));
+  if(issue==='wrong-name')pkg.bcs.moduleMap[name]=toBase64(moveModuleIdentityBytesFixture('other',role==='corePackage'?f.options.roles.core.originalPackageId:W));
+  if(issue==='malformed')pkg.bcs.moduleMap[name]='AA==';
+  if(issue==='missing-required-module'){
+    if(role==='corePackage')pkg.bcs.moduleMap={};else delete pkg.bcs.moduleMap.blob;
+  }
+  if(issue==='owner')pkg.owner={AddressOwner:f.options.signerAddress};
+  if(issue==='version')pkg.bcs.version='999';
+  await assert.rejects(read(f.input),{code:'MAKER_V8_ACTIVATION_AUTHORITY_INVALID'});
 });
 test('freshness allows a genuinely advancing System while checking current Blob lifetime and preserving old evidence',async()=>{
   const f=await fixture();const context={schemaVersion:'fixture',chainIdentifier:'mainnet',paymentCoinType:'fixture',protocolProfile:{},coreArtifact:{},activationAuthority:f.authority,signerAddress:f.options.signerAddress,

@@ -8,6 +8,7 @@ import { readMakerV8PackDefinitions } from './maker-v8-pack-definition-reader.js
 import { deriveMakerV8PackProfiles } from './maker-v8-profile-wire.js';
 import { assertMakerV8CatalogCommitments } from './maker-v8-catalog-commitments.js';
 import { assertMakerV8SealPolicyCommitments } from './maker-v8-seal-policy-commitments.js';
+import { readMakerV8MoveModuleIdentity } from './maker-v8-walrus-execution.js';
 import {
   fromBase58, fromBase64, fromHex, normalizeStructTag, toBase58, toBase64, deriveDynamicFieldID,
 } from '@mysten/sui/utils';
@@ -113,6 +114,14 @@ const AUTHORITY_BYTE_FIELDS = new Set([
 ]);
 const AUTHORITY_BYTE_VECTOR_FIELDS = new Set(['role_config_commitments', 'install_mark_commitments']);
 function authorityJsonMatches(observed, decoded, label, byteVector = false, nestedBytes = false) {
+  // The gRPC Move JSON projection unwraps Balance<u64> only at this schema path.
+  if (label === 'Native soulTransferPolicy JSON/BCS.balance' && typeof observed === 'string') {
+    authorityCheck(/^(?:0|[1-9][0-9]*)$/.test(observed) && observed.length <= 20
+      && BigInt(observed) <= 18446744073709551615n, `${label} canonical u64`);
+    observed = { value: observed };
+  }
+  if (/^Native soulTransferPolicy JSON\/BCS\.rules\.contents\[[0-9]+\]$/.test(label)
+    && typeof observed === 'string') observed = { name: observed };
   if (record(observed) && (Object.hasOwn(observed, 'vec') || Object.hasOwn(observed.fields || {}, 'vec'))) observed = moveOption(observed, label);
   if (decoded === null) { authorityCheck(observed === null, label); return; }
   if (Array.isArray(decoded)) {
@@ -131,7 +140,11 @@ function authorityJsonMatches(observed, decoded, label, byteVector = false, nest
     Object.entries(decoded).forEach(([key, entry]) => authorityJsonMatches(fields[key], entry, `${label}.${key}`,
       AUTHORITY_BYTE_FIELDS.has(key), AUTHORITY_BYTE_VECTOR_FIELDS.has(key)));
   } else if (typeof decoded === 'string' && /^0x[0-9a-f]{64}$/i.test(decoded)) {
-    authorityCheck(id(observed, label) === decoded.toLowerCase(), label);
+    if (label === 'Native marketConfig JSON/BCS.legacy_config_id') {
+      // Fresh MarketConfigV2 deliberately stores the zero legacy address.
+      authorityCheck(typeof observed === 'string' && /^0x[0-9a-f]{64}$/.test(observed)
+        && observed === decoded, label);
+    } else authorityCheck(id(observed, label) === decoded.toLowerCase(), label);
   } else if (typeof decoded === 'boolean') {
     authorityCheck(observed === decoded, label);
   } else { authorityCheck(String(observed) === String(decoded), label); }
@@ -666,6 +679,25 @@ export function isMakerV8NativeSoulBinding(value, runtimeInput) {
     && VERIFIED_NATIVE_SOUL_BINDINGS.get(value) === makerV8StableType(runtime, 'core', 'protocol_config_v8', 'SoulidityBindingSlotKeyV8');
 }
 
+function nativePackageOriginalId(pkg, expectedOriginal = null) {
+  authorityCheck(record(pkg?.moduleMap) && Object.keys(pkg.moduleMap).length > 0, 'Native package modules');
+  let originalId = null;
+  for (const [name, encoded] of Object.entries(pkg.moduleMap)) {
+    authorityCheck(typeof encoded === 'string' && encoded.length <= Math.ceil(16 * 1024 * 1024 / 3) * 4, 'Native bounded module bytes');
+    let identity;
+    try {
+      const bytes = fromBase64(encoded);
+      authorityCheck(toBase64(bytes) === encoded, 'Native canonical module bytes');
+      identity = readMakerV8MoveModuleIdentity(bytes);
+    } catch { authorityCheck(false, 'Native package Move module identity'); }
+    authorityCheck(identity.moduleName === name && (originalId === null || identity.originalId === originalId), 'Native package self identity');
+    originalId = identity.originalId;
+  }
+  authorityCheck((pkg.originalId == null || pkg.originalId === originalId)
+    && (expectedOriginal === null || originalId === expectedOriginal), 'Native package lineage pin');
+  return id(originalId, 'Native package originalId');
+}
+
 function nativePackageEvidence(response, expectedId, expectedOriginal = null, expectedDigest = null) {
   const data = response?.data;
   authorityCheck(record(data) && !response.error && data.objectId === expectedId
@@ -678,8 +710,7 @@ function nativePackageEvidence(response, expectedId, expectedOriginal = null, ex
     packageDigest = data.digest;
   } catch { authorityCheck(false, 'Native callable digest'); }
   authorityCheck(expectedDigest === null || packageDigest === expectedDigest, 'Native callable digest pin');
-  const originalId = id(data.bcs.originalId, 'Native package originalId');
-  authorityCheck(expectedOriginal === null || originalId === expectedOriginal, 'Native package lineage pin');
+  const originalId = nativePackageOriginalId(data.bcs, expectedOriginal);
   const version = decimal(data.version, 'Native package version', { positive: true }).toString();
   authorityCheck(String(data.bcs.version) === version && record(data.bcs.moduleMap)
     && Array.isArray(data.bcs.typeOriginTable) && Array.isArray(data.bcs.linkageTable), 'Native package complete metadata');
@@ -689,11 +720,7 @@ function nativePackageEvidence(response, expectedId, expectedOriginal = null, ex
       && /^[a-zA-Z_][a-zA-Z_0-9]*$/.test(row.moduleName) && /^[a-zA-Z_][a-zA-Z_0-9]*$/.test(row.datatypeName), 'Native type origin row');
     const key = `${row.moduleName}::${row.datatypeName}`;
     authorityCheck(!Object.hasOwn(origins, key), 'Native duplicate type origin');
-    const encoded = data.bcs.moduleMap[row.moduleName];
-    let bytes;
-    try { bytes = fromBase64(encoded); } catch { authorityCheck(false, 'Native package module BCS'); }
-    authorityCheck(typeof encoded === 'string' && bytes?.length > 4 && toBase64(bytes) === encoded
-      && bytes[0] === 0xa1 && bytes[1] === 0x1c && bytes[2] === 0xeb && bytes[3] === 0x0b, 'Native package Move module bytes');
+    authorityCheck(Object.hasOwn(data.bcs.moduleMap, row.moduleName), 'Native type origin module');
     origins[key] = `${id(row.packageId, 'Native type origin')}::${key}`;
   }
   const linkage = {};
@@ -731,10 +758,11 @@ async function attestNativeSoulAuthority(rpc, runtimeInput, recovery) {
     const data = response?.data;
     const dependency = nativePackage.linkage[pinned.originalPackageId];
     authorityCheck(data?.objectId === pinned.callablePackageId && data.digest === pinned.packageDigest
-      && data.bcs?.dataType === 'package' && data.bcs.originalId === pinned.originalPackageId
+      && !response.error && data.bcs?.dataType === 'package'
       && data.bcs.id === pinned.callablePackageId && ownerOf(data.owner).kind === 'immutable'
       && /^[1-9][0-9]*$/.test(String(data.version)) && String(data.bcs.version) === String(data.version)
       && dependency?.upgradedId === pinned.callablePackageId && dependency.upgradedVersion === String(data.version), `Native ${role} attested dependency`);
+    nativePackageOriginalId(data.bcs, pinned.originalPackageId);
   }));
   for (const [row, key] of [['soul::Soul', 'soulDefiningType'], ['animacraft_v8_binding::MintBindingWitnessV8', 'mintWitnessDefiningType'], ['animacraft_v8_binding::SoulOwnerWitnessV8', 'ownerWitnessDefiningType']]) authorityCheck(nativePackage.origins[row] === nativeBinding[key], 'Native package exact bound type introduction');
   // Existing encrypted content needs the same immutable identity, not permission
@@ -921,7 +949,7 @@ function parseCallablePackageIdentity(response, runtime, role) {
     const publishedModuleSha256 = digestHex(moduleBytes);
     let moduleSha256 = publishedModuleSha256;
     if (moduleSha256 !== MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256) {
-      const packageBytes = fromHex(packageId);
+      const packageBytes = fromHex(runtime.roles[role].typeOriginPackageId);
       const matchingOffsets = [];
       for (let offset = 0; offset <= moduleBytes.length - packageBytes.length; offset += 1) {
         if (!packageBytes.every((byte, index) => moduleBytes[offset + index] === byte)) continue;

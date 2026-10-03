@@ -3,7 +3,7 @@ import { deriveDynamicFieldID, fromBase64, toBase64, fromBase58, toBase58, fromH
 import { blobIdToInt, blobIdFromInt } from '@mysten/walrus';
 import { sha256 } from '@noble/hashes/sha2.js';
 import initWalrusWasm, { BlobEncoder } from '@mysten/walrus-wasm';
-import { assertMakerV8WalrusExecutionV1, readMakerV8WalrusExecutionV1, MakerV8WalrusSystemBcs,
+import { assertMakerV8WalrusExecutionV1, readMakerV8WalrusExecutionV1, readMakerV8MoveModuleIdentity, MakerV8WalrusSystemBcs,
   MAKER_V8_WALRUS_MINIMUM_DEPENDENCY, MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID,
   MAKER_V8_WALRUS_SYSTEM_ID } from './maker-v8-walrus-execution.js';
 export { MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID, MAKER_V8_WALRUS_SYSTEM_ID } from './maker-v8-walrus-execution.js';
@@ -122,13 +122,31 @@ export async function validateMakerV8ActivationAuthorityV8(value,options){
 }
 
 function decode(codec,encoded){const raw=fromBase64(encoded);check(raw.length<=1024*1024&&toBase64(raw)===encoded,'canonical BCS bytes');const value=codec.parse(raw);check(toBase64(codec.serialize(value).toBytes())===encoded,'canonical BCS roundtrip');return value;}
+function packageIdentity(pkg,originalId){
+  // gRPC originalId is optional. Prove identity from every Move self handle,
+  // never infer an upgraded package's origin from its storage ID.
+  check(pkg.originalId==null||pkg.originalId===originalId,'package original metadata');
+  check(pkg.moduleMap&&Object.getPrototypeOf(pkg.moduleMap)===Object.prototype
+    &&Object.keys(pkg.moduleMap).length>0,'package modules');
+  for(const [name,encoded]of Object.entries(pkg.moduleMap)){
+    check(typeof encoded==='string'&&encoded.length<=Math.ceil(16*1024*1024/3)*4,'bounded module bytes');
+    const raw=fromBase64(encoded);check(toBase64(raw)===encoded,'canonical module bytes');
+    let identity;
+    try{identity=readMakerV8MoveModuleIdentity(raw);}catch{check(false,'Move module identity');}
+    check(identity.originalId===originalId&&identity.moduleName===name,'package original/self identity');
+  }
+}
 function unwrap(v){if(v&&typeof v==='object'&&!Array.isArray(v)&&v.fields)return unwrap(v.fields);return v;}
-function jsonMatches(actual,expected){
+function jsonMatches(actual,expected,path=''){
   actual=unwrap(actual);
+  // Official gRPC JSON renders Balance<u64> as its scalar value. Normalize
+  // only this schema-declared Balance, then retain exact BCS equality.
+  if(/^walrusSystemState\.value\.future_accounting\.ring_buffer\.[0-9]+\.rewards_to_distribute$/.test(path)
+    &&typeof actual==='string')actual={value:uint(actual)};
   if(expected===null){check(actual===null||Array.isArray(actual?.vec)&&actual.vec.length===0,'JSON option');return;}
   if(actual&&typeof actual==='object'&&Array.isArray(actual.vec)){check(actual.vec.length===1,'JSON some');actual=actual.vec[0];}
-  if(Array.isArray(expected)){if(typeof actual==='string')actual=[...fromBase64(actual)];check(Array.isArray(actual)&&actual.length===expected.length,'JSON vector');expected.forEach((v,i)=>jsonMatches(actual[i],v));}
-  else if(expected&&typeof expected==='object'){exact(actual,Object.keys(expected),'JSON fields');Object.entries(expected).forEach(([k,v])=>jsonMatches(actual[k],v));}
+  if(Array.isArray(expected)){if(typeof actual==='string')actual=[...fromBase64(actual)];check(Array.isArray(actual)&&actual.length===expected.length,'JSON vector');expected.forEach((v,i)=>jsonMatches(actual[i],v,`${path}.${i}`));}
+  else if(expected&&typeof expected==='object'){exact(actual,Object.keys(expected),'JSON fields');Object.entries(expected).forEach(([k,v])=>jsonMatches(actual[k],v,`${path}.${k}`));}
   else if(typeof expected==='string'&&expected.startsWith('0x')){while(actual&&typeof actual==='object')actual=actual.id??actual.bytes;check(actual===expected,'JSON ID');}
   else check(typeof expected==='boolean'?actual===expected:String(actual)===String(expected),'JSON scalar');
 }
@@ -149,7 +167,7 @@ async function readOnce({client,attested,transport,signerAddress}){
     const data=await get(objectId);check(data.objectId===objectId&&normalizeStructTag(data.type)===normalizeStructTag(type)&&data.bcs?.dataType==='moveObject'&&normalizeStructTag(data.bcs.type)===normalizeStructTag(type),'object/type evidence');
     uint(String(data.version),true);digest(data.digest);
     const fields=decode(MakerV8ActivationAuthorityBcs[name],data.bcs.bcsBytes);check(fields.id===objectId,'object UID');
-    check(data.content?.dataType==='moveObject'&&normalizeStructTag(data.content.type)===normalizeStructTag(type),'parsed type');jsonMatches(data.content.fields,fields);
+    check(data.content?.dataType==='moveObject'&&normalizeStructTag(data.content.type)===normalizeStructTag(type),'parsed type');jsonMatches(data.content.fields,fields,name);
     const owner=data.owner;let reference;
     if(kind==='shared'){exact(owner,['Shared'],'shared owner');reference={kind,objectId,initialSharedVersion:String(owner.Shared.initial_shared_version)};uint(reference.initialSharedVersion,true);}
     else{check(kind==='immutable'?owner==='Immutable'||Object.hasOwn(owner??{},'Immutable'):owner?.[name==='livingBlob'?'AddressOwner':'ObjectOwner']===ownerId,'exact owner custody');reference={kind,objectId,version:String(data.version),digest:data.digest};}
@@ -165,17 +183,19 @@ async function readOnce({client,attested,transport,signerAddress}){
   const walrusPolicy=await read(field.fields.value.policy_id,`${core}::core_v8::WalrusCertificationPolicyV1`,'walrusPolicy','shared');
   const walrusSystem=await read(MAKER_V8_WALRUS_SYSTEM_ID,`${MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID}::system::System`,'walrusSystem','shared');
   const corePackage=await get(runtime.roles.core.callablePackageId);
-  check(corePackage.bcs?.dataType==='package'&&corePackage.bcs.id===corePackage.objectId&&corePackage.bcs.originalId===core&&corePackage.owner?.Immutable===true
+  check(corePackage.bcs?.dataType==='package'&&corePackage.bcs.id===corePackage.objectId&&corePackage.owner?.Immutable===true
     &&String(corePackage.version)===String(corePackage.bcs.version),'Core package evidence');uint(String(corePackage.version),true);
+  packageIdentity(corePackage.bcs,core);
   const pinned=attested.packageTuple?.find(r=>r.role==='core');check(pinned&&pinned.packageDigest===corePackage.digest,'attested Core digest');
   const links=corePackage.bcs.linkageTable.filter(r=>r.originalId===MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID);check(links.length===1,'exact Walrus linkage');
   check(links[0].upgradedId===MAKER_V8_WALRUS_MINIMUM_DEPENDENCY.publishedAt
     &&links[0].upgradedVersion===MAKER_V8_WALRUS_MINIMUM_DEPENDENCY.version,'approved static Walrus minimum');
   const walrusPackage=await get(links[0].upgradedId);
-  check(walrusPackage.bcs?.dataType==='package'&&walrusPackage.bcs.id===walrusPackage.objectId&&walrusPackage.bcs.originalId===MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID&&walrusPackage.owner?.Immutable===true
+  check(walrusPackage.bcs?.dataType==='package'&&walrusPackage.bcs.id===walrusPackage.objectId&&walrusPackage.owner?.Immutable===true
     &&String(walrusPackage.version)===links[0].upgradedVersion&&String(walrusPackage.bcs.version)===String(walrusPackage.version),'static linked Walrus package');
+  packageIdentity(walrusPackage.bcs,MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID);
   for(const [moduleName,datatypeName]of [['blob','Blob'],['system','System'],['system_state_inner','SystemStateInnerV1']]){
-    const rows=walrusPackage.bcs.typeOriginTable.filter(r=>r.moduleName===moduleName&&r.datatypeName===datatypeName);check(rows.length===1&&rows[0].packageId===MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID,'Walrus exact TypeOrigin');
+    const rows=walrusPackage.bcs.typeOriginTable.filter(r=>r.moduleName===moduleName&&r.datatypeName===datatypeName);check(rows.length===1&&rows[0].packageId===MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID&&Object.hasOwn(walrusPackage.bcs.moduleMap,moduleName),'Walrus exact TypeOrigin');
   }
   const walrusExecution=await readMakerV8WalrusExecutionV1({transport:client,minimumDependency:MAKER_V8_WALRUS_MINIMUM_DEPENDENCY});
   const stateId=deriveDynamicFieldID(walrusSystem.reference.objectId,'u64',bcs.u64().serialize(walrusSystem.fields.version).toBytes());
