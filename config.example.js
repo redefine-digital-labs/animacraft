@@ -1,6 +1,10 @@
 (() => {
   const exactId = (byte) => `0x${byte.repeat(32)}`;
 
+  window.ANIMACRAFT_CONFIG = Object.freeze({
+    soulidityAppUrl: 'https://www.soulidity.ai',
+  });
+
   // Copy to public-v8/config.js, replace every value with live readback evidence,
   // keep the gate disabled through preflight, then enable in one reviewed edit.
   window.SoulidityMakerV8 = Object.freeze({

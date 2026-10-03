@@ -1,3 +1,5 @@
+import { fromBase58, toBase58 } from '@mysten/sui/utils';
+
 const EXACT_SUI_ID = /^0x[0-9a-fA-F]{64}$/;
 const EXACT_SUI_TYPE = /^0x([0-9a-fA-F]{64})::([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)$/;
 const MOVE_MODULE = /^[a-z_][a-z0-9_]*$/;
@@ -105,8 +107,11 @@ const TOP_LEVEL_FIELDS = Object.freeze([
   'roles',
   'roleConfigIds',
   'makerBindings',
+  'nativeSoulIntegration',
 ]);
-const REQUIRED_TOP_LEVEL_FIELDS = TOP_LEVEL_FIELDS.filter((field) => field !== 'makerBindings');
+const REQUIRED_TOP_LEVEL_FIELDS = TOP_LEVEL_FIELDS.filter((field) => !['makerBindings', 'nativeSoulIntegration'].includes(field));
+const NATIVE_FIELDS = ['soulidityCallablePackageId', 'soulidityOriginalPackageId', 'soulidityCallableDigest', 'kioskPackageId', 'walrusPackageId', 'marketConfigV2Id', 'kindRegistryId', 'kioskRegistryId', 'soulTransferPolicyId', 'expectedNativeBinding'];
+const NATIVE_TYPES = ['soulOriginalType', 'soulDefiningType', 'mintWitnessOriginalType', 'mintWitnessDefiningType', 'ownerWitnessOriginalType', 'ownerWitnessDefiningType'];
 const ROLE_FIELDS = Object.freeze(['typeOriginPackageId', 'callablePackageId']);
 const OPTION_FIELDS = Object.freeze(['requireEnabled', 'resolveTypeOriginPackageId']);
 const LEGACY_FIELD_SET = new Set(MAKER_V8_LEGACY_FIELDS);
@@ -217,6 +222,34 @@ function normalizeSuiType(value) {
   const match = EXACT_SUI_TYPE.exec(value);
   if (!match) return '';
   return `0x${match[1].toLowerCase()}::${match[2]}::${match[3]}`;
+}
+
+function inspectNativeSoulIntegration(source, issues) {
+  if (!hasOwn(source, 'nativeSoulIntegration')) return undefined;
+  const value = source.nativeSoulIntegration;
+  if (!inspectRecordShape(value, 'nativeSoulIntegration', NATIVE_FIELDS, NATIVE_FIELDS, issues)) return undefined;
+  const result = {};
+  for (const key of NATIVE_FIELDS.filter(key => key.endsWith('Id'))) result[key] = inspectId(value, key, `nativeSoulIntegration.${key}`, issues);
+  try {
+    const bytes = fromBase58(value.soulidityCallableDigest);
+    if (bytes.length !== 32 || toBase58(bytes) !== value.soulidityCallableDigest) throw new Error('digest');
+    result.soulidityCallableDigest = value.soulidityCallableDigest;
+  } catch { issues.push(issue('identity', 'MAKER_V8_NATIVE_DIGEST_INVALID', 'nativeSoulIntegration.soulidityCallableDigest', 'Native callable digest must be canonical 32-byte Sui Base58.')); }
+  result.expectedNativeBinding = {};
+  if (inspectRecordShape(value.expectedNativeBinding, 'nativeSoulIntegration.expectedNativeBinding', NATIVE_TYPES, NATIVE_TYPES, issues)) {
+    for (const key of NATIVE_TYPES) {
+      const type = normalizeSuiType(value.expectedNativeBinding[key]);
+      const suffix = key.startsWith('soul') ? 'soul::Soul' : key.startsWith('mint') ? 'animacraft_v8_binding::MintBindingWitnessV8' : 'animacraft_v8_binding::SoulOwnerWitnessV8';
+      if (!type || !type.endsWith(`::${suffix}`) || !normalizeSuiId(type.split('::')[0])) issues.push(issue('identity', 'MAKER_V8_NATIVE_TYPE_INVALID', `nativeSoulIntegration.expectedNativeBinding.${key}`, 'Native type must have its exact module/datatype without generic arguments.'));
+      result.expectedNativeBinding[key] = type;
+    }
+    const t = result.expectedNativeBinding;
+    if (['soulOriginalType', 'mintWitnessOriginalType', 'ownerWitnessOriginalType'].some(key => t[key]?.split('::')[0] !== result.soulidityOriginalPackageId)
+      || t.mintWitnessDefiningType?.split('::')[0] !== t.ownerWitnessDefiningType?.split('::')[0]) issues.push(issue('lineage', 'MAKER_V8_NATIVE_LINEAGE_INVALID', 'nativeSoulIntegration.expectedNativeBinding', 'Soul and proofs must share original lineage; both proofs share their introducing release.'));
+  }
+  const objectIds = ['marketConfigV2Id', 'kindRegistryId', 'kioskRegistryId', 'soulTransferPolicyId'].map(key => result[key]);
+  if (new Set(objectIds).size !== objectIds.length) issues.push(issue('identity', 'MAKER_V8_NATIVE_OBJECT_ALIAS', 'nativeSoulIntegration', 'Native config, registries and transfer policy must be distinct objects.'));
+  return result;
 }
 
 function inspectOptions(value, issues) {
@@ -560,6 +593,7 @@ export function inspectMakerV8Runtime(config, options) {
   );
   const roleConfigIds = inspectRoleConfigIds(source.roleConfigIds, issues);
   const makerBindings = inspectMakerBindings(source.makerBindings, issues);
+  const nativeSoulIntegration = inspectNativeSoulIntegration(source, issues);
 
   const runtime = deepFreeze({
     schemaVersion,
@@ -573,6 +607,7 @@ export function inspectMakerV8Runtime(config, options) {
     roles,
     roleConfigIds,
     makerBindings,
+    ...(nativeSoulIntegration === undefined ? {} : { nativeSoulIntegration }),
   });
   inspectObjectIdCollisions(runtime, issues);
 

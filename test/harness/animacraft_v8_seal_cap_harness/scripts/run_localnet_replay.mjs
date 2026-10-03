@@ -23,6 +23,8 @@ import {
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  APPROVED_PROTOCOL_PROFILE,
+  APPROVED_PROTOCOL_PROFILE_HASH,
   assertApprovedProtocolProfile,
   assertReplayMatchesEvidence,
   canonicalJson,
@@ -52,6 +54,12 @@ let localnet = null;
 let localnetExit = null;
 let temporaryRoot = null;
 let cleanupPromise = null;
+let candidateBinary = null;
+const candidate137 = Object.freeze({
+  version: 'sui 1.80.1-671ba71e69c7',
+  binarySha256: '1d7baa7c7314113671415acfa20279b1eedb6ae6d04f286988a00da285e769c3',
+  profile: { ...APPROVED_PROTOCOL_PROFILE, protocolVersion: '137' },
+});
 
 function fail(message) {
   throw new Error(`seal-cap localnet replay: ${message}`);
@@ -128,6 +136,7 @@ function scrubbedEnvironment() {
 const childEnvironment = scrubbedEnvironment();
 
 function run(command, args, { allowFailure = false, timeoutMs = transactionTimeoutMs } = {}) {
+  if (command === 'sui') command = candidateBinary ?? process.env.ANIMACRAFT_SUI_BINARY ?? 'sui';
   return new Promise((resolveRun, rejectRun) => {
     process.stdout.write(`+ ${command} ${args.join(' ')}\n`);
     const child = spawn(command, args, {
@@ -377,7 +386,7 @@ function startLocalnet(networkDirectory, rpcPort) {
     while (logBytes > 64 * 1024 && logs.length > 1) logBytes -= logs.shift().length;
   };
   process.stdout.write(`+ sui start --network.config ${networkDirectory} --fullnode-rpc-port ${rpcPort} --quiet\n`);
-  localnet = spawn('sui', [
+  localnet = spawn(candidateBinary ?? process.env.ANIMACRAFT_SUI_BINARY ?? 'sui', [
     'start',
     '--network.config', networkDirectory,
     '--fullnode-rpc-port', String(rpcPort),
@@ -536,10 +545,49 @@ function assertSuccess(envelope, label) {
 async function main({
   diagnoseFullCorePublish = false,
   diagnoseSevenPackagePublish = false,
-  recordProtocol133Evidence = false,
+  recordFieldLimitEvidence = false,
+  recordProtocol137Evidence = false,
+  measureProtocol137 = false,
 } = {}) {
-  await run(process.execPath, [quickGate], { timeoutMs: 4 * 60_000 });
-  const evidence = loadAndVerifyEvidence(harnessDirectory);
+  let evidence;
+  if (recordProtocol137Evidence) {
+    const evidenceDirectory = join(harnessDirectory, 'evidence');
+    evidence = {
+      approvedProfile: APPROVED_PROTOCOL_PROFILE,
+      artifacts: new Map(),
+      evidenceDirectory,
+      manifest: JSON.parse(readFileSync(join(evidenceDirectory, 'manifest.json'), 'utf8')),
+    };
+  } else {
+    // Candidate measurement validates current production bytes below, not the
+    // approved historical source hash. Approved replay still uses the full gate.
+    if (!measureProtocol137) await run(process.execPath, [quickGate], { timeoutMs: 4 * 60_000 });
+    evidence = loadAndVerifyEvidence(harnessDirectory);
+  }
+  if (measureProtocol137) {
+    if (!candidateBinary || sha256Bytes(readFileSync(candidateBinary)) !== candidate137.binarySha256) {
+      fail('candidate137 executable hash mismatch');
+    }
+    const version = await run('sui', ['--version']);
+    if (version.stdout.trim() !== candidate137.version) fail('candidate137 executable version mismatch');
+    evidence = { ...evidence, approvedProfile: candidate137.profile };
+    // Current Core additionally reads the Part index and row during seal.
+    // These are candidate hypotheses; actual executions below must prove them.
+    evidence.manifest = { ...evidence.manifest, scenarios: Object.fromEntries([
+      ['331-colored', 331, 331, 1, 998, 'success'],
+      ['332-colored', 332, 332, 1, 1001, 'failure'],
+      ['497-colorless', 497, 0, 1, 999, 'success'],
+      ['498-colorless', 498, 0, 1, 1001, 'failure'],
+      ['199-distinct', 199, 0, 199, 997, 'success'],
+      ['200-distinct', 200, 0, 200, 1002, 'failure'],
+    ].map(([name, styles, colors, items, cacheDemand, status]) =>
+      [name, { styles, colors, items, referencedAssets: items,
+        referencedColorChannels: colors, cacheDemand, status }])) };
+  }
+  const measuredProfileHash = measureProtocol137
+    ? sha256Bytes(Buffer.from(canonicalJson(candidate137.profile)))
+    : recordProtocol137Evidence ? APPROVED_PROTOCOL_PROFILE_HASH
+      : evidence.manifest.approvedProtocolProfile.canonicalSha256;
 
   const { fixtureDirectory, publicationFile } = prepareTemporaryWorkspace();
   let clientConfig = null;
@@ -597,10 +645,11 @@ async function main({
   const profile = assertApprovedProtocolProfile(
     protocolEnvelope,
     evidence.approvedProfile,
-    evidence.manifest.approvedProtocolProfile.canonicalSha256,
+    measuredProfileHash,
   );
+  const approvedProtocolProfileHash = measuredProfileHash;
   process.stdout.write(
-    `ok: exact approved protocol profile ${canonicalJson(profile)} (${evidence.manifest.approvedProtocolProfile.canonicalSha256})\n`,
+    `ok: exact ${measureProtocol137 ? 'candidate (not approved)' : 'approved'} protocol profile ${canonicalJson(profile)} (${approvedProtocolProfileHash})\n`,
   );
 
   const clientPrefix = [
@@ -609,6 +658,63 @@ async function main({
     '--client.env', 'localnet',
     '-y',
   ];
+  if (recordFieldLimitEvidence) {
+    const cases = {};
+    for (const fieldCount of [32, 33]) {
+      const packagePath = join(root, 'test', 'harness', `animacraft_v8_field_limit_${fieldCount}`);
+      const fieldPublicationFile = checkedTemporaryChild(
+        join(temporaryRoot, `FieldLimit${fieldCount}Published.toml`),
+        `${fieldCount}-field publication file`,
+      );
+      const published = await runTestPublishWithRetry(() => run('sui', [
+        ...clientPrefix,
+        'test-publish', packagePath,
+        '--build-env', `field${fieldCount}`,
+        '--pubfile-path', fieldPublicationFile,
+        '--gas-budget', gasBudget,
+        '--warnings-are-errors',
+        '--json',
+      ], { allowFailure: true, timeoutMs: 180_000 }));
+      const { digest } = transactionDigest(published, `${fieldCount}-field publish`);
+      const envelope = await transactionEnvelope(rpcUrl, digest);
+      const status = envelope.result?.effects?.status;
+      const expectedStatus = fieldCount === 32 ? 'success' : 'failure';
+      if (status?.status !== expectedStatus) {
+        fail(`${fieldCount}-field publish expected ${expectedStatus}, got ${canonicalJson(status)}`);
+      }
+      cases[`${fieldCount}-fields`] = {
+        package: `test/harness/animacraft_v8_field_limit_${fieldCount}`,
+        struct: `FieldLimit${fieldCount}`,
+        fieldCount,
+        status: expectedStatus,
+        digest,
+        ...(expectedStatus === 'failure' ? { error: status.error } : {}),
+      };
+    }
+    const fieldEvidence = {
+      schema: 'animacraft-v8-struct-field-limit-evidence.v1',
+      replayProvenance: {
+        binaryTag: 'mainnet-v1.80.1',
+        commit: '671ba71e69c711ded76a11ef90297c4f2d5ac474',
+        asset: 'sui-mainnet-v1.80.1-macos-arm64.tgz',
+        assetSha256: '4df39def26921abbffbc78902e7bd8a89fc8c99c99eb0c4fb254ebbcbf963c05',
+        cliVersion: measureProtocol137 ? candidate137.version : 'sui 1.80.1-671ba71e69c7',
+        protocolVersion: profile.protocolVersion,
+        maxFieldsInStruct: '32',
+      },
+      approvedProtocolProfileHash: measuredProfileHash,
+      cases,
+    };
+    const fieldPath = measureProtocol137
+      ? join(mkdtempSync(join(resolve(tmpdir()), 'animacraft-protocol137-fields-')), 'measurement.json')
+      : join(root, 'test', 'harness', 'animacraft_v8_field_limit_protocol137.json');
+    writeFileSync(
+      fieldPath,
+      `${JSON.stringify(fieldEvidence, null, 2)}\n`,
+    );
+    process.stdout.write(`ok: recorded protocol ${profile.protocolVersion} 32/33-field verifier boundary at ${fieldPath}\n`);
+    return;
+  }
   if (diagnoseSevenPackagePublish) {
     const packageNames = [
       'animacraft_v8_core',
@@ -696,6 +802,24 @@ async function main({
         && !['Published.toml', 'SlimPublished.toml'].includes(basename(source));
     },
   });
+  let candidateSource = null;
+  if (measureProtocol137) {
+    const productionCopy = checkedTemporaryChild(join(temporaryRoot, 'production-core'), 'candidate Core');
+    const sourceOnly = source => !/(?:^|\/)(?:build|\.git)(?:\/|$)/.test(source);
+    cpSync(productionCoreSource, productionCopy, { recursive: true, filter: sourceOnly });
+    const source = readFileSync(join(productionCopy, 'sources/base_registry_v8.move'));
+    writeFileSync(join(fixtureDirectory, 'sources/base_registry_v8.move'), source);
+    for (const target of [productionCopy, fixtureDirectory]) {
+      await run('sui', ['move', 'build', '--path', target, '--force', '--warnings-are-errors'], { timeoutMs: 180_000 });
+    }
+    const relativeBytecode = 'build/animacraft_v8_core/bytecode_modules/base_registry_v8.mv';
+    const productionBytes = readFileSync(join(productionCopy, relativeBytecode));
+    if (!productionBytes.equals(readFileSync(join(fixtureDirectory, relativeBytecode)))) {
+      fail('candidate fixture bytecode differs from current production base registry');
+    }
+    candidateSource = { sourceSha256: sha256Bytes(source), bytecodeSha256: sha256Bytes(productionBytes) };
+    process.stdout.write(`ok: candidate current-production bytecode identity ${canonicalJson(candidateSource)}\n`);
+  }
   const diagnosticOmissions = diagnoseFullCorePublish
     ? String(process.env.CORE_DIAGNOSTIC_OMIT ?? '').split(',').filter(Boolean)
     : [];
@@ -769,10 +893,18 @@ async function main({
 
   const summaries = [];
   const recordedEnvelopes = new Map();
-  for (const name of EVIDENCE_SCENARIO_NAMES) {
+  const scenarioNames = measureProtocol137 ? Object.keys(evidence.manifest.scenarios) : EVIDENCE_SCENARIO_NAMES;
+  const candidateOutput = measureProtocol137
+    ? mkdtempSync(join(resolve(tmpdir()), 'animacraft-protocol137-measurement-')) : null;
+  if (candidateOutput) {
+    writeFileSync(join(candidateOutput, 'protocol-config.rpc.json'), `${JSON.stringify(protocolEnvelope, null, 2)}\n`);
+    process.stdout.write(`candidate partial evidence: ${candidateOutput}\n`);
+  }
+  for (const name of scenarioNames) {
     const scenario = evidence.manifest.scenarios[name];
     const colored = scenario.colors > 0;
-    const created = await executeCall('create_registry', [scenario.styles, colored]);
+    const unique = scenario.items > 1;
+    const created = await executeCall('create_registry', [scenario.styles, colored, unique]);
     assertSuccess(created, `${name} create_registry setup`);
     const objectChanges = created.result.objectChanges ?? [];
     const registry = objectChanges.find(
@@ -788,21 +920,15 @@ async function main({
       fail(`${name} create_registry did not create typed registry/root/admin objects`);
     }
 
-    for (let start = 0; start < scenario.styles; start += 100) {
-      const count = Math.min(100, scenario.styles - start);
-      const appended = await executeCall(
-        'append_styles',
-        [registry, makerRoot, admin, start, count, colored],
-      );
-      assertSuccess(appended, `${name} append_styles ${start}+${count}`);
-    }
-    for (let start = 0; start < scenario.colors; start += 100) {
-      const count = Math.min(100, scenario.colors - start);
-      const appended = await executeCall(
-        'append_colors',
-        [registry, makerRoot, admin, scenario.styles, start, count],
-      );
-      assertSuccess(appended, `${name} append_colors ${start}+${count}`);
+    for (const [functionName, total, extras] of [
+      ['append_colors', scenario.colors, []],
+      ['append_items', scenario.items, []],
+      ['append_styles', scenario.styles, [colored, unique]],
+      ['append_assets', scenario.referencedAssets, []],
+    ]) for (let start = 0; start < total; start += 50) {
+      const count = Math.min(50, total - start);
+      const appended = await executeCall(functionName, [registry, makerRoot, admin, start, count, ...extras]);
+      assertSuccess(appended, `${name} ${functionName} ${start}+${count}`);
     }
 
     // The measured seal is deliberately its own transaction after every setup
@@ -810,25 +936,68 @@ async function main({
     const sealed = await executeCall(
       'seal',
       [registry, makerRoot, admin],
-      { allowFailure: scenario.status === 'failure' },
+      { allowFailure: measureProtocol137 || scenario.status === 'failure' },
     );
-    summaries.push(assertReplayMatchesEvidence(name, sealed, evidence));
-    if (recordProtocol133Evidence) recordedEnvelopes.set(name, sealed);
+    if (candidateOutput) writeFileSync(join(candidateOutput, `seal-${name}.rpc.json`),
+      `${JSON.stringify(sealed, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    if (recordProtocol137Evidence || measureProtocol137) {
+      const result = sealed?.result;
+      if (!result || result.digest !== result.effects?.transactionDigest
+          || result.effects?.status?.status !== scenario.status
+          || !Array.isArray(result.rawEffects)) {
+        fail(`${name} did not preserve its measured success/failure boundary under protocol ${profile.protocolVersion}`);
+      }
+      if (measureProtocol137 && scenario.status === 'failure'
+          && (!/MovePrimitiveRuntimeError/.test(result.effects.status.error ?? '')
+            || !/dynamic_field/.test(result.effects.status.error ?? '')
+            || !/borrow_child_object|has_child_object/.test(result.effects.status.error ?? ''))) {
+        fail(`${name} failed for a different reason: ${result.effects.status.error}`);
+      }
+      summaries.push({
+        name,
+        digest: result.digest,
+        status: result.effects.status.status,
+        cacheDemand: scenario.cacheDemand,
+        gasUsed: result.effects.gasUsed,
+        rawEffectsLength: result.rawEffects.length,
+      });
+      recordedEnvelopes.set(name, sealed);
+    } else {
+      summaries.push(assertReplayMatchesEvidence(name, sealed, evidence));
+    }
     process.stdout.write(`ok: ${name} typed seal effects match the protocol retest boundary\n`);
   }
 
-  if (recordProtocol133Evidence) {
+  if (measureProtocol137) {
+    const output = candidateOutput;
+    const artifacts = new Map([['protocol-config.rpc.json', protocolEnvelope],
+      ...scenarioNames.map(name => [`seal-${name}.rpc.json`, recordedEnvelopes.get(name)])]);
+    const hashes = {};
+    for (const [name, value] of artifacts) {
+      const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+      if (!readFileSync(join(output, name)).equals(bytes)) fail(`candidate artifact drift: ${name}`);
+      hashes[name] = sha256Bytes(bytes);
+    }
+    writeFileSync(join(output, 'measurement.json'), `${JSON.stringify({
+      status: 'CANDIDATE_MEASUREMENT_NOT_APPROVAL', candidate: candidate137, source: candidateSource,
+      profileHash: measuredProfileHash, artifacts: hashes, scenarios: summaries,
+    }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    process.stdout.write(`candidate measurement retained at ${output}; approved evidence unchanged\n`);
+    return;
+  }
+  if (recordProtocol137Evidence) {
     const manifest = structuredClone(evidence.manifest);
+    manifest.approvedProtocolProfile.canonicalSha256 = APPROVED_PROTOCOL_PROFILE_HASH;
     manifest.replayProvenance = {
-      binaryTag: 'mainnet-v1.77.2',
-      commit: '51d177ad7d65102fc368b582408f466d97b31548',
-      asset: 'sui-mainnet-v1.77.2-macos-arm64.tgz',
-      assetSha256: 'f0871c35ce1f3261028a3b0d389c2e34166fbf2f4982fd52d728806a03736d0d',
-      cliVersion: 'sui 1.77.2-51d177ad7d65',
-      protocolVersion: '133',
+      binaryTag: 'mainnet-v1.80.1',
+      commit: '671ba71e69c711ded76a11ef90297c4f2d5ac474',
+      asset: 'sui-mainnet-v1.80.1-macos-arm64.tgz',
+      assetSha256: '4df39def26921abbffbc78902e7bd8a89fc8c99c99eb0c4fb254ebbcbf963c05',
+      cliVersion: 'sui 1.80.1-671ba71e69c7',
+      protocolVersion: '137',
     };
     const artifacts = new Map([
-      ['protocol-config-v133.rpc.json', protocolEnvelope],
+      ['protocol-config-v137.rpc.json', protocolEnvelope],
       ...EVIDENCE_SCENARIO_NAMES.map((name) => [
         manifest.scenarios[name].artifact,
         recordedEnvelopes.get(name),
@@ -846,6 +1015,7 @@ async function main({
       const result = recordedEnvelopes.get(name).result;
       const scenario = manifest.scenarios[name];
       scenario.originalDigest = result.digest;
+      if (scenario.status === 'failure') scenario.expectedError = result.effects.status.error;
       scenario.gasUsed = result.effects.gasUsed;
       scenario.rawEffectsLength = result.rawEffects.length;
       scenario.eventCount = (result.events ?? []).length;
@@ -861,15 +1031,19 @@ async function main({
       };
     }
     writeFileSync(
+      join(evidence.evidenceDirectory, 'approved-protocol-profile.json'),
+      `${JSON.stringify(APPROVED_PROTOCOL_PROFILE, null, 2)}\n`,
+    );
+    writeFileSync(
       join(evidence.evidenceDirectory, 'manifest.json'),
       `${JSON.stringify(manifest, null, 2)}\n`,
     );
-    process.stdout.write('ok: recorded same-run protocol 133 profile and four complete RPC envelopes\n');
+    process.stdout.write('ok: recorded same-run protocol 137 profile and six complete RPC envelopes\n');
   }
 
   process.stdout.write(`${JSON.stringify({
     schema: 'animacraft-v8-seal-cap-localnet-replay.v1',
-    approvedProtocolProfileHash: evidence.manifest.approvedProtocolProfile.canonicalSha256,
+    approvedProtocolProfileHash,
     scenarios: summaries,
   }, null, 2)}\n`);
 }
@@ -1070,10 +1244,18 @@ try {
     await main({ diagnoseFullCorePublish: true });
   } else if (arguments_.length === 1 && arguments_[0] === '--diagnose-seven-package-publish') {
     await main({ diagnoseSevenPackagePublish: true });
-  } else if (arguments_.length === 1 && arguments_[0] === '--record-protocol133-evidence') {
-    await main({ recordProtocol133Evidence: true });
+  } else if (arguments_.length === 1 && arguments_[0] === '--record-field-limit-evidence') {
+    await main({ recordFieldLimitEvidence: true });
+  } else if (arguments_.length === 1 && arguments_[0] === '--record-protocol137-evidence') {
+    await main({ recordProtocol137Evidence: true });
+  } else if (arguments_.length === 2 && arguments_[0] === '--measure-protocol137') {
+    candidateBinary = resolve(arguments_[1]);
+    await main({ measureProtocol137: true });
+  } else if (arguments_.length === 2 && arguments_[0] === '--measure-protocol137-fields') {
+    candidateBinary = resolve(arguments_[1]);
+    await main({ measureProtocol137: true, recordFieldLimitEvidence: true });
   } else {
-    fail('runner accepts only `--workspace-self-test`, `--diagnose-full-core-publish`, `--diagnose-seven-package-publish`, or `--record-protocol133-evidence`; use `npm run move:seal-cap:localnet` for replay');
+    fail('runner accepts `--workspace-self-test`, `--diagnose-full-core-publish`, `--diagnose-seven-package-publish`, `--record-field-limit-evidence`, `--record-protocol137-evidence`, `--measure-protocol137 /absolute/path/to/sui`, or `--measure-protocol137-fields /absolute/path/to/sui`; use `npm run move:seal-cap:localnet` for approved replay');
   }
 } finally {
   await cleanup();

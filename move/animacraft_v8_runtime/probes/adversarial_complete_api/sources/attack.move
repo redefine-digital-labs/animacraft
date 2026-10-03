@@ -10,7 +10,7 @@ use animacraft_v8_runtime::runtime_v8::{
     RuntimeLoadoutAuthorizationV8,
 };
 
-// Must fail: an external package cannot bypass the Core OutputRuntimeRequest
+// Must fail: an external package cannot bypass the installed RuntimeCallerCap
 // adapter and reach the counter mutator directly.
 public fun bypass_output_request<PaymentCoin>(
     release: &mut PackReleaseV8<PaymentCoin>,

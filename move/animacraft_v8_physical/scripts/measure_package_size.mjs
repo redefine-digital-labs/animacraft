@@ -23,17 +23,26 @@ const modules = fs.readdirSync(bytecodeDir)
     const moduleName = filename.slice(0, -3);
     const bytecodeBytes = fs.statSync(path.join(bytecodeDir, filename)).size;
     const disassembly = fs.readFileSync(path.join(disassemblyDir, `${moduleName}.mvb`), 'utf8');
-    const declared = disassembly.match(/^module\s+[^.]+\.([A-Za-z][A-Za-z0-9_]*)\s*\{/m)?.[1];
-    if (declared !== moduleName) throw new Error(`Disassembly module mismatch for ${filename}.`);
+    const declaration = disassembly.match(/^module\s+(?:0x)?([0-9a-fA-F]{1,64})\.([A-Za-z][A-Za-z0-9_]*)\s*\{/m);
+    const declaredModule = declaration?.[2];
+    const declaredAddress = declaration?.[1].toLowerCase().padStart(64, '0');
+    if (declaredModule !== moduleName) {
+      throw new Error(`Disassembly module mismatch for ${filename}: ${declaredModule || 'missing'}`);
+    }
     const datatypeNames = [...disassembly.matchAll(/^(?:struct|enum)\s+([A-Za-z][A-Za-z0-9_]*)\b/gm)]
       .map((match) => match[1]);
-    const dependencyAddresses = [...disassembly.matchAll(/^use\s+([0-9a-fA-F]{64})::/gm)]
-      .map((match) => match[1].toLowerCase())
-      .filter((address) => !/^0+$/.test(address));
-    return { moduleName, bytecodeBytes, datatypeNames, dependencyAddresses };
+    const dependencyAddresses = [...disassembly.matchAll(/^use\s+(?:0x)?([0-9a-fA-F]{1,64})::/gm)]
+      .map((match) => match[1].toLowerCase().padStart(64, '0'))
+      // A package's own module imports are not external linkage entries.
+      .filter((address) => address !== declaredAddress);
+    return { moduleName, declaredAddress, bytecodeBytes, datatypeNames, dependencyAddresses };
   });
 
 if (!modules.length) throw new Error('No production Move modules found.');
+if (new Set(modules.map(module => module.declaredAddress)).size !== 1) {
+  throw new Error('Disassembly package address mismatch.');
+}
+
 const dependencies = new Set(modules.flatMap((module) => module.dependencyAddresses));
 const moduleMapBytes = modules.reduce(
   (total, module) => total + Buffer.byteLength(module.moduleName) + module.bytecodeBytes,

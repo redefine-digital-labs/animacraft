@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { SessionKey } from '@mysten/seal';
 import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
-import { GrpcTypes } from '@mysten/sui/grpc';
+import { GrpcTypes, SuiGrpcClient, isSuiGrpcClient } from '@mysten/sui/grpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { MultiSigPublicKey } from '@mysten/sui/multisig';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { getZkLoginSignature } from '@mysten/sui/zklogin';
-import { RpcError } from '@protobuf-ts/runtime-rpc';
+import { RpcError, TestTransport } from '@protobuf-ts/runtime-rpc';
 import {
   fromBase64,
   fromHex,
@@ -457,6 +458,16 @@ function fixtures() {
       },
     },
     coreTransaction: coreTransactionResult(),
+    dynamicField: {
+      $kind: 'DynamicField',
+      fieldId: objectId('8'),
+      digest: digest(18),
+      version: '22',
+      type: normalizeStructTag(`0x2::dynamic_field::Field<0x2::object::ID,${TYPE}>`),
+      previousTransaction: PREVIOUS_TX,
+      name: { type: normalizeStructTag('0x2::object::ID'), bcs: bcs.Address.serialize(OBJECT).toBytes() },
+      value: { type: normalizeStructTag(TYPE), bcs: new Uint8Array([7, 8, 9]) },
+    },
     graphqlResult: {
       data: {
         chainIdentifier: MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
@@ -501,6 +512,14 @@ function fixtures() {
       calls.push(['grpc.getBalance', input]);
       return { balance: { coinType: normalizeStructTag('0x2::sui::SUI'), balance: '999', coinBalance: '999', addressBalance: '0' } };
     },
+    async getDynamicField(input) {
+      calls.push(['grpc.getDynamicField', input]);
+      return { dynamicField: structuredClone(values.dynamicField) };
+    },
+    async listDynamicFields(input) {
+      calls.push(['grpc.listDynamicFields', input]);
+      return { dynamicFields: [structuredClone(values.dynamicField)], cursor: null, hasNextPage: false };
+    },
     async simulateTransaction(input) {
       calls.push(['grpc.simulateTransaction', input]);
       return structuredClone(values.coreTransaction);
@@ -510,10 +529,16 @@ function fixtures() {
       return structuredClone(values.coreTransaction);
     },
     core: {
+      async getObject(input) {
+        calls.push(['core.getObject', input]);
+        return { object: structuredClone(values.current) };
+      },
       async getObjects() { return { objects: [] }; },
       async listOwnedObjects(input) { return grpcClient.listOwnedObjects(input); },
       async listCoins(input) { return grpcClient.listCoins(input); },
       async getBalance(input) { return grpcClient.getBalance(input); },
+      async getDynamicField(input) { return grpcClient.getDynamicField(input); },
+      async listDynamicFields(input) { return grpcClient.listDynamicFields(input); },
       async getTransaction(input) {
         calls.push(['core.getTransaction', input]);
         return structuredClone(values.coreTransaction);
@@ -523,6 +548,10 @@ function fixtures() {
       async getProtocolConfig() { return { protocolConfig: structuredClone(values.protocolConfig) }; },
       async getCurrentSystemState() { return { systemState: { epoch: '91' } }; },
       resolveTransactionPlugin() { return async (_data, _options, next) => next(); },
+      async verifyZkLoginSignature(input) {
+        calls.push(['core.verifyZkLoginSignature', input]);
+        return { success: true, errors: [] };
+      },
     },
     ledgerService: {
       async getObject(input) {
@@ -586,9 +615,142 @@ test('production factory is official, branded, and exposes gRPC authority withou
   assert.equal(transport.signAndExecuteTransaction, undefined);
   assert.equal(typeof transport.core.executeTransaction, 'function');
   assert.equal(typeof transport.core.simulateTransaction, 'function');
+  assert.equal(typeof transport.core.getObject, 'function');
+  assert.equal(typeof transport.core.verifyZkLoginSignature, 'function');
 });
 
-test('factory rejects non-Mainnet and incomplete clients while brand cannot be shape-forged', () => {
+test('official branded gRPC core is exact-forwarded for Seal and zkLogin with fresh Mainnet pins', async () => {
+  const rpcCalls = [];
+  const fallback = new TestTransport();
+  let observedChainId = MAKER_V8_SUI_MAINNET_GENESIS_DIGEST;
+  const rpcTransport = {
+    mergeOptions: (options) => fallback.mergeOptions(options),
+    unary(method, input, options) {
+      const call = { service: method.service.typeName, method: method.name, input };
+      rpcCalls.push(call);
+      let response;
+      if (call.service === 'sui.rpc.v2.LedgerService' && call.method === 'GetServiceInfo') {
+        response = method.O.create({
+          chainId: observedChainId,
+          chain: 'mainnet',
+          epoch: 91n,
+          checkpointHeight: 100n,
+          lowestAvailableCheckpoint: 4n,
+          lowestAvailableCheckpointObjects: 9n,
+          server: 'official-memory-grpc/2.26.2',
+        });
+      } else if (call.service === 'sui.rpc.v2.LedgerService'
+        && call.method === 'BatchGetObjects') {
+        response = method.O.create({
+          objects: [{
+            result: {
+              oneofKind: 'object',
+              object: rawPackage({ version: 1n }),
+            },
+          }],
+        });
+      } else if (call.service === 'sui.rpc.v2.SignatureVerificationService'
+        && call.method === 'VerifySignature') {
+        response = method.O.create({ isValid: true });
+      } else {
+        throw new Error(`Unexpected official gRPC call ${call.service}.${call.method}`);
+      }
+      return new TestTransport({ response }).unary(method, input, options);
+    },
+    serverStreaming() { throw new Error('Unexpected server-streaming gRPC call.'); },
+    clientStreaming() { throw new Error('Unexpected client-streaming gRPC call.'); },
+    duplex() { throw new Error('Unexpected duplex gRPC call.'); },
+  };
+  const grpcClient = new SuiGrpcClient({ network: 'mainnet', transport: rpcTransport });
+  assert.equal(isSuiGrpcClient(grpcClient), true);
+
+  const rawGetObject = grpcClient.core.getObject.bind(grpcClient.core);
+  const rawVerifyZkLoginSignature = grpcClient.core.verifyZkLoginSignature.bind(grpcClient.core);
+  const coreGetObjectInputs = [];
+  const coreGetObjectResults = [];
+  const coreVerifyInputs = [];
+  const coreVerifyResults = [];
+  let driftAfterGetObject = false;
+  grpcClient.core.getObject = async function getObject(input) {
+    assert.equal(this, grpcClient.core);
+    coreGetObjectInputs.push(input);
+    const result = await rawGetObject(input);
+    coreGetObjectResults.push(result);
+    if (driftAfterGetObject) observedChainId = 'not-mainnet';
+    return result;
+  };
+  grpcClient.core.verifyZkLoginSignature = async function verifyZkLoginSignature(input) {
+    assert.equal(this, grpcClient.core);
+    coreVerifyInputs.push(input);
+    const result = await rawVerifyZkLoginSignature(input);
+    coreVerifyResults.push(result);
+    return result;
+  };
+
+  const transport = createMakerV8SuiGrpcTransport({
+    grpcClient,
+    graphqlClient: {
+      network: 'mainnet',
+      async query() { throw new Error('GraphQL must not be consulted by raw Core proxy calls.'); },
+    },
+  });
+  assert.equal(isMakerV8SuiGrpcTransport(transport), true);
+
+  const getObjectInput = Object.freeze({ objectId: PACKAGE });
+  const getObjectResult = await transport.core.getObject(getObjectInput);
+  assert.equal(coreGetObjectInputs[0], getObjectInput);
+  assert.equal(getObjectResult, coreGetObjectResults[0]);
+  assert.equal(getObjectResult.object.version, '1');
+
+  const sessionKey = await SessionKey.create({
+    address: OWNER,
+    packageId: PACKAGE,
+    ttlMin: 10,
+    suiClient: transport,
+  });
+  assert.equal(sessionKey.getAddress(), OWNER);
+  assert.equal(sessionKey.getPackageId(), PACKAGE);
+  assert.deepEqual(coreGetObjectInputs[1], { objectId: PACKAGE });
+
+  const verifyInput = Object.freeze({
+    bytes: toBase64(new Uint8Array([1, 2, 3])),
+    signature: toBase64(new Uint8Array([4, 5, 6])),
+    intentScope: 'PersonalMessage',
+    address: OWNER,
+  });
+  const verifyResult = await transport.core.verifyZkLoginSignature(verifyInput);
+  assert.equal(coreVerifyInputs[0], verifyInput);
+  assert.equal(verifyResult, coreVerifyResults[0]);
+  assert.deepEqual(verifyResult, { success: true, errors: [] });
+  assert.equal(
+    rpcCalls.filter(({ method }) => method === 'GetServiceInfo').length,
+    6,
+    'each raw Core call must pin Mainnet both before and after forwarding',
+  );
+  assert.deepEqual(
+    [...new Set(rpcCalls.map(({ service }) => service))].sort(),
+    ['sui.rpc.v2.LedgerService', 'sui.rpc.v2.SignatureVerificationService'],
+  );
+
+  const getCallsBeforePostDrift = coreGetObjectInputs.length;
+  driftAfterGetObject = true;
+  await assert.rejects(
+    transport.core.getObject({ objectId: PACKAGE }),
+    code('MAKER_V8_SUI_GRPC_CHAIN_MISMATCH'),
+  );
+  assert.equal(coreGetObjectInputs.length, getCallsBeforePostDrift + 1);
+  driftAfterGetObject = false;
+
+  observedChainId = 'not-mainnet';
+  const verifyCallsBeforePreDrift = coreVerifyInputs.length;
+  await assert.rejects(
+    transport.core.verifyZkLoginSignature(verifyInput),
+    code('MAKER_V8_SUI_GRPC_CHAIN_MISMATCH'),
+  );
+  assert.equal(coreVerifyInputs.length, verifyCallsBeforePreDrift);
+});
+
+test('factory rejects non-Mainnet clients, raw Core gaps fail closed, and brand cannot be forged', async () => {
   const { grpcClient, graphqlClient } = fixtures();
   assert.throws(
     () => createMakerV8SuiGrpcTransport({ grpcClient: { ...grpcClient, network: 'testnet' }, graphqlClient }),
@@ -597,6 +759,14 @@ test('factory rejects non-Mainnet and incomplete clients while brand cannot be s
   assert.throws(
     () => createMakerV8SuiGrpcTransport({ grpcClient, graphqlClient: { network: 'mainnet' } }),
     code('MAKER_V8_SUI_GRAPHQL_CLIENT_INVALID'),
+  );
+  const incomplete = createMakerV8SuiGrpcTransport({
+    grpcClient: { ...grpcClient, core: { ...grpcClient.core, verifyZkLoginSignature: undefined } },
+    graphqlClient,
+  });
+  await assert.rejects(
+    incomplete.core.verifyZkLoginSignature({}),
+    code('MAKER_V8_SUI_GRPC_CLIENT_INVALID'),
   );
   assert.equal(isMakerV8SuiGrpcTransport({
     schemaVersion: 'animacraft.maker-v8-sui-grpc.v1',
@@ -705,6 +875,37 @@ test('raw package modules become a sorted canonical moduleMap and duplicate name
   );
 });
 
+test('raw package projection preserves actual original, type-introduction and dependency IDs', async () => {
+  const fixture = fixtures();
+  fixture.values.current = moveObject({ objectId: PACKAGE, version: '23', digest: PACKAGE_DIGEST,
+    owner: { $kind: 'Immutable', Immutable: true }, type: 'package', json: null });
+  Object.assign(fixture.values.rawPackage.package, {
+    storageId: PACKAGE, originalId: OBJECT, version: 23n,
+    typeOrigins: [{ moduleName: 'alpha', datatypeName: 'Soul', packageId: OBJECT }],
+    linkage: [{ originalId: OBJECT, upgradedId: PACKAGE, upgradedVersion: 7n }],
+  });
+  const read = () => fixture.transport.getObject({ id: PACKAGE, options: { showBcs: true } });
+  const response = await read();
+  assert.equal(response.data.bcs.originalId, OBJECT);
+  assert.deepEqual(response.data.bcs.typeOriginTable, [{ moduleName: 'alpha', datatypeName: 'Soul', packageId: OBJECT }]);
+  assert.deepEqual(response.data.bcs.linkageTable, [{ originalId: OBJECT, upgradedId: PACKAGE, upgradedVersion: '7' }]);
+  assert.equal(Object.isFrozen(response.data.bcs.typeOriginTable[0]), true);
+  assert.equal(Object.isFrozen(response.data.bcs.linkageTable), true);
+  const mask = fixture.calls.find(([name]) => name === 'ledger.getObject')[1].readMask.paths;
+  for (const path of ['package.original_id', 'package.type_origins', 'package.linkage']) assert.ok(mask.includes(path));
+  fixture.values.rawPackage.package.typeOrigins.push({ ...fixture.values.rawPackage.package.typeOrigins[0] });
+  await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_PACKAGE_TABLE_DUPLICATE'));
+  fixture.values.rawPackage.package.typeOrigins.pop();
+  fixture.values.rawPackage.package.linkage.push({ ...fixture.values.rawPackage.package.linkage[0] });
+  await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_PACKAGE_TABLE_DUPLICATE'));
+  fixture.values.rawPackage.package.linkage.pop();
+  fixture.values.rawPackage.package.typeOrigins[0].moduleName = 'missing';
+  await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_PACKAGE_ORIGIN_INVALID'));
+  fixture.values.rawPackage.package.typeOrigins[0].moduleName = 'alpha';
+  fixture.values.rawPackage.package.storageId = OBJECT;
+  await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_PACKAGE_DRIFT'));
+});
+
 test('package Core/raw identity drift is rejected', async () => {
   const fixture = fixtures();
   fixture.values.current = moveObject({
@@ -767,6 +968,99 @@ test('owned objects, coins, balance, current epoch, and protocol string|null sha
     fixture.transport.getOwnedObjects({ owner: OWNER, filter: { MatchAll: [] } }),
     code('MAKER_V8_SUI_GRPC_OWNED_FILTER_INVALID'),
   );
+});
+
+test('gRPC dynamic-field point and page reads preserve exact key/value BCS without JSON-RPC', async () => {
+  const fixture = fixtures();
+  const nameBcsBase64 = toBase64(bcs.Address.serialize(OBJECT).toBytes());
+  const field = await fixture.transport.getDynamicField({
+    parentId: PARENT,
+    name: { type: normalizeStructTag('0x2::object::ID'), bcsBase64: nameBcsBase64 },
+  });
+  assert.equal(field.fieldId, objectId('8'));
+  assert.equal(field.name.bcsBase64, nameBcsBase64);
+  assert.equal(field.value.type, normalizeStructTag(TYPE));
+  assert.equal(field.value.bcsBase64, toBase64(new Uint8Array([7, 8, 9])));
+  assert.equal(field.version, '22');
+  assert.equal(field.previousTransaction, PREVIOUS_TX);
+
+  const page = await fixture.transport.listDynamicFields({ parentId: PARENT, limit: 100 });
+  assert.equal(page.data.length, 1);
+  assert.equal(page.data[0].fieldId, field.fieldId);
+  assert.equal(page.hasNextPage, false);
+  assert.equal(fixture.calls.some(([name]) => name === 'grpc.getDynamicField'), true);
+  assert.equal(fixture.calls.some(([name]) => name === 'grpc.listDynamicFields'), true);
+  assert.equal(fixture.calls.some(([name]) => name.includes('jsonRpc')), false);
+});
+
+test('Core dynamic-field version is an exact positive uint64 string, not raw protobuf bigint', async () => {
+  const fixture = fixtures();
+  const request = { parentId: PARENT, name: { type: normalizeStructTag('0x2::object::ID'),
+    bcsBase64: toBase64(bcs.Address.serialize(OBJECT).toBytes()) } };
+  for (const version of ['1', '9007199254740993', '18446744073709551615']) {
+    fixture.values.dynamicField.version = version;
+    assert.equal((await fixture.transport.getDynamicField(request)).version, version);
+  }
+  for (const version of [22n, 22, '0', '-1', '01', '1.0', '1e3', ' 1',
+    '18446744073709551616', '9'.repeat(100), null, undefined]) {
+    fixture.values.dynamicField.version = version;
+    await assert.rejects(fixture.transport.getDynamicField(request),
+      { code: 'MAKER_V8_SUI_GRPC_DYNAMIC_FIELD_INVALID' });
+  }
+});
+
+test('historical RPC JSON flattens nested TypeName and Url without weakening exact comparison', async () => {
+  const datatype = (typeName) => ({ type: MOVE_TYPE.DATATYPE, typeName, typeParameterInstantiation: [] });
+  const vector = (inner) => ({ type: MOVE_TYPE.VECTOR, typeParameterInstantiation: [inner] });
+  const asciiType = `${STD_PACKAGE}::ascii::String`;
+  const typeNameType = `${STD_PACKAGE}::type_name::TypeName`;
+  const urlType = `${SUI_PACKAGE}::url::Url`;
+  const nestedType = `${PACKAGE}::history_test::NestedStrings`;
+  const descriptions = [
+    [asciiType, [['bytes', vector({ type: MOVE_TYPE.U8, typeParameterInstantiation: [] })]]],
+    [typeNameType, [['name', datatype(asciiType)]]],
+    [urlType, [['url', datatype(asciiType)]]],
+    [nestedType, [['id', datatype(UID_TYPE)], ['rules', vector(datatype(typeNameType))], ['url', datatype(urlType)]]],
+  ];
+  for (const [typeName, fields] of descriptions) {
+    const [definingId, module, name] = typeName.split('::');
+    datatypeFixtures.set(`${definingId}:${module}:${name}`, {
+      typeName, definingId, module, name, abilities: [], typeParameters: [],
+      kind: DATATYPE_KIND.STRUCT, variants: [],
+      fields: fields.map(([name, type], position) => ({ name, type, position })),
+    });
+  }
+  try {
+    const parsed = { id: OBJECT, rules: [`${PACKAGE.slice(2)}::royalty_rule::Rule`], url: 'https://example.com/asset' };
+    const contents = bcs.struct('NestedStrings', {
+      id: bcs.Address, rules: bcs.vector(bcs.string()), url: bcs.string(),
+    }).serialize(parsed).toBytes();
+    const object = bcs.Object.parse(HISTORICAL_OBJECT_BCS);
+    object.data.Move.type = { Other: TypeTagSerializer.parseFromStr(nestedType, true).struct };
+    object.data.Move.contents = contents;
+    const objectBytes = bcs.Object.serialize(object).toBytes();
+    const fixture = fixtures();
+    fixture.values.historical = rawHistorical({
+      objectType: nestedType,
+      digest: typedDigest('Object', objectBytes),
+      contents: { name: nestedType, value: contents },
+      bcs: { name: 'Object', value: objectBytes },
+      json: GrpcTypes.Object.fromJson({ json: parsed }).json,
+    });
+    assert.deepEqual((await fixture.transport.getHistoricalObject({ objectId: OBJECT, version: 11n })).parsed, parsed);
+    fixture.values.historical.json = GrpcTypes.Object.fromJson({
+      json: { ...parsed, rules: [{ name: parsed.rules[0] }] },
+    }).json;
+    await assert.rejects(fixture.transport.getHistoricalObject({ objectId: OBJECT, version: 11n }),
+      code('MAKER_V8_SUI_GRPC_HISTORY_JSON_DRIFT'));
+    fixture.values.historical.json = GrpcTypes.Object.fromJson({
+      json: { ...parsed, url: 'https://example.com/tampered' },
+    }).json;
+    await assert.rejects(fixture.transport.getHistoricalObject({ objectId: OBJECT, version: 11n }),
+      code('MAKER_V8_SUI_GRPC_HISTORY_JSON_DRIFT'));
+  } finally {
+    for (const [typeName] of descriptions) datatypeFixtures.delete(typeName.split('::').join(':'));
+  }
 });
 
 test('historical Object BCS binds exact version, ID, type, owner, contents, metadata, and digest', async () => {

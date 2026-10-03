@@ -2,7 +2,7 @@
 
 `animacraft_v8_seal` is the fresh Seal role for unified Animacraft v8. It
 depends only on `animacraft_v8_core` and the exact Sui framework revision
-`73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1`. It imports no older Animacraft
+`722ac4fcf4841346c91775f596c4ce23fb7fbd0f`. It imports no older Animacraft
 package and accepts no package-name or package-ID strings from a Maker author.
 
 ## Security boundary

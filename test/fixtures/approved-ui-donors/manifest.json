@@ -1,0 +1,77 @@
+{
+  "schema": "approved-ui-donor-source-v1",
+  "files": [
+    {
+      "revision": "aac90dbc",
+      "commit": "aac90dbc0d1aad7ce7f7b76b3aa11ac43aac024e",
+      "path": "maker-workspace.js",
+      "fixture": "aac90dbc/maker-workspace.js.txt",
+      "gitBlob": "5ec51c2fffe357fa045364ee1f2a1242694f5bfc",
+      "byteLength": 733554,
+      "sha256": "5c4190b585f0e0a5ccae94d48f316d01656a6a99b9b515eb5036a733ea30b79c"
+    },
+    {
+      "revision": "aac90dbc",
+      "commit": "aac90dbc0d1aad7ce7f7b76b3aa11ac43aac024e",
+      "path": "maker-definition-editor.js",
+      "fixture": "aac90dbc/maker-definition-editor.js.txt",
+      "gitBlob": "61aa2b140214411111ff708b78789449d459b99d",
+      "byteLength": 13316,
+      "sha256": "82fd45245e1d86cc30d6d53584a2d5e9e5846412a5a0508eeb0e564b97047af5"
+    },
+    {
+      "revision": "aac90dbc",
+      "commit": "aac90dbc0d1aad7ce7f7b76b3aa11ac43aac024e",
+      "path": "maker-definition-rule-control.js",
+      "fixture": "aac90dbc/maker-definition-rule-control.js.txt",
+      "gitBlob": "944cbdf764af252b86f54f883af63e7b0f931f11",
+      "byteLength": 5825,
+      "sha256": "990a93c2222e9f4c3d6552a6ec50d76e02786c2be764f9bf929e7951b630750b"
+    },
+    {
+      "revision": "aac90dbc",
+      "commit": "aac90dbc0d1aad7ce7f7b76b3aa11ac43aac024e",
+      "path": "maker-editor-shell.js",
+      "fixture": "aac90dbc/maker-editor-shell.js.txt",
+      "gitBlob": "09100384db3e532350ed7d327776afa7eff60535",
+      "byteLength": 3696,
+      "sha256": "b01b9084154d6b14e2017340122cbbd7cac4b8e5cebfeb6435d05a36064ba6bb"
+    },
+    {
+      "revision": "aac90dbc",
+      "commit": "aac90dbc0d1aad7ce7f7b76b3aa11ac43aac024e",
+      "path": "maker-workspace-i18n.js",
+      "fixture": "aac90dbc/maker-workspace-i18n.js.txt",
+      "gitBlob": "278d349157746ef3073e87bcc471c9066d429367",
+      "byteLength": 393528,
+      "sha256": "29f4250b6cb59db1e41e26c63c512eb671b72373ca5f47b0d90257dd5a2eb514"
+    },
+    {
+      "revision": "aac90dbc",
+      "commit": "aac90dbc0d1aad7ce7f7b76b3aa11ac43aac024e",
+      "path": "expansion-pack-lifecycle-i18n.js",
+      "fixture": "aac90dbc/expansion-pack-lifecycle-i18n.js.txt",
+      "gitBlob": "695fd0a7f74346b70e43bc1a814d9325b2033731",
+      "byteLength": 27574,
+      "sha256": "089fdc7c0fb5590ddd062ead428303851c57c7c8a097089d465eafe95d385019"
+    },
+    {
+      "revision": "aac90dbc",
+      "commit": "aac90dbc0d1aad7ce7f7b76b3aa11ac43aac024e",
+      "path": "index.html",
+      "fixture": "aac90dbc/index.html.txt",
+      "gitBlob": "22fdb8698d63ea3e547d9f3e1fd20bde8dec704c",
+      "byteLength": 57860,
+      "sha256": "e88319ae3d79831d9ae8f7a15623812579e20dbba48cb4850869b30111b3ba40"
+    },
+    {
+      "revision": "93d16531",
+      "commit": "93d16531e794fe07229e986c25a88511c45b2d4a",
+      "path": "maker-workspace.js",
+      "fixture": "93d16531/maker-workspace.js.txt",
+      "gitBlob": "41160ad3e8c775aa20898821cc01b77256e8d3c2",
+      "byteLength": 131538,
+      "sha256": "1bf53f53c84398cf06162094a5cf3221e3fa8d482de812180f2ce9fb74ef87d0"
+    }
+  ]
+}

@@ -4,56 +4,200 @@
 [move]
 version = 4
 
+[pinned.mainnet.Kiosk]
+source = { git = "https://github.com/MystenLabs/apps.git", subdir = "kiosk", rev = "7a07937149c0af057be8f6747e60d0f1acd88fde" }
+use_environment = "mainnet"
+manifest_digest = "BA49968BFF7C4A4D9F013B59535CF8B89D935A7C6D63C121606B1FE844829B72"
+deps = { Sui = "Sui_3" }
+
 [pinned.mainnet.MoveStdlib]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
+use_environment = "mainnet"
+manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
+deps = {}
+
+[pinned.mainnet.MoveStdlib_1]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "eddf9c94dfcc9b86e5c4966748252148d73bb217" }
+use_environment = "mainnet"
+manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
+deps = {}
+
+[pinned.mainnet.MoveStdlib_2]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "2a0becb2fcc6989e492981104af67f62f2c9511a" }
+use_environment = "mainnet"
+manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
+deps = {}
+
+[pinned.mainnet.MoveStdlib_3]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "6f6f095c246733e7b155abebb63a4e64d64e17b9" }
+use_environment = "mainnet"
+manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
+deps = {}
+
+[pinned.mainnet.MoveStdlib_4]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "a4185da5659d8d299d34e1bb2515ff1f7e32a20a" }
 use_environment = "mainnet"
 manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
 deps = {}
 
 [pinned.mainnet.Sui]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
 use_environment = "mainnet"
 manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263195"
 deps = { MoveStdlib = "MoveStdlib" }
 
+[pinned.mainnet.Sui_1]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "eddf9c94dfcc9b86e5c4966748252148d73bb217" }
+use_environment = "mainnet"
+manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263195"
+deps = { MoveStdlib = "MoveStdlib_1" }
+
+[pinned.mainnet.Sui_2]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "2a0becb2fcc6989e492981104af67f62f2c9511a" }
+use_environment = "mainnet"
+manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263195"
+deps = { MoveStdlib = "MoveStdlib_2" }
+
+[pinned.mainnet.Sui_3]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "6f6f095c246733e7b155abebb63a4e64d64e17b9" }
+use_environment = "mainnet"
+manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263195"
+deps = { MoveStdlib = "MoveStdlib_3" }
+
+[pinned.mainnet.Sui_4]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "a4185da5659d8d299d34e1bb2515ff1f7e32a20a" }
+use_environment = "mainnet"
+manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263195"
+deps = { MoveStdlib = "MoveStdlib_4" }
+
+[pinned.mainnet.WAL]
+source = { git = "https://github.com/MystenLabs/walrus.git", subdir = "mainnet-contracts/wal", rev = "a19764ff77f501a79db88dc6d922a2c73848e989" }
+use_environment = "mainnet"
+manifest_digest = "08D7F4F08A90745595084EF351C2DC663EB302DA8C5AAE8A4E23B508AF951A80"
+deps = { Sui = "Sui_1" }
+
+[pinned.mainnet.Walrus]
+source = { git = "https://github.com/MystenLabs/walrus.git", subdir = "mainnet-contracts/walrus", rev = "a19764ff77f501a79db88dc6d922a2c73848e989" }
+use_environment = "mainnet"
+manifest_digest = "F5EE3601B0F0F292A09B1CF6BFF941E8BCD70C7624692070796849E0B7FB337B"
+deps = { Sui = "Sui_1", WAL = "WAL" }
+
 [pinned.mainnet.animacraft_v8_core]
 source = { local = "../animacraft_v8_core" }
 use_environment = "mainnet"
-manifest_digest = "D102AD9D5653054ABB17E21F853CF4E888E04AB30025D5DAC19DAF483C2B899B"
-deps = { Sui = "Sui" }
+manifest_digest = "241DFAA87E2A440231998A2B8F2F42C67FC8E90384057EA4BE86A0A188DC3774"
+deps = { Sui = "Sui", Walrus = "Walrus" }
 
 [pinned.mainnet.animacraft_v8_market]
 source = { root = true }
 use_environment = "mainnet"
-manifest_digest = "DC3DC29C9FB22D808865E707AF8EE8E688485E927B440A9CE3065F1D22859AA8"
+manifest_digest = "55ABE03BB42FBD4F5FBFD7BA30399F4E27C3413C19B9A2606C6EFCED9EB87F76"
 deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", animacraft_v8_physical = "animacraft_v8_physical", animacraft_v8_release = "animacraft_v8_release", animacraft_v8_runtime = "animacraft_v8_runtime" }
 
 [pinned.mainnet.animacraft_v8_output]
 source = { local = "../animacraft_v8_output" }
 use_environment = "mainnet"
-manifest_digest = "A5DFD130E34FCE57AD25BA22C36B9DE61519F2FBF2A2913B87A7E51D544B259B"
+manifest_digest = "C61C7616510950EE7335C255269E6A5FECF5F55FA3CD59054B051B1DF223CE47"
 deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_runtime = "animacraft_v8_runtime", animacraft_v8_seal = "animacraft_v8_seal" }
 
 [pinned.mainnet.animacraft_v8_physical]
 source = { local = "../animacraft_v8_physical" }
 use_environment = "mainnet"
-manifest_digest = "3DE92EF3F0F2052BBE6BAC125899B208AD9D16994502DD7740B8582DE2E56A84"
+manifest_digest = "FC7557A20429602D77401E4DE93DF23906BE2AA1DFC0F1E2C52DF3ECB3580949"
 deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", animacraft_v8_runtime = "animacraft_v8_runtime" }
 
 [pinned.mainnet.animacraft_v8_release]
 source = { local = "../animacraft_v8_release" }
 use_environment = "mainnet"
-manifest_digest = "C0F47F481C2C3C700C855DCA471972DCF3FDE133EBA74FC4D51143966B9B7F98"
-deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", animacraft_v8_physical = "animacraft_v8_physical", animacraft_v8_runtime = "animacraft_v8_runtime", animacraft_v8_seal = "animacraft_v8_seal" }
+manifest_digest = "33A78AED5C9B9D40F71F6417908078184E03562E6023A024519243388CF77FE6"
+deps = { MoveStdlib = "MoveStdlib", Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", animacraft_v8_physical = "animacraft_v8_physical", animacraft_v8_runtime = "animacraft_v8_runtime", animacraft_v8_seal = "animacraft_v8_seal", soulidity = "soulidity" }
 
 [pinned.mainnet.animacraft_v8_runtime]
 source = { local = "../animacraft_v8_runtime" }
 use_environment = "mainnet"
-manifest_digest = "5D099D9DA57187C29E971BFFA6915635240A3A4D06B10085ECA50FC5EF0BAFD1"
+manifest_digest = "14D905F1ABA17267CBB187DB57746AC180A65DC6D79C3B4A512365CA13BE795D"
 deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_seal = "animacraft_v8_seal" }
 
 [pinned.mainnet.animacraft_v8_seal]
 source = { local = "../animacraft_v8_seal" }
 use_environment = "mainnet"
-manifest_digest = "7E21EE6C6E3651A039B6DC552FD981479289380693C6B891074570CDD314772A"
+manifest_digest = "C690CF960A84B4CA0E85357087B3967CF376CA7DB6BE3399351DDFFD198AA4EA"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core" }
+
+[pinned.mainnet.soulidity]
+source = { local = "/Users/naoer/.codex/worktrees/f722/soulidity/move/soulidity" }
+use_environment = "mainnet"
+manifest_digest = "8A9EB2BE9F0CB731E123241E7461B96519BA32E1B9994502C2BA3C9C012676EE"
+deps = { Kiosk = "Kiosk", Walrus = "Walrus", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", stablecoin = "stablecoin", std = "MoveStdlib_2", sui = "Sui_2", sui_extensions = "sui_extensions", usdc = "usdc" }
+
+[pinned.mainnet.stablecoin]
+source = { git = "https://github.com/circlefin/stablecoin-sui.git", subdir = "packages/stablecoin", rev = "d0904aec1bbe46b38f811654070032363a5a2966" }
+use_environment = "mainnet"
+manifest_digest = "D1FE50C597BE535CA6E8A169082748AB89005284E0D8263275A45A017CFA40D9"
+deps = { Sui = "Sui_4", sui_extensions = "sui_extensions" }
+
+[pinned.mainnet.sui_extensions]
+source = { git = "https://github.com/circlefin/stablecoin-sui.git", subdir = "packages/sui_extensions", rev = "d0904aec1bbe46b38f811654070032363a5a2966" }
+use_environment = "mainnet"
+manifest_digest = "A441490BFF45892FF2D2F51A362331BAB479ECDAF138E673D20F5D457D2F65B9"
+deps = { Sui = "Sui_4" }
+
+[pinned.mainnet.usdc]
+source = { git = "https://github.com/circlefin/stablecoin-sui.git", subdir = "packages/usdc", rev = "d0904aec1bbe46b38f811654070032363a5a2966" }
+use_environment = "mainnet"
+manifest_digest = "BF0D9AE6518F5174EE87CBF91CFDB3F76B83EF440B11AC27486B1448973CD02B"
+deps = { Sui = "Sui_4", stablecoin = "stablecoin", sui_extensions = "sui_extensions" }
+
+[pinned.testnet.MoveStdlib]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
+use_environment = "testnet"
+manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
+deps = {}
+
+[pinned.testnet.Sui]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
+use_environment = "testnet"
+manifest_digest = "7AFB66695545775FBFBB2D3078ADFD084244D5002392E837FDE21D9EA1C6D01C"
+deps = { MoveStdlib = "MoveStdlib" }
+
+[pinned.testnet.animacraft_v8_core]
+source = { local = "../animacraft_v8_core" }
+use_environment = "testnet"
+manifest_digest = "60ADF412FBF6A8F886DB96A327E19EE11946A0F14EB7AD132D147351DFE46111"
+deps = { Sui = "Sui" }
+
+[pinned.testnet.animacraft_v8_market]
+source = { root = true }
+use_environment = "testnet"
+manifest_digest = "21CF7DF3F89F9CE6D4F80855F4CF7417861457ADBBFA917522B23C7248C21FE1"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", animacraft_v8_physical = "animacraft_v8_physical", animacraft_v8_release = "animacraft_v8_release", animacraft_v8_runtime = "animacraft_v8_runtime" }
+
+[pinned.testnet.animacraft_v8_output]
+source = { local = "../animacraft_v8_output" }
+use_environment = "testnet"
+manifest_digest = "9FE5E6CD163C181C43F267711F4B7D506F8F3C3FD6BC66CD9D51BB1711AD2FF4"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_runtime = "animacraft_v8_runtime", animacraft_v8_seal = "animacraft_v8_seal" }
+
+[pinned.testnet.animacraft_v8_physical]
+source = { local = "../animacraft_v8_physical" }
+use_environment = "testnet"
+manifest_digest = "B9F10E9DFBB7A2B8E5310A56C872F3DE07F4820089DAFC1386E670757F2C5B67"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", animacraft_v8_runtime = "animacraft_v8_runtime" }
+
+[pinned.testnet.animacraft_v8_release]
+source = { local = "../animacraft_v8_release" }
+use_environment = "testnet"
+manifest_digest = "41B3A676AA21630FF30077091D750501A595C0F0BB6D8B11F627168D39FE0944"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", animacraft_v8_physical = "animacraft_v8_physical", animacraft_v8_runtime = "animacraft_v8_runtime", animacraft_v8_seal = "animacraft_v8_seal" }
+
+[pinned.testnet.animacraft_v8_runtime]
+source = { local = "../animacraft_v8_runtime" }
+use_environment = "testnet"
+manifest_digest = "09F95F1681313B28A6373C8C4FE307C371E4D1E3C9FD6DD00DDD622BF822DEDF"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_seal = "animacraft_v8_seal" }
+
+[pinned.testnet.animacraft_v8_seal]
+source = { local = "../animacraft_v8_seal" }
+use_environment = "testnet"
+manifest_digest = "CAF8D86E63F07AAFD5FAB70E6313516B0CFB99DAD127FAA64426547FA8F3C2C8"
 deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core" }

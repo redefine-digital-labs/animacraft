@@ -42,9 +42,9 @@ import {
 } from '../maker-v8-runtime.js';
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
-  attestMakerV8Runtime,
+  makerV8AttestedReplacement,
 } from '../maker-v8-chain.js';
-import { CORE_BASE_REGISTRY_MODULE_BASE64 } from './fixtures/maker-v8-runtime-attestation.js';
+import { attestFixtureRuntime } from './fixtures/maker-v8-runtime-attestation.js';
 
 const fixture = JSON.parse(await readFile(
   new URL('./fixtures/market-v8-abi.json', import.meta.url),
@@ -87,84 +87,7 @@ const runtimeInput = Object.freeze({
   makerBindings: Object.freeze([]),
 });
 
-function runtimeAttestationRpc(runtime) {
-  const runtimeRoles = Object.keys(runtime.roles);
-  const roles = ['seal', 'runtime', 'output', 'physical', 'market', 'release'];
-  const authority = Object.fromEntries(roles.map((role, index) => [role, id(900 + index)]));
-  const roleCommitment = Object.fromEntries(Object.keys(runtime.roles).map((role, index) => [role, bytes32(40 + index)]));
-  const productCommitment = bytes32(60);
-  const callSetCommitment = bytes32(61);
-  const objectResponse = (type, objectId, fields) => ({
-    data: {
-      objectId,
-      version: '1',
-      digest,
-      type,
-      owner: { Shared: { initial_shared_version: '1' } },
-      content: { dataType: 'moveObject', type, fields: { id: { id: objectId }, ...fields } },
-    },
-  });
-  const binding = Object.fromEntries(Object.entries(runtime.roles).map(([role, identity], index) => [role, { fields: {
-    original_package_id: identity.typeOriginPackageId,
-    callable_package_id: identity.callablePackageId,
-    source_commitment: bytes32(10 + index),
-    package_commitment: bytes32(20 + index),
-    abi_commitment: bytes32(30 + index),
-    commitment: roleCommitment[role],
-  } }]));
-  const catalog = objectResponse(
-    `${runtime.roles.core.typeOriginPackageId}::package_binding_v8::ProductReleaseCatalogV8`,
-    runtime.catalogId,
-    {
-      version: '8', protocol_config_id: runtime.protocolConfigId,
-      protocol_config_revision: '7', protocol_config_commitment: bytes32(4),
-      binding: { fields: { version: '8', native_capability_mask: '127', ...binding, commitment: productCommitment } },
-      call_cap_set: { fields: {
-        version: '8', catalog_id: runtime.catalogId, product_binding_commitment: productCommitment,
-        ...Object.fromEntries(roles.map((role) => [`${role}_authority_id`, authority[role]])),
-        commitment: callSetCommitment,
-      } },
-      ...Object.fromEntries(roles.map((role) => [`${role}_call_cap`, null])),
-    },
-  );
-  const typeNames = {
-    seal: ['seal_v8', 'SealPolicyConfigV8'], runtime: ['runtime_binding_v8', 'RuntimePackageConfigV8'],
-    output: ['output_v8', 'OutputPackageConfigV8'], physical: ['physical_v8', 'PhysicalPackageConfigV8'],
-    market: ['market_v8', 'MarketPackageConfigV8'], release: ['release_v8', 'ReleasePackageConfigV8'],
-  };
-  const configs = Object.fromEntries(roles.map((role) => {
-    const [moduleName, typeName] = typeNames[role];
-    return [role, objectResponse(`${runtime.roles[role].typeOriginPackageId}::${moduleName}::${typeName}`, runtime.roleConfigIds[role], {
-      version: '8', catalog_id: runtime.catalogId, product_binding_commitment: productCommitment,
-      call_cap_set_commitment: callSetCommitment,
-      [`${role}_call_cap`]: { fields: {
-        version: '8', authority_id: authority[role], catalog_id: runtime.catalogId,
-        product_binding_commitment: productCommitment, role_binding_commitment: roleCommitment[role],
-        call_cap_set_commitment: callSetCommitment,
-      } },
-    })];
-  }));
-  return {
-    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
-    async getObject({ id: objectId }) {
-      if (objectId === runtime.catalogId) return catalog;
-      const packageIndex = runtimeRoles.findIndex((role) => runtime.roles[role].callablePackageId === objectId);
-      if (packageIndex >= 0) return {
-        data: {
-          objectId,
-          version: '1',
-          digest: String(packageIndex + 2).repeat(44),
-          owner: { Immutable: true },
-          bcs: { dataType: 'package', id: objectId, version: '1', moduleMap: packageIndex === 0 ? { base_registry_v8: CORE_BASE_REGISTRY_MODULE_BASE64 } : {} },
-        },
-      };
-      const role = roles.find((candidate) => runtime.roleConfigIds[candidate] === objectId);
-      return configs[role];
-    },
-  };
-}
-
-const attestedRuntime = (await attestMakerV8Runtime(runtimeAttestationRpc(runtimeInput), runtimeInput)).runtime;
+const attestedRuntime = await attestFixtureRuntime(runtimeInput);
 const client = createMarketV8Client(attestedRuntime, { network: NETWORK });
 assert.equal(client.runtime.sourceRuntime, attestedRuntime, 'Market client must preserve the private runtime-attestation identity');
 const { types } = client;
@@ -627,7 +550,7 @@ function transactionSnapshot(result) {
     inputs: data.inputs.map((input) => {
       if (input.UnresolvedObject) return { kind: 'object', ...input.UnresolvedObject };
       if (input.Object?.Receiving) return { kind: 'receiving', ...input.Object.Receiving };
-      if (input.Object?.ImmOrOwnedObject) return { kind: 'payment', ...input.Object.ImmOrOwnedObject };
+      if (input.Object?.ImmOrOwnedObject) return { kind: 'object', ...input.Object.ImmOrOwnedObject };
       if (input.Pure) return { kind: 'pure', ...input.Pure };
       return { kind: inputKind(input) };
     }),
@@ -655,7 +578,8 @@ function u64Base64(value) {
 }
 
 function expectedInput(argument) {
-  if (argument.kind === 'object') return { kind: 'object', objectId: argument.objectId };
+  if (argument.kind === 'object') return { kind: 'object', objectId: argument.objectId,
+    ...(argument.version !== undefined ? { version: argument.version, digest: argument.digest } : {}) };
   if (argument.kind === 'receiving') {
     return {
       kind: argument.kind,
@@ -676,6 +600,9 @@ function fullListTransactionBytes(result, { functionName, firstObjectId, extraCo
       objectId: argument.objectId,
       version: argument.version,
       digest: argument.digest,
+    });
+    if (argument.name === 'replacement') return Inputs.ObjectRef({
+      objectId: argument.objectId, version: argument.version, digest: argument.digest,
     });
     return Inputs.SharedObjectRef({
       objectId: index === 0 && firstObjectId ? firstObjectId : argument.objectId,
@@ -1059,10 +986,52 @@ test('all 14 builders snapshot real Transaction data with exact targets, types, 
     recoverPhysicalListing: 1,
   });
   for (const result of Object.values(actions).filter(({ descriptor }) => descriptor.action.startsWith('purchase'))) {
-    assert.equal(result.transaction.getData().inputs.filter((input) => input.Object?.ImmOrOwnedObject).length, 0);
+    const replacement = makerV8AttestedReplacement(attestedRuntime);
+    assert.deepEqual(result.transaction.getData().inputs.flatMap((input) => input.Object?.ImmOrOwnedObject ? [input.Object.ImmOrOwnedObject] : []),
+      [{ objectId: replacement.objectId, version: replacement.version.toString(), digest: replacement.digest }]);
     assert.equal(result.transaction.getData().commands.filter((command) => command.$Intent?.name === 'CoinWithBalance').length, 1);
     assert.equal(result.descriptor.arguments.filter((argument) => argument.kind === 'payment').length, 1);
     assert.equal(result.descriptor.arguments.find((argument) => argument.kind === 'payment').balanceAtomic, '1000000');
+  }
+});
+
+test('all 14 actions pin the certified immutable replacement and reject resolver substitution', async () => {
+  const replacement = makerV8AttestedReplacement(attestedRuntime);
+  assert.equal(replacement.owner.kind, 'immutable');
+  for (const [action, built] of Object.entries(allActions())) {
+    const argument = built.descriptor.arguments.find((entry) => entry.name === 'replacement');
+    assert.deepEqual(argument, { kind: 'object', name: 'replacement', objectId: replacement.objectId,
+      type: types.replacement, version: replacement.version.toString(), digest: replacement.digest }, action);
+  }
+  for (const mutation of ['id', 'version', 'digest', 'shared']) {
+    await assert.rejects(inspectMarketActionOnChainV8(canonicalSigningClient({
+      mutateResolved(transactionData) {
+        const index = transactionData.inputs.findIndex((input) => input.Object?.ImmOrOwnedObject?.objectId === replacement.objectId);
+        assert.notEqual(index, -1);
+        const ref = transactionData.inputs[index].Object.ImmOrOwnedObject;
+        if (mutation === 'shared') transactionData.inputs[index] = Inputs.SharedObjectRef({ objectId: ref.objectId, initialSharedVersion: '1', mutable: false });
+        else if (mutation === 'id') ref.objectId = id(799);
+        else if (mutation === 'version') ref.version = '99';
+        else ref.digest = '11111111111111111111111111111112';
+      },
+    }), allActions().listMakerControl), (error) => error.code === (mutation === 'id'
+      ? 'MARKET_V8_TRANSACTION_OBJECT_MISMATCH' : 'MARKET_V8_TRANSACTION_IMMUTABLE_REF_MISMATCH'));
+  }
+});
+
+test('all cancel lanes require the exact bound ProtocolConfig', () => {
+  const cases = [
+    [client.buildCancelMakerControl, makerExisting(makerListing, IDs.seller)],
+    [client.buildCancelSoulListing, soulExisting(soulListing, IDs.seller)],
+    [client.buildCancelPhysicalListing, physicalExisting(baseListing, IDs.seller)],
+    [client.buildCancelPhysicalListing, physicalExisting(packListing, IDs.seller)],
+  ];
+  for (const [build, input] of cases) {
+    assert.throws(() => build({ ...input, protocolConfig: undefined }), (error) => error.code === 'MARKET_V8_OBJECT_INPUT_INVALID');
+    assert.throws(() => build({ ...input, protocolConfig: object(id(799), types.protocolConfig) }),
+      (error) => error.code === 'MARKET_V8_OBJECT_REF_MISMATCH');
+    assert.throws(() => build({ ...input, protocolConfig: object(IDs.protocolConfig, types.catalog) }),
+      (error) => error.code === 'MARKET_V8_OBJECT_TYPE_MISMATCH');
   }
 });
 

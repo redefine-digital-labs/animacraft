@@ -1,4 +1,6 @@
 import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
+import { readMakerV8ActivationAuthorityV8, validateMakerV8ActivationAuthorityV8 } from './maker-v8-activation-authority.js';
+import { assertMakerV8WalrusExecutionV1, MAKER_V8_WALRUS_MINIMUM_DEPENDENCY } from './maker-v8-walrus-execution.js';
 import {
   Transaction,
   TransactionDataBuilder,
@@ -10,11 +12,15 @@ import {
   toBase58,
 } from '@mysten/sui/utils';
 import { blake2b } from '@noble/hashes/blake2.js';
-import { isValidTransactionSignature } from '@mysten/sui/verify';
+import {
+  isValidPersonalMessageSignature,
+  isValidTransactionSignature,
+} from '@mysten/sui/verify';
 import {
   SUI_MAINNET_CHAIN,
   StandardConnect,
   StandardEvents,
+  SuiSignPersonalMessage,
   SuiSignTransaction,
   WALLET_STANDARD_ERROR__USER__REQUEST_REJECTED,
   getWallets,
@@ -2037,9 +2043,10 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
             schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
             // Stable recovery evidence schema; transport authority is the typed
             // gRPC NOT_FOUND plus the full-genesis checkpoint watermark above.
-            kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
-            rpcCode: -32602,
-            rpcType: 'InvalidParams',
+            kind: 'SUI_GRPC_TRANSACTION_NOT_FOUND',
+            grpcCode: 'NOT_FOUND',
+            grpcService: 'sui.rpc.v2.LedgerService',
+            grpcMethod: 'GetTransaction',
             requestedDigest: transactionDigest,
             chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
             watermarkEpoch: decimal(watermark?.epoch, 'transaction absence checkpoint epoch'),
@@ -2248,6 +2255,66 @@ export function createWalletStandardConnectorV8({
         digest: actualDigest,
         signer: captured.address,
         signedAt: Date.now(),
+      });
+    },
+
+    async signExactPersonalMessage({ message, signer }) {
+      if (!checkedExecution.allowWalletSignature) {
+        fail('WEB_V8_SIGNING_DISABLED', 'Wallet signing is disabled by the pinned deployment gate.', 'SIGNING');
+      }
+      await assertPinnedMainnet(client);
+      const captured = requireAccount();
+      const expectedSigner = id(signer, 'signer');
+      const sign = captured.wallet.features?.[SuiSignPersonalMessage]?.signPersonalMessage;
+      if (captured.address !== expectedSigner) {
+        fail('MAKER_V8_BROWSER_ACCOUNT_DRIFT', 'Current wallet account differs from the protected-content signer.', 'CONTEXT');
+      }
+      if (!captured.account.features.includes(SuiSignPersonalMessage) || typeof sign !== 'function') {
+        fail(
+          'MAKER_V8_BROWSER_PERSONAL_MESSAGE_UNAVAILABLE',
+          'The connected wallet does not support Sui personal-message signing required by Seal.',
+          'WALLET',
+        );
+      }
+      if (!(message instanceof Uint8Array) || message.length < 1 || message.length > 16 * 1024) {
+        fail('MAKER_V8_BROWSER_PERSONAL_MESSAGE_INVALID', 'Seal personal message is invalid or exceeds its bound.', 'SIGNING');
+      }
+      const raw = Uint8Array.from(message);
+      let result;
+      try {
+        result = await sign({
+          message: raw,
+          account: captured.account,
+          chain: SUI_MAINNET_CHAIN,
+        });
+      } catch (cause) {
+        if (!isDefinitiveWalletStandardRejectionV8(cause)) throw cause;
+        fail('MAKER_V8_BROWSER_WALLET_REQUEST_REJECTED', 'Wallet rejected the Seal session authorization.', 'SIGNING');
+      }
+      const current = requireAccount();
+      if (current.wallet !== captured.wallet || current.account !== captured.account
+        || current.revision !== captured.revision || current.address !== captured.address) {
+        fail('MAKER_V8_BROWSER_ACCOUNT_DRIFT', 'Wallet account changed while the Seal prompt was open.', 'CONTEXT');
+      }
+      let returned;
+      try { returned = fromBase64(result?.bytes); } catch {
+        fail('MAKER_V8_BROWSER_PERSONAL_MESSAGE_INVALID', 'Wallet returned invalid personal-message bytes.', 'SIGNING');
+      }
+      if (toBase64(returned) !== result?.bytes
+        || returned.length !== raw.length
+        || returned.some((byte, index) => byte !== raw[index])
+        || typeof result?.signature !== 'string'
+        || !await isValidPersonalMessageSignature(raw, result.signature, { address: captured.address })) {
+        fail(
+          'MAKER_V8_BROWSER_PERSONAL_MESSAGE_INVALID',
+          'Wallet did not authenticate the exact Seal session message and signer.',
+          'SIGNING',
+        );
+      }
+      return freeze({
+        bytes: result.bytes,
+        signature: result.signature,
+        signer: captured.address,
       });
     },
 
@@ -2504,7 +2571,9 @@ const COMPILER_CONTEXT_OBJECTS = Object.freeze([
 const SCAFFOLD_FIELDS = Object.freeze({
   root: Object.freeze([
     'version', 'creator', 'owner', 'adminCapId', 'controlEpoch', 'lifecycle',
-    'makerKey', 'makerVersion', 'versionCommitment', 'rendererCommitment',
+    'makerKey', 'makerVersion', 'previousRootId', 'previousVersionCommitment',
+    'versionCommitment', 'makerDocumentCommitment', 'creatorDefaultsCommitment',
+    'livingContentBindingCommitment', 'sealedBaseRegistryCommitment', 'rendererCommitment',
     'manifestBlobId', 'manifestSha256', 'contentCommitment', 'protocolConfigId',
     'protocolConfigRevision', 'protocolConfigCommitment', 'baseRegistryId',
     'makerTreasuryId', 'expectedBaseDefinitionCount',
@@ -2514,39 +2583,42 @@ const SCAFFOLD_FIELDS = Object.freeze({
   ]),
   baseRegistry: Object.freeze([
     'version', 'rootId', 'makerVersion', 'rootContentCommitment',
-    'expectedCounts', 'observedCounts', 'expectedCommitments',
-    'rollingCommitments', 'nextSequence', 'expectedSequenceCount',
-    'protectedStyleCount', 'sealed',
+    'expectedCounts', 'observedCounts', 'initialCommitments',
+    'rollingCommitments', 'sealedCommitments', 'nextSequence', 'expectedSequenceCount',
+    'protectedStyleCount', 'colorSwatchCount', 'totalCapacity', 'ruleSelectorCount',
+    'visibilityLeafCount', 'authorRowsRollingCommitment', 'sealed',
   ]),
   makerTreasury: Object.freeze(['version', 'rootId', 'makerVersion', 'rootContentCommitment']),
   adminCap: Object.freeze(['version', 'rootId', 'owner', 'controlEpoch']),
 });
 
-const BASE_FIELDS = Object.freeze([
-  'version', 'rootId', 'makerVersion', 'rootContentCommitment',
-  'observedCounts', 'rollingCommitments', 'nextSequence',
-  'protectedStyleCount', 'sealed',
+const SUCCESSOR_PREDECESSOR_FIELDS = Object.freeze([
+  'version', 'owner', 'adminCapId', 'controlEpoch', 'lifecycle', 'makerKey',
+  'makerVersion', 'versionCommitment', 'successorAuthorityId', 'successorRootId',
 ]);
+
+const BASE_FIELDS = SCAFFOLD_FIELDS.baseRegistry;
 
 const COMPANION_FIELDS = Object.freeze({
   sealRegistry: Object.freeze([
     'version', 'rootId', 'makerVersion', 'rootContentCommitment', 'catalogId',
     'productBindingCommitment', 'policyConfigId', 'policyCommitment',
     'expectedBaseCount', 'expectedPackCount', 'expectedCompleteCount',
-    'expectedCount', 'observedBaseCount', 'observedPackCount',
-    'observedCompleteCount', 'observedCount', 'expectedCommitment',
-    'rollingCommitment', 'sealed', 'runtimeRevision', 'runtimeCommitment',
+    'baseCount', 'packCount', 'completeCount',
+    'baseCommitment', 'packCommitment', 'completeCommitment',
+    'revision', 'commitment', 'sealed', 'runtimeRevision',
   ]),
   runtimeDefinitions: Object.freeze([
     'version', 'rootId', 'rootVersion', 'rootContentCommitment',
     'baseRegistryId', 'expectedProfileCount', 'observedProfileCount',
     'expectedProfileCommitment', 'rollingProfileCommitment',
-    'admissionCeiling', 'sealed',
+    'admissionCeiling', 'itemAssetization', 'sealed',
   ]),
   packRegistry: Object.freeze([
     'version', 'rootId', 'rootVersion', 'rootContentCommitment',
     'definitionRegistryId', 'admissionAuthorityId', 'admissionPolicyCommitment',
-    'revision', 'releaseCount', 'externalAdmissionCount',
+    'revision', 'releaseCount', 'externalAdmissionCount', 'wardrobeRevision',
+    'baseItemCount',
   ]),
   admissionAuthority: Object.freeze(['version', 'rootId', 'rootVersion', 'rootContentCommitment']),
   outputRegistry: Object.freeze([
@@ -2615,11 +2687,21 @@ function compilerHash(value, label) {
     && value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255)) {
     return value.map((entry) => entry.toString(16).padStart(2, '0')).join('');
   }
+  if (typeof value === 'string' && /^[A-Za-z0-9+/]{43}=$/.test(value)) {
+    const decoded = fromBase64(value);
+    if (decoded.length === 32 && toBase64(decoded) === value) return compilerHash([...decoded], label);
+  }
   const normalized = typeof value === 'string' ? value.replace(/^0x/, '').toLowerCase() : '';
   if (!/^[0-9a-f]{64}$/.test(normalized)) {
     fail('MAKER_V8_COMPILER_HASH_INVALID', `${label} is not an exact 32-byte live commitment.`, 'READBACK');
   }
   return normalized;
+}
+
+function compilerHashOrEmpty(value, label) {
+  if (Array.isArray(value) && value.length === 0) return '';
+  if (value === '') return '';
+  return compilerHash(value, label);
 }
 
 function compilerOptionId(value, label) {
@@ -2631,9 +2713,40 @@ function compilerOptionId(value, label) {
   return compilerMoveId(option, label);
 }
 
+function compilerNullableOptionId(value, label) {
+  if (value === null || value === undefined) return null;
+  if (plain(value?.fields)) return compilerNullableOptionId(value.fields, label);
+  if (plain(value) && Array.isArray(value.vec)) return compilerNullableOptionId(value.vec, label);
+  if (plain(value) && value.$kind === 'None') return null;
+  if (plain(value) && value.$kind === 'Some') return compilerNullableOptionId(value.Some, label);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return null;
+    if (value.length === 1) return compilerMoveId(value[0], label);
+  }
+  return compilerMoveId(value, label);
+}
+
+function compilerOptionHash(value, label) {
+  const option = compilerOptionalValue(value, label);
+  return option === null ? null : compilerHash(option, label);
+}
+
+function compilerOptionalValue(value, label) {
+  if (value === null) return null;
+  if (value === undefined) fail('MAKER_V8_COMPILER_OPTION_INVALID', `${label} is missing.`, 'READBACK');
+  if (plain(value?.fields)) return compilerOptionalValue(value.fields, label);
+  if (plain(value) && Object.hasOwn(value, 'vec')) {
+    if (Object.keys(value).length !== 1 || !Array.isArray(value.vec) || value.vec.length > 1) fail('MAKER_V8_COMPILER_OPTION_INVALID', `${label} must contain zero or one value.`, 'READBACK');
+    return value.vec.length ? value.vec[0] : null;
+  }
+  if (plain(value) && value.$kind === 'None' && Object.keys(value).length === 1) return null;
+  if (plain(value) && value.$kind === 'Some' && Object.keys(value).length === 2 && Object.hasOwn(value, 'Some')) return value.Some;
+  return value;
+}
+
 function compilerCountRecord(value, label) {
   const fields = rawMoveFields(value, label);
-  return Object.fromEntries(['tracks', 'parts', 'items', 'styles', 'colors', 'rules'].map((name) => [
+  return Object.fromEntries(['tracks', 'colors', 'parts', 'items', 'styles', 'rules', 'assets'].map((name) => [
     name,
     decimal(rawMoveField(fields, name, label), `${label}.${name}`),
   ]));
@@ -2641,7 +2754,7 @@ function compilerCountRecord(value, label) {
 
 function compilerCommitmentRecord(value, label) {
   const fields = rawMoveFields(value, label);
-  return Object.fromEntries(['tracks', 'parts', 'items', 'styles', 'colors', 'rules', 'aggregate'].map((name) => [
+  return Object.fromEntries(['tracks', 'colors', 'parts', 'items', 'styles', 'rules', 'assets', 'aggregate'].map((name) => [
     name,
     compilerHash(rawMoveField(fields, name, label), `${label}.${name}`),
   ]));
@@ -2649,8 +2762,15 @@ function compilerCommitmentRecord(value, label) {
 
 function compilerField(value, name, label) {
   if (['expectedCounts', 'observedCounts'].includes(name)) return compilerCountRecord(value, label);
-  if (['expectedCommitments', 'rollingCommitments'].includes(name)) return compilerCommitmentRecord(value, label);
-  if (/Commitment$|Sha256$/.test(name)) return compilerHash(value, label);
+  if (['initialCommitments', 'rollingCommitments'].includes(name)) return compilerCommitmentRecord(value, label);
+  if (name === 'sealedCommitments') { const option = compilerOptionalValue(value, label); return option === null ? null : compilerCommitmentRecord(option, label); }
+  if (['sealId', 'previousVersionCommitment', 'sealedBaseRegistryCommitment'].includes(name)) return compilerOptionHash(value, label);
+  if (name === 'successorAuthorityId' || name === 'successorRootId'
+    || name === 'previousRootId') {
+    return compilerNullableOptionId(value, label);
+  }
+  if (name === 'protectionBindingCommitment') return compilerHashOrEmpty(value, label);
+  if (name === 'commitment' || /Commitment$|Sha256$/.test(name)) return compilerHash(value, label);
   if (/Id$/.test(name) && !/BlobId$/.test(name)) return compilerMoveId(value, label);
   if (['creator', 'owner'].includes(name)) return compilerMoveId(value, label);
   if (['version', 'makerVersion', 'lifecycle'].includes(name)) {
@@ -2666,6 +2786,23 @@ function compilerField(value, name, label) {
 function compilerFields(value, names, label) {
   return Object.fromEntries(names.map((name) => {
     const raw = rawMoveField(value, name, label);
+    return [name, compilerField(raw, name, `${label}.${name}`)];
+  }));
+}
+
+function compilerRootFields(value, names, label) {
+  const fields = rawMoveFields(value, label);
+  return Object.fromEntries(names.map(name => {
+    let raw;
+    if (['rendererCommitment', 'manifestBlobId', 'manifestSha256', 'contentCommitment'].includes(name)) raw = rawMoveField(rawMoveField(fields, 'content', label), name, `${label}.content`);
+    else if (['protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment'].includes(name)) raw = rawMoveField(rawMoveField(fields, 'economics', label), name, `${label}.economics`);
+    else if (name === 'economicsCommitment' || name === 'rightsCommitment') raw = rawMoveField(rawMoveField(fields, name === 'economicsCommitment' ? 'economics' : 'rights', label), 'commitment', label);
+    else if (['catalogId', 'sealedBaseRegistryCommitment'].includes(name)) raw = rawMoveField(rawMoveField(fields, 'publication', label), name, `${label}.publication`);
+    else if (['productBindingCommitment', 'callCapSetCommitment'].includes(name)) {
+      const publication = rawMoveField(fields, 'publication', label);
+      raw = rawMoveField(compilerOptionalValue(rawMoveField(publication, 'releaseCommitments', label), `${label}.publication.releaseCommitments`), name, label);
+    } else raw = rawMoveField(fields, name, label);
+    if (['baseRegistryId', 'makerTreasuryId', 'catalogId'].includes(name)) raw = compilerOptionalValue(raw, `${label}.${name}`);
     return [name, compilerField(raw, name, `${label}.${name}`)];
   }));
 }
@@ -2735,7 +2872,10 @@ function compilerObjectFromHistorical(value, fields, label) {
   else if (value.owner.kind === 'Immutable') reference = { kind: 'immutable', objectId: value.objectId, version: value.ref.version, digest: value.ref.digest };
   else if (['AddressOwner', 'ObjectOwner'].includes(value.owner.kind)) reference = { kind: 'owned', objectId: value.objectId, version: value.ref.version, digest: value.ref.digest };
   else fail('MAKER_V8_COMPILER_OWNER_INVALID', `${label} has an unsupported historical owner.`, 'READBACK');
-  return { type: value.type, reference, fields };
+  // Keep the effects-matched historical owner, not only the PTB reference
+  // category. ObjectOwner must remain distinguishable from AddressOwner so a
+  // native Soul can be checked against its exact historical Kiosk custody.
+  return { type: value.type, reference, owner: value.owner, fields };
 }
 
 export async function readMakerV8CompilerHistoricalObjectV8(
@@ -2749,7 +2889,16 @@ export async function readMakerV8CompilerHistoricalObjectV8(
   const historical = await exactPastObject(client, ref, expectedType, label, outputDigest);
   return compilerObjectFromHistorical(
     historical,
-    compilerFields(historical.parsed, fields, label),
+    expectedType.includes('::maker_v8::MakerRootV8<')
+      ? compilerRootFields(historical.parsed, fields, label)
+      : expectedType.endsWith('::soul::SoulState')
+        ? Object.fromEntries(fields.map(name => {
+          const raw = rawMoveField(historical.parsed, name, label);
+          return [name, ['contentId', 'accessListId', 'collectionId'].includes(name)
+            ? compilerNullableOptionId(raw, `${label}.${name}`)
+            : compilerField(raw, name, `${label}.${name}`)];
+        }))
+        : compilerFields(historical.parsed, fields, label),
     label,
   );
 }
@@ -2765,6 +2914,15 @@ function compilerAuthorityProjection(context) {
     coreArtifact: context.coreArtifact,
     ...Object.fromEntries(COMPILER_CONTEXT_OBJECTS.map((name) => [name, object(context[name])])),
     configs: Object.fromEntries(Object.entries(context.configs).map(([name, value]) => [name, object(value)])),
+    activationAuthority: {
+      ...Object.fromEntries(['replacement','bootstrapCertificate','walrusPolicy','livingBlob'].map(name=>[name,context.activationAuthority[name]])),
+      // System/inner advance normally; current read validation checks the Blob's
+      // actual remaining lifetime. Their mutable epoch is not a saved PTB input.
+      walrusSystem: {type:context.activationAuthority.walrusSystem.type,reference:context.activationAuthority.walrusSystem.reference},
+      walrusSystemState: {type:context.activationAuthority.walrusSystemState.type,objectId:context.activationAuthority.walrusSystemState.reference.objectId},
+      walrusExecution: assertMakerV8WalrusExecutionV1(context.activationAuthority.walrusExecution,
+        {minimumDependency:MAKER_V8_WALRUS_MINIMUM_DEPENDENCY}),
+    },
     derived: {
       productBindingCommitment: context._derived.productBindingCommitment,
       callCapSetCommitment: context._derived.callCapSetCommitment,
@@ -2782,7 +2940,7 @@ export async function readMakerV8CompilerProtocolProfileV8(client) {
   const response = await client.getProtocolConfig();
   if (!plain(response) || typeof response.protocolVersion !== 'string'
     || !/^(?:0|[1-9][0-9]*)$/.test(response.protocolVersion)
-    || !plain(response.attributes)) {
+    || !plain(response.attributes) || response.featureFlags?.enable_unified_linkage !== true) {
     fail('MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID', 'Sui protocol profile readback has an invalid exact shape.', 'CONTEXT');
   }
   const attribute = (name) => {
@@ -2806,10 +2964,17 @@ export async function readMakerV8CompilerProtocolProfileV8(client) {
   return observed;
 }
 
-export function assertMakerV8CompilerContextFreshV8(expected, observed) {
+export async function assertMakerV8CompilerContextFreshV8(expected, observed) {
   let left;
   let right;
   try {
+    for(const context of [expected,observed])await validateMakerV8ActivationAuthorityV8(context.activationAuthority,{
+      catalogId:context.catalog.reference.objectId,productBindingCommitment:context._derived.productBindingCommitment,
+      callCapSetCommitment:context._derived.callCapSetCommitment,roles:context.catalog.fields.roles,
+      configIds:Object.fromEntries(Object.entries(context.configs).map(([role,value])=>[role,value.reference.objectId])),
+      livingBlobId:context.transport.livingContent.blobId,livingBlobObjectId:context.transport.livingContent.blobObjectId,
+      livingByteLength:fromBase64(context.transport.livingContent.bytesBase64).length,livingBytes:fromBase64(context.transport.livingContent.bytesBase64),signerAddress:context.signerAddress,
+    });
     left = canonicalMakerV8Json(compilerAuthorityProjection(expected));
     right = canonicalMakerV8Json(compilerAuthorityProjection(observed));
   } catch {
@@ -3249,6 +3414,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
         role,
         compilerConfigObject(attested, role),
       ])),
+      activationAuthority: await readMakerV8ActivationAuthorityV8({client,attested,transport,signerAddress}),
       transport,
     };
     const certified = await certifyMakerV8TrustedContext(context);
@@ -3267,7 +3433,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       name,
       await compilerChangedObject(client, response, types[name], name, SCAFFOLD_FIELDS[name]),
     ]));
-    return {
+    const result = {
       schemaVersion: MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
       source: 'FINALIZED_RPC',
       transactionDigest: response.digest,
@@ -3275,11 +3441,23 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       transactionKindSha256: response.compilerTransactionKindProof.transactionKindSha256,
       ...Object.fromEntries(entries),
     };
+    if (publication.document.lineage.version > 1) {
+      result.previousRoot = await compilerChangedObject(
+        client,
+        response,
+        publication.predecessor.root.type,
+        'previousRoot',
+        SUCCESSOR_PREDECESSOR_FIELDS,
+        publication.predecessor.root.reference.objectId,
+      );
+    }
+    return result;
   }
 
   async function baseReadback(response, scaffold) {
     return {
       schemaVersion: MAKER_V8_BASE_READBACK_SCHEMA,
+      root: await compilerChangedObject(client, response, scaffold.root.type, 'root', SCAFFOLD_FIELDS.root, scaffold.root.reference.objectId),
       baseRegistry: await compilerChangedObject(
         client,
         response,
@@ -3292,20 +3470,17 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
   }
 
   async function baseChunkReadback(response, scaffold) {
+    const baseRegistry = await compilerChangedObject(client, response, scaffold.baseRegistry.type, 'baseRegistry', BASE_FIELDS, scaffold.baseRegistry.reference.objectId);
     return {
       schemaVersion: MAKER_V8_BASE_CHUNK_READBACK_SCHEMA,
       source: 'FINALIZED_RPC',
       transactionDigest: response.digest,
       transactionKindBytesBase64: response.compilerTransactionKindProof.transactionKindBytesBase64,
       transactionKindSha256: response.compilerTransactionKindProof.transactionKindSha256,
-      baseRegistry: await compilerChangedObject(
-        client,
-        response,
-        scaffold.baseRegistry.type,
-        'baseRegistry',
-        BASE_FIELDS,
-        scaffold.baseRegistry.reference.objectId,
-      ),
+      baseRegistry,
+      root: baseRegistry.fields.sealed === true
+        ? await compilerChangedObject(client, response, scaffold.root.type, 'root', SCAFFOLD_FIELDS.root, scaffold.root.reference.objectId)
+        : null,
     };
   }
 
@@ -3439,6 +3614,42 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
     async loadTrustedContext({ signerAddress, transport }) {
       return (await loadContextDetails({ signerAddress, transport })).context;
     },
+    async loadSuccessorPredecessor({
+      signerAddress, previousRootId, previousVersionCommitment, makerKey, makerVersion,
+    }) {
+      await assertPinnedMainnet(client);
+      const runtime = assertMakerV8Runtime(runtimeInput);
+      const signer = id(signerAddress, 'successor signer');
+      const rootId = id(previousRootId, 'successor previousRootId');
+      const rootType = `${makerV8StableType(runtime, 'core', 'maker_v8', 'MakerRootV8')}<${runtime.paymentCoinType}>`;
+      const rootResponse = await client.getObject({
+        id: rootId,
+        options: { showType: true, showContent: true, showOwner: true },
+      });
+      const root = moveObject(rootResponse, rootId, rootType, 'Successor predecessor Root');
+      const rootFields = compilerFields(root.fields, SUCCESSOR_PREDECESSOR_FIELDS, 'Successor predecessor Root');
+      const adminId = rootFields.adminCapId;
+      const adminType = makerV8StableType(runtime, 'core', 'maker_v8', 'MakerAdminCapV8');
+      const adminResponse = await client.getObject({
+        id: adminId,
+        options: { showType: true, showContent: true, showOwner: true },
+      });
+      const admin = moveObject(adminResponse, adminId, adminType, 'Successor predecessor AdminCap');
+      const adminFields = compilerFields(admin.fields, SCAFFOLD_FIELDS.adminCap, 'Successor predecessor AdminCap');
+      if (rootFields.owner !== signer || rootFields.makerKey !== makerKey
+        || rootFields.makerVersion !== makerVersion - 1
+        || rootFields.versionCommitment !== previousVersionCommitment
+        || rootFields.lifecycle !== 3 || rootFields.successorAuthorityId !== null
+        || rootFields.successorRootId !== null
+        || adminFields.owner !== signer || adminFields.rootId !== rootId) {
+        fail('MAKER_V8_SUCCESSOR_PREDECESSOR_DRIFT', 'Live archived predecessor differs from the requested exact N+1 lineage.', 'CONTEXT');
+      }
+      return freeze({
+        schemaVersion: 'animacraft.maker-v8-successor-predecessor.v1',
+        root: compilerObjectFromParsed(root, rootFields, 'Successor predecessor Root'),
+        adminCap: compilerObjectFromParsed(admin, adminFields, 'Successor predecessor AdminCap'),
+      });
+    },
     async assertContextFresh({ publication, transport }) {
       await assertPinnedMainnet(client);
       const fresh = await loadContextDetails({ signerAddress: publication.context.signerAddress, transport });
@@ -3453,7 +3664,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
         signerAddress: publication.context.signerAddress,
         transport,
       });
-      assertMakerV8CompilerContextFreshV8(publication.context, fresh.context);
+      await assertMakerV8CompilerContextFreshV8(publication.context, fresh.context);
       const response = await assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, transaction);
       if (stage === 'SCAFFOLD') return scaffoldReadback(response, publication);
       if (stage === 'BASE_DEFINITIONS') return baseReadback(response, scaffold);
@@ -3494,6 +3705,7 @@ export function createProductionMakerV8BrowserAdapters({
   client = createProductionMakerV8SuiGrpcTransport(),
   walletRegistry = getWallets(),
   walletId = null,
+  wallet: walletInput = null,
   dataSource = null,
   persistence = null,
 } = {}) {
@@ -3503,12 +3715,16 @@ export function createProductionMakerV8BrowserAdapters({
     'resolveRoleLineages', 'loadRoute', 'browseMarket', 'loadOwnedInventory', 'loadActionContext',
     'queryTransaction', 'readbackMarketAction',
   ]) requireMethod(reader, method, 'dataSource');
-  const wallet = createWalletStandardConnectorV8({
+  const wallet = walletInput ?? createWalletStandardConnectorV8({
     registry: walletRegistry,
     execution: checkedExecution,
     client,
     walletId,
   });
+  for (const method of [
+    'getCurrentAccount', 'reconnect', 'signExactTransaction',
+    'verifyExactSignature', 'subscribe', 'dispose',
+  ]) requireMethod(wallet, method, 'wallet');
   const transactions = createMakerV8TransactionAdaptersV8({
     client,
     execution: checkedExecution,

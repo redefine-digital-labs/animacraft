@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maker v8 draft store browser smoke</title>
+  </head>
+  <body data-status="running">
+    <pre id="result">running</pre>
+    <script type="module">
+      const result = document.querySelector('#result');
+      const bytesBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
+      const oldBytes = bytesBase64(new Uint8Array([0x11]));
+      const newBytes = bytesBase64(new Uint8Array([0x22]));
+      const databaseName = `maker-v8-real-browser-${crypto.randomUUID()}`;
+      let persistence;
+
+      try {
+        const [{ createMakerV8DraftPersistence }, { createCharacterMakerV8Starter }] = await Promise.all([
+          import('../../maker-v8-draft-store.js'),
+          import('../../maker-v8-document.js'),
+        ]);
+        persistence = createMakerV8DraftPersistence(indexedDB, {
+          databaseName,
+          now: () => 100,
+        });
+        const makerDocument = createCharacterMakerV8Starter({
+          makerKey: 'browser-smoke',
+          name: 'Browser Smoke',
+        });
+        const created = await persistence.createBundle({
+          draftId: 'browser-smoke',
+          document: makerDocument,
+          createdAt: 100,
+          assets: [{
+            assetId: 'base-default',
+            kind: 'layer',
+            mediaType: 'image/png',
+            bytesBase64: oldBytes,
+          }],
+        });
+
+        const savedDocument = structuredClone(created.draft.document);
+        savedDocument.metadata.summary = 'Saved in a real Chromium IndexedDB';
+        const saved = await persistence.compareAndSwap({
+          draftId: 'browser-smoke',
+          expectedRevision: created.draft.revision,
+          document: savedDocument,
+          updatedAt: 101,
+        });
+
+        const changed = await persistence.upsertAsset({
+          draftId: 'browser-smoke',
+          expectedDraftRevision: saved.revision,
+          assetId: 'base-default',
+          kind: 'layer',
+          mediaType: 'image/png',
+          bytesBase64: newBytes,
+          expectedAssetRevision: created.assets[0].revision,
+          updatedAt: 102,
+        });
+        const beforeRestore = await persistence.loadAsset('browser-smoke', 'base-default');
+        if (beforeRestore.bytesBase64 !== newBytes || beforeRestore.byteLength !== 1) {
+          throw new Error('same-length asset mutation was not durable before restore');
+        }
+
+        const restored = await persistence.restoreVersion({
+          draftId: 'browser-smoke',
+          expectedRevision: changed.draft.revision,
+          revision: saved.revision,
+          updatedAt: 103,
+        });
+        const restoredAsset = await persistence.loadAsset('browser-smoke', 'base-default');
+        if (restored.revision !== 4) throw new Error(`unexpected restored revision ${restored.revision}`);
+        if (restored.document.metadata.summary !== savedDocument.metadata.summary) {
+          throw new Error('restored document does not match the selected version');
+        }
+        if (restoredAsset.bytesBase64 !== oldBytes || restoredAsset.byteLength !== 1) {
+          throw new Error('restore did not recover the exact same-length historical bytes');
+        }
+
+        let current = restored;
+        for (let nextRevision = 5; nextRevision <= 103; nextRevision += 1) {
+          const nextDocument = structuredClone(current.document);
+          nextDocument.metadata.summary = `Browser bounded history ${nextRevision}`;
+          current = await persistence.compareAndSwap({
+            draftId: 'browser-smoke',
+            expectedRevision: current.revision,
+            document: nextDocument,
+            updatedAt: 100 + nextRevision,
+          });
+        }
+        const database = await new Promise((resolve, reject) => {
+          const request = indexedDB.open(databaseName);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const countStore = (storeName) => new Promise((resolve, reject) => {
+          const request = database.transaction([storeName], 'readonly').objectStore(storeName).count();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const [versionCount, assetVersionCount, blobCount] = await Promise.all([
+          countStore('versions'), countStore('assetVersions'), countStore('assetBlobs'),
+        ]);
+        database.close();
+        if (current.revision !== 103 || versionCount !== 100 || assetVersionCount !== 100
+          || blobCount !== 1) {
+          throw new Error(`bounded content history drift: ${JSON.stringify({
+            revision: current.revision, versionCount, assetVersionCount, blobCount,
+          })}`);
+        }
+
+        document.body.dataset.status = 'pass';
+        document.body.dataset.restoredRevision = String(restored.revision);
+        document.body.dataset.restoredBytes = restoredAsset.bytesBase64;
+        document.body.dataset.finalRevision = String(current.revision);
+        document.body.dataset.versionCount = String(versionCount);
+        document.body.dataset.assetVersionCount = String(assetVersionCount);
+        document.body.dataset.blobCount = String(blobCount);
+        result.textContent = JSON.stringify({
+          status: 'pass',
+          restoredRevision: restored.revision,
+          restoredBytes: restoredAsset.bytesBase64,
+        });
+      } catch (error) {
+        document.body.dataset.status = 'fail';
+        document.body.dataset.errorName = error?.name || 'Error';
+        document.body.dataset.errorCode = error?.code || '';
+        result.textContent = error?.stack || String(error);
+      } finally {
+        persistence?.close();
+      }
+    </script>
+  </body>
+</html>

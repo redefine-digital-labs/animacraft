@@ -9,6 +9,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { toBase58, toBase64 } from '@mysten/sui/utils';
 
 import { MAKER_V8_PUBLICATION_COMPILER_ABI } from '../maker-v8-compiler.js';
+import { MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256 } from '../maker-v8-chain.js';
 import {
   MAKER_V8_PUBLICATION_DATABASE,
   MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA,
@@ -297,14 +298,14 @@ async function authority() {
   return makerV8PublicationCompilerAuthorityV8({
     schemaVersion: 'animacraft.maker-v8-publication-authority.v1',
     protocolProfile: {
-      protocolVersion: '133',
+      protocolVersion: '137',
       objectRuntimeMaxNumCachedObjects: '1000',
       objectRuntimeMaxNumStoreEntries: '1000',
     },
     coreArtifact: {
       callablePackageId: packageTuple[0].callablePackageId,
       packageDigest: packageTuple[0].packageDigest,
-      baseRegistryModuleSha256: '89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7',
+      baseRegistryModuleSha256: MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
     },
     packageTuple,
     protocolConfig: { objectId: id('81'), revision: '3', commitment: hash('4d') },
@@ -404,7 +405,7 @@ async function planFixture({
     makerKey,
     manifestSha256: hash('aa'),
     contentCommitment: hash('cc'),
-    protocolProfileCommitment: '47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457',
+    protocolProfileCommitment: 'bf6c019eae80bac3824e07fad65b2f983f5e74e69d0b6c46779078c752738fa7',
     coreArtifactCommitment: await crypto.subtle.digest(
       'SHA-256',
       new TextEncoder().encode(JSON.stringify({

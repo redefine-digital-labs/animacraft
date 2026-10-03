@@ -6,6 +6,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      soulidity_commit_sha:
+        description: Exact reviewed Soulidity commit for this paired release check
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,6 +24,9 @@ jobs:
     name: Web production build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      SOULIDITY_COMMIT_SHA: ${{ inputs.soulidity_commit_sha || vars.SOULIDITY_COMMIT_SHA }}
+      SOULIDITY_WORKSPACE: ${{ github.workspace }}/_paired/soulidity
 
     steps:
       - name: Checkout
@@ -36,16 +44,51 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Require exact paired source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOULIDITY_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'SOULIDITY_COMMIT_SHA must identify the reviewed paired commit; branch fallback is forbidden.'
+            exit 1
+          fi
+
+      - name: Checkout paired Soulidity source
+        uses: actions/checkout@v6
+        with:
+          repository: redefine-digital-labs/soulidity
+          ref: ${{ env.SOULIDITY_COMMIT_SHA }}
+          path: _paired/soulidity
+          persist-credentials: false
+
+      - name: Verify paired source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C _paired/soulidity rev-parse HEAD)" = "$SOULIDITY_COMMIT_SHA"
+          test -f "$SOULIDITY_WORKSPACE/move/soulidity/sources/market.move"
+
+      - name: Prepare pinned external source prerequisites
+        env:
+          MOVE_HOME: ${{ runner.temp }}/native-soul-external-sources
+        run: node scripts/prepare-native-soul-external-sources.mjs "$MOVE_HOME"
+
       - name: Check production build
+        env:
+          MOVE_HOME: ${{ runner.temp }}/native-soul-external-sources
         run: npm run check
 
   move:
-    name: Seven-package Move gates
+    name: Paired eight-package Move gates
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      SUI_COMMIT: 51d177ad7d65102fc368b582408f466d97b31548
-      SUI_BINARY_SHA256: c4318640723ebba4169bfe3d9e8ac10016d4e6380675e6f07d4e63eba6911f73
+      SOULIDITY_COMMIT_SHA: ${{ inputs.soulidity_commit_sha || vars.SOULIDITY_COMMIT_SHA }}
+      # Official Ubuntu x86_64 archive digest, not the macOS executable hash.
+      # Framework dependencies remain separately pinned in Move.toml.
+      SUI_RELEASE: mainnet-v1.80.1
+      SUI_ARCHIVE: sui-mainnet-v1.80.1-ubuntu-x86_64.tgz
+      SUI_ARCHIVE_SHA256: 97f9aed10e0c2fe3204ce4639ac992e1449b17c14f22f30e9f903ead54ac7336
 
     steps:
       - name: Checkout
@@ -58,46 +101,92 @@ jobs:
         with:
           node-version: 22
 
+      - name: Require exact paired source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOULIDITY_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'SOULIDITY_COMMIT_SHA must identify the reviewed paired commit; branch fallback is forbidden.'
+            exit 1
+          fi
+
+      - name: Checkout paired Soulidity source
+        uses: actions/checkout@v6
+        with:
+          repository: redefine-digital-labs/soulidity
+          ref: ${{ env.SOULIDITY_COMMIT_SHA }}
+          path: _paired/soulidity
+          persist-credentials: false
+
+      - name: Verify paired source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C _paired/soulidity rev-parse HEAD)" = "$SOULIDITY_COMMIT_SHA"
+          test -f _paired/soulidity/move/soulidity/Move.toml
+          node --test test/harness/native-soul-v8/*.test.mjs test/seal-cap-toolchain-identity.test.mjs
+
       - name: Install pinned Sui CLI
         shell: bash
         run: |
           set -euo pipefail
           bin_dir="$RUNNER_TEMP/sui-bin"
           binary="$bin_dir/sui"
+          archive="$RUNNER_TEMP/$SUI_ARCHIVE"
           mkdir -p "$bin_dir"
           curl --fail --location --proto '=https' --tlsv1.2 \
-            "https://releases.sui.io/${SUI_COMMIT}/sui" \
-            --output "$binary"
-          echo "${SUI_BINARY_SHA256}  ${binary}" | sha256sum --check --strict
+            "https://github.com/MystenLabs/sui/releases/download/${SUI_RELEASE}/${SUI_ARCHIVE}" \
+            --output "$archive"
+          echo "${SUI_ARCHIVE_SHA256}  ${archive}" | sha256sum --check --strict
+          member="$(tar -tzf "$archive" | grep -E '^(\./)?sui$')"
+          test "$(printf '%s\n' "$member" | wc -l)" -eq 1
+          tar -xOzf "$archive" "$member" > "$binary"
           chmod 0755 "$binary"
           echo "$bin_dir" >> "$GITHUB_PATH"
-          "$binary" --version | grep --fixed-strings 'sui 1.77.2-51d177ad7d65'
-
-      - name: Build all seven packages
-        run: npm run move:build
-
-      - name: Test all seven packages
-        run: npm run move:test
+          test "$("$binary" --version)" = 'sui 1.80.1-671ba71e69c7'
 
       - name: Verify test-only seal-cap reproducibility
-        run: npm run move:seal-cap:quick
-
-      - name: Run adversarial compile probes
-        run: npm run move:probes
-
-      - name: Force disassembly and enforce package sizes
         shell: bash
         run: |
           set -euo pipefail
-          for package in core seal runtime output physical market release; do
-            sui move build \
-              --path "move/animacraft_v8_${package}" \
-              --force \
-              --disassemble \
-              --warnings-are-errors
-          done
-          npm run move:field-limits
-          npm run move:size
+          ANIMACRAFT_SUI_BINARY="$RUNNER_TEMP/sui-bin/sui" \
+            ANIMACRAFT_SUI_ARCHIVE="$RUNNER_TEMP/$SUI_ARCHIVE" \
+            npm run move:seal-cap:quick 2>&1 | tee "$RUNNER_TEMP/seal-cap-quick.log"
+          # The certificate uses original addresses; the following graph rewrites
+          # addresses only. No checked-out source may change between those gates.
+          git diff --exit-code HEAD -- move scripts test/harness
+
+      - name: Run paired eight-package Move and joint gates
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          node scripts/native-soul-test-graph.mjs \
+            --animacraft-root "$GITHUB_WORKSPACE" \
+            --soulidity-root "$GITHUB_WORKSPACE/_paired/soulidity" \
+            --sui "$RUNNER_TEMP/sui-bin/sui" --check release-gates
+
+      - name: Bundle paired Move gate evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          shopt -s nullglob
+          files=(native-soul-v8-graph-*/*.json native-soul-v8-graph-*/*.log)
+          if [[ -f seal-cap-quick.log ]]; then files+=(seal-cap-quick.log); fi
+          if (( ${#files[@]} == 0 )); then exit 0; fi
+          tar -czf paired-move-evidence.tgz -- "${files[@]}"
+
+      - name: Retain paired Move gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paired-move-gates-${{ github.run_id }}
+          path: ${{ runner.temp }}/paired-move-evidence.tgz
+          if-no-files-found: warn
+          retention-days: 30
 
   hygiene:
     name: Repository hygiene
@@ -132,12 +221,13 @@ jobs:
           for package in core seal runtime output physical market release; do
             test -f "move/animacraft_v8_${package}/Move.toml"
           done
-          test -f test/harness/animacraft_v8_seal_cap_harness/Move.toml
+          test ! -e test/harness/animacraft_v8_seal_cap_harness/Move.toml
           test -f test/harness/animacraft_v8_seal_cap_harness/README.md
           test -f test/harness/animacraft_v8_seal_cap_harness/fixture/slim-core/Move.toml
           test -f test/harness/animacraft_v8_seal_cap_harness/fixture/slim-core/sources/base_registry_v8.move
           test -f test/harness/animacraft_v8_seal_cap_harness/evidence/manifest.json
           test -f test/harness/animacraft_v8_seal_cap_harness/scripts/run_localnet_replay.mjs
+          test -f test/harness/animacraft_v8_seal_cap_harness/scripts/verify_reproducibility.mjs
 
       - name: Verify fresh-only delivery surface
         run: npm run scan:fresh:source

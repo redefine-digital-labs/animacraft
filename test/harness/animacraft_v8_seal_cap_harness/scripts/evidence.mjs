@@ -3,31 +3,41 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const PROFILE_SCHEMA = 'animacraft.maker-v8-sui-protocol-profile.v1';
-const EVIDENCE_SCHEMA = 'animacraft-v8-seal-cap-evidence.v1';
+const EVIDENCE_SCHEMA = 'animacraft-v8-seal-cap-evidence.v2';
 const APPROVED_PROFILE_ARTIFACT = 'approved-protocol-profile.json';
-const PROTOCOL_ARTIFACT = 'protocol-config-v133.rpc.json';
+const PROTOCOL_ARTIFACT = 'protocol-config-v137.rpc.json';
 const SCENARIO_ARTIFACTS = Object.freeze({
-  '333-colored': 'seal-333-colored.rpc.json',
-  '334-colored': 'seal-334-colored.rpc.json',
-  '500-colorless': 'seal-500-colorless.rpc.json',
-  '501-colorless': 'seal-501-colorless.rpc.json',
+  '331-colored': 'seal-331-colored.rpc.json',
+  '332-colored': 'seal-332-colored.rpc.json',
+  '497-colorless': 'seal-497-colorless.rpc.json',
+  '498-colorless': 'seal-498-colorless.rpc.json',
+  '199-distinct': 'seal-199-distinct.rpc.json',
+  '200-distinct': 'seal-200-distinct.rpc.json',
+});
+const SCENARIO_INPUTS = Object.freeze({
+  '331-colored': [331, 331, 1, 1, 998, 'success'],
+  '332-colored': [332, 332, 1, 1, 1001, 'failure'],
+  '497-colorless': [497, 0, 1, 1, 999, 'success'],
+  '498-colorless': [498, 0, 1, 1, 1001, 'failure'],
+  '199-distinct': [199, 0, 199, 199, 997, 'success'],
+  '200-distinct': [200, 0, 200, 200, 1002, 'failure'],
 });
 export const EVIDENCE_SCENARIO_NAMES = Object.freeze(Object.keys(SCENARIO_ARTIFACTS));
 export const APPROVED_PROTOCOL_PROFILE = Object.freeze({
   schemaVersion: PROFILE_SCHEMA,
-  protocolVersion: '133',
+  protocolVersion: '137',
   objectRuntimeMaxNumCachedObjects: '1000',
   objectRuntimeMaxNumStoreEntries: '1000',
 });
 export const APPROVED_PROTOCOL_PROFILE_HASH =
-  '47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457';
+  'bf6c019eae80bac3824e07fad65b2f983f5e74e69d0b6c46779078c752738fa7';
 export const APPROVED_REPLAY_PROVENANCE = Object.freeze({
-  binaryTag: 'mainnet-v1.77.2',
-  commit: '51d177ad7d65102fc368b582408f466d97b31548',
-  asset: 'sui-mainnet-v1.77.2-macos-arm64.tgz',
-  assetSha256: 'f0871c35ce1f3261028a3b0d389c2e34166fbf2f4982fd52d728806a03736d0d',
-  cliVersion: 'sui 1.77.2-51d177ad7d65',
-  protocolVersion: '133',
+  binaryTag: 'mainnet-v1.80.1',
+  commit: '671ba71e69c711ded76a11ef90297c4f2d5ac474',
+  asset: 'sui-mainnet-v1.80.1-macos-arm64.tgz',
+  assetSha256: '4df39def26921abbffbc78902e7bd8a89fc8c99c99eb0c4fb254ebbcbf963c05',
+  cliVersion: 'sui 1.80.1-671ba71e69c7',
+  protocolVersion: '137',
 });
 
 function fail(message) {
@@ -222,13 +232,17 @@ export function loadAndVerifyEvidence(harnessDirectory) {
   );
 
   for (const [name, scenario] of Object.entries(manifest.scenarios ?? {})) {
+    exact([scenario.styles, scenario.colors, scenario.items, scenario.referencedAssets,
+      scenario.cacheDemand, scenario.status], SCENARIO_INPUTS[name], name + ' scenario inputs');
+    if (scenario.referencedColorChannels !== scenario.colors) fail(name + ' color reference drift');
     if (scenario.artifact !== SCENARIO_ARTIFACTS[name]) {
       fail(`${name} must use canonical artifact ${SCENARIO_ARTIFACTS[name]}`);
     }
-    if (scenario.cacheDemand !== (2 * scenario.styles) + scenario.referencedColorPairs) {
+    if (scenario.parts !== 1 || scenario.cacheDemand !== (2 * scenario.parts) + (2 * scenario.styles) + scenario.referencedColorChannels
+        + (2 * scenario.items) + scenario.referencedAssets) {
       fail(`${name} cache-demand equation drift`);
     }
-    if (scenario.colors < scenario.referencedColorPairs) {
+    if (scenario.colors < scenario.referencedColorChannels) {
       fail(`${name} references more color pairs than declared colors`);
     }
     const envelope = artifacts.get(scenario.artifact);

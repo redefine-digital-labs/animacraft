@@ -1,8 +1,9 @@
 module runtime_output_companion_probe::probe;
 
-use animacraft_v8_core::activation_v8::OutputRuntimeRequestV8;
+use animacraft_v8_core::protocol_config_v8::ProtocolConfigV8;
 use animacraft_v8_core::maker_v8::MakerRootV8;
-use animacraft_v8_core::package_binding_v8::ProductReleaseCatalogV8;
+use animacraft_v8_core::package_binding_v8::{ProductReleaseCatalogV8,
+    FreshTupleReplacementBindingV2, RuntimeCallerCapV1};
 use animacraft_v8_runtime::runtime_binding_v8::{Self as runtime_binding,
     RuntimePackageConfigV8};
 use animacraft_v8_runtime::runtime_v8::{
@@ -18,9 +19,11 @@ use animacraft_v8_runtime::runtime_v8::{
 };
 
 public fun authorize_pack_complete<PaymentCoin, OutputRegistry: key>(
-    request: OutputRuntimeRequestV8,
+    caller_cap: &RuntimeCallerCapV1,
     root: &MakerRootV8<PaymentCoin>,
+    protocol: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &RuntimePackageConfigV8,
     output_registry: &OutputRegistry,
     release: &mut PackReleaseV8<PaymentCoin>,
@@ -31,7 +34,7 @@ public fun authorize_pack_complete<PaymentCoin, OutputRegistry: key>(
     ctx: &TxContext,
 ): PackCompleteLineV8 {
     runtime_binding::authorize_pack_complete_from_output_v8(
-        request, root, catalog, config, output_registry, release, packs, pass,
+        caller_cap, root, protocol, catalog, replacement, config, output_registry, release, packs, pass,
         authorization, loadout, ctx,
     )
 }

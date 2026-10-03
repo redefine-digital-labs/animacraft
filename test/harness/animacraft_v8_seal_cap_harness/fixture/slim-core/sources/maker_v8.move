@@ -15,6 +15,7 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     content_commitment: vector<u8>,
     expected_base_definition_count: u64,
     expected_base_registry_commitment: vector<u8>,
+    sealed_base_registry_commitment: Option<vector<u8>>,
     base_registry_id: Option<ID>,
     admin_cap_id: ID,
     owner: address,
@@ -53,6 +54,7 @@ public(package) fun new_root_for_seal_cap<PaymentCoin>(
             content_commitment,
             expected_base_definition_count,
             expected_base_registry_commitment,
+            sealed_base_registry_commitment: option::none(),
             base_registry_id: option::none(),
             admin_cap_id,
             owner: ctx.sender(),
@@ -144,4 +146,18 @@ public fun root_expected_base_registry_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): &vector<u8> {
     &root.expected_base_registry_commitment
+}
+
+public(package) fun install_sealed_base_registry_commitment_v2<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>, admin: &MakerAdminCapV8,
+    registry_id: ID, commitment: vector<u8>,
+) {
+    assert_draft_admin_v8(root, admin);
+    assert!(*root.base_registry_id.borrow() == registry_id, E_INVALID);
+    assert!(root.sealed_base_registry_commitment.is_none(), E_INVALID);
+    root.sealed_base_registry_commitment.fill(commitment);
+}
+
+public fun root_sealed_base_registry_commitment_v2<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): &vector<u8> {
+    root.sealed_base_registry_commitment.borrow()
 }

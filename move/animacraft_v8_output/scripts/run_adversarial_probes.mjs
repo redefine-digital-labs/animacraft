@@ -8,6 +8,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 execFileSync('sui', ['move', 'build', '--force', '--warnings-are-errors', '--path',
   path.join(root, 'probes', 'companion_compile')], { stdio: 'inherit' });
+execFileSync('sui', ['move', 'build', '--force', '--warnings-are-errors', '--path',
+  path.join(root, 'probes', 'native_soul_compile')], { stdio: 'inherit' });
 
 for (const [name, expected] of [
   ['adversarial_abilities', [
@@ -21,7 +23,7 @@ for (const [name, expected] of [
     'does not have the ability',
   ]],
   ['adversarial_api', [
-    'output_call_cap', 'PhysicalMaterializationWitnessV8', 'restricted visibility',
+    'runtime_caller_cap', 'PhysicalMaterializationWitnessV8', 'restricted visibility',
   ]],
   ['adversarial_bypass', ['mutate_base_counter', 'restricted visibility']],
   ['adversarial_replay', ['witness', 'authorization', 'previously moved']],
@@ -57,6 +59,10 @@ for (const [name, expected] of [
   } catch (error) {
     const output = `${error.stdout || ''}\n${error.stderr || ''}`;
     if (error.message === `${name} unexpectedly compiled`) throw error;
+    if (/unbound module member|unbound type|unbound field|too few arguments|too many arguments|invalid subtype|incompatible types|missing fields/i.test(output)) {
+      process.stderr.write(output);
+      throw new Error(`${name} failed with an unrelated ABI error`);
+    }
     const missing = expected.filter((fragment) => !output.includes(fragment));
     if (missing.length > 0) {
       process.stderr.write(output);

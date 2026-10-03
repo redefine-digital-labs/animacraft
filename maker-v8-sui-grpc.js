@@ -534,6 +534,34 @@ export function normalizeMakerV8RawPackageObject(object, expectedReference = nul
     });
   }
   const moduleMap = canonicalMakerV8PackageModuleMap(object.package);
+  const rawPackage = object.package;
+  if ((rawPackage.storageId !== undefined
+      && address(rawPackage.storageId, 'package.storageId') !== reference.objectId)
+    || (rawPackage.version !== undefined
+      && uint64(rawPackage.version, 'package.version', { positive: true }).toString() !== reference.version)) {
+    fail('MAKER_V8_SUI_GRPC_PACKAGE_DRIFT', 'Package identity differs from its enclosing object.');
+  }
+  const originalId = rawPackage.originalId === undefined
+    ? null : address(rawPackage.originalId, 'package.originalId');
+  const typeOriginTable = rawPackage.typeOrigins.map((row, index) => {
+    sdkMessage(row, GrpcTypes.TypeOrigin, `package.typeOrigins[${index}]`);
+    if (!Object.hasOwn(moduleMap, row.moduleName)
+      || typeof row.datatypeName !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(row.datatypeName)) {
+      fail('MAKER_V8_SUI_GRPC_PACKAGE_ORIGIN_INVALID', 'Package type origin must name an existing module and valid datatype.');
+    }
+    return Object.freeze({ moduleName: row.moduleName, datatypeName: row.datatypeName,
+      packageId: address(row.packageId, 'package.typeOrigin.packageId') });
+  });
+  const linkageTable = rawPackage.linkage.map((row, index) => {
+    sdkMessage(row, GrpcTypes.Linkage, `package.linkage[${index}]`);
+    return Object.freeze({ originalId: address(row.originalId, 'package.linkage.originalId'),
+      upgradedId: address(row.upgradedId, 'package.linkage.upgradedId'),
+      upgradedVersion: uint64(row.upgradedVersion, 'package.linkage.upgradedVersion', { positive: true }).toString() });
+  });
+  if (new Set(typeOriginTable.map(row => `${row.moduleName}::${row.datatypeName}`)).size !== typeOriginTable.length
+    || new Set(linkageTable.map(row => row.originalId)).size !== linkageTable.length) {
+    fail('MAKER_V8_SUI_GRPC_PACKAGE_TABLE_DUPLICATE', 'Package origin/linkage keys must be unique.');
+  }
   return Object.freeze({
     data: Object.freeze({
       ...reference,
@@ -547,6 +575,9 @@ export function normalizeMakerV8RawPackageObject(object, expectedReference = nul
         id: reference.objectId,
         version: reference.version,
         moduleMap,
+        originalId,
+        typeOriginTable: Object.freeze(typeOriginTable),
+        linkageTable: Object.freeze(linkageTable),
       }),
     }),
   });
@@ -740,6 +771,8 @@ const MOVE_SPECIAL_TYPES = Object.freeze({
   option: `${STD_ADDRESS}::option::Option`,
   string: `${STD_ADDRESS}::string::String`,
   ascii: `${STD_ADDRESS}::ascii::String`,
+  typeName: `${STD_ADDRESS}::type_name::TypeName`,
+  url: `${SUI_ADDRESS}::url::Url`,
 });
 
 function historicalMoveJson(node, value, label) {
@@ -762,6 +795,18 @@ function historicalMoveJson(node, value, label) {
   if (base === MOVE_SPECIAL_TYPES.id) return historicalMoveJson(node.fields[0].type, value.bytes, `${label}.bytes`);
   if (base === MOVE_SPECIAL_TYPES.uid) return historicalMoveJson(node.fields[0].type, value.id, `${label}.id`);
   if (base === MOVE_SPECIAL_TYPES.balance) return historicalMoveJson(node.fields[0].type, value.value, `${label}.value`);
+  // Sui's RpcVisitor renders these single-string wrappers as strings, including
+  // TypeName entries nested inside TransferPolicy.rules (VecSet<TypeName>).
+  if (base === MOVE_SPECIAL_TYPES.typeName || base === MOVE_SPECIAL_TYPES.url) {
+    const fieldName = base === MOVE_SPECIAL_TYPES.typeName ? 'name' : 'url';
+    const field = node.fields[0];
+    const inner = field?.type;
+    if (node.fields.length !== 1 || field.name !== fieldName || inner?.kind !== 'datatype'
+      || `${inner.address}::${inner.module}::${inner.name}` !== MOVE_SPECIAL_TYPES.ascii) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', `${label} is not one canonical Move string wrapper.`);
+    }
+    return historicalMoveJson(inner, value[fieldName], `${label}.${fieldName}`);
+  }
   if (base === MOVE_SPECIAL_TYPES.option) {
     const vector = node.fields[0].type;
     if (vector?.kind !== 'vector' || !Array.isArray(value.vec) || value.vec.length > 1) {
@@ -1292,7 +1337,9 @@ export function isMakerV8SuiGrpcTransport(value) {
   return Boolean(value) && value[TRANSPORT_BRAND] === true
     && value.schemaVersion === MAKER_V8_SUI_GRPC_SCHEMA
     && value.network === 'mainnet'
-    && value.chainIdentifier === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST;
+    && value.chainIdentifier === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+    && typeof value.core?.getObject === 'function'
+    && typeof value.core?.verifyZkLoginSignature === 'function';
 }
 
 export function assertMakerV8SuiGrpcTransport(value) {
@@ -1320,7 +1367,17 @@ export function createMakerV8SuiGrpcTransport({
       GrpcTypes.GetServiceInfoResponse,
     ));
   let pinnedServiceInfo = null;
-  const ensurePinnedMainnet = async () => {
+  const ensurePinnedMainnet = async ({ refresh = false } = {}) => {
+    if (refresh) {
+      try {
+        const info = await readServiceInfo();
+        pinnedServiceInfo = Promise.resolve(info);
+        return info;
+      } catch (error) {
+        pinnedServiceInfo = null;
+        throw error;
+      }
+    }
     if (pinnedServiceInfo === null) {
       pinnedServiceInfo = readServiceInfo().catch((error) => {
         pinnedServiceInfo = null;
@@ -1328,6 +1385,16 @@ export function createMakerV8SuiGrpcTransport({
       });
     }
     return pinnedServiceInfo;
+  };
+  const forwardOfficialCore = async (method, input) => {
+    const rawMethod = grpc.core?.[method];
+    if (typeof rawMethod !== 'function') {
+      fail('MAKER_V8_SUI_GRPC_CLIENT_INVALID', `Official gRPC core.${method} is required.`, { method });
+    }
+    await ensurePinnedMainnet({ refresh: true });
+    const result = await rawMethod.call(grpc.core, input);
+    await ensurePinnedMainnet({ refresh: true });
+    return result;
   };
   const getServiceInfo = async () => {
     const info = await readServiceInfo();
@@ -1384,6 +1451,8 @@ export function createMakerV8SuiGrpcTransport({
         paths: [
           'object_id', 'version', 'digest', 'owner', 'object_type', 'previous_transaction',
           'package.modules.name', 'package.modules.contents',
+          'package.storage_id', 'package.original_id', 'package.version',
+          'package.type_origins', 'package.linkage',
         ],
       },
     }), 'ledgerService.getObject(package)', GrpcTypes.GetObjectResponse);
@@ -1415,6 +1484,98 @@ export function createMakerV8SuiGrpcTransport({
       data: Object.freeze(response.objects.map((object) => normalizeMakerV8CurrentMoveObject(object, options))),
       nextCursor: response.cursor,
       hasNextPage: response.hasNextPage,
+    });
+  };
+
+  const listDynamicFields = async (input) => {
+    await ensurePinnedMainnet();
+    if (!plain(input) || typeof grpc.listDynamicFields !== 'function') {
+      fail('MAKER_V8_SUI_GRPC_DYNAMIC_FIELD_REQUEST_INVALID', 'Dynamic-field request requires the official gRPC list surface.');
+    }
+    const parentId = address(input.parentId, 'dynamicField.parentId');
+    const limit = input.limit === undefined ? 100 : input.limit;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000
+      || !(input.cursor === null || input.cursor === undefined || typeof input.cursor === 'string')) {
+      fail('MAKER_V8_SUI_GRPC_DYNAMIC_FIELD_REQUEST_INVALID', 'Dynamic-field pagination is invalid.');
+    }
+    const response = await grpc.listDynamicFields({
+      parentId,
+      cursor: input.cursor ?? null,
+      limit,
+      include: { value: true },
+    });
+    if (!plain(response) || !Array.isArray(response.dynamicFields)
+      || typeof response.hasNextPage !== 'boolean'
+      || !(response.cursor === null || typeof response.cursor === 'string')) {
+      fail('MAKER_V8_SUI_GRPC_DYNAMIC_FIELD_PAGE_INVALID', 'Core listDynamicFields returned an invalid page.');
+    }
+    const data = response.dynamicFields.map((field, index) => {
+      if (!plain(field) || !plain(field.name) || !plain(field.value)
+        || !['DynamicField', 'DynamicObject'].includes(field.$kind)) {
+        fail('MAKER_V8_SUI_GRPC_DYNAMIC_FIELD_INVALID', `Dynamic field ${index} is incomplete.`);
+      }
+      return Object.freeze({
+        kind: field.$kind,
+        fieldId: address(field.fieldId, `dynamicField[${index}].fieldId`),
+        childId: field.childId == null ? null
+          : address(field.childId, `dynamicField[${index}].childId`),
+        type: typeName(field.type, `dynamicField[${index}].type`),
+        name: Object.freeze({
+          type: typeName(field.name.type, `dynamicField[${index}].name.type`),
+          bcsBase64: toBase64(bytes(field.name.bcs, `dynamicField[${index}].name.bcs`)),
+        }),
+        value: Object.freeze({
+          type: typeName(field.value.type, `dynamicField[${index}].value.type`),
+          bcsBase64: toBase64(bytes(field.value.bcs, `dynamicField[${index}].value.bcs`)),
+        }),
+      });
+    });
+    return Object.freeze({
+      data: Object.freeze(data),
+      nextCursor: response.cursor,
+      hasNextPage: response.hasNextPage,
+    });
+  };
+
+  const getDynamicField = async (input) => {
+    await ensurePinnedMainnet();
+    if (!plain(input) || typeof grpc.getDynamicField !== 'function' || !plain(input.name)) {
+      fail('MAKER_V8_SUI_GRPC_DYNAMIC_FIELD_REQUEST_INVALID', 'Dynamic-field point request requires the official gRPC surface.');
+    }
+    const parentId = address(input.parentId, 'dynamicField.parentId');
+    const name = {
+      type: typeName(input.name.type, 'dynamicField.name.type'),
+      bcs: fromBase64(canonicalBase64(input.name.bcsBase64, 'dynamicField.name.bcsBase64')),
+    };
+    const response = await grpc.getDynamicField({ parentId, name });
+    const field = response?.dynamicField;
+    if (!plain(field) || !plain(field.name) || !plain(field.value)
+      || !['DynamicField', 'DynamicObject'].includes(field.$kind)) {
+      fail('MAKER_V8_SUI_GRPC_DYNAMIC_FIELD_INVALID', 'Core getDynamicField returned an invalid field.');
+    }
+    // CoreClient.getDynamicField projects getObjects(), whose version is a
+    // decimal string; raw protobuf LedgerService objects use bigint instead.
+    if (typeof field.version !== 'string' || !/^[1-9][0-9]{0,19}$/.test(field.version)
+      || BigInt(field.version) > 0xffffffffffffffffn) {
+      fail('MAKER_V8_SUI_GRPC_DYNAMIC_FIELD_INVALID', 'Core dynamic field version must be a positive canonical uint64 string.');
+    }
+    return Object.freeze({
+      kind: field.$kind,
+      fieldId: address(field.fieldId, 'dynamicField.fieldId'),
+      childId: field.childId == null ? null : address(field.childId, 'dynamicField.childId'),
+      version: field.version,
+      digest: digest(field.digest, 'dynamicField.digest'),
+      previousTransaction: field.previousTransaction == null ? null
+        : digest(field.previousTransaction, 'dynamicField.previousTransaction'),
+      type: typeName(field.type, 'dynamicField.type'),
+      name: Object.freeze({
+        type: typeName(field.name.type, 'dynamicField.name.type'),
+        bcsBase64: toBase64(bytes(field.name.bcs, 'dynamicField.name.bcs')),
+      }),
+      value: Object.freeze({
+        type: typeName(field.value.type, 'dynamicField.value.type'),
+        bcsBase64: toBase64(bytes(field.value.bcs, 'dynamicField.value.bcs')),
+      }),
     });
   };
 
@@ -1750,6 +1911,7 @@ export function createMakerV8SuiGrpcTransport({
   };
 
   const authoritativeCore = Object.freeze({
+    getObject: async (input) => forwardOfficialCore('getObject', input),
     getObjects: grpc.core.getObjects && (async (input) => {
       await ensurePinnedMainnet();
       return grpc.core.getObjects(input);
@@ -1757,6 +1919,14 @@ export function createMakerV8SuiGrpcTransport({
     listOwnedObjects: grpc.core.listOwnedObjects && (async (input) => {
       await ensurePinnedMainnet();
       return grpc.core.listOwnedObjects(input);
+    }),
+    listDynamicFields: grpc.core.listDynamicFields && (async (input) => {
+      await ensurePinnedMainnet();
+      return grpc.core.listDynamicFields(input);
+    }),
+    getDynamicField: grpc.core.getDynamicField && (async (input) => {
+      await ensurePinnedMainnet();
+      return grpc.core.getDynamicField(input);
     }),
     listCoins: grpc.core.listCoins && (async (input) => {
       await ensurePinnedMainnet();
@@ -1782,6 +1952,9 @@ export function createMakerV8SuiGrpcTransport({
       return grpc.core.getReferenceGasPrice();
     }),
     resolveTransactionPlugin: () => grpc.core.resolveTransactionPlugin(),
+    verifyZkLoginSignature: async (input) => (
+      forwardOfficialCore('verifyZkLoginSignature', input)
+    ),
     getChainIdentifier,
   });
 
@@ -1798,6 +1971,8 @@ export function createMakerV8SuiGrpcTransport({
     getChainIdentifier,
     getObject,
     getOwnedObjects,
+    listDynamicFields,
+    getDynamicField,
     getCoins,
     getBalance: async (input) => {
       await ensurePinnedMainnet();

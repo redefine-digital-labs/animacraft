@@ -1,0 +1,11 @@
+[package]
+name = "no_holder_read"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f", override = true }
+MoveStdlib = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f", override = true }
+animacraft_v8_output = { local = "../.." }
+
+[addresses]
+no_holder_read = "0x0"

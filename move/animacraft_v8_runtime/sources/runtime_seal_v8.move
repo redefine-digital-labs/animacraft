@@ -8,7 +8,7 @@ use animacraft_v8_core::maker_v8::MakerRootV8;
 use animacraft_v8_core::package_binding_v8::ProductReleaseCatalogV8;
 use animacraft_v8_core::treasury_v8::{Self as core_treasury, MakerAccessPassV8};
 use animacraft_v8_runtime::runtime_v8::{Self as runtime, MakerLoadoutV8,
-    PackAdminCapV8, PackPassV8, PackRegistryV8, PackReleaseV8,
+    OwnedBaseItemV8, PackAdminCapV8, PackPassV8, PackRegistryV8, PackReleaseV8,
     RuntimeDefinitionRegistryV8, RuntimeOriginalMarkerV8,
     RuntimeBaseEntitlementWitnessV8, RuntimePackEntitlementWitnessV8,
     RuntimePackRegistrationWitnessV8,
@@ -34,6 +34,7 @@ public fun select_protected_base_style_v8<PaymentCoin>(
     seal_registry: &SealRegistryV8,
     seal_policy: &SealPolicyConfigV8,
     expected_loadout_revision: u64,
+    target_selection_index: Option<u64>,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -43,19 +44,64 @@ public fun select_protected_base_style_v8<PaymentCoin>(
     seal_id: vector<u8>,
     ctx: &sui::tx_context::TxContext,
 ) {
-    let style = base::borrow_style_v8(base_registry, part_key, item_key, style_key);
+    let style = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
     let snapshot = seal::protected_asset_snapshot_v8(
         seal_registry, seal_policy, root, seal::scope_base_v8(),
         runtime::base_seal_scope_key_v8(),
         *animacraft_v8_core::maker_v8::root_content_commitment_v8(root),
         runtime::style_seal_asset_key_v8(part_key, item_key, style_key),
-        *base::style_payload_commitment_v8(style),
-        *base::style_asset_blob_id_v8(style), *base::style_asset_sha256_v8(style),
+        *base::style_payload_commitment_v2(style),
+        *base::style_asset_blob_id_v2(style), *base::style_asset_sha256_v2(style),
         ciphertext_blob_commitment, certification_commitment, seal_id,
     );
     runtime::select_protected_base_style_after_seal_v8(
         loadout, root, definitions, packs, base_registry, maker_access,
-        expected_loadout_revision, part_key, item_key, style_key, swatch_key,
+        expected_loadout_revision, target_selection_index, part_key, item_key, style_key, swatch_key,
+        snapshot_commitment(&snapshot), ctx,
+    )
+}
+
+public fun equip_protected_owned_base_style_v8<PaymentCoin>(
+    loadout: &mut MakerLoadoutV8,
+    item: &mut OwnedBaseItemV8,
+    root: &MakerRootV8<PaymentCoin>,
+    definitions: &RuntimeDefinitionRegistryV8,
+    packs: &PackRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    maker_access: &MakerAccessPassV8,
+    seal_registry: &SealRegistryV8,
+    seal_policy: &SealPolicyConfigV8,
+    expected_loadout_revision: u64,
+    target_selection_index: Option<u64>,
+    style_key: String,
+    swatch_key: Option<String>,
+    ciphertext_blob_commitment: vector<u8>,
+    certification_commitment: vector<u8>,
+    seal_id: vector<u8>,
+    ctx: &sui::tx_context::TxContext,
+) {
+    let style = base::borrow_style_v2(
+        base_registry,
+        *runtime::owned_base_item_part_key_v8(item),
+        *runtime::owned_base_item_item_key_v8(item),
+        style_key,
+    );
+    let snapshot = seal::protected_asset_snapshot_v8(
+        seal_registry, seal_policy, root, seal::scope_base_v8(),
+        runtime::base_seal_scope_key_v8(),
+        *animacraft_v8_core::maker_v8::root_content_commitment_v8(root),
+        runtime::style_seal_asset_key_v8(
+            *runtime::owned_base_item_part_key_v8(item),
+            *runtime::owned_base_item_item_key_v8(item),
+            style_key,
+        ),
+        *base::style_payload_commitment_v2(style),
+        *base::style_asset_blob_id_v2(style), *base::style_asset_sha256_v2(style),
+        ciphertext_blob_commitment, certification_commitment, seal_id,
+    );
+    runtime::equip_protected_owned_base_style_after_seal_v8(
+        loadout, item, root, definitions, packs, base_registry, maker_access,
+        expected_loadout_revision, target_selection_index, style_key, swatch_key,
         snapshot_commitment(&snapshot), ctx,
     )
 }
@@ -77,14 +123,14 @@ public fun prove_protected_base_selection_v8<PaymentCoin>(
     seal_id: vector<u8>,
     ctx: &sui::tx_context::TxContext,
 ): SelectionAccessProofV8 {
-    let style = base::borrow_style_v8(base_registry, part_key, item_key, style_key);
+    let style = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
     let snapshot = seal::protected_asset_snapshot_v8(
         seal_registry, seal_policy, root, seal::scope_base_v8(),
         runtime::base_seal_scope_key_v8(),
         *animacraft_v8_core::maker_v8::root_content_commitment_v8(root),
         runtime::style_seal_asset_key_v8(part_key, item_key, style_key),
-        *base::style_payload_commitment_v8(style),
-        *base::style_asset_blob_id_v8(style), *base::style_asset_sha256_v8(style),
+        *base::style_payload_commitment_v2(style),
+        *base::style_asset_blob_id_v2(style), *base::style_asset_sha256_v2(style),
         ciphertext_blob_commitment, certification_commitment, seal_id,
     );
     runtime::prove_protected_base_selection_after_seal_v8(
@@ -111,14 +157,14 @@ public fun certify_protected_base_entitlement_v8<PaymentCoin>(
     seal_id: vector<u8>,
     ctx: &sui::tx_context::TxContext,
 ): BaseDecryptProofV8 {
-    let style = base::borrow_style_v8(base_registry, part_key, item_key, style_key);
+    let style = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
     let scope_key = runtime::base_seal_scope_key_v8();
     let asset_key = runtime::style_seal_asset_key_v8(part_key, item_key, style_key);
     let snapshot = seal::protected_asset_snapshot_v8(
         seal_registry, seal_policy, root, seal::scope_base_v8(), scope_key,
         *animacraft_v8_core::maker_v8::root_content_commitment_v8(root), asset_key,
-        *base::style_payload_commitment_v8(style),
-        *base::style_asset_blob_id_v8(style), *base::style_asset_sha256_v8(style),
+        *base::style_payload_commitment_v2(style),
+        *base::style_asset_blob_id_v2(style), *base::style_asset_sha256_v2(style),
         ciphertext_blob_commitment, certification_commitment, seal_id,
     );
     let witness = runtime::new_base_entitlement_witness_v8(
@@ -128,7 +174,7 @@ public fun certify_protected_base_entitlement_v8<PaymentCoin>(
         PaymentCoin, RuntimeOriginalMarkerV8, RuntimeBaseEntitlementWitnessV8,
     >(
         witness, catalog, root, ctx.sender(),
-        core_treasury::maker_access_pass_id_v8(maker_access),
+        sui::object::id(maker_access),
         runtime::maker_access_entitlement_commitment_v8(maker_access),
         *seal::snapshot_scope_key_v8(&snapshot),
         *seal::snapshot_asset_key_v8(&snapshot), *seal::snapshot_seal_id_v8(&snapshot),
@@ -137,10 +183,65 @@ public fun certify_protected_base_entitlement_v8<PaymentCoin>(
         entitlement_commitment, _) = runtime::consume_base_entitlement_witness(witness);
     assert!(revision == runtime::loadout_revision_v8(loadout), EInvalidWitness);
     assert!(returned_index == selection_index && holder == ctx.sender(), EInvalidWitness);
-    assert!(entitlement_id == core_treasury::maker_access_pass_id_v8(maker_access),
+    assert!(entitlement_id == sui::object::id(maker_access),
         EInvalidWitness);
     assert!(entitlement_commitment ==
         runtime::maker_access_entitlement_commitment_v8(maker_access), EInvalidWitness);
+    proof
+}
+
+public fun certify_protected_owned_base_entitlement_v8<PaymentCoin>(
+    loadout: &MakerLoadoutV8,
+    item: &OwnedBaseItemV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    packs: &PackRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8,
+    catalog: &ProductReleaseCatalogV8,
+    seal_registry: &SealRegistryV8,
+    seal_policy: &SealPolicyConfigV8,
+    selection_index: u64,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    ciphertext_blob_commitment: vector<u8>,
+    certification_commitment: vector<u8>,
+    seal_id: vector<u8>,
+    ctx: &sui::tx_context::TxContext,
+): BaseDecryptProofV8 {
+    assert!(runtime::owned_base_item_part_key_v8(item) == &part_key, EInvalidWitness);
+    assert!(runtime::owned_base_item_item_key_v8(item) == &item_key, EInvalidWitness);
+    let style = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
+    let scope_key = runtime::base_seal_scope_key_v8();
+    let asset_key = runtime::style_seal_asset_key_v8(part_key, item_key, style_key);
+    let snapshot = seal::protected_asset_snapshot_v8(
+        seal_registry, seal_policy, root, seal::scope_base_v8(), scope_key,
+        *animacraft_v8_core::maker_v8::root_content_commitment_v8(root), asset_key,
+        *base::style_payload_commitment_v2(style),
+        *base::style_asset_blob_id_v2(style), *base::style_asset_sha256_v2(style),
+        ciphertext_blob_commitment, certification_commitment, seal_id,
+    );
+    let witness = runtime::new_owned_base_entitlement_witness_v8(
+        loadout, item, definitions, packs, base_registry, root, maker_access,
+        selection_index, snapshot_commitment(&snapshot), ctx,
+    );
+    let entitlement_id = sui::object::id(item);
+    let entitlement_commitment = runtime::owned_base_item_entitlement_commitment_v8(item);
+    let (witness, proof) = seal::certify_base_entitlement_v8<
+        PaymentCoin, RuntimeOriginalMarkerV8, RuntimeBaseEntitlementWitnessV8,
+    >(
+        witness, catalog, root, ctx.sender(), entitlement_id,
+        entitlement_commitment,
+        *seal::snapshot_scope_key_v8(&snapshot),
+        *seal::snapshot_asset_key_v8(&snapshot), *seal::snapshot_seal_id_v8(&snapshot),
+    );
+    let (_, revision, returned_index, holder, returned_id,
+        returned_commitment, _) = runtime::consume_base_entitlement_witness(witness);
+    assert!(revision == runtime::loadout_revision_v8(loadout), EInvalidWitness);
+    assert!(returned_index == selection_index && holder == ctx.sender(), EInvalidWitness);
+    assert!(returned_id == entitlement_id, EInvalidWitness);
+    assert!(returned_commitment == entitlement_commitment, EInvalidWitness);
     proof
 }
 
@@ -158,6 +259,7 @@ public fun append_protected_pack_style_v8<PaymentCoin>(
     expected_seal_revision: u64,
     certification: CiphertextCertificationV8,
     sequence: u64,
+    definition_sources: runtime::PackStyleDefinitionSourcesV8,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -176,7 +278,7 @@ public fun append_protected_pack_style_v8<PaymentCoin>(
         *runtime::pack_release_semantic_id_v8(release));
     let asset_key = runtime::style_seal_asset_key_v8(part_key, item_key, style_key);
     let witness = runtime::new_pack_registration_witness_v8(
-        release, cap, definitions, sequence, part_key, item_key, style_key,
+        release, cap, definitions, sequence, definition_sources, part_key, item_key, style_key,
         asset_content_commitment, ctx);
     let (witness, seal_id) = seal::register_pack_ciphertext_v8<
         PaymentCoin, RuntimeOriginalMarkerV8, RuntimePackRegistrationWitnessV8,
@@ -192,7 +294,7 @@ public fun append_protected_pack_style_v8<PaymentCoin>(
     );
     let binding = snapshot_commitment(&snapshot);
     runtime::append_certified_pack_style_v8(
-        release, cap, definitions, base_registry, witness, layer_track_key,
+        release, cap, definitions, base_registry, witness, definition_sources, layer_track_key,
         color_channel_key, default_swatch_key, ciphertext_blob_id,
         ciphertext_sha256, asset_content_commitment, binding,
         style_commitment, ctx,
@@ -277,7 +379,7 @@ public fun certify_protected_pack_entitlement_v8<PaymentCoin>(
         PaymentCoin, RuntimeOriginalMarkerV8, RuntimePackEntitlementWitnessV8,
     >(
         witness, catalog, root, ctx.sender(),
-        core_treasury::maker_access_pass_id_v8(maker_access),
+        sui::object::id(maker_access),
         runtime::maker_access_entitlement_commitment_v8(maker_access),
         sui::object::id(pass),
         runtime::pack_pass_commitment_v8(pass), sui::object::id(release),

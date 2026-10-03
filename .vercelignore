@@ -5,3 +5,28 @@ test/
 .git/
 .github/
 *.md
+# Release uploads contain public application/build inputs only. Vercel does not
+# inherit .gitignore, and plain .env files are not covered by its default rules.
+**/.env*
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/.git/**
+**/.vercel/**
+**/node_modules/**
+**/_paired/**
+_paired/
+state/
+source-cas/
+runs/
+reports/
+queue/
+tasks/
+handoff/
+docs/
+**/*.log
+**/release-wal.json*
+**/release-plan.json
+**/release-certificate.json
+**/animacraft-mainnet-v8-config.json

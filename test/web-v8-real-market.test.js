@@ -12,7 +12,7 @@ import {
   WEB_V8_READBACK_SCHEMA,
   assertFinalizedMarketReadbackV8,
   marketRuntimeFromMakerRuntime,
-} from '../app.js';
+} from '../maker-v8-market-controller.js';
 import { assertMakerV8Runtime } from '../maker-v8-runtime.js';
 import { attestFixtureRuntime } from './fixtures/maker-v8-runtime-attestation.js';
 

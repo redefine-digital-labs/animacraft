@@ -1,24 +1,19 @@
 module output_companion_compile::probe;
 
 use animacraft_v8_core::maker_v8::{MakerAdminCapV8, MakerRootV8};
-use animacraft_v8_core::activation_v8::OutputReadinessV8;
 use animacraft_v8_core::package_binding_v8::{PackageCallCapV8,
-    MarketRoleV8, OutputRoleV8, PhysicalRoleV8, ProductReleaseCatalogV8};
+    OutputRoleV8, ProductReleaseCatalogV8, FreshTupleReplacementBindingV2, RuntimeCallerCapV1};
 use animacraft_v8_core::protocol_config_v8::ProtocolConfigV8;
 use animacraft_v8_runtime::runtime_v8::{MakerLoadoutV8,
     RuntimePhysicalSelectionWitnessV8};
 use animacraft_v8_output::output_v8::{Self as output,
     CanonicalSoulV8, CompleteOutputV8, CompleteReceiptV8, OutputPackageConfigV8,
-    OutputPolicyRowV8, OutputRegistryV8,
+    OutputPolicyRowV8, OutputRegistryV8, OutputReadinessV8,
     PhysicalCompleteBindingV8, PhysicalMaterializationWitnessV8,
     PhysicalSelectionBindingV8, SoulMarketCustodyBindingV8,
     SoulMarketCustodyTicketV8, SoulRegistryV8};
 use sui::transfer::Receiving;
 
-public struct PhysicalOriginalMarker has drop {}
-public struct PhysicalCallableMarker has drop {}
-public struct MarketOriginalMarker has drop {}
-public struct MarketCallableMarker has drop {}
 public struct MarketRegistry has key { id: UID }
 public struct MarketTreasury has key { id: UID }
 public struct MarketListing has key { id: UID }
@@ -32,7 +27,7 @@ public fun market_treasury_id(treasury: &MarketTreasury): ID {
 }
 
 public fun new_output_config(
-    catalog: &ProductReleaseCatalogV8,
+    catalog: &mut ProductReleaseCatalogV8,
     cap: PackageCallCapV8<OutputRoleV8>,
     ctx: &mut TxContext,
 ): OutputPackageConfigV8 {
@@ -132,19 +127,18 @@ public fun custody_for_market<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    cap: &PackageCallCapV8<MarketRoleV8>,
+    cap: &RuntimeCallerCapV1,
     ctx: &TxContext,
 ): SoulMarketCustodyTicketV8 {
     output::custody_soul_bundle_for_market_v8<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(complete, receipt, soul, &mut listing.id, output_registry, soul_registry,
-        root, protocol_config, catalog, market_registry, market_treasury, cap,
+        root, protocol_config, catalog, replacement, market_registry, market_treasury, cap,
         ctx)
 }
 
@@ -154,18 +148,18 @@ public fun consume_market_ticket<PaymentCoin>(
     output_registry: &OutputRegistryV8,
     soul_registry: &SoulRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    cap: &PackageCallCapV8<MarketRoleV8>,
+    cap: &RuntimeCallerCapV1,
 ): SoulMarketCustodyBindingV8 {
     output::consume_soul_market_custody_ticket_v8<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
-    >(ticket, &listing.id, output_registry, soul_registry, root, catalog,
+    >(ticket, &listing.id, output_registry, soul_registry, root, protocol_config, catalog, replacement,
         market_registry, market_treasury, cap)
 }
 
@@ -178,19 +172,19 @@ public fun return_market_custody<PaymentCoin>(
     output_registry: &OutputRegistryV8,
     soul_registry: &SoulRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    cap: &PackageCallCapV8<MarketRoleV8>,
+    cap: &RuntimeCallerCapV1,
 ) {
     output::return_soul_bundle_from_market_v8<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(output_receiving, receipt_receiving, soul_receiving, &mut listing.id,
-        custody, output_registry, soul_registry, root, catalog, market_registry,
+        custody, output_registry, soul_registry, root, protocol_config, catalog, replacement, market_registry,
         market_treasury, cap)
 }
 
@@ -205,32 +199,32 @@ public fun purchase_market_custody<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    cap: &PackageCallCapV8<MarketRoleV8>,
+    cap: &RuntimeCallerCapV1,
     buyer: address,
 ) {
     output::purchase_soul_bundle_from_market_v8<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(output_receiving, receipt_receiving, soul_receiving, &mut listing.id,
-        custody, output_registry, soul_registry, root, protocol_config, catalog,
+        custody, output_registry, soul_registry, root, protocol_config, catalog, replacement,
         market_registry, market_treasury, cap, buyer)
 }
 
-public fun consume_for_physical(
+public fun consume_for_physical<PhysicalRuntimeWitness: drop>(
     witness: PhysicalMaterializationWitnessV8,
     catalog: &ProductReleaseCatalogV8,
-    cap: &PackageCallCapV8<PhysicalRoleV8>,
+    physical_authority: PhysicalRuntimeWitness,
+    protocol_config: &ProtocolConfigV8,
+    replacement: &FreshTupleReplacementBindingV2,
 ): (PhysicalCompleteBindingV8, PhysicalSelectionBindingV8,
     std::string::String, vector<u8>) {
     output::consume_physical_materialization_witness_v8<
-        PhysicalOriginalMarker,
-        PhysicalCallableMarker,
-    >(witness, catalog, cap)
+        PhysicalRuntimeWitness,
+    >(witness, physical_authority, protocol_config, catalog, replacement)
 }
 
 public fun new_physical_witness<PaymentCoin>(

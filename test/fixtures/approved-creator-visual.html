@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-theme="animacraft" data-theme-preference="animacraft">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Approved Creator visual fixture</title>
+    <meta name="theme-color" content="#f3f7f8" />
+    <script src="/theme-bootstrap.js?v=animacraft-theme-v1"></script>
+    <link rel="stylesheet" href="/styles.css?v=animacraft-docs-single-scroll-v5" />
+  </head>
+  <body>
+    <script type="module">
+      // The fixture projects the canonical index DOM; it never reconstructs the product shell.
+      const response = await fetch('/index.html', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Unable to load approved index.html: ${response.status}`);
+      const source = await response.text();
+      const parsed = new DOMParser().parseFromString(source, 'text/html');
+      parsed.querySelectorAll('script').forEach((node) => node.remove());
+
+      parsed.querySelectorAll('main .page').forEach((page) => page.classList.remove('active'));
+      parsed.querySelector('#creator')?.classList.add('active');
+      const gate = parsed.querySelector('#creatorWalletGate');
+      if (gate) gate.hidden = true;
+      const consolePanel = parsed.querySelector('#creatorConsole');
+      if (consolePanel) consolePanel.hidden = false;
+
+      document.body.replaceChildren(...parsed.body.children);
+    </script>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
-  chmod, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile,
+  chmod, mkdir, mkdtemp, readFile, readdir, rm, rmdir, stat, unlink, writeFile,
 } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,23 +17,19 @@ import {
   MAINNET_V8_KEY_SERVER_SET_DOMAIN,
   MAINNET_V8_LEGACY_CHAIN_IDENTIFIER,
   MAINNET_V8_PACKAGE_NAMES,
+  MAINNET_V8_PUBLISH_ORDER,
+  MAINNET_V8_PUBLISH_PACKAGE_NAMES,
   MAINNET_V8_PAYMENT_COIN_TYPE,
-  MAINNET_V8_DEFAULT_COMMITTEE,
-  MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
-  MAINNET_V8_DEFAULT_COMMITTEE_OWNER,
-  MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
+  MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_SEAL_THRESHOLD,
   MAINNET_V8_RELEASE_SIGNER,
   MAINNET_V8_SUI_BINARY_SHA256,
   MAINNET_V8_RELEASE_STEPS,
-  MAINNET_V8_ROLE_DEPENDENCIES,
-  MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES,
   MAINNET_V8_ROLE_ORDER,
   MAINNET_V8_SOURCE_ARTIFACT_DOMAIN,
   MAINNET_V8_SUI_SOURCE_COMMIT,
   MAINNET_V8_SUI_VERSION,
   MAINNET_V8_SUI_VERSION_OUTPUT,
   MAINNET_V8_WAL_EVIDENCE_SCHEMA,
-  MAINNET_V8_WAL_LOCK_LEASE_MS,
   MainnetV8ReleaseError,
   appendReleaseWal,
   appendMainnetV8ReleaseWal,
@@ -41,19 +37,19 @@ import {
   assertMainnetV8DeterministicJson,
   assertMainnetV8PackageArtifact,
   assertMainnetV8ReleasePlan,
+  assertMainnetV8ReleasePlanContents,
   assertMainnetV8FinalSealPolicy,
   assertMainnetV8SealPolicy,
   assertMainnetV8SourceArtifact,
   buildMainnetV8AbiArtifact,
   buildMainnetV8PackageArtifact,
   buildMainnetV8ReleasePlan,
+  buildMainnetV8ReleasePlanContents,
   buildMainnetV8ReadyEvidence,
   buildMainnetV8FinalSealPolicy,
   buildMainnetV8SealPolicy,
   buildMainnetV8SignedEvidence,
   buildMainnetV8OutcomeEvidence,
-  buildMainnetV8FinalManifest,
-  buildMainnetV8ManifestEvidence,
   buildMainnetV8SourceArtifact,
   canonicalMainnetV8Json,
   compareMainnetV8Text,
@@ -75,17 +71,44 @@ import {
   sha256Bytes,
   sha256Hex,
 } from '../scripts/mainnet-v8-release-lib.mjs';
+import { NATIVE_SOUL_EXTERNAL_PUBLICATIONS } from '../scripts/native-soul-external-publications.mjs';
+import { nativeSoulPublicationOutcomeFixture } from './fixtures/native-soul-publication-certificate-fixture.mjs';
+import { nativeSoulStageReadyFixture, nativeSoulStageOutcomeFixture } from './fixtures/native-soul-native-stage-ready-fixture.mjs';
+import { rewriteHistoricalObject } from './fixtures/native-soul-bootstrap-history-fixture.mjs';
+import { NativeSoulBootstrapBcs } from '../scripts/native-soul-bootstrap-readback.mjs';
+import { nativeSoulCompletedWalFixture } from './fixtures/native-soul-completed-wal-fixture.mjs';
+import { nativeSoulPublicationWalFixture } from './fixtures/native-soul-full-wal-fixture.mjs';
+import { assertMainnetV8TransactionMatchesReady } from '../scripts/mainnet-v8-release.mjs';
 
 const id = (byte) => `0x${byte.toString(16).padStart(2, '0').repeat(32)}`;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const clone = (value) => structuredClone(value);
-const sourceRevision = Object.freeze({ gitCommit: 'a'.repeat(40), gitTree: 'b'.repeat(40), clean: true });
+// Synthetic current source inventory, not a claim of compilation or a clean checkout.
+const sourceRevision = {
+  schema: 'animacraft.native-source-snapshot.v1',
+  repositories: {
+    animacraft: { baseGitCommit: 'a'.repeat(40), baseGitTree: 'b'.repeat(40) },
+    soulidity: { baseGitCommit: 'c'.repeat(40), baseGitTree: 'd'.repeat(40) },
+  },
+  packages: MAINNET_V8_PUBLISH_ORDER.map((role, index) => {
+    const packageName = MAINNET_V8_PUBLISH_PACKAGE_NAMES[role];
+    const originalFiles = [
+      mainnetV8SourceFileRecord('Move.lock', `[move]\nversion = ${index + 1}`),
+      mainnetV8SourceFileRecord('Move.toml', `[package]\nname = "${packageName}"`),
+      mainnetV8SourceFileRecord('sources/alpha.move', `module ${role}::alpha {}`),
+      mainnetV8SourceFileRecord('sources/zeta.move', `module ${role}::zeta {}`),
+    ];
+    return { role, packageName, repository: role === 'soulidity' ? 'soulidity' : 'animacraft',
+      originalFiles, files: clone(originalFiles) };
+  }),
+};
+sourceRevision.snapshotSha256 = sha256MainnetV8Json(sourceRevision);
 const toolchain = Object.freeze({
-  suiVersion: '1.77.2',
-  suiVersionOutput: 'sui 1.77.2-51d177ad7d65',
-  suiSourceCommit: '51d177ad7d65102fc368b582408f466d97b31548',
+  suiVersion: '1.80.1',
+  suiVersionOutput: 'sui 1.80.1-671ba71e69c7',
+  suiSourceCommit: '671ba71e69c711ded76a11ef90297c4f2d5ac474',
   suiBinarySha256: MAINNET_V8_SUI_BINARY_SHA256,
-  frameworkRevision: '73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1',
+  frameworkRevision: '722ac4fcf4841346c91775f596c4ce23fb7fbd0f',
 });
 const sender = MAINNET_V8_RELEASE_SIGNER;
 const transactionKind = { ProgrammableTransaction: { inputs: [], commands: [] } };
@@ -150,7 +173,7 @@ const signedArtifact = Object.freeze({
 
 const protocolProfile = Object.freeze({
   chainIdentifier: MAINNET_V8_CHAIN_IDENTIFIER,
-  protocolVersion: '133',
+  protocolVersion: '137',
   epoch: '999',
   gasPrice: unsignedEnvelope.gasPrice,
   attributes: Object.freeze({
@@ -158,51 +181,20 @@ const protocolProfile = Object.freeze({
     objectRuntimeMaxNumStoreEntries: '1000',
   }),
 });
-const TEST_SUI_EVENT_BCS = bcs.struct('MainnetV8ReleaseTestSuiEvent', {
-  package_id: bcs.Address,
-  transaction_module: bcs.string(),
-  sender: bcs.Address,
-  event_type: bcs.StructTag,
-  contents: bcs.vector(bcs.u8()),
-});
-const TEST_SUI_TRANSACTION_EVENTS_BCS = bcs.struct('MainnetV8ReleaseTestTransactionEvents', {
-  data: bcs.vector(TEST_SUI_EVENT_BCS),
-});
 const TEST_PROTOCOL_CONFIG_COMMITMENT_INPUT_BCS = bcs.struct('MainnetV8ReleaseTestProtocolCommitment', {
-  domain: bcs.byteVector(),
-  version: bcs.u64(),
+  domain: bcs.string(),
+  schema_revision: bcs.u64(),
   config_id: bcs.Address,
+  config_revision: bcs.u64(),
+  enabled: bcs.bool(),
   core_original_package_id: bcs.Address,
   core_callable_package_id: bcs.Address,
-  revision: bcs.u64(),
   treasury_id: bcs.option(bcs.Address),
   payment_coin_type: bcs.string(),
   primary_content_fee_bps: bcs.u16(),
   fixed_complete_fee_atomic: bcs.u64(),
   maker_market_fee_bps: bcs.u16(),
   soul_market_fee_bps: bcs.u16(),
-  enabled: bcs.bool(),
-});
-const TEST_PROTOCOL_TREASURY_INITIALIZED_EVENT_BCS = bcs.struct(
-  'MainnetV8ReleaseTestTreasuryInitialized', {
-    config_id: bcs.Address,
-    treasury_id: bcs.Address,
-    revision: bcs.u64(),
-    commitment: bcs.byteVector(),
-  },
-);
-const TEST_PROTOCOL_ENABLED_CHANGED_EVENT_BCS = bcs.struct('MainnetV8ReleaseTestProtocolEnabled', {
-  config_id: bcs.Address,
-  revision: bcs.u64(),
-  enabled: bcs.bool(),
-  commitment: bcs.byteVector(),
-});
-const TEST_SEAL_POLICY_CREATED_EVENT_BCS = bcs.struct('MainnetV8ReleaseTestSealPolicyCreated', {
-  config_id: bcs.Address,
-  catalog_id: bcs.Address,
-  threshold: bcs.u16(),
-  key_server_set_commitment: bcs.byteVector(),
-  commitment: bcs.byteVector(),
 });
 const TEST_UPGRADE_CAP_BCS = bcs.struct('MainnetV8ReleaseTestUpgradeCap', {
   id: bcs.Address,
@@ -229,107 +221,6 @@ const TEST_PROTOCOL_ADMIN_CAP_BCS = bcs.struct('MainnetV8ReleaseTestProtocolAdmi
   id: bcs.Address,
   version: bcs.u64(),
   config_id: bcs.Address,
-});
-const TEST_PROTOCOL_TREASURY_BCS = bcs.struct('MainnetV8ReleaseTestProtocolTreasury', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  config_id: bcs.Address,
-  revenue: bcs.struct('MainnetV8ReleaseTestProtocolBalance', { value: bcs.u64() }),
-  total_collected: bcs.u128(),
-  total_withdrawn: bcs.u128(),
-});
-const TEST_PACKAGE_CALL_CAP_BCS = bcs.struct('MainnetV8ReleaseTestPackageCallCap', {
-  version: bcs.u64(),
-  authority_id: bcs.Address,
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  role_binding_commitment: bcs.byteVector(),
-  call_cap_set_commitment: bcs.byteVector(),
-});
-const TEST_EXACT_PACKAGE_BINDING_BCS = bcs.struct('MainnetV8ReleaseTestExactBinding', {
-  original_package_id: bcs.Address,
-  callable_package_id: bcs.Address,
-  source_commitment: bcs.byteVector(),
-  package_commitment: bcs.byteVector(),
-  abi_commitment: bcs.byteVector(),
-  commitment: bcs.byteVector(),
-});
-const TEST_PRODUCT_RELEASE_BINDING_BCS = bcs.struct('MainnetV8ReleaseTestProductBinding', {
-  version: bcs.u64(),
-  native_capability_mask: bcs.u64(),
-  core: TEST_EXACT_PACKAGE_BINDING_BCS,
-  seal: TEST_EXACT_PACKAGE_BINDING_BCS,
-  runtime: TEST_EXACT_PACKAGE_BINDING_BCS,
-  output: TEST_EXACT_PACKAGE_BINDING_BCS,
-  physical: TEST_EXACT_PACKAGE_BINDING_BCS,
-  market: TEST_EXACT_PACKAGE_BINDING_BCS,
-  release: TEST_EXACT_PACKAGE_BINDING_BCS,
-  commitment: bcs.byteVector(),
-});
-const TEST_PACKAGE_CALL_CAP_SET_BCS = bcs.struct('MainnetV8ReleaseTestCallCapSet', {
-  version: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  seal_authority_id: bcs.Address,
-  runtime_authority_id: bcs.Address,
-  output_authority_id: bcs.Address,
-  physical_authority_id: bcs.Address,
-  market_authority_id: bcs.Address,
-  release_authority_id: bcs.Address,
-  commitment: bcs.byteVector(),
-});
-const TEST_PRODUCT_RELEASE_CATALOG_BCS = bcs.struct('MainnetV8ReleaseTestCatalog', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  protocol_config_id: bcs.Address,
-  protocol_config_revision: bcs.u64(),
-  protocol_config_commitment: bcs.byteVector(),
-  binding: TEST_PRODUCT_RELEASE_BINDING_BCS,
-  call_cap_set: TEST_PACKAGE_CALL_CAP_SET_BCS,
-  seal_call_cap: bcs.option(TEST_PACKAGE_CALL_CAP_BCS),
-  runtime_call_cap: bcs.option(TEST_PACKAGE_CALL_CAP_BCS),
-  output_call_cap: bcs.option(TEST_PACKAGE_CALL_CAP_BCS),
-  physical_call_cap: bcs.option(TEST_PACKAGE_CALL_CAP_BCS),
-  market_call_cap: bcs.option(TEST_PACKAGE_CALL_CAP_BCS),
-  release_call_cap: bcs.option(TEST_PACKAGE_CALL_CAP_BCS),
-});
-const TEST_SEAL_KEY_SERVER_BINDING_BCS = bcs.struct('MainnetV8ReleaseTestSealKeyServer', {
-  key_server_id: bcs.Address,
-  weight: bcs.u16(),
-});
-const TEST_SEAL_POLICY_CONFIG_BCS = bcs.struct('MainnetV8ReleaseTestSealConfig', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  protocol_config_id: bcs.Address,
-  protocol_config_revision: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  seal_original_package_id: bcs.Address,
-  seal_callable_package_id: bcs.Address,
-  seal_binding_commitment: bcs.byteVector(),
-  seal_authority_id: bcs.Address,
-  call_cap_set_commitment: bcs.byteVector(),
-  seal_call_cap: TEST_PACKAGE_CALL_CAP_BCS,
-  key_servers: bcs.vector(TEST_SEAL_KEY_SERVER_BINDING_BCS),
-  threshold: bcs.u16(),
-  key_server_set_commitment: bcs.byteVector(),
-  encryption_policy_commitment: bcs.byteVector(),
-  commitment: bcs.byteVector(),
-});
-const TEST_SIMPLE_PACKAGE_CONFIG_BCS = bcs.struct('MainnetV8ReleaseTestSimpleConfig', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  call_cap: TEST_PACKAGE_CALL_CAP_BCS,
-});
-const TEST_BOUND_PACKAGE_CONFIG_BCS = bcs.struct('MainnetV8ReleaseTestBoundConfig', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  call_cap_set_commitment: bcs.byteVector(),
-  call_cap: TEST_PACKAGE_CALL_CAP_BCS,
 });
 const effectsObjectDigest = toBase58(new Uint8Array(32).fill(0x66));
 function bcsOwner(owner) {
@@ -395,18 +286,18 @@ function abiDescriptor(definingId = id(40)) {
   };
 }
 
-function artifacts(role, index) {
-  const sourceArtifact = buildMainnetV8SourceArtifact({
-    role,
-    release: { gitCommit: sourceRevision.gitCommit, gitTree: sourceRevision.gitTree },
+function sourceArtifactFor(role) {
+  const source = sourceRevision.packages.find((entry) => entry.role === role);
+  return buildMainnetV8SourceArtifact({
+    ...source,
+    release: { snapshotSha256: sourceRevision.snapshotSha256, repository: source.repository,
+      ...sourceRevision.repositories[source.repository] },
     toolchain,
-    files: [
-      mainnetV8SourceFileRecord('sources/zeta.move', `module ${role}::zeta {}`),
-      mainnetV8SourceFileRecord('Move.lock', `[move]\nversion = ${index + 1}`),
-      mainnetV8SourceFileRecord('Move.toml', `[package]\nname = "${MAINNET_V8_PACKAGE_NAMES[role]}"`),
-      mainnetV8SourceFileRecord('sources/alpha.move', `module ${role}::alpha {}`),
-    ],
   });
+}
+
+function artifacts(role, index) {
+  const sourceArtifact = sourceArtifactFor(role);
   const packageArtifact = buildMainnetV8PackageArtifact({
     role,
     modules: [
@@ -415,7 +306,9 @@ function artifacts(role, index) {
     ],
     dependencies: [
       id(index + 20), id(2), id(1),
-      ...MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES[role].map((dependency) => (
+      // Synthetic dependencies for Catalog serialization, not a claim about
+      // compiler linkage or the complete eight-package publication graph.
+      ...MAINNET_V8_ROLE_ORDER.slice(0, index).map((dependency) => (
         id(40 + MAINNET_V8_ROLE_ORDER.indexOf(dependency))
       )),
     ],
@@ -438,18 +331,15 @@ function artifacts(role, index) {
 }
 
 function fixturePlan() {
-  return buildMainnetV8ReleasePlan({
+  return buildMainnetV8ReleasePlanContents({
     sender,
     sourceRevision,
     toolchain,
     sealPolicy: buildMainnetV8SealPolicy({
-      keyServers: [{
-        objectId: MAINNET_V8_DEFAULT_COMMITTEE,
-        weight: 1,
-      }],
-      threshold: 1,
+      keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })),
+      threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD,
     }),
-    packages: MAINNET_V8_ROLE_ORDER.map(artifacts),
+    packages: MAINNET_V8_PUBLISH_ORDER.map((role) => ({ role, sourceArtifact: sourceArtifactFor(role) })),
   });
 }
 
@@ -480,72 +370,6 @@ function readyPublishEvidence(index, { attempt = '0', predecessor = null } = {})
       gasFunding,
       protocolProfile,
       predecessorReadback: predecessorReadback(index, predecessor),
-    },
-  });
-}
-
-function fixtureStageData(ordinal) {
-  const packageIds = Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role, index) => [
-    role, id(40 + index),
-  ]));
-  const core = packageReadback(0);
-  const ownedAdmin = clone(core.protocolAdminCap.reference);
-  if (ordinal === 7) {
-    return {
-      packageIds,
-      protocolConfig: {
-        objectId: core.protocolConfig.reference.objectId,
-        initialSharedVersion: core.protocolConfig.owner.Shared.initial_shared_version,
-      },
-      protocolAdminCap: ownedAdmin,
-    };
-  }
-  const initialized = protocolInitReadback();
-  const finalSealPolicy = fixtureFinalSealPolicy();
-  return {
-    packageIds,
-    protocolConfig: {
-      objectId: initialized.protocolConfig.reference.objectId,
-      initialSharedVersion: initialized.protocolConfig.owner.Shared.initial_shared_version,
-    },
-    protocolAdminCap: clone(initialized.protocolAdminCap.reference),
-    commitments: Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role, index) => {
-      const artifact = artifacts(role, index);
-      return [role, {
-        source: fixturePlan().packages[index].sourceCommitment,
-        package: artifact.packageCommitment,
-        abi: artifact.abiCommitment,
-      }];
-    })),
-    sealPolicy: finalSealPolicy,
-    keyServerCertificates: finalSealPolicy.keyServers.map((entry, index) => ({
-      objectId: entry.objectId,
-      type: MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
-      version: '1',
-      digest: toBase58(new Uint8Array(32).fill(150 + index)),
-      owner: MAINNET_V8_DEFAULT_COMMITTEE_OWNER,
-      previousTransaction: toBase58(new Uint8Array(32).fill(160 + index)),
-      contentSha256: MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
-    })),
-  };
-}
-
-function readyStageEvidence(ordinal, predecessor, stageDataOverride = null) {
-  const kind = MAINNET_V8_RELEASE_STEPS[ordinal].kind;
-  const stageData = stageDataOverride
-    ?? fixtureStageData(ordinal);
-  return buildMainnetV8ReadyEvidence({
-    ordinal: String(ordinal),
-    unsignedEnvelope: ordinal === 9 ? null : unsignedEnvelope,
-    readyArtifact: {
-      kind,
-      stageData,
-      stageDataSha256: sha256MainnetV8Json(stageData),
-      publishedTomlSha256: hash(`published-${ordinal}`),
-      simulation: ordinal === 9 ? null : simulation,
-      gasFunding: ordinal === 9 ? null : gasFunding,
-      protocolProfile,
-      predecessorReadback: predecessorReadback(ordinal, predecessor),
     },
   });
 }
@@ -600,12 +424,6 @@ function moveContentBytes(type, fields) {
   if (type.endsWith('::protocol_config_v8::ProtocolAdminCapV8')) {
     return TEST_PROTOCOL_ADMIN_CAP_BCS.serialize(fields).toBytes();
   }
-  if (type.includes('::protocol_config_v8::ProtocolTreasuryV8<')) {
-    return TEST_PROTOCOL_TREASURY_BCS.serialize({
-      ...fields,
-      revenue: { value: fields.revenue },
-    }).toBytes();
-  }
   return null;
 }
 
@@ -637,19 +455,19 @@ function fixtureProtocolConfigCommitment({
   corePackageId, configId, revision, treasuryId = null, enabled,
 }) {
   const bytes = TEST_PROTOCOL_CONFIG_COMMITMENT_INPUT_BCS.serialize({
-    domain: new TextEncoder().encode('animacraft-v8/protocol-config'),
-    version: '8',
+    domain: 'animacraft-fresh-v8/core/protocol-config/v2',
+    schema_revision: '8',
     config_id: configId,
+    config_revision: revision,
+    enabled,
     core_original_package_id: corePackageId,
     core_callable_package_id: corePackageId,
-    revision,
     treasury_id: treasuryId,
     payment_coin_type: MAINNET_V8_PAYMENT_COIN_TYPE,
     primary_content_fee_bps: 1000,
     fixed_complete_fee_atomic: '0',
     maker_market_fee_bps: 250,
     soul_market_fee_bps: 250,
-    enabled,
   }).toBytes();
   return sha256MainnetV8Bytes(bytes);
 }
@@ -685,29 +503,13 @@ function readbackWrites(readback) {
         ? [outputWrite(readback.protocolConfig), outputWrite(readback.protocolAdminCap)] : []),
     ];
   }
-  if (readback.kind === 'PROTOCOL_INIT_CERTIFICATE') {
-    return [
-      outputWrite(readback.protocolConfig, 'MUTATED'),
-      outputWrite(readback.protocolAdminCap, 'MUTATED'),
-      outputWrite(readback.protocolTreasury),
-    ];
-  }
-  if (readback.kind === 'BOOTSTRAP_CERTIFICATE') {
-    return [
-      outputWrite(readback.protocolAdminCap, 'MUTATED'),
-      outputWrite(readback.catalog),
-      ...Object.values(readback.configs).map((entry) => outputWrite(entry)),
-    ];
-  }
   return [];
 }
 
-function finalityEvidence(success = true, writes = [], eventRows = []) {
-  const eventBytes = eventRows.length === 0
-    ? null
-    : TEST_SUI_TRANSACTION_EVENTS_BCS.serialize({ data: eventRows }).toBytes();
-  const eventsDigest = eventBytes === null
-    ? null : mainnetV8TypedDigest('TransactionEvents', eventBytes);
+function finalityEvidence(success = true, writes = []) {
+  // Remaining local callers cover publication and failure recovery; current
+  // native-stage event/history fixtures live in their dedicated shared module.
+  const eventsDigest = null;
   const effectsBytes = success
     ? transactionEffectsBytes(true, writes, eventsDigest) : transactionEffectsBytes(false);
   return {
@@ -726,11 +528,7 @@ function finalityEvidence(success = true, writes = [], eventRows = []) {
       ? { success: true, error: null }
       : { success: false, error: { kind: 'InsufficientGas' } },
     eventsDigest,
-    transactionEvents: eventBytes === null ? null : {
-      digest: eventsDigest,
-      bcsBase64: toBase64(eventBytes),
-      eventCount: String(eventRows.length),
-    },
+    transactionEvents: null,
   };
 }
 
@@ -738,7 +536,6 @@ function finalityCertificate(readback, success = true) {
   const evidence = finalityEvidence(
     success,
     success ? readbackWrites(readback) : [],
-    success ? readbackEventRows(readback) : [],
   );
   return {
     finalityEvidence: evidence,
@@ -849,23 +646,6 @@ function rehashFinalizedDetails(details) {
   return value;
 }
 
-function manifestPackage(index, details) {
-  const readback = details.certificate.readback;
-  return {
-    role: MAINNET_V8_ROLE_ORDER[index],
-    packageId: readback.package.reference.objectId,
-    packageDigest: readback.package.reference.digest,
-    packageVersion: readback.package.reference.version,
-    upgradeCapId: readback.upgradeCap.reference.objectId,
-    publishDigest: details.certificate.finalityEvidence.digest,
-    sourceCommitment: fixturePlan().packages[index].sourceCommitment,
-    packageCommitment: details.packageCommitment,
-    abiCommitment: details.abiCommitment,
-    finalityEvidenceSha256: details.certificate.finalityEvidenceSha256,
-    readbackSha256: details.certificate.readbackSha256,
-  };
-}
-
 function finalizedFailureDetails(index) {
   const artifact = artifacts(MAINNET_V8_ROLE_ORDER[index], index);
   const certificate = finalityCertificate(null, false);
@@ -875,486 +655,6 @@ function finalizedFailureDetails(index) {
     certificate,
     certificateSha256: sha256MainnetV8Json(certificate),
   };
-}
-
-function protocolInitReadback() {
-  const corePackageId = id(40);
-  const configId = id(90);
-  const treasuryId = id(100);
-  const adminId = packageReadback(0).protocolAdminCap.reference.objectId;
-  const protocolTreasury = moveOutput({
-    objectId: treasuryId,
-    byte: 100,
-    type: `${corePackageId}::protocol_config_v8::ProtocolTreasuryV8<${MAINNET_V8_PAYMENT_COIN_TYPE}>`,
-    owner: { Shared: { initial_shared_version: '2' } },
-    fields: {
-      id: treasuryId, version: '8', config_id: configId, revenue: '0',
-      total_collected: '0', total_withdrawn: '0',
-    },
-  });
-  const protocolConfig = moveOutput({
-    objectId: configId,
-    byte: 92,
-    version: '2',
-    type: `${corePackageId}::protocol_config_v8::ProtocolConfigV8`,
-    owner: { Shared: { initial_shared_version: '1' } },
-    fields: protocolConfigFields(corePackageId, configId, {
-      enabled: true, revision: '2', treasuryId,
-    }),
-  });
-  const protocolAdminCap = moveOutput({
-    objectId: adminId,
-    byte: 93,
-    version: '2',
-    type: `${corePackageId}::protocol_config_v8::ProtocolAdminCapV8`,
-    owner: { AddressOwner: sender },
-    fields: { id: adminId, version: '8', config_id: configId },
-  });
-  const intermediateCommitment = fixtureProtocolConfigCommitment({
-    corePackageId, configId, revision: '1', treasuryId, enabled: false,
-  });
-  const finalCommitment = protocolConfig.fields.commitment;
-  return {
-    schemaVersion: 'animacraft.mainnet-v8-release-runner.v1',
-    kind: 'PROTOCOL_INIT_CERTIFICATE',
-    transactionDigest: signedArtifact.digest,
-    protocolConfig,
-    protocolAdminCap,
-    protocolTreasury,
-    events: {
-      treasuryInitialized: {
-        config_id: configId,
-        treasury_id: treasuryId,
-        revision: '1',
-        commitment: toBase64(Buffer.from(intermediateCommitment, 'hex')),
-      },
-      enabledChanged: {
-        config_id: configId,
-        revision: '2',
-        enabled: true,
-        commitment: toBase64(Buffer.from(finalCommitment, 'hex')),
-      },
-      intermediateCommitment,
-      finalCommitment,
-    },
-  };
-}
-
-function attestedObject({ objectId, byte, type, fields, role = null }) {
-  const base = {
-    schemaVersion: 'animacraft.maker-v8-chain.v8',
-    network: 'mainnet',
-    objectId,
-    version: '1',
-    digest: toBase58(new Uint8Array(32).fill(byte)),
-    type,
-    owner: { kind: 'shared', initialSharedVersion: '1' },
-    fields,
-    objectRef: { objectId, version: '1', digest: toBase58(new Uint8Array(32).fill(byte)) },
-  };
-  return role === null ? base : { ...base, role };
-}
-
-function fixtureFinalSealPolicy() {
-  const seal = artifacts('seal', 1);
-  return buildMainnetV8FinalSealPolicy({
-    template: fixturePlan().sealPolicy,
-    sealPackageCommitment: seal.packageCommitment,
-    sealAbiCommitment: seal.abiCommitment,
-  });
-}
-
-const bytes32 = (value) => Buffer.from(value, 'hex');
-const fixtureMoveFields = (value) => value?.fields ?? value;
-
-function fixtureCallCapBcs(value) {
-  const fields = fixtureMoveFields(value);
-  return {
-    version: fields.version,
-    authority_id: fields.authority_id,
-    catalog_id: fields.catalog_id,
-    product_binding_commitment: bytes32(fields.product_binding_commitment),
-    role_binding_commitment: bytes32(fields.role_binding_commitment),
-    call_cap_set_commitment: bytes32(fields.call_cap_set_commitment),
-  };
-}
-
-function fixtureExactBindingBcs(value) {
-  const fields = fixtureMoveFields(value);
-  return {
-    original_package_id: fields.original_package_id,
-    callable_package_id: fields.callable_package_id,
-    source_commitment: bytes32(fields.source_commitment),
-    package_commitment: bytes32(fields.package_commitment),
-    abi_commitment: bytes32(fields.abi_commitment),
-    commitment: bytes32(fields.commitment),
-  };
-}
-
-function setFixtureContentBcs(output, bytes) {
-  output.contentBcsBase64 = toBase64(bytes);
-  output.contentBcsSha256 = sha256Hex(bytes);
-}
-
-function setFixtureBootstrapRawBcs(catalog, configs) {
-  const catalogFields = catalog.fields;
-  const binding = fixtureMoveFields(catalogFields.binding);
-  const callCapSet = fixtureMoveFields(catalogFields.call_cap_set);
-  setFixtureContentBcs(catalog, TEST_PRODUCT_RELEASE_CATALOG_BCS.serialize({
-    id: catalogFields.id,
-    version: catalogFields.version,
-    protocol_config_id: catalogFields.protocol_config_id,
-    protocol_config_revision: catalogFields.protocol_config_revision,
-    protocol_config_commitment: bytes32(catalogFields.protocol_config_commitment),
-    binding: {
-      version: binding.version,
-      native_capability_mask: binding.native_capability_mask,
-      ...Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role) => [
-        role, fixtureExactBindingBcs(binding[role]),
-      ])),
-      commitment: bytes32(binding.commitment),
-    },
-    call_cap_set: {
-      version: callCapSet.version,
-      catalog_id: callCapSet.catalog_id,
-      product_binding_commitment: bytes32(callCapSet.product_binding_commitment),
-      ...Object.fromEntries(MAINNET_V8_ROLE_ORDER.slice(1).map((role) => [
-        `${role}_authority_id`, callCapSet[`${role}_authority_id`],
-      ])),
-      commitment: bytes32(callCapSet.commitment),
-    },
-    ...Object.fromEntries(MAINNET_V8_ROLE_ORDER.slice(1).map((role) => [
-      `${role}_call_cap`, catalogFields[`${role}_call_cap`] === null
-        ? null : fixtureCallCapBcs(catalogFields[`${role}_call_cap`]),
-    ])),
-  }).toBytes());
-
-  MAINNET_V8_ROLE_ORDER.slice(1).forEach((role) => {
-    const fields = configs[role].fields;
-    if (role === 'seal') {
-      setFixtureContentBcs(configs[role], TEST_SEAL_POLICY_CONFIG_BCS.serialize({
-        id: fields.id,
-        version: fields.version,
-        protocol_config_id: fields.protocol_config_id,
-        protocol_config_revision: fields.protocol_config_revision,
-        catalog_id: fields.catalog_id,
-        product_binding_commitment: bytes32(fields.product_binding_commitment),
-        seal_original_package_id: fields.seal_original_package_id,
-        seal_callable_package_id: fields.seal_callable_package_id,
-        seal_binding_commitment: bytes32(fields.seal_binding_commitment),
-        seal_authority_id: fields.seal_authority_id,
-        call_cap_set_commitment: bytes32(fields.call_cap_set_commitment),
-        seal_call_cap: fixtureCallCapBcs(fields.seal_call_cap),
-        key_servers: fields.key_servers.map((entry) => {
-          const row = fixtureMoveFields(entry);
-          return { key_server_id: row.key_server_id, weight: Number(row.weight) };
-        }),
-        threshold: Number(fields.threshold),
-        key_server_set_commitment: bytes32(fields.key_server_set_commitment),
-        encryption_policy_commitment: bytes32(fields.encryption_policy_commitment),
-        commitment: bytes32(fields.commitment),
-      }).toBytes());
-      return;
-    }
-    const simple = ['runtime', 'output'].includes(role);
-    const schema = simple ? TEST_SIMPLE_PACKAGE_CONFIG_BCS : TEST_BOUND_PACKAGE_CONFIG_BCS;
-    setFixtureContentBcs(configs[role], schema.serialize({
-      id: fields.id,
-      version: fields.version,
-      catalog_id: fields.catalog_id,
-      product_binding_commitment: bytes32(fields.product_binding_commitment),
-      ...(!simple ? {
-        call_cap_set_commitment: bytes32(fields.call_cap_set_commitment),
-      } : {}),
-      call_cap: fixtureCallCapBcs(fields[`${role}_call_cap`]),
-    }).toBytes());
-  });
-}
-
-function bootstrapReadback() {
-  const packageIds = Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role, index) => [role, id(40 + index)]));
-  const catalogId = id(110);
-  const configRoles = MAINNET_V8_ROLE_ORDER.slice(1);
-  const roleConfigIds = Object.fromEntries(configRoles.map((role, index) => [role, id(111 + index)]));
-  const init = protocolInitReadback();
-  const protocolAdminCap = moveOutput({
-    objectId: init.protocolAdminCap.reference.objectId,
-    byte: 94,
-    version: '3',
-    type: `${packageIds.core}::protocol_config_v8::ProtocolAdminCapV8`,
-    owner: { AddressOwner: sender },
-    fields: {
-      id: init.protocolAdminCap.reference.objectId,
-      version: '8',
-      config_id: init.protocolConfig.reference.objectId,
-    },
-  });
-  const runtimeConfig = {
-    schemaVersion: 'animacraft.maker-v8-runtime.v8',
-    protocolVersion: 8,
-    enabled: true,
-    catalogId,
-    protocolConfigId: id(90),
-    protocolTreasuryId: id(100),
-    paymentCoinType: MAINNET_V8_PAYMENT_COIN_TYPE,
-    clockObjectId: `0x${'0'.repeat(63)}6`,
-    roles: Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role) => [role, {
-      typeOriginPackageId: packageIds[role], callablePackageId: packageIds[role],
-    }])),
-    roleConfigIds,
-    makerBindings: [],
-  };
-  const catalog = moveOutput({
-    objectId: catalogId,
-    byte: 110,
-    type: `${packageIds.core}::package_binding_v8::ProductReleaseCatalogV8`,
-    owner: { Shared: { initial_shared_version: '3' } },
-    fields: { id: catalogId },
-  });
-  const typeSuffixes = {
-    seal: 'seal_v8::SealPolicyConfigV8', runtime: 'runtime_binding_v8::RuntimePackageConfigV8',
-    output: 'output_v8::OutputPackageConfigV8', physical: 'physical_v8::PhysicalPackageConfigV8',
-    market: 'market_v8::MarketPackageConfigV8', release: 'release_v8::ReleasePackageConfigV8',
-  };
-  const finalSealPolicy = fixtureFinalSealPolicy();
-  const sealPolicyCommitment = hash('onchain-seal-policy');
-  const configs = Object.fromEntries(configRoles.map((role, index) => [role, moveOutput({
-    objectId: roleConfigIds[role],
-    byte: 111 + index,
-    type: `${packageIds[role]}::${typeSuffixes[role]}`,
-    owner: { Shared: { initial_shared_version: '3' } },
-    fields: role === 'seal' ? {
-      id: roleConfigIds[role],
-      key_server_set_commitment: finalSealPolicy.keyServerSetCommitment,
-      encryption_policy_commitment: finalSealPolicy.encryptionPolicyCommitment,
-    } : { id: roleConfigIds[role] },
-  })]));
-  const catalogRoles = Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role, index) => {
-    const artifact = artifacts(role, index);
-    return [role, {
-      role,
-      originalPackageId: packageIds[role],
-      callablePackageId: packageIds[role],
-      sourceCommitment: fixturePlan().packages[index].sourceCommitment,
-      packageCommitment: artifact.packageCommitment,
-      abiCommitment: artifact.abiCommitment,
-      commitment: hash(`catalog-role-${role}`),
-    }];
-  }));
-  const attestedCatalog = {
-    ...attestedObject({ objectId: catalogId, byte: 110, type: catalog.type, fields: { id: catalogId } }),
-    protocolConfigRevision: '2',
-    protocolConfigCommitment: fixtureProtocolConfigCommitment({
-      corePackageId: packageIds.core,
-      configId: id(90),
-      revision: '2',
-      treasuryId: id(100),
-      enabled: true,
-    }),
-    productBindingCommitment: hash('product-binding'),
-    callCapSetCommitment: hash('call-cap-set'),
-    roles: catalogRoles,
-    authorities: Object.fromEntries(configRoles.map((role, index) => [role, id(130 + index)])),
-  };
-  const bindingFields = Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role) => [role, {
-    fields: {
-      original_package_id: catalogRoles[role].originalPackageId,
-      callable_package_id: catalogRoles[role].callablePackageId,
-      source_commitment: catalogRoles[role].sourceCommitment,
-      package_commitment: catalogRoles[role].packageCommitment,
-      abi_commitment: catalogRoles[role].abiCommitment,
-      commitment: catalogRoles[role].commitment,
-    },
-  }]));
-  catalog.fields = {
-    id: catalogId,
-    version: '8',
-    protocol_config_id: id(90),
-    protocol_config_revision: '2',
-    protocol_config_commitment: attestedCatalog.protocolConfigCommitment,
-    binding: { fields: {
-      version: '8',
-      native_capability_mask: '127',
-      ...bindingFields,
-      commitment: attestedCatalog.productBindingCommitment,
-    } },
-    call_cap_set: { fields: {
-      version: '8',
-      catalog_id: catalogId,
-      product_binding_commitment: attestedCatalog.productBindingCommitment,
-      ...Object.fromEntries(configRoles.map((role) => [
-        `${role}_authority_id`, attestedCatalog.authorities[role],
-      ])),
-      commitment: attestedCatalog.callCapSetCommitment,
-    } },
-    ...Object.fromEntries(configRoles.map((role) => [`${role}_call_cap`, null])),
-  };
-  attestedCatalog.fields = clone(catalog.fields);
-  configRoles.forEach((role) => {
-    const callCap = { fields: {
-      version: '8',
-      authority_id: attestedCatalog.authorities[role],
-      catalog_id: catalogId,
-      product_binding_commitment: attestedCatalog.productBindingCommitment,
-      role_binding_commitment: catalogRoles[role].commitment,
-      call_cap_set_commitment: attestedCatalog.callCapSetCommitment,
-    } };
-    configs[role].fields = role === 'seal' ? {
-      id: roleConfigIds[role],
-      version: '8',
-      protocol_config_id: id(90),
-      protocol_config_revision: '2',
-      catalog_id: catalogId,
-      product_binding_commitment: attestedCatalog.productBindingCommitment,
-      seal_original_package_id: packageIds.seal,
-      seal_callable_package_id: packageIds.seal,
-      seal_binding_commitment: catalogRoles.seal.commitment,
-      seal_authority_id: attestedCatalog.authorities.seal,
-      call_cap_set_commitment: attestedCatalog.callCapSetCommitment,
-      seal_call_cap: callCap,
-      key_servers: finalSealPolicy.keyServers.map((entry) => ({ fields: {
-        key_server_id: entry.objectId,
-        weight: entry.weight,
-      } })),
-      threshold: finalSealPolicy.threshold,
-      key_server_set_commitment: finalSealPolicy.keyServerSetCommitment,
-      encryption_policy_commitment: finalSealPolicy.encryptionPolicyCommitment,
-      commitment: sealPolicyCommitment,
-    } : {
-      id: roleConfigIds[role],
-      version: '8',
-      catalog_id: catalogId,
-      product_binding_commitment: attestedCatalog.productBindingCommitment,
-      ...(['runtime', 'output'].includes(role) ? {} : {
-        call_cap_set_commitment: attestedCatalog.callCapSetCommitment,
-      }),
-      [`${role}_call_cap`]: callCap,
-    };
-  });
-  const attestedConfigs = Object.fromEntries(configRoles.map((role, index) => [role, attestedObject({
-    objectId: roleConfigIds[role], byte: 111 + index, type: configs[role].type,
-    fields: clone(configs[role].fields), role,
-  })]));
-  const packageTuple = MAINNET_V8_ROLE_ORDER.map((role, index) => ({
-    role,
-    originalPackageId: packageIds[role],
-    callablePackageId: packageIds[role],
-    packageDigest: toBase58(new Uint8Array(32).fill(40 + index)),
-  }));
-  const markerTypes = {
-    core: ['protocol_config_v8', 'CorePackageMarkerV8', 'CorePackageMarkerV8'],
-    seal: ['seal_v8', 'SealOriginalMarkerV8', 'SealCallableMarkerV8'],
-    runtime: ['runtime_v8', 'RuntimeOriginalMarkerV8', 'RuntimeCallableMarkerV8'],
-    output: ['output_v8', 'OutputOriginalMarkerV8', 'OutputCallableMarkerV8'],
-    physical: ['physical_v8', 'PhysicalOriginalMarkerV8', 'PhysicalCallableMarkerV8'],
-    market: ['market_v8', 'MarketOriginalMarkerV8', 'MarketCallableMarkerV8'],
-    release: ['release_v8', 'ReleaseOriginalMarkerV8', 'ReleaseCallableMarkerV8'],
-  };
-  const releaseCommitments = {
-    roles: Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role) => {
-      const attested = catalogRoles[role];
-      const [module, original, callable] = markerTypes[role];
-      return [role, {
-        originalPackageId: packageIds[role],
-        callablePackageId: packageIds[role],
-        sourceCommitment: attested.sourceCommitment,
-        packageCommitment: attested.packageCommitment,
-        abiCommitment: attested.abiCommitment,
-        bindingCommitment: attested.commitment,
-        originalMarkerType: `${packageIds[role]}::${module}::${original}`,
-        callableMarkerType: `${packageIds[role]}::${module}::${callable}`,
-      }];
-    })),
-    authorities: { ...attestedCatalog.authorities },
-    productBindingCommitment: attestedCatalog.productBindingCommitment,
-    callCapSetCommitment: attestedCatalog.callCapSetCommitment,
-  };
-  const events = {
-    config_id: roleConfigIds.seal,
-    catalog_id: catalogId,
-    threshold: Number(finalSealPolicy.threshold),
-    key_server_set_commitment: toBase64(Buffer.from(finalSealPolicy.keyServerSetCommitment, 'hex')),
-    commitment: toBase64(Buffer.from(sealPolicyCommitment, 'hex')),
-  };
-  setFixtureBootstrapRawBcs(catalog, configs);
-  return {
-    schemaVersion: 'animacraft.mainnet-v8-release-runner.v1',
-    kind: 'BOOTSTRAP_CERTIFICATE',
-    transactionDigest: signedArtifact.digest,
-    protocolAdminCap,
-    runtimeConfig,
-    catalog,
-    configs,
-    releaseCommitments,
-    sealPolicyCommitment,
-    events,
-    attestation: {
-      catalog: attestedCatalog,
-      configs: attestedConfigs,
-      packageTuple,
-      coreArtifact: {
-        callablePackageId: packageIds.core,
-        packageDigest: packageTuple[0].packageDigest,
-        baseRegistryModuleSha256: hash('core-base-registry'),
-      },
-    },
-  };
-}
-
-function suiEvent({ packageId, module, name, contents }) {
-  return {
-    package_id: packageId,
-    transaction_module: module,
-    sender,
-    event_type: { address: packageId, module, name, typeParams: [] },
-    contents,
-  };
-}
-
-function readbackEventRows(readback) {
-  if (!readback) return [];
-  if (readback.kind === 'PROTOCOL_INIT_CERTIFICATE') {
-    const corePackageId = readback.protocolConfig.type.split('::')[0];
-    const first = readback.events.treasuryInitialized;
-    const second = readback.events.enabledChanged;
-    return [
-      suiEvent({
-        packageId: corePackageId,
-        module: 'protocol_config_v8',
-        name: 'ProtocolTreasuryV8Initialized',
-        contents: TEST_PROTOCOL_TREASURY_INITIALIZED_EVENT_BCS.serialize({
-          ...first, commitment: Buffer.from(first.commitment, 'base64'),
-        }).toBytes(),
-      }),
-      suiEvent({
-        packageId: corePackageId,
-        module: 'protocol_config_v8',
-        name: 'ProtocolV8EnabledChanged',
-        contents: TEST_PROTOCOL_ENABLED_CHANGED_EVENT_BCS.serialize({
-          ...second, commitment: Buffer.from(second.commitment, 'base64'),
-        }).toBytes(),
-      }),
-    ];
-  }
-  if (readback.kind === 'BOOTSTRAP_CERTIFICATE') {
-    return [suiEvent({
-      packageId: readback.runtimeConfig.roles.seal.callablePackageId,
-      module: 'seal_v8',
-      name: 'SealPolicyCreatedV8',
-      contents: TEST_SEAL_POLICY_CREATED_EVENT_BCS.serialize({
-        ...readback.events,
-        key_server_set_commitment: Buffer.from(readback.events.key_server_set_commitment, 'base64'),
-        commitment: Buffer.from(readback.events.commitment, 'base64'),
-      }).toBytes(),
-    })];
-  }
-  return [];
-}
-
-function finalizedStageDetails(ordinal) {
-  const readback = ordinal === 7 ? protocolInitReadback() : bootstrapReadback();
-  const certificate = finalityCertificate(readback);
-  return { certificate, certificateSha256: sha256MainnetV8Json(certificate) };
 }
 
 const queryIntent = Object.freeze({ kind: 'QUERY_INTENT', details: Object.freeze({}) });
@@ -1457,7 +757,7 @@ test('canonical JSON is safe, injective, and sorted by ECMAScript UTF-16 code un
     expectCode('MAINNET_V8_JSON_DOMAIN_INVALID'),
   ));
 
-  // A real seven-package WAL contains full ABI and predecessor certificates;
+  // A full release WAL contains full ABI and predecessor certificates;
   // keep its accepted deterministic domain above the former 200k-node limit.
   assert.doesNotThrow(() => assertMainnetV8DeterministicJson(
     Array.from({ length: 210_000 }, () => null),
@@ -1465,31 +765,17 @@ test('canonical JSON is safe, injective, and sorted by ECMAScript UTF-16 code un
   ));
 });
 
-test('the seven roles, direct dependency DAG, package names, and ten release ordinals are frozen', () => {
+test('seven Catalog roles remain distinct from eight publications and fourteen release ordinals', () => {
   assert.deepEqual(MAINNET_V8_ROLE_ORDER, ['core', 'seal', 'runtime', 'output', 'physical', 'market', 'release']);
-  assert.deepEqual(MAINNET_V8_ROLE_DEPENDENCIES, {
-    core: [],
-    seal: ['core'],
-    runtime: ['core', 'seal'],
-    output: ['core', 'seal', 'runtime'],
-    physical: ['core', 'output', 'runtime'],
-    market: ['core', 'output', 'physical', 'runtime'],
-    release: ['core', 'seal', 'runtime', 'output', 'physical'],
-  });
-  assert.deepEqual(MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES, {
-    core: [],
-    seal: ['core'],
-    runtime: ['core', 'seal'],
-    output: ['core', 'seal', 'runtime'],
-    physical: ['core', 'seal', 'runtime', 'output'],
-    market: ['core', 'seal', 'runtime', 'output', 'physical'],
-    release: ['core', 'seal', 'runtime', 'output'],
-  });
   assert.deepEqual(Object.values(MAINNET_V8_PACKAGE_NAMES), MAINNET_V8_ROLE_ORDER.map((role) => `animacraft_v8_${role}`));
+  assert.deepEqual(MAINNET_V8_PUBLISH_ORDER, ['core', 'seal', 'runtime', 'output', 'physical', 'market', 'soulidity', 'release']);
+  assert.deepEqual(MAINNET_V8_PUBLISH_PACKAGE_NAMES, { ...MAINNET_V8_PACKAGE_NAMES, soulidity: 'soulidity' });
+  assert.deepEqual(MAINNET_V8_RELEASE_STEPS.slice(0, 8).map(({ role }) => role), MAINNET_V8_PUBLISH_ORDER);
   assert.deepEqual(MAINNET_V8_RELEASE_STEPS.map(({ ordinal, kind }) => [ordinal, kind]), [
     ['0', 'PUBLISH'], ['1', 'PUBLISH'], ['2', 'PUBLISH'], ['3', 'PUBLISH'],
-    ['4', 'PUBLISH'], ['5', 'PUBLISH'], ['6', 'PUBLISH'],
-    ['7', 'INITIALIZE_PROTOCOL'], ['8', 'BOOTSTRAP_RELEASE'], ['9', 'VERIFY_AND_EXPORT'],
+    ['4', 'PUBLISH'], ['5', 'PUBLISH'], ['6', 'PUBLISH'], ['7', 'PUBLISH'],
+    ['8', 'INITIALIZE_PROTOCOL'], ['9', 'SETUP_RELEASE'], ['10', 'BEGIN_BOOTSTRAP'],
+    ['11', 'FINALIZE_BOOTSTRAP'], ['12', 'ACTIVATE_SOULIDITY_MARKET'], ['13', 'VERIFY_AND_EXPORT'],
   ]);
 });
 
@@ -1503,6 +789,13 @@ test('source artifacts bind the exact source set, release revision, toolchain, s
     'Move.lock', 'Move.toml', 'sources/alpha.move', 'sources/zeta.move',
   ]);
   assert.doesNotThrow(() => assertMainnetV8SourceArtifact(artifact));
+  assert.deepEqual(artifact.originalFiles, artifact.files);
+  assert.equal(artifact.release.snapshotSha256, sourceRevision.snapshotSha256);
+  assert.equal(artifact.release.repository, 'animacraft');
+  const soulidityArtifact = sourceArtifactFor('soulidity');
+  assert.equal(soulidityArtifact.release.repository, 'soulidity');
+  assert.equal(soulidityArtifact.release.baseGitCommit, sourceRevision.repositories.soulidity.baseGitCommit);
+  assert.doesNotThrow(() => assertMainnetV8SourceArtifact(soulidityArtifact));
   assert.equal(mainnetV8SourceCommitment(artifact), sha256MainnetV8Json(artifact));
 
   const sizeTamper = clone(artifact);
@@ -1516,7 +809,7 @@ test('source artifacts bind the exact source set, release revision, toolchain, s
   pathTamper.files[2].path = '../alpha.move';
   assert.throws(() => assertMainnetV8SourceArtifact(pathTamper), expectCode('MAINNET_V8_SOURCE_PATH_INVALID'));
   const binaryCommitVersion = clone(artifact);
-  binaryCommitVersion.toolchain.suiVersion = '1.77.2-51d177ad7d65';
+  binaryCommitVersion.toolchain.suiVersion = '1.80.1-671ba71e69c7';
   assert.throws(() => assertMainnetV8SourceArtifact(binaryCommitVersion), expectCode('MAINNET_V8_TOOLCHAIN_INVALID'));
   const sourceCommitTamper = clone(artifact);
   sourceCommitTamper.toolchain.suiSourceCommit = 'd'.repeat(40);
@@ -1524,6 +817,12 @@ test('source artifacts bind the exact source set, release revision, toolchain, s
   const binaryHashTamper = clone(artifact);
   binaryHashTamper.toolchain.suiBinarySha256 = 'd'.repeat(64);
   assert.throws(() => assertMainnetV8SourceArtifact(binaryHashTamper), expectCode('MAINNET_V8_TOOLCHAIN_INVALID'));
+  const sourceBytesTamper = clone(artifact);
+  sourceBytesTamper.files[2].sha256 = hash('unapproved source rewrite');
+  assert.throws(() => assertMainnetV8SourceArtifact(sourceBytesTamper), expectCode('MAINNET_V8_SOURCE_ARTIFACT_INVALID'));
+  const wrongRepository = clone(soulidityArtifact);
+  wrongRepository.release.repository = 'animacraft';
+  assert.throws(() => assertMainnetV8SourceArtifact(wrongRepository), expectCode('MAINNET_V8_SOURCE_ARTIFACT_INVALID'));
 });
 
 test('package artifacts bind exact module bytes, normalized dependencies, and build digest', () => {
@@ -1561,16 +860,15 @@ test('ABI artifacts strip docs/source locations, decimalize integers, and canoni
   assert.throws(() => assertMainnetV8AbiArtifact(docTamper), expectCode('MAINNET_V8_ABI_INVALID'));
 });
 
-test('Seal policy commitments bind the reviewed Mainnet committee and final artifact policy', () => {
+test('Seal policy commitments bind the two reviewed no-secret Mainnet services and final artifact policy', () => {
   const template = buildMainnetV8SealPolicy({
-    keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: 1 }],
-    threshold: 1,
+    keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD,
   });
   assert.equal(template.keyServerSetArtifact.domain, MAINNET_V8_KEY_SERVER_SET_DOMAIN);
   assert.equal(template.keyServerSetArtifact.chainIdentifier, MAINNET_V8_CHAIN_IDENTIFIER);
-  assert.deepEqual(template.keyServers.map(({ objectId }) => objectId), [MAINNET_V8_DEFAULT_COMMITTEE]);
-  assert.deepEqual(template.keyServers.map(({ weight }) => weight), ['1']);
-  assert.equal(template.threshold, '1');
+  assert.deepEqual(template.keyServers.map(({ objectId }) => objectId), MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => objectId));
+  assert.deepEqual(template.keyServers.map(({ weight }) => weight), ['1', '1']);
+  assert.equal(template.threshold, '2');
   assert.equal(template.keyServerSetCommitment, sha256MainnetV8Json(template.keyServerSetArtifact));
   assert.equal(Object.hasOwn(template, 'encryptionPolicyArtifact'), false);
   assert.equal(canonicalMainnetV8Json(template).includes('apiKey'), false);
@@ -1594,6 +892,16 @@ test('Seal policy commitments bind the reviewed Mainnet committee and final arti
   assert.doesNotThrow(() => assertMainnetV8FinalSealPolicy(finalPolicy, template));
 
   assert.throws(() => buildMainnetV8SealPolicy({ keyServers: [], threshold: 1 }), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
+  // Historical credential-only committee remains explicitly rejected, not a
+  // fallback or a compatible publication target for this fresh browser release.
+  assert.throws(() => buildMainnetV8SealPolicy({
+    keyServers: [{ objectId: '0x686098f1439237fff9f36b99c7329683c22979d2005c2465cb891acb012a7595', weight: '1' }],
+    threshold: '1',
+  }), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
+  assert.throws(() => buildMainnetV8SealPolicy({
+    keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })),
+    threshold: '1',
+  }), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
   assert.throws(() => buildMainnetV8SealPolicy({
     keyServers: [{ objectId: '0x1', weight: 1 }], threshold: 2,
   }), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
@@ -1624,12 +932,15 @@ test('Seal policy commitments bind the reviewed Mainnet committee and final arti
   );
 });
 
-test('executionPlanId binds exact Mainnet, sender, clean Git revision, protocol 133, USDC, Seal, and seven source artifacts only', () => {
+test('executionPlanId binds Mainnet, sender, dual-repository source snapshot, protocol 137, USDC, Seal and eight source artifacts', () => {
   const plan = fixturePlan();
   assert.equal(plan.chain.chainIdentifier, MAINNET_V8_CHAIN_IDENTIFIER);
   assert.equal(plan.chain.legacyChainIdentifier, MAINNET_V8_LEGACY_CHAIN_IDENTIFIER);
   assert.equal(plan.paymentCoinType, MAINNET_V8_PAYMENT_COIN_TYPE);
-  assert.equal(plan.packages.length, 7);
+  assert.equal(plan.packages.length, 8);
+  assert.equal(plan.steps.length, 14);
+  assert.deepEqual(plan.sourceRevision.repositories, sourceRevision.repositories);
+  assert.equal(Object.hasOwn(plan.sourceRevision, 'clean'), false);
   assert.equal(plan.packages.some((entry) => [
     'packageArtifact', 'packageCommitment', 'abiArtifact', 'abiCommitment',
   ].some((field) => Object.hasOwn(entry, field))), false);
@@ -1637,24 +948,24 @@ test('executionPlanId binds exact Mainnet, sender, clean Git revision, protocol 
     Object.entries(plan).filter(([key]) => key !== 'executionPlanId'),
   )));
   assert.equal(computeExecutionPlanId(plan), plan.executionPlanId);
-  assert.doesNotThrow(() => assertMainnetV8ReleasePlan(plan));
+  assert.doesNotThrow(() => assertMainnetV8ReleasePlanContents(plan));
 
-  const dirty = clone(plan);
-  dirty.sourceRevision.clean = false;
-  assert.throws(() => assertMainnetV8ReleasePlan(dirty), expectCode('MAINNET_V8_PLAN_INVALID'));
+  const obsoleteCleanClaim = clone(plan);
+  obsoleteCleanClaim.sourceRevision.clean = true;
+  assert.throws(() => assertMainnetV8ReleasePlanContents(obsoleteCleanClaim), { code: 'NATIVE_SOUL_SOURCE_INVALID' });
   const signerTamper = clone(plan);
   signerTamper.sender = id(173);
   signerTamper.executionPlanId = computeExecutionPlanId(signerTamper);
-  assert.throws(() => assertMainnetV8ReleasePlan(signerTamper), expectCode('MAINNET_V8_PLAN_INVALID'));
+  assert.throws(() => assertMainnetV8ReleasePlanContents(signerTamper), expectCode('MAINNET_V8_PLAN_INVALID'));
   const artifactTamper = clone(plan);
   artifactTamper.packages[3].sourceArtifact.files[0].sha256 = 'd'.repeat(64);
   artifactTamper.executionPlanId = sha256MainnetV8Json(Object.fromEntries(
     Object.entries(artifactTamper).filter(([key]) => key !== 'executionPlanId'),
   ));
-  assert.throws(() => assertMainnetV8ReleasePlan(artifactTamper), expectCode('MAINNET_V8_PLAN_INVALID'));
+  assert.throws(() => assertMainnetV8ReleasePlanContents(artifactTamper), expectCode('MAINNET_V8_PLAN_INVALID'));
 
-  const rebuiltInputs = MAINNET_V8_ROLE_ORDER.map((role, index) => {
-    const entry = artifacts(role, index);
+  const rebuiltInputs = plan.packages.map((source, index) => {
+    const entry = clone(source), { role } = entry;
     entry.packageArtifact = buildMainnetV8PackageArtifact({
       role, modules: [{ name: 'changed', bytes: Uint8Array.of(99, index) }],
       dependencies: [id(index + 40)], buildDigest: String(index + 1).repeat(64).slice(0, 64),
@@ -1662,10 +973,36 @@ test('executionPlanId binds exact Mainnet, sender, clean Git revision, protocol 
     entry.packageCommitment = mainnetV8PackageCommitment(entry.packageArtifact);
     return entry;
   });
-  const sameSourcePlan = buildMainnetV8ReleasePlan({
+  const sameSourcePlan = buildMainnetV8ReleasePlanContents({
     sender, sourceRevision, toolchain, sealPolicy: plan.sealPolicy, packages: rebuiltInputs,
   });
   assert.equal(sameSourcePlan.executionPlanId, plan.executionPlanId);
+  for (const mutate of [
+    value => { value.packages.splice(6, 1); },
+    value => { value.steps.splice(12, 1); },
+    value => { value.steps[9].kind = 'BOOTSTRAP_RELEASE'; },
+    value => { [value.steps[9], value.steps[10]] = [value.steps[10], value.steps[9]]; },
+    value => { value.chain.chainIdentifier = MAINNET_V8_LEGACY_CHAIN_IDENTIFIER; },
+    value => { value.protocolProfile.protocolVersion = '134'; },
+    value => { value.paymentCoinType = `${id(1)}::fake::USDC`; },
+  ]) {
+    const tampered = clone(plan); mutate(tampered);
+    tampered.executionPlanId = computeExecutionPlanId(tampered);
+    assert.throws(() => assertMainnetV8ReleasePlanContents(tampered), expectCode('MAINNET_V8_PLAN_INVALID'));
+  }
+  const stalePlanHash = clone(plan);
+  stalePlanHash.executionPlanId = 'f'.repeat(64);
+  assert.throws(() => assertMainnetV8ReleasePlanContents(stalePlanHash), expectCode('MAINNET_V8_PLAN_INVALID'));
+});
+
+test('public release-plan entry points validate the same exact current plan', () => {
+  const plan = fixturePlan();
+  assert.doesNotThrow(() => assertMainnetV8ReleasePlanContents(plan));
+  assert.deepEqual(assertMainnetV8ReleasePlan(plan), plan);
+  assert.deepEqual(buildMainnetV8ReleasePlan(plan), plan);
+  const drift = clone(plan);
+  drift.executionPlanId = 'f'.repeat(64);
+  assert.throws(() => assertMainnetV8ReleasePlan(drift), expectCode('MAINNET_V8_PLAN_INVALID'));
 });
 
 test('Published.toml renderer/parser roundtrips the exact deterministic Sui ephemeral prefix', async () => {
@@ -1676,80 +1013,97 @@ test('Published.toml renderer/parser roundtrips the exact deterministic Sui ephe
     publishedAt: id(index + 10),
     originalId: id(index + 10),
     version: '1',
-    toolchainVersion: '1.77.2',
+    toolchainVersion: '1.80.1',
     buildConfig: { flavor: 'sui', edition: '2024' },
     upgradeCapability: id(index + 30),
   }));
-  const value = { buildEnv: 'mainnet', chainId: MAINNET_V8_LEGACY_CHAIN_IDENTIFIER, entries };
+  const externalEntries = NATIVE_SOUL_EXTERNAL_PUBLICATIONS.map(pin => ({
+    packageName: pin.packageName, source: join(root, 'external', pin.rev, pin.subdir),
+    publishedAt: pin.publishedAt, originalId: pin.originalId, version: pin.version,
+  }));
+  const value = { buildEnv: 'mainnet', chainId: MAINNET_V8_LEGACY_CHAIN_IDENTIFIER, entries, externalEntries };
   const text = renderMainnetV8PublishedToml(value);
   assert.match(text, /^# generated by Move\n/);
   assert.match(text, /build-env = "mainnet"\nchain-id = "35834a8a"/);
   assert.deepEqual(parseMainnetV8PublishedToml(text), value);
   assert.equal(renderMainnetV8PublishedToml(parseMainnetV8PublishedToml(text)), text);
   assert.throws(() => parseMainnetV8PublishedToml(text.replace('version = 1', 'version = 01')), expectCode('MAINNET_V8_DECIMAL_INVALID'));
+  assert.equal(parseMainnetV8PublishedToml(text).externalEntries.length, 6);
+  const wrongPin = clone(value);
+  wrongPin.externalEntries[0].publishedAt = wrongPin.externalEntries[0].originalId;
+  assert.throws(() => renderMainnetV8PublishedToml(wrongPin), { code: 'NATIVE_SOUL_EXTERNAL_PUBLICATION_INVALID' });
+  const missingExternal = clone(value);
+  missingExternal.externalEntries.pop();
+  assert.throws(() => renderMainnetV8PublishedToml(missingExternal), { code: 'NATIVE_SOUL_EXTERNAL_PUBLICATION_INVALID' });
+  const missingField = clone(value); delete missingField.externalEntries;
+  assert.throws(() => renderMainnetV8PublishedToml(missingField), expectCode('MAINNET_V8_FIELDS_INVALID'));
+  await rm(root, { recursive: true, force: true });
 });
 
-test('fsync WAL is hash-linked, append-only, atomically replaced, and CAS protected', async () => {
+test('fsync WAL is hash-linked, append-only, atomically replaced, and CAS protected', async (t) => {
+  const fixture = await nativeSoulPublicationWalFixture();
   const root = await mkdtemp(join(tmpdir(), 'animacraft-v8-release-wal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
   await chmod(root, 0o700);
   const path = join(root, 'release.json');
-  const ready0 = readyPublishEvidence(0);
-  let wal = await createMainnetV8ReleaseWal(path, fixturePlan(), {
-    recordedAt: '2026-08-22T00:00:00.000Z', evidence: ready0,
+  const initial = fixture.wal.events[0];
+  let wal = await createMainnetV8ReleaseWal(path, fixture.plan, {
+    recordedAt: initial.recordedAt, evidence: initial.evidence,
   });
   const firstHead = wal.headEventSha256;
-  const signed0 = signedWalEvidence(ready0, '0', '0');
-  const success0 = finalizedPublishDetails(0);
-  for (const [status, evidence, recordedAt] of [
-    ['SIGNED', signed0, '2026-08-22T00:00:01.000Z'],
-    ['OUTCOME_PENDING', outcomeWalEvidence('OUTCOME_PENDING', ready0, signed0, '0', '0', queryIntent), '2026-08-22T00:00:02.000Z'],
-    ['FINALIZED_SUCCESS_PENDING_READBACK', outcomeWalEvidence(
-      'FINALIZED_SUCCESS_PENDING_READBACK', ready0, signed0, '0', '0', pendingReadbackDetails(success0),
-    ), '2026-08-22T00:00:03.000Z'],
-    ['FINALIZED_SUCCESS', outcomeWalEvidence('FINALIZED_SUCCESS', ready0, signed0, '0', '0', success0), '2026-08-22T00:00:04.000Z'],
-    ['READY', readyPublishEvidence(1, { predecessor: success0 }), '2026-08-22T00:00:05.000Z'],
-  ]) {
-    const ordinal = status === 'READY' ? '1' : '0';
-    if (status === 'FINALIZED_SUCCESS') {
-      const drifted = clone(success0);
-      drifted.certificate.finalityEvidence.checkpoint = '12346';
+  const append = (event, evidence = event.evidence) => appendMainnetV8ReleaseWal(path, {
+    expectedRevision: wal.revision, expectedHeadEventSha256: wal.headEventSha256,
+    ordinal: event.ordinal, attempt: event.attempt, status: event.status,
+    evidence, recordedAt: event.recordedAt,
+  });
+  let dependencyDriftChecks = 0;
+  for (const event of fixture.wal.events.slice(1, 11)) {
+    if (event.status === 'FINALIZED_SUCCESS') {
+      const input = clone(fixture.publications[Number(event.ordinal)].input);
+      const drifted = input.observation;
+      drifted.certificate.finalityEvidence.checkpoint = String(BigInt(drifted.certificate.finalityEvidence.checkpoint) + 1n);
       drifted.certificate.finalityEvidenceSha256 = sha256MainnetV8Json(
         drifted.certificate.finalityEvidence,
       );
       drifted.certificateSha256 = sha256MainnetV8Json(drifted.certificate);
-      await assert.rejects(() => appendMainnetV8ReleaseWal(path, {
-        expectedRevision: wal.revision,
-        expectedHeadEventSha256: wal.headEventSha256,
-        ordinal: '0', attempt: '0', status,
-        evidence: outcomeWalEvidence(status, ready0, signed0, '0', '0', drifted),
-        recordedAt: '2026-08-22T00:00:03.500Z',
-      }), expectCode('MAINNET_V8_WAL_INVALID'));
+      await assert.rejects(() => append(event, buildMainnetV8OutcomeEvidence(input)), expectCode('MAINNET_V8_WAL_INVALID'));
     }
-    if (status === 'READY') {
-      const driftedArtifact = clone(evidence.readyArtifact);
+    // Remove an actual dependency from the sample Runtime READY artifact.
+    // Its dependency list is fixture data, not the real compiled package graph.
+    if (event.status === 'READY' && event.ordinal === '2') {
+      dependencyDriftChecks += 1;
+      const driftedArtifact = clone(event.evidence.readyArtifact);
+      const dependencyId = driftedArtifact.dependencies[0];
+      assert.ok(dependencyId);
+      assert.ok(driftedArtifact.packageArtifact.dependencies.includes(dependencyId));
       driftedArtifact.packageArtifact.dependencies = driftedArtifact.packageArtifact.dependencies
-        .filter((dependency) => dependency !== id(40));
+        .filter((dependency) => dependency !== dependencyId);
       driftedArtifact.dependencies = clone(driftedArtifact.packageArtifact.dependencies);
       driftedArtifact.packageCommitment = mainnetV8PackageCommitment(
         driftedArtifact.packageArtifact,
       );
       const driftedReady = buildMainnetV8ReadyEvidence({
-        ordinal: '1', attempt: '0', unsignedEnvelope, readyArtifact: driftedArtifact,
+        ordinal: event.ordinal, attempt: '0', unsignedEnvelope: event.evidence.unsignedEnvelope, readyArtifact: driftedArtifact,
       });
-      await assert.rejects(() => appendMainnetV8ReleaseWal(path, {
-        expectedRevision: wal.revision,
-        expectedHeadEventSha256: wal.headEventSha256,
-        ordinal: '1', attempt: '0', status, evidence: driftedReady,
-        recordedAt: '2026-08-22T00:00:04.500Z',
-      }), expectCode('MAINNET_V8_WAL_INVALID'));
+      // Dependency completeness belongs to the exact-byte boundary also used
+      // before signing. WAL context alone checks the allowed finalized prefix.
+      const exactReady = {
+        ordinal: event.ordinal, plan: fixture.plan,
+        unsignedEnvelope: event.evidence.unsignedEnvelope,
+      };
+      await assertMainnetV8TransactionMatchesReady({
+        ...exactReady, readyArtifact: event.evidence.readyArtifact,
+      });
+      const beforeAttack = await readFile(path, 'utf8');
+      await assert.rejects(() => assertMainnetV8TransactionMatchesReady({
+        ...exactReady, readyArtifact: driftedReady.readyArtifact,
+      }), { code: 'MAINNET_V8_READY_TRANSACTION_DRIFT' });
+      assert.equal(await readFile(path, 'utf8'), beforeAttack);
     }
-    wal = await appendMainnetV8ReleaseWal(path, {
-      expectedRevision: wal.revision,
-      expectedHeadEventSha256: wal.headEventSha256,
-      ordinal, attempt: '0', status, evidence, recordedAt,
-    });
+    wal = await append(event);
   }
-  assert.equal(wal.revision, '6');
+  assert.equal(dependencyDriftChecks, 1);
+  assert.equal(wal.revision, '11');
   assert.equal(wal.events[1].previousEventSha256, firstHead);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.deepEqual(await readMainnetV8ReleaseWal(path), wal);
@@ -1930,320 +1284,210 @@ test('expired NOT_FOUND is typed, signed-transaction-bound, post-epoch, and term
   }
 });
 
-test('stage certificates reject role, effects, event, commitment, and output drift', () => {
-  const buildSuccess = (ordinal, details) => buildMainnetV8OutcomeEvidence({
-    status: 'FINALIZED_SUCCESS',
-    ordinal: String(ordinal),
-    attempt: '0',
-    readyArtifactSha256: 'a'.repeat(64),
-    signedArtifact,
-    signedArtifactSha256: sha256MainnetV8Json(signedArtifact),
-    digest: signedArtifact.digest,
-    observation: details,
+// Current typed certificate cases replace the former mixed publish/old single-
+// bootstrap test. Every attack starts from a passing actual outcome. Fresh state
+// is the policy authority: Seal threshold is checked in SealPolicyConfigV8, not
+// in an obsolete event projection. Full WAL/predecessor tests below stay separate.
+function rehashCurrentOutcome(input) {
+  input.observation = rehashFinalizedDetails(input.observation);
+  return input;
+}
+function currentProofError(error) {
+  return typeof error.code === 'string'
+    && /^(MAINNET_V8_|NATIVE_SOUL_|MAKER_V8_)/.test(error.code)
+    && !(error instanceof TypeError);
+}
+function rewriteCurrentNativeObject(input, kind, mutate) {
+  const c = input.observation.certificate, evidence = c.readback.objects[kind];
+  rewriteHistoricalObject(evidence, object => {
+    const fields = NativeSoulBootstrapBcs[kind].parse(object.data.Move.contents);
+    mutate(fields);
+    object.data.Move.contents = NativeSoulBootstrapBcs[kind].serialize(fields).toBytes();
   });
+  // Refresh the real full Object and its exact effects reference, not merely
+  // JSON fields. The rejection must reach semantic identity/commitment checks.
+  const effects = bcs.TransactionEffects.parse(Buffer.from(c.finalityEvidence.effectsBcsBase64, 'base64'));
+  const row = effects.V2.changedObjects.find(([objectId]) => objectId === evidence.reference.objectId);
+  assert.ok(row?.[1]?.outputState?.ObjectWrite, kind + ' must be an actual write in this stage');
+  row[1].outputState.ObjectWrite[0] = evidence.reference.digest;
+  const bytes = bcs.TransactionEffects.serialize(effects).toBytes();
+  Object.assign(c.finalityEvidence, { effectsBcsBase64: toBase64(bytes),
+    effectsSha256: sha256MainnetV8Bytes(bytes), effectsDigest: mainnetV8TypedDigest('TransactionEffects', bytes) });
+  return rehashCurrentOutcome(input);
+}
 
-  const publish = finalizedPublishDetails(0);
-  assert.doesNotThrow(() => buildSuccess(0, publish));
-  for (const mutate of [
-    (value) => { value.certificate.readback.role = 'seal'; },
-    (value) => {
-      value.certificate.readback.package.reference.digest = toBase58(new Uint8Array(32).fill(0x77));
-    },
-    (value) => { value.certificate.readback.upgradeCap.fields.package = id(77); },
-    (value) => {
-      value.certificate.readback.package.descriptor.modules.alpha.functions.alpha.index = '1';
-    },
-    (value) => { value.certificate.readback.package.typeOrigins[0].package = id(77); },
-    (value) => { value.certificate.readback.package.linkage[0].upgradedId = id(77); },
-  ]) {
-    const drifted = clone(publish);
-    mutate(drifted);
-    const rehashed = rehashFinalizedDetails(drifted);
-    assert.throws(() => buildSuccess(0, rehashed), expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'));
-  }
-  const rawCapDrift = clone(publish);
-  const rawCap = TEST_UPGRADE_CAP_BCS.serialize({
-    id: rawCapDrift.certificate.readback.upgradeCap.reference.objectId,
-    package: id(77),
-    version: '1',
-    policy: 0,
-  }).toBytes();
-  rawCapDrift.certificate.readback.upgradeCap.contentBcsBase64 = toBase64(rawCap);
-  rawCapDrift.certificate.readback.upgradeCap.contentBcsSha256 = sha256Hex(rawCap);
-  assert.throws(
-    () => buildSuccess(0, rehashFinalizedDetails(rawCapDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-
-  const initialized = finalizedStageDetails(7);
-  assert.doesNotThrow(() => buildSuccess(7, initialized));
-  const eventDrift = clone(initialized);
-  eventDrift.certificate.readback.events.finalCommitment = 'f'.repeat(64);
-  assert.throws(
-    () => buildSuccess(7, rehashFinalizedDetails(eventDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-  const effectDrift = clone(initialized);
-  effectDrift.certificate.readback.protocolTreasury.reference.version = '3';
-  assert.throws(
-    () => buildSuccess(7, rehashFinalizedDetails(effectDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-
-  const bootstrapped = finalizedStageDetails(8);
-  assert.doesNotThrow(() => buildSuccess(8, bootstrapped));
-  const commitmentDrift = clone(bootstrapped);
-  commitmentDrift.certificate.readback.releaseCommitments.roles.seal.packageCommitment = 'f'.repeat(64);
-  assert.throws(
-    () => buildSuccess(8, rehashFinalizedDetails(commitmentDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-  const bootstrapEventDrift = clone(bootstrapped);
-  bootstrapEventDrift.certificate.readback.events.threshold = 2;
-  assert.throws(
-    () => buildSuccess(8, rehashFinalizedDetails(bootstrapEventDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-  const catalogFieldDrift = clone(bootstrapped);
-  catalogFieldDrift.certificate.readback.catalog.fields.binding.fields.native_capability_mask = '126';
-  catalogFieldDrift.certificate.readback.attestation.catalog.fields.binding.fields
-    .native_capability_mask = '126';
-  assert.throws(
-    () => buildSuccess(8, rehashFinalizedDetails(catalogFieldDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-  const catalogRawDrift = clone(bootstrapped);
-  const rawCatalog = TEST_PRODUCT_RELEASE_CATALOG_BCS.parse(Buffer.from(
-    catalogRawDrift.certificate.readback.catalog.contentBcsBase64, 'base64',
-  ));
-  rawCatalog.binding.native_capability_mask = '126';
-  const rawCatalogBytes = TEST_PRODUCT_RELEASE_CATALOG_BCS.serialize(rawCatalog).toBytes();
-  catalogRawDrift.certificate.readback.catalog.contentBcsBase64 = toBase64(rawCatalogBytes);
-  catalogRawDrift.certificate.readback.catalog.contentBcsSha256 = sha256Hex(rawCatalogBytes);
-  assert.throws(
-    () => buildSuccess(8, rehashFinalizedDetails(catalogRawDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-  const installedCapDrift = clone(bootstrapped);
-  installedCapDrift.certificate.readback.configs.market.fields.market_call_cap.fields.authority_id = id(250);
-  installedCapDrift.certificate.readback.attestation.configs.market.fields.market_call_cap.fields
-    .authority_id = id(250);
-  assert.throws(
-    () => buildSuccess(8, rehashFinalizedDetails(installedCapDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-  const configRawDrift = clone(bootstrapped);
-  const marketOutput = configRawDrift.certificate.readback.configs.market;
-  const rawMarket = TEST_BOUND_PACKAGE_CONFIG_BCS.parse(Buffer.from(
-    marketOutput.contentBcsBase64, 'base64',
-  ));
-  rawMarket.call_cap.authority_id = id(250);
-  const rawMarketBytes = TEST_BOUND_PACKAGE_CONFIG_BCS.serialize(rawMarket).toBytes();
-  marketOutput.contentBcsBase64 = toBase64(rawMarketBytes);
-  marketOutput.contentBcsSha256 = sha256Hex(rawMarketBytes);
-  assert.throws(
-    () => buildSuccess(8, rehashFinalizedDetails(configRawDrift)),
-    expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'),
-  );
-
-  const keyServerDrift = fixtureStageData(8);
-  keyServerDrift.keyServerCertificates[0].type = `${id(2)}::key_server::KeyServer`;
-  assert.throws(() => buildMainnetV8ReadyEvidence({
-    ordinal: '8', unsignedEnvelope,
-    readyArtifact: {
-      kind: 'BOOTSTRAP_RELEASE', stageData: keyServerDrift,
-      stageDataSha256: sha256MainnetV8Json(keyServerDrift),
-      publishedTomlSha256: hash('published-key-server-drift'),
-      simulation, gasFunding, protocolProfile,
-      predecessorReadback: predecessorReadback(8, finalizedStageDetails(7)),
-    },
-  }), expectCode('MAINNET_V8_WAL_EVIDENCE_INVALID'));
+test('Core publication certificate accepts current full Object/module/linkage evidence', async () => {
+  const { input } = await nativeSoulPublicationOutcomeFixture({ role: 'core' });
+  const result = buildMainnetV8OutcomeEvidence(input);
+  assert.equal(result.observation.details.certificate.readback.role, 'core');
+  assert.equal(result.observation.details.certificate.readback.soulidityInitialization, null);
+});
+for (const [name, mutate] of Object.entries({
+  'role substitution': r => { r.role = 'seal'; },
+  'package digest drift': r => { r.package.reference.digest = toBase58(new Uint8Array(32).fill(0x77)); },
+  'UpgradeCap package drift': r => { r.upgradeCap.fields.package = id(77); },
+  'descriptor ABI drift': r => { r.package.descriptor.modules[0].functions.push({ name: 'injected', visibility: 'public', parameters: [], returns: [] }); },
+  'unexpected own type origin': r => { r.package.typeOrigins.push({ moduleName: 'sample', datatypeName: 'Injected', package: id(77) }); },
+  'dependency linkage substitution': r => { r.package.linkage[0].upgradedId = id(77); },
+  'raw UpgradeCap package drift': r => {
+    const raw = TEST_UPGRADE_CAP_BCS.serialize({ id: r.upgradeCap.reference.objectId, package: id(77), version: '1', policy: 0 }).toBytes();
+    r.upgradeCap.contentBcsBase64 = toBase64(raw);
+    r.upgradeCap.contentBcsSha256 = sha256MainnetV8Bytes(raw);
+  },
+})) test('Core publication certificate rejects rehashed ' + name, async () => {
+  const input = clone((await nativeSoulPublicationOutcomeFixture({ role: 'core' })).input);
+  assert.doesNotThrow(() => buildMainnetV8OutcomeEvidence(input));
+  mutate(input.observation.certificate.readback);
+  assert.throws(() => buildMainnetV8OutcomeEvidence(rehashCurrentOutcome(input)), currentProofError);
 });
 
-test('all ten ordinals bind predecessor certificates and verify ordinal 9 without a signature', async () => {
+test('Soulidity publication certificate rejects rehashed existing dependency Config origin substitution', async () => {
+  const input = clone((await nativeSoulPublicationOutcomeFixture({ role: 'soulidity' })).input);
+  assert.doesNotThrow(() => buildMainnetV8OutcomeEvidence(input));
+  const evidence = input.observation.certificate.readback.package.dependencyPackages[0];
+  const object = bcs.Object.parse(Buffer.from(evidence.objectBcsBase64, 'base64'));
+  const origins = object.data.Package.typeOriginTable;
+  assert.equal(origins[0].datatypeName, 'Config');
+  // Preserve module/datatype/order/count and rehash the full dependency Object.
+  // Soulidity's initialized Config must still match its exact Kiosk origin.
+  // This is dependency/init coverage, not an own-package datatype fixture.
+  origins[0].package = id(77);
+  const raw = bcs.Object.serialize(object).toBytes();
+  evidence.objectBcsBase64 = toBase64(raw);
+  evidence.reference.digest = mainnetV8TypedDigest('Object', raw);
+  assert.throws(() => buildMainnetV8OutcomeEvidence(rehashCurrentOutcome(input)), currentProofError);
+});
+
+for (const stage of ['INITIALIZE_PROTOCOL', 'SETUP_RELEASE', 'BEGIN_BOOTSTRAP',
+  'FINALIZE_BOOTSTRAP', 'ACTIVATE_SOULIDITY_MARKET']) {
+  test(stage + ' certificate uses the current separate native stage', () => {
+    const input = nativeSoulStageOutcomeFixture(stage);
+    assert.equal(buildMainnetV8OutcomeEvidence(input).observation.kind, stage + '_FINALIZED_SUCCESS');
+  });
+}
+for (const [name, stage, kind, mutate] of [
+  // Former finalCommitment drift must fail even after all proof envelopes and
+  // effects are repaired. Changing a fee alone would not preserve this check.
+  ['protocol commitment substitution', 'INITIALIZE_PROTOCOL', 'protocol', x => { x.commitment = Array(32).fill(77); }],
+  ['fresh treasury schema drift', 'INITIALIZE_PROTOCOL', 'protocolTreasury', x => { x.version = '3'; }],
+  ['Seal package commitment drift', 'SETUP_RELEASE', 'catalog', x => { x.binding.bindings[1].package_commitment = Array(32).fill(77); }],
+  ['Seal threshold drift', 'SETUP_RELEASE', 'sealConfig', x => { x.threshold = 3; }],
+  // The retired native_capability_mask field is not in CatalogV2. Complete
+  // seven-role inventory and FINAL's two actual installation bits replace it.
+  ['missing Catalog role', 'SETUP_RELEASE', 'catalog', x => { x.binding.bindings.pop(); }],
+  ['incomplete setup role inventory', 'SETUP_RELEASE', 'catalog', x => { x.next_setup_role = 5; }],
+  ['incomplete final install mask', 'FINALIZE_BOOTSTRAP', 'bootstrapCertificate', x => { x.install_mask = 8; }],
+  // Setup's PackageCallCap is consumed; its authority remains bound in the
+  // catalog cap-set and the config's installation commitment. RuntimeCallerCap
+  // below is an additional native permission, not a replacement of that proof.
+  ['consumed Market setup authority substitution', 'SETUP_RELEASE', 'catalog', x => { x.authority_ids[4] = id(250); }],
+  ['Market installation commitment drift', 'SETUP_RELEASE', 'marketConfig', x => { x.installation_commitment = Array(32).fill(77); }],
+  ['bootstrap admin protocol authority drift', 'BEGIN_BOOTSTRAP', 'bootstrapAdmin', x => { x.protocol_admin_id = id(250); }],
+  ['Market runtime caller replacement drift', 'FINALIZE_BOOTSTRAP', 'marketConfig', x => { x.runtime_caller_cap.replacement_binding_id = id(250); }],
+  ['raw Market runtime caller package drift', 'FINALIZE_BOOTSTRAP', 'marketConfig', x => { x.runtime_caller_cap.caller_original_package_id = id(250); }],
+]) test('native certificate rejects fully rehashed ' + name, () => {
+  const input = nativeSoulStageOutcomeFixture(stage);
+  assert.doesNotThrow(() => buildMainnetV8OutcomeEvidence(input));
+  rewriteCurrentNativeObject(input, kind, mutate);
+  assert.throws(() => buildMainnetV8OutcomeEvidence(input), currentProofError);
+});
+
+test('INIT8 certificate rejects historical treasury reference drift', () => {
+  const input = nativeSoulStageOutcomeFixture('INITIALIZE_PROTOCOL');
+  assert.doesNotThrow(() => buildMainnetV8OutcomeEvidence(input));
+  input.observation.certificate.readback.objects.protocolTreasury.reference.version = '3';
+  assert.throws(() => buildMainnetV8OutcomeEvidence(rehashCurrentOutcome(input)), currentProofError);
+});
+test('SETUP9 READY rejects wrong key-server certificate type after stage rehash', () => {
+  const input = nativeSoulStageReadyFixture('SETUP_RELEASE');
+  assert.doesNotThrow(() => buildMainnetV8ReadyEvidence(input));
+  input.readyArtifact.stageData.keyServerCertificates[0].type = id(2) + '::key_server::KeyServer';
+  input.readyArtifact.stageDataSha256 = sha256MainnetV8Json(input.readyArtifact.stageData);
+  assert.throws(() => buildMainnetV8ReadyEvidence(input), currentProofError);
+});
+test('Market12 certificate cannot omit its own admin output', () => {
+  const input = nativeSoulStageOutcomeFixture('ACTIVATE_SOULIDITY_MARKET');
+  assert.doesNotThrow(() => buildMainnetV8OutcomeEvidence(input));
+  delete input.observation.certificate.readback.objects.marketAdminCapV2;
+  assert.throws(() => buildMainnetV8OutcomeEvidence(rehashCurrentOutcome(input)), currentProofError);
+});
+
+test('all fourteen ordinals bind predecessor certificates and verify ordinal 13 without a signature through actual filesystem APIs', async (t) => {
+  const fixture = await nativeSoulCompletedWalFixture();
+  assert.equal(fixture.wal.events.length, 68);
   const root = await mkdtemp(join(tmpdir(), 'animacraft-v8-stage-wal-'));
+  t.after(async () => rm(root, { recursive: true, force: true }));
   const path = join(root, 'stages.json');
-  const plan = fixturePlan();
-  let ready = readyPublishEvidence(0);
-  let wal = await createMainnetV8ReleaseWal(path, plan, { evidence: ready });
-  let previousCertificate = null;
-  const publishSuccesses = [];
-  let tick = 1;
-  const append = async (ordinal, status, evidence) => {
-    wal = await appendMainnetV8ReleaseWal(path, {
-      expectedRevision: wal.revision,
-      expectedHeadEventSha256: wal.headEventSha256,
-      ordinal: String(ordinal), attempt: '0', status, evidence,
-      recordedAt: `2026-08-22T03:${String(Math.floor(tick / 60)).padStart(2, '0')}:${String(tick++ % 60).padStart(2, '0')}.000Z`,
-    });
-  };
-  for (let ordinal = 0; ordinal <= 8; ordinal += 1) {
-    const signed = signedWalEvidence(ready, String(ordinal), '0');
-    const details = ordinal < 7 ? finalizedPublishDetails(ordinal) : finalizedStageDetails(ordinal);
-    await append(ordinal, 'SIGNED', signed);
-    await append(ordinal, 'OUTCOME_PENDING', outcomeWalEvidence(
-      'OUTCOME_PENDING', ready, signed, String(ordinal), '0', queryIntent,
-    ));
-    await append(ordinal, 'FINALIZED_SUCCESS_PENDING_READBACK', outcomeWalEvidence(
-      'FINALIZED_SUCCESS_PENDING_READBACK', ready, signed, String(ordinal), '0',
-      pendingReadbackDetails(details),
-    ));
-    await append(ordinal, 'FINALIZED_SUCCESS', outcomeWalEvidence(
-      'FINALIZED_SUCCESS', ready, signed, String(ordinal), '0', details,
-    ));
-    if (ordinal < 7) publishSuccesses.push(details);
-    previousCertificate = details;
-    if (ordinal === 6) {
-      const finalManifest = buildMainnetV8FinalManifest({
-        plan,
-        packages: publishSuccesses.map((entry, index) => manifestPackage(index, entry)),
-      });
-      await append(6, 'FINAL_MANIFEST_SEALED', buildMainnetV8ManifestEvidence({
-        ordinal: '6', attempt: '0', finalManifest, plan,
-      }));
+  const first = fixture.wal.events[0];
+  // Keep actual guarded create/append/read: offline fixture validity is not
+  // filesystem acceptance. This remains failing while the public gate is closed.
+  let wal = await createMainnetV8ReleaseWal(path, fixture.plan, {
+    evidence: first.evidence, recordedAt: first.recordedAt,
+  });
+  const append = (target, event, evidence = event.evidence) => appendMainnetV8ReleaseWal(target, {
+    expectedRevision: wal.revision, expectedHeadEventSha256: wal.headEventSha256,
+    ordinal: event.ordinal, attempt: event.attempt, status: event.status,
+    evidence, recordedAt: event.recordedAt,
+  });
+  const unsignedVerify = (status, observation) => buildMainnetV8OutcomeEvidence({
+    status, ordinal: '13', attempt: '0',
+    readyArtifactSha256: fixture.verify.ready.readyArtifactSha256,
+    signedArtifact: null, signedArtifactSha256: null, digest: null, observation,
+  });
+  for (const event of fixture.wal.events.slice(1)) {
+    if (event.ordinal === '8' && event.status === 'READY') {
+      assert.equal(wal.events.at(-1).status, 'FINAL_MANIFEST_SEALED');
+      const drifted = clone(event.evidence.readyArtifact);
+      drifted.stageData.packageIds.core = id(250);
+      drifted.stageDataSha256 = sha256MainnetV8Json(drifted.stageData);
+      const evidence = buildMainnetV8ReadyEvidence({ ordinal: '8', attempt: '0',
+        unsignedEnvelope: event.evidence.unsignedEnvelope, readyArtifact: drifted });
+      await assert.rejects(() => append(path, event, evidence), expectCode('MAINNET_V8_WAL_INVALID'));
     }
-    if (ordinal < 8) {
-      ready = ordinal + 1 < 7
-        ? readyPublishEvidence(ordinal + 1, { predecessor: previousCertificate })
-        : readyStageEvidence(ordinal + 1, previousCertificate);
-      if (ordinal === 6) {
-        const driftedStage = clone(ready.readyArtifact);
-        driftedStage.stageData.packageIds.core = id(250);
-        driftedStage.stageDataSha256 = sha256MainnetV8Json(driftedStage.stageData);
-        const driftedReady = buildMainnetV8ReadyEvidence({
-          ordinal: '7', attempt: '0', unsignedEnvelope, readyArtifact: driftedStage,
-        });
-        await assert.rejects(() => appendMainnetV8ReleaseWal(path, {
-          expectedRevision: wal.revision,
-          expectedHeadEventSha256: wal.headEventSha256,
-          ordinal: '7', attempt: '0', status: 'READY', evidence: driftedReady,
-          recordedAt: '2026-08-22T03:00:40.000Z',
-        }), expectCode('MAINNET_V8_WAL_INVALID'));
-      }
-      await append(ordinal + 1, 'READY', ready);
-    }
+    wal = await append(path, event);
+    if (event.ordinal !== '13' || event.status !== 'READY') continue;
+    const next = fixture.wal.events.at(-1);
+    const drifted = clone(next.evidence.observation.details);
+    drifted.certificate.verification.packageVerification.packages[0].packageId = id(250);
+    drifted.certificate.verification.packageVerificationSha256 =
+      sha256MainnetV8Json(drifted.certificate.verification.packageVerification);
+    drifted.certificate.verificationSha256 = sha256MainnetV8Json(drifted.certificate.verification);
+    drifted.certificateSha256 = sha256MainnetV8Json(drifted.certificate);
+    const driftPath = join(root, 'stages-package-verification-drift.json');
+    await writeFile(driftPath, `${canonicalMainnetV8Json(wal)}\n`, { mode: 0o600 });
+    await assert.rejects(() => append(driftPath, next, unsignedVerify('FINALIZED_SUCCESS', drifted)),
+      expectCode('MAINNET_V8_WAL_INVALID'));
+    const data = event.evidence.readyArtifact.stageData;
+    const incident = { code: 'MAINNET_V8_VERIFY_MISMATCH',
+      message: 'Cold verification differs from sealed release evidence.',
+      details: { executionPlanId: wal.executionPlanId, releaseId: wal.releaseId,
+        finalManifestSha256: data.finalManifestSha256,
+        bootstrapCertificateSha256: data.bootstrapCertificateSha256,
+        marketActivationCertificateSha256: data.marketActivationCertificateSha256,
+        check: 'runtime-attestation', expectedSha256: hash('expected-runtime-attestation'),
+        observedSha256: hash('observed-runtime-attestation') } };
+    const details = { incident, incidentSha256: sha256MainnetV8Json(incident) };
+    const missingContext = clone(details);
+    delete missingContext.incident.details.check;
+    missingContext.incidentSha256 = sha256MainnetV8Json(missingContext.incident);
+    assert.throws(() => unsignedVerify('INCIDENT_STOPPED', missingContext), expectCode('MAINNET_V8_FIELDS_INVALID'));
+    const wrongRelease = clone(details);
+    wrongRelease.incident.details.releaseId = 'f'.repeat(64);
+    wrongRelease.incidentSha256 = sha256MainnetV8Json(wrongRelease.incident);
+    const incidentPath = join(root, 'stages-incident.json');
+    await writeFile(incidentPath, `${canonicalMainnetV8Json(wal)}\n`, { mode: 0o600 });
+    const incidentEvent = { ...next, status: 'INCIDENT_STOPPED' };
+    await assert.rejects(() => append(incidentPath, incidentEvent, unsignedVerify('INCIDENT_STOPPED', wrongRelease)),
+      expectCode('MAINNET_V8_WAL_INVALID'));
+    const incidentWal = await append(incidentPath, incidentEvent, unsignedVerify('INCIDENT_STOPPED', details));
+    assert.equal(incidentWal.events.at(-1).status, 'INCIDENT_STOPPED');
+    assert.equal(Object.hasOwn(incidentWal.events.at(-1).evidence, 'signedArtifact'), false);
+    assert.deepEqual(await readMainnetV8ReleaseWal(incidentPath), incidentWal);
   }
-  ready = readyStageEvidence(9, previousCertificate, {
-    releaseId: wal.releaseId,
-    finalManifestSha256: sha256MainnetV8Json(wal.finalManifest),
-    bootstrapCertificateSha256: previousCertificate.certificate.readbackSha256,
-    exportFilename: 'animacraft-mainnet-v8-config.json',
-  });
-  await append(9, 'READY', ready);
-  const packageVerification = {
-    kind: 'FINAL_PACKAGE_REBUILD_VERIFICATION',
-    executionPlanId: wal.executionPlanId,
-    releaseId: wal.releaseId,
-    packages: wal.finalManifest.packages.map((entry, index) => ({
-      role: entry.role,
-      packageId: entry.packageId,
-      packageDigest: entry.packageDigest,
-      packageVersion: entry.packageVersion,
-      publishDigest: entry.publishDigest,
-      sourceCommitment: entry.sourceCommitment,
-      packageCommitment: entry.packageCommitment,
-      abiCommitment: entry.abiCommitment,
-      moduleMapSha256: hash(`verified-module-map-${index}`),
-      objectBcsSha256: hash(`verified-package-object-${index}`),
-      readbackSha256: entry.readbackSha256,
-    })),
-  };
-  const verification = {
-    kind: 'VERIFY_AND_EXPORT',
-    executionPlanId: wal.executionPlanId,
-    releaseId: wal.releaseId,
-    finalManifestSha256: sha256MainnetV8Json(wal.finalManifest),
-    packageVerification,
-    packageVerificationSha256: sha256MainnetV8Json(packageVerification),
-    runtimeAttestationSha256: sha256MainnetV8Json(
-      previousCertificate.certificate.readback.attestation,
-    ),
-  };
-  const exports = {
-    filename: 'animacraft-mainnet-v8-config.json',
-    sha256: hash('production-config'),
-    protectedDecryptionReady: false,
-  };
-  const verifyCertificate = {
-    verification,
-    verificationSha256: sha256MainnetV8Json(verification),
-    exports,
-    exportsSha256: sha256MainnetV8Json(exports),
-  };
-  const verifyDetails = {
-    certificate: verifyCertificate,
-    certificateSha256: sha256MainnetV8Json(verifyCertificate),
-  };
-  const packageVerificationDrift = clone(verifyDetails);
-  packageVerificationDrift.certificate.verification.packageVerification
-    .packages[0].packageId = id(250);
-  packageVerificationDrift.certificate.verification.packageVerificationSha256 =
-    sha256MainnetV8Json(
-      packageVerificationDrift.certificate.verification.packageVerification,
-    );
-  packageVerificationDrift.certificate.verificationSha256 = sha256MainnetV8Json(
-    packageVerificationDrift.certificate.verification,
-  );
-  packageVerificationDrift.certificateSha256 = sha256MainnetV8Json(
-    packageVerificationDrift.certificate,
-  );
-  const packageVerificationDriftPath = join(root, 'stages-package-verification-drift.json');
-  await writeFile(packageVerificationDriftPath, `${canonicalMainnetV8Json(wal)}\n`, { mode: 0o600 });
-  await assert.rejects(() => appendMainnetV8ReleaseWal(packageVerificationDriftPath, {
-    expectedRevision: wal.revision,
-    expectedHeadEventSha256: wal.headEventSha256,
-    ordinal: '9', attempt: '0', status: 'FINALIZED_SUCCESS',
-    evidence: outcomeWalEvidence(
-      'FINALIZED_SUCCESS', ready, null, '9', '0', packageVerificationDrift,
-    ),
-    recordedAt: '2026-08-22T03:00:58.000Z',
-  }), expectCode('MAINNET_V8_WAL_INVALID'));
-  const incident = {
-    code: 'MAINNET_V8_VERIFY_MISMATCH',
-    message: 'Cold verification differs from sealed release evidence.',
-    details: {
-      executionPlanId: wal.executionPlanId,
-      releaseId: wal.releaseId,
-      finalManifestSha256: sha256MainnetV8Json(wal.finalManifest),
-      bootstrapCertificateSha256: previousCertificate.certificate.readbackSha256,
-      check: 'runtime-attestation',
-      expectedSha256: hash('expected-runtime-attestation'),
-      observedSha256: hash('observed-runtime-attestation'),
-    },
-  };
-  const incidentDetails = { incident, incidentSha256: sha256MainnetV8Json(incident) };
-  const missingIncidentContext = clone(incidentDetails);
-  delete missingIncidentContext.incident.details.check;
-  assert.throws(() => outcomeWalEvidence(
-    'INCIDENT_STOPPED', ready, null, '9', '0', missingIncidentContext,
-  ), expectCode('MAINNET_V8_FIELDS_INVALID'));
-  const incidentPath = join(root, 'stages-incident.json');
-  await writeFile(incidentPath, `${canonicalMainnetV8Json(wal)}\n`, { mode: 0o600 });
-  const wrongRootIncident = clone(incidentDetails);
-  wrongRootIncident.incident.details.releaseId = 'f'.repeat(64);
-  wrongRootIncident.incidentSha256 = sha256MainnetV8Json(wrongRootIncident.incident);
-  await assert.rejects(() => appendMainnetV8ReleaseWal(incidentPath, {
-    expectedRevision: wal.revision,
-    expectedHeadEventSha256: wal.headEventSha256,
-    ordinal: '9', attempt: '0', status: 'INCIDENT_STOPPED',
-    evidence: outcomeWalEvidence('INCIDENT_STOPPED', ready, null, '9', '0', wrongRootIncident),
-    recordedAt: '2026-08-22T03:00:59.000Z',
-  }), expectCode('MAINNET_V8_WAL_INVALID'));
-  const incidentWal = await appendMainnetV8ReleaseWal(incidentPath, {
-    expectedRevision: wal.revision,
-    expectedHeadEventSha256: wal.headEventSha256,
-    ordinal: '9', attempt: '0', status: 'INCIDENT_STOPPED',
-    evidence: outcomeWalEvidence('INCIDENT_STOPPED', ready, null, '9', '0', incidentDetails),
-    recordedAt: '2026-08-22T03:01:00.000Z',
-  });
-  assert.equal(incidentWal.events.at(-1).status, 'INCIDENT_STOPPED');
-  assert.equal(Object.hasOwn(incidentWal.events.at(-1).evidence, 'signedArtifact'), false);
-  await append(9, 'FINALIZED_SUCCESS', outcomeWalEvidence(
-    'FINALIZED_SUCCESS', ready, null, '9', '0', verifyDetails,
-  ));
+  assert.equal(wal.events.at(-1).ordinal, '13');
   assert.equal(wal.events.at(-1).status, 'FINALIZED_SUCCESS');
-  assert.equal(wal.events.at(-1).ordinal, '9');
   assert.equal(Object.hasOwn(wal.events.at(-1).evidence, 'signedArtifact'), false);
+  assert.deepEqual(wal, fixture.wal);
   assert.deepEqual(await readMainnetV8ReleaseWal(path), wal);
 });
 
@@ -2308,27 +1552,26 @@ test('known successful-readback parser incident only reopens the exact durable f
   assert.deepEqual(await readMainnetV8ReleaseWal(path), wal);
 });
 
-test('WAL lock lease never steals a live process and atomically reclaims a dead local owner', async () => {
+test('WAL lock never steals a live marker and reclaims only a dead local owner', async () => {
   const root = await mkdtemp(join(tmpdir(), 'animacraft-v8-lock-wal-'));
   const livePath = join(root, 'live.json');
   const liveLock = `${livePath}.lock`;
-  const staleInstant = new Date(Date.now() - MAINNET_V8_WAL_LOCK_LEASE_MS * 2).toISOString();
-  const liveRecord = {
-    pid: String(process.pid), hostname: hostname(), createdAt: staleInstant, nonce: 'a'.repeat(32),
-  };
-  await writeFile(liveLock, `${canonicalMainnetV8Json(liveRecord)}\n`, { mode: 0o600 });
+  const hostHash = createHash('sha256').update(hostname()).digest('hex');
+  const liveMarker = `owner.${hostHash}.${process.pid}.${'a'.repeat(32)}`;
+  await mkdir(liveLock, { mode: 0o700 });
+  await mkdir(join(liveLock, liveMarker), { mode: 0o700 });
   await assert.rejects(() => createMainnetV8ReleaseWal(
     livePath, fixturePlan(), { evidence: readyPublishEvidence(0) },
   ), expectCode('MAINNET_V8_WAL_LOCKED'));
-  assert.deepEqual(JSON.parse(await readFile(liveLock, 'utf8')), liveRecord);
-  await unlink(liveLock);
+  assert.deepEqual(await readdir(liveLock), [liveMarker]);
+  await rmdir(join(liveLock, liveMarker));
+  await rmdir(liveLock);
 
   const deadPath = join(root, 'dead.json');
   const deadLock = `${deadPath}.lock`;
-  const deadRecord = {
-    pid: '99999999', hostname: hostname(), createdAt: staleInstant, nonce: 'b'.repeat(32),
-  };
-  await writeFile(deadLock, `${canonicalMainnetV8Json(deadRecord)}\n`, { mode: 0o600 });
+  const deadMarker = `owner.${hostHash}.99999999.${'b'.repeat(32)}`;
+  await mkdir(deadLock, { mode: 0o700 });
+  await mkdir(join(deadLock, deadMarker), { mode: 0o700 });
   const wal = await createMainnetV8ReleaseWal(
     deadPath, fixturePlan(), { evidence: readyPublishEvidence(0) },
   );

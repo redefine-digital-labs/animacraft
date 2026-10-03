@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Animacraft browser target probe</title>
+  </head>
+  <body>
+    <p>Browser target isolation probe.</p>
+    <script>
+      (() => {
+        const kind = new URLSearchParams(location.search).get('kind') || 'frame';
+        const endpoint = `/__acceptance_write_probe__/target-${kind}`;
+        globalThis.__ANIMACRAFT_TARGET_PROBE_RESULT__ = Promise.resolve()
+          .then(() => fetch(endpoint, { method: 'POST', body: kind }))
+          .then(() => ({ kind, blocked: false }))
+          .catch((error) => ({ kind, blocked: String(error?.message || error) }))
+          .then((result) => {
+            const message = { source: 'animacraft-target-probe', result };
+            if (parent !== window) parent.postMessage(message, '*');
+            if (opener) opener.postMessage(message, '*');
+            return result;
+          });
+      })();
+    </script>
+  </body>
+</html>

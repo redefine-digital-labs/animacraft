@@ -1,0 +1,9 @@
+[package]
+name = "output_native_soul_replay"
+edition = "2024.beta"
+
+[dependencies]
+animacraft_v8_output = { local = "../.." }
+
+[addresses]
+output_native_soul_replay = "0x0"

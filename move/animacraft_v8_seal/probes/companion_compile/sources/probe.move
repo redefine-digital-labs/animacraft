@@ -8,7 +8,6 @@ use animacraft_v8_seal::seal_v8::{
     BaseDecryptProofV8,
     CompleteDecryptProofV8,
     SealPolicyConfigV8,
-    SealReadinessV8,
     SealRegistryV8,
 };
 use std::string::String;
@@ -35,17 +34,6 @@ public fun certify_base<PaymentCoin>(
         entitlement_id, entitlement_commitment, scope_key, asset_key, seal_id);
     let RuntimeBaseEntitlementWitnessV8 {} = witness;
     proof
-}
-
-public fun certify_activation_readiness<PaymentCoin>(
-    readiness: SealReadinessV8,
-    registry: &SealRegistryV8,
-    policy: &SealPolicyConfigV8,
-    root: &MakerRootV8<PaymentCoin>,
-    catalog: &ProductReleaseCatalogV8,
-): animacraft_v8_core::activation_v8::SealReadinessV8 {
-    seal::certify_activation_readiness_v8(
-        readiness, registry, policy, root, catalog)
 }
 
 public fun consume_complete<PaymentCoin>(

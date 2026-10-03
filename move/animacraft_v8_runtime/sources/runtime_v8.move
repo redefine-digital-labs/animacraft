@@ -4,15 +4,19 @@ module animacraft_v8_runtime::runtime_v8;
 
 use animacraft_v8_core::base_registry_v8::{Self as base, BaseDefinitionRegistryV8};
 use animacraft_v8_core::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
+use animacraft_v8_core::companion_binding_v2::{Self as companion, MakerRuntimeCompanionBindingBuilderV2};
 use animacraft_v8_core::package_binding_v8::{
     Self as binding,
     PackageCallCapV8,
-    PhysicalRoleV8,
+    RuntimeRoleV8,
     ProductReleaseCatalogV8,
+    FreshTupleReplacementBindingV2,
+    RuntimeCallerCapV1,
 };
 use animacraft_v8_core::protocol_config_v8::{Self as protocol, ProtocolConfigV8,
     ProtocolTreasuryV8};
 use animacraft_v8_core::treasury_v8::{Self as core_treasury, MakerAccessPassV8};
+use animacraft_v8_core::soulidity_binding_v8 as native_binding;
 use std::bcs;
 use std::hash;
 use std::option::{Self as option, Option};
@@ -21,13 +25,19 @@ use sui::balance::{Self as balance, Balance};
 use sui::clock::Clock;
 use sui::coin::{Self as coin, Coin};
 use sui::event;
+use sui::dynamic_field as df;
 use sui::table::{Self as table, Table};
+use sui::transfer::Receiving;
 
 const VERSION: u64 = 8;
 const HASH_LENGTH: u64 = 32;
 const MAX_KEY_BYTES: u64 = 128;
 const MAX_LOCATOR_BYTES: u64 = 512;
+const MAX_MEDIA_TYPE_BYTES: u64 = 256;
+const MAX_ASSET_BYTES: u64 = 12582912;
 const MAX_PART_PROFILES: u64 = 750;
+const MAX_PART_CAPACITY: u64 = 64;
+const MAX_LOADOUT_SELECTIONS: u64 = 500;
 const MAX_PACK_STYLES: u64 = 10_000;
 const MAX_PRICE: u64 = 1_000_000_000_000;
 const MAX_COMPLETE_COUNT: u64 = 1_000_000_000;
@@ -49,7 +59,10 @@ const SOURCE_BASE: u8 = 0;
 const SOURCE_PACK: u8 = 1;
 const SOURCE_EXTERNAL: u8 = 2;
 
-const BASE_ITEM_GATE_INCLUDED: u8 = 0;
+#[test_only]
+const RULE_REQUIRE: u8 = 0;
+#[test_only]
+const RULE_EXCLUDE: u8 = 1;
 
 const ACCESS_FREE: u8 = 0;
 const ACCESS_PAID: u8 = 1;
@@ -103,9 +116,45 @@ const EInvalidRecipient: u64 = 26;
 const EAlreadyAdmitted: u64 = 27;
 const ENotReady: u64 = 28;
 const EWrongControl: u64 = 29;
+const ERuleViolation: u64 = 30;
+const EOwnedInstanceRequired: u64 = 31;
+const EItemNotTransferable: u64 = 32;
+const ERecipientAlreadyOwned: u64 = 33;
+const EPackAccessAlreadyIssued: u64 = 34;
+const EInvalidEquipmentMarketAuthority: u64 = 35;
+const EInvalidEquipmentMarketCustody: u64 = 36;
+
+/// Entry access is unique per holder, independent of completion quota.
+public struct PackAccessKeyV8 has copy, drop, store { holder: address }
 
 /// Stable package lineage markers used by Core and Seal exact-role checks.
 public struct RuntimeOriginalMarkerV8 has drop {}
+
+/// Only this package can prove installation of Runtime's unique setup cap.
+public struct RuntimeSetupInstallWitnessV2 has drop {}
+
+public(package) fun install_runtime_setup_v2(
+    catalog: &mut ProductReleaseCatalogV8,
+    cap: PackageCallCapV8<RuntimeRoleV8>,
+    config_id: ID,
+): vector<u8> {
+    binding::consume_runtime_call_cap_v8(
+        catalog, cap, RuntimeSetupInstallWitnessV2 {}, config_id)
+}
+
+public(package) fun assert_pack_complete_root_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    packs: &PackRegistryV8,
+    loadout: &MakerLoadoutV8,
+) {
+    maker::assert_root_identity_v8(root, packs.root_id, packs.root_version,
+        &packs.root_content_commitment);
+    maker::assert_root_identity_v8(root, loadout.root_id, loadout.root_version,
+        &loadout.root_content_commitment);
+    assert!(loadout.pack_registry_id == object::id(packs), EInvalidBinding);
+    assert!(companion::pack_registry_id_v2(maker::root_companion_registry_ids_v2(root))
+        == object::id(packs), EInvalidBinding);
+}
 public struct RuntimeCallableMarkerV8 has drop {}
 
 public struct PartProfileKeyV8 has copy, drop, store { part_key: String }
@@ -115,6 +164,11 @@ public struct PackStyleKeyV8 has copy, drop, store {
     style_key: String,
 }
 public struct WalletKeyV8 has copy, drop, store { wallet: address }
+public struct BaseItemHolderKeyV8 has copy, drop, store {
+    part_key: String,
+    item_key: String,
+    holder: address,
+}
 
 /// Immutable compiler-derived Runtime interpretation of one exact Core Part.
 /// The opaque Core payload is included in the row commitment, never inferred.
@@ -144,6 +198,7 @@ public struct RuntimeDefinitionRegistryV8 has key {
     expected_profile_commitment: vector<u8>,
     rolling_profile_commitment: vector<u8>,
     admission_ceiling: u8,
+    item_assetization: bool,
     sealed: bool,
     profile_keys: vector<String>,
     profiles: Table<PartProfileKeyV8, PartProfileV8>,
@@ -176,6 +231,11 @@ public struct ExternalAdmissionRecordV8 has copy, drop, store {
     admission_state: u8,
 }
 
+public struct BaseItemOwnershipRecordV8 has copy, drop, store {
+    item_id: ID,
+    ownership_epoch: u64,
+}
+
 /// Mutable post-activation Pack and external-product admission registry.
 /// Revision is the sole mutation CAS; no mutable set enters Root content.
 public struct PackRegistryV8 has key {
@@ -190,13 +250,18 @@ public struct PackRegistryV8 has key {
     revision: u64,
     release_count: u64,
     external_admission_count: u64,
+    wardrobe_revision: u64,
+    base_item_count: u64,
     releases: Table<ID, PackAdmissionRecordV8>,
     semantic_releases: Table<String, ID>,
     external_admissions: Table<ID, ExternalAdmissionRecordV8>,
+    base_item_owners: Table<BaseItemHolderKeyV8, BaseItemOwnershipRecordV8>,
 }
 
 /// Same-transaction proof that the initial Runtime registry tuple is exact,
 /// sealed, and has zero mutable post-activation admission rows.
+public struct MakerCompanionBindingWitnessV2 has drop {}
+
 public struct RuntimeActivationReadinessReceiptV8 {
     root_id: ID,
     root_version: u64,
@@ -208,8 +273,31 @@ public struct RuntimeActivationReadinessReceiptV8 {
     companion_commitment: vector<u8>,
 }
 
+/// Definition scopes match Core semantic sources, NOT Runtime selection classes.
+/// PACK_SELF binds to this exact Release, never a globally looked-up Pack name.
+public struct PackStyleDefinitionSourcesV8 has copy, drop, store {
+    part: u8,
+    track: u8,
+    color: Option<u8>,
+}
+
+public fun new_pack_style_definition_sources_v8(
+    part: u8, track: u8, color: Option<u8>,
+): PackStyleDefinitionSourcesV8 {
+    assert!(part == 1 || part == 2, EInvalidPolicy);
+    assert!(track == 1 || track == 2, EInvalidPolicy);
+    if (color.is_some()) assert!(*color.borrow() == 1 || *color.borrow() == 2, EInvalidPolicy);
+    PackStyleDefinitionSourcesV8 { part, track, color }
+}
+
+fun pack_definition_source_id<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>, source: u8): ID {
+    assert!(source == 1 || source == 2, EInvalidPolicy);
+    if (source == 1) release.root_id else object::id(release)
+}
+
 public struct PackStyleV8 has copy, drop, store {
     index: u64,
+    definition_sources: PackStyleDefinitionSourcesV8,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -222,6 +310,230 @@ public struct PackStyleV8 has copy, drop, store {
     protected: bool,
     seal_binding_commitment: vector<u8>,
     style_commitment: vector<u8>,
+}
+
+public struct PackDefinitionsKeyV8 has copy, drop, store {}
+public struct PackDefinitionsDraftKeyV8 has copy, drop, store {}
+public struct PackColorDraftKeyV8 has copy, drop, store {}
+public struct PackDefinitionsDraftV8 has store {
+    next_chunk: u64,
+    expected_commitment: vector<u8>,
+    rows: base::PackDefinitionRowsV2,
+}
+public struct PackDefinitionsV8 has copy, drop, store {
+    version: u64,
+    release_id: ID,
+    release_content_commitment: vector<u8>,
+    rows: base::PackDefinitionRowsV2,
+    commitment: vector<u8>,
+}
+public struct PackDefinitionsCommitmentInputV8 has drop {
+    domain: vector<u8>, version: u64, release_id: ID,
+    release_content_commitment: vector<u8>, rows: base::PackDefinitionRowsV2,
+}
+
+/// One-time immutable attachment by the exact draft owner. No style may already
+/// have been appended against a different definition universe.
+public fun register_pack_definitions_v8<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    rows: base::PackDefinitionRowsV2, expected_commitment: vector<u8>, ctx: &TxContext,
+) {
+    assert_pack_write(release, cap, ctx);
+    assert!(release.lifecycle == PACK_DRAFT, EInvalidLifecycle);
+    assert!(release.observed_style_count == 0, EInvalidCount);
+    assert!(!df::exists(&release.id, PackDefinitionsDraftKeyV8 {}), EInvalidPolicy);
+    assert!(!df::exists(&release.id, PackDefinitionsKeyV8 {}), EDuplicate);
+    assert!(base::pack_semantic_id_v2(&rows) == &release.semantic_pack_id, EInvalidBinding);
+    assert_pack_reference_source(base_registry, release, release.root_id);
+    base::assert_pack_additive_definitions_v2(base_registry, &rows);
+    let release_id = object::id(release);
+    let commitment = pack_definitions_commitment_v8(release_id, release.content_commitment, &rows);
+    assert!(commitment == expected_commitment, EInvalidCommitment);
+    df::add(&mut release.id, PackDefinitionsKeyV8 {}, PackDefinitionsV8 {
+        version: VERSION, release_id, release_content_commitment: release.content_commitment,
+        rows, commitment,
+    });
+}
+
+/// Draft chunks are never returned by pack_definitions_v8. Finalization reuses
+/// the exact one-time registration authority and full-content commitment.
+public fun begin_pack_definitions_v8<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8,
+    expected_commitment: vector<u8>, ctx: &TxContext,
+) {
+    assert_pack_write(release, cap, ctx);
+    assert!(release.lifecycle == PACK_DRAFT, EInvalidLifecycle);
+    assert!(release.observed_style_count == 0, EInvalidCount);
+    assert!(expected_commitment.length() == 32, EInvalidCommitment);
+    assert!(!df::exists(&release.id, PackDefinitionsKeyV8 {})
+        && !df::exists(&release.id, PackDefinitionsDraftKeyV8 {}), EDuplicate);
+    let rows = base::new_pack_definition_rows_v2(release.semantic_pack_id,
+        vector[], vector[], vector[], vector[], vector[]);
+    df::add(&mut release.id, PackDefinitionsDraftKeyV8 {},
+        PackDefinitionsDraftV8 { next_chunk: 0, expected_commitment, rows });
+}
+
+public fun append_pack_definitions_v8<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8, expected_chunk: u64,
+    tracks: vector<base::TrackRowV2>, colors: vector<base::ColorChannelRowV2>,
+    parts: vector<base::PartRowV2>, rules: vector<base::RuleRowV2>,
+    visibility: vector<base::PackVisibilityRowV2>, ctx: &TxContext,
+) {
+    assert_pack_write(release, cap, ctx);
+    assert!(release.lifecycle == PACK_DRAFT, EInvalidLifecycle);
+    assert!(release.observed_style_count == 0, EInvalidCount);
+    assert!(!df::exists(&release.id, PackColorDraftKeyV8 {}), EInvalidPolicy);
+    let draft: &mut PackDefinitionsDraftV8 = df::borrow_mut(&mut release.id, PackDefinitionsDraftKeyV8 {});
+    assert!(draft.next_chunk == expected_chunk, EInvalidSequence);
+    base::append_pack_definition_rows_v2(&mut draft.rows, tracks, colors, parts, rules, visibility);
+    draft.next_chunk = draft.next_chunk + 1;
+}
+
+public fun finalize_pack_definitions_v8<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, expected_chunks: u64, ctx: &TxContext,
+) {
+    assert_pack_write(release, cap, ctx);
+    assert!(!df::exists(&release.id, PackColorDraftKeyV8 {}), EInvalidPolicy);
+    let PackDefinitionsDraftV8 { next_chunk, expected_commitment, rows } =
+        df::remove(&mut release.id, PackDefinitionsDraftKeyV8 {});
+    assert!(next_chunk == expected_chunks, EInvalidSequence);
+    register_pack_definitions_v8(release, cap, base_registry, rows, expected_commitment, ctx);
+}
+
+public fun begin_pack_color_v8<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8, expected_chunk: u64,
+    sequence: u64, key: String, label: String, default_swatch_key: String, expected_swatches: u64, ctx: &TxContext,
+) {
+    assert_pack_write(release, cap, ctx);
+    assert!(release.lifecycle == PACK_DRAFT && release.observed_style_count == 0, EInvalidPolicy);
+    assert!(!df::exists(&release.id, PackColorDraftKeyV8 {}), EDuplicate);
+    let draft: &mut PackDefinitionsDraftV8 = df::borrow_mut(&mut release.id, PackDefinitionsDraftKeyV8 {});
+    assert!(draft.next_chunk == expected_chunk && base::pack_colors_v2(&draft.rows).length() == sequence, EInvalidSequence);
+    draft.next_chunk = draft.next_chunk + 1;
+    let color = base::new_color_channel_draft_v2(sequence, key, label, default_swatch_key, expected_swatches);
+    df::add(&mut release.id, PackColorDraftKeyV8 {}, color);
+}
+
+public fun append_pack_color_v8<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8, expected_chunk: u64,
+    expected_start: u64, swatches: vector<base::ColorSwatchV2>, ctx: &TxContext,
+) {
+    assert_pack_write(release, cap, ctx);
+    assert!(release.lifecycle == PACK_DRAFT && release.observed_style_count == 0, EInvalidPolicy);
+    let draft: &mut PackDefinitionsDraftV8 = df::borrow_mut(&mut release.id, PackDefinitionsDraftKeyV8 {});
+    assert!(draft.next_chunk == expected_chunk, EInvalidSequence);
+    draft.next_chunk = draft.next_chunk + 1;
+    let color: &mut base::ColorChannelDraftV2 = df::borrow_mut(&mut release.id, PackColorDraftKeyV8 {});
+    base::append_color_channel_draft_v2(color, expected_start, swatches);
+}
+
+public fun finish_pack_color_v8<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8, expected_chunk: u64, ctx: &TxContext,
+) {
+    assert_pack_write(release, cap, ctx);
+    assert!(release.lifecycle == PACK_DRAFT && release.observed_style_count == 0, EInvalidPolicy);
+    let row = base::finish_color_channel_draft_v2(df::remove(&mut release.id, PackColorDraftKeyV8 {}));
+    let draft: &mut PackDefinitionsDraftV8 = df::borrow_mut(&mut release.id, PackDefinitionsDraftKeyV8 {});
+    assert!(draft.next_chunk == expected_chunk, EInvalidSequence);
+    base::append_pack_definition_rows_v2(&mut draft.rows, vector[], vector[row], vector[], vector[], vector[]);
+    draft.next_chunk = draft.next_chunk + 1;
+}
+
+public fun pack_definitions_commitment_v8(
+    release_id: ID, release_content_commitment: vector<u8>, rows: &base::PackDefinitionRowsV2,
+): vector<u8> {
+    assert_hash(&release_content_commitment);
+    hash::sha2_256(bcs::to_bytes(&PackDefinitionsCommitmentInputV8 {
+        domain: b"animacraft-v8/runtime/pack-definitions", version: VERSION,
+        release_id, release_content_commitment, rows: *rows,
+    }))
+}
+
+public fun pack_definitions_v8<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): &PackDefinitionsV8 {
+    df::borrow(&release.id, PackDefinitionsKeyV8 {})
+}
+
+/// Resolves a definition's exact identity, not an entitlement. Draft authoring
+/// uses the same lookup; selection must separately require admission/lifecycle.
+fun assert_pack_reference_source<PaymentCoin>(
+    base_registry: &BaseDefinitionRegistryV8, release: &PackReleaseV8<PaymentCoin>,
+    source_definition_id: ID,
+) {
+    assert!(base::registry_sealed_v2(base_registry), ENotSealed);
+    assert!(base::registry_root_id_v2(base_registry) == release.root_id
+        && base::registry_maker_version_v2(base_registry) == release.root_version
+        && base::registry_root_content_commitment_v2(base_registry)
+            == &release.root_content_commitment, EInvalidBinding);
+    assert!(source_definition_id == release.root_id
+        || source_definition_id == object::id(release), EInvalidBinding);
+    if (source_definition_id == object::id(release)) {
+        let owned = pack_definitions_v8(release);
+        assert!(owned.version == VERSION && owned.release_id == object::id(release)
+            && owned.release_content_commitment == release.content_commitment
+            && base::pack_semantic_id_v2(&owned.rows) == &release.semantic_pack_id, EInvalidBinding);
+    };
+}
+
+public fun resolve_pack_track_v8<PaymentCoin>(
+    base_registry: &BaseDefinitionRegistryV8, release: &PackReleaseV8<PaymentCoin>,
+    source_definition_id: ID, key: String,
+): &base::TrackRowV2 {
+    assert_pack_reference_source(base_registry, release, source_definition_id);
+    if (source_definition_id == release.root_id) base::borrow_track_v2(base_registry, key)
+    else base::borrow_pack_track_v2(&pack_definitions_v8(release).rows, key)
+}
+
+public fun resolve_pack_part_v8<PaymentCoin>(
+    base_registry: &BaseDefinitionRegistryV8, release: &PackReleaseV8<PaymentCoin>,
+    source_definition_id: ID, key: String,
+): &base::PartRowV2 {
+    assert_pack_reference_source(base_registry, release, source_definition_id);
+    if (source_definition_id == release.root_id) base::borrow_part_v2(base_registry, key)
+    else base::borrow_pack_part_v2(&pack_definitions_v8(release).rows, key)
+}
+
+public fun resolve_pack_color_v8<PaymentCoin>(
+    base_registry: &BaseDefinitionRegistryV8, release: &PackReleaseV8<PaymentCoin>,
+    source_definition_id: ID, channel_key: String, swatch_key: String,
+): &base::ColorSwatchV2 {
+    assert_pack_reference_source(base_registry, release, source_definition_id);
+    if (source_definition_id == release.root_id) base::borrow_color_v2(base_registry, channel_key, swatch_key)
+    else base::borrow_pack_color_v2(&pack_definitions_v8(release).rows, channel_key, swatch_key)
+}
+
+/// Derived from immutable owned rows and the sealed parent policy. No separate
+/// mutable profile registry can reinterpret a previously attached Pack slot.
+public fun pack_part_profiles_v8<PaymentCoin>(
+    definitions: &RuntimeDefinitionRegistryV8, release: &PackReleaseV8<PaymentCoin>,
+): vector<PartProfileV8> {
+    assert!(definitions.sealed, ENotSealed);
+    assert!(definitions.version == VERSION && definitions.root_id == release.root_id
+        && definitions.root_version == release.root_version
+        && definitions.root_content_commitment == release.root_content_commitment, EInvalidBinding);
+    let owned = pack_definitions_v8(release);
+    assert!(owned.version == VERSION && owned.release_id == object::id(release)
+        && owned.release_content_commitment == release.content_commitment, EInvalidBinding);
+    let mut profiles = vector[];
+    let mut rolling = empty_profile_commitment_v8(release.content_commitment);
+    base::pack_parts_v2(&owned.rows).do_ref!(|row| {
+        let (key, sequence, required, payload) = base::part_identity_terms_v2(row);
+        let (mode, capacity) = base::part_slot_terms_v2(row);
+        assert!(!required && sequence == profiles.length(), EInvalidPolicy);
+        // Same authoring mapping as Base: FIXED -> fixed; SLOT -> soul-local
+        // when admission is closed, otherwise hybrid. No new author policy.
+        let behavior = if (mode == WARDROBE_FIXED) BEHAVIOR_FIXED
+            else if (definitions.admission_ceiling == ADMISSION_DISABLED) BEHAVIOR_SOUL_LOCAL
+            else BEHAVIOR_HYBRID;
+        rolling = advance_profile_commitment_v8(release.content_commitment, sequence,
+            rolling, *key, *payload, required, mode, behavior, capacity, definitions.admission_ceiling);
+        profiles.push_back(PartProfileV8 { index: sequence, part_key: *key,
+            core_part_payload_commitment: *payload, required, wardrobe_mode: mode,
+            behavior, capacity, admission_ceiling: definitions.admission_ceiling,
+            profile_commitment: rolling });
+    });
+    profiles
 }
 
 public struct PackReleaseV8<phantom PaymentCoin> has key {
@@ -322,6 +634,8 @@ public struct ExternalItemProductV8 has key {
     default_swatch_key: Option<String>,
     asset_blob_id: String,
     asset_sha256: vector<u8>,
+    asset_media_type: String,
+    asset_byte_length: u64,
     asset_content_commitment: vector<u8>,
     compatibility_commitment: vector<u8>,
     content_commitment: vector<u8>,
@@ -353,6 +667,69 @@ public struct OwnedExternalItemV8 has key {
     ownership_epoch: u64,
     transferable: bool,
     equip_lock: Option<EquipLockV8>,
+}
+
+/// Transferable official Base Item instance. The holder may choose any Style
+/// belonging to the exact immutable Item, but the object can be locked to only
+/// one Maker loadout slot at a time.
+public struct OwnedBaseItemV8 has key {
+    id: UID,
+    version: u64,
+    root_id: ID,
+    root_version: u64,
+    root_content_commitment: vector<u8>,
+    definition_registry_id: ID,
+    pack_registry_id: ID,
+    base_registry_id: ID,
+    part_key: String,
+    item_key: String,
+    item_payload_commitment: vector<u8>,
+    holder: address,
+    ownership_epoch: u64,
+    transferable: bool,
+    equip_lock: Option<EquipLockV8>,
+}
+
+/// Frozen readback, not authority. Releasing the child also requires Market's
+/// private installed caller cap, the exact live registry/treasury and parent UID.
+/// The full pre-custody object commitment preserves all content and ownership
+/// fields without adding a second transferable equipment identity.
+public struct EquipmentMarketCustodyBindingV8 has copy, drop, store {
+    version: u64,
+    catalog_id: ID,
+    product_binding_commitment: vector<u8>,
+    call_cap_set_commitment: vector<u8>,
+    market_authority_id: ID,
+    market_registry_id: ID,
+    market_treasury_id: ID,
+    listing_id: ID,
+    root_id: ID,
+    maker_version: u64,
+    root_content_commitment: vector<u8>,
+    asset_id: ID,
+    asset_kind: u8,
+    source_id: ID,
+    asset_commitment: vector<u8>,
+    holder: address,
+    ownership_epoch: u64,
+}
+
+/// Must be consumed by the caller in the same custody transaction.
+public struct EquipmentMarketCustodyTicketV8 {
+    binding: EquipmentMarketCustodyBindingV8,
+}
+
+public struct EquipmentMarketCustodyTransitionV8 has copy, drop {
+    action: u8,
+    listing_id: ID,
+    asset_id: ID,
+    asset_kind: u8,
+    source_id: ID,
+    previous_holder: address,
+    holder: address,
+    previous_ownership_epoch: u64,
+    ownership_epoch: u64,
+    asset_commitment: vector<u8>,
 }
 
 /// Catalog-authority attestation for CERTIFIED admission. No caller boolean
@@ -391,6 +768,23 @@ public struct LoadoutSelectionV8 has copy, drop, store {
     seal_binding_commitment: vector<u8>,
 }
 
+/// A committed Part range belongs to one exact definition, not a bare local key.
+/// Base ranges name the Maker Root; Pack-owned ranges name the Pack Release.
+public struct DefinitionSlotV8 has copy, drop, store {
+    source_definition_id: ID,
+    part_key: String,
+    profile_commitment: vector<u8>,
+    start: u64,
+    capacity: u64,
+}
+
+/// Explicit enrollment survives even when a Pack adds no Parts or no selected
+/// Style. Definition commitment already binds exact Release ID/content/rows.
+public struct AttachedPackDefinitionV8 has copy, drop, store {
+    release_id: ID,
+    definition_commitment: vector<u8>,
+}
+
 public struct MakerLoadoutV8 has key {
     id: UID,
     version: u64,
@@ -403,9 +797,45 @@ public struct MakerLoadoutV8 has key {
     maker_access_commitment: vector<u8>,
     holder: address,
     revision: u64,
+    attached_pack_definitions: vector<AttachedPackDefinitionV8>,
+    definition_slots: vector<DefinitionSlotV8>,
     selections: vector<Option<LoadoutSelectionV8>>,
     selection_count: u64,
     commitment: vector<u8>,
+}
+
+/// Soul equipment reuses the same selections and instance locks, but is not a
+/// wallet's temporary Player loadout. This field leaves its BCS layout intact.
+public struct SoulEquipmentKeyV8 has copy, drop, store {}
+
+/// Persistent layout identity, NOT an owner authorization. The owner binding is
+/// temporarily removed by the atomic-update guard; this marker must survive it.
+public struct SoulEquipmentLayoutKeyV8 has copy, drop, store {}
+
+#[test]
+fun soul_equipment_key_bcs_matches_client() {
+    assert!(bcs::to_bytes(&SoulEquipmentKeyV8 {}) == vector[0], 100);
+}
+public struct SoulEquipmentBindingV8 has copy, drop, store {
+    soul_id: ID,
+    soul_state_id: ID,
+    holder: address,
+    ownership_epoch: u64,
+    protocol_config_id: ID,
+}
+public struct SoulEquipmentOwnerClaimV8 has drop {
+    soul_id: ID, soul_state_id: ID, holder: address, ownership_epoch: u64,
+}
+/// No abilities: all mutations in one transaction must finish by validating the
+/// final selected visibility and restoring this exact binding. Intermediate
+/// replacement states may be invalid; the guard cannot be stored or discarded.
+public struct SoulEquipmentUpdateV8 {
+    loadout_id: ID,
+    binding: SoulEquipmentBindingV8,
+}
+public struct SoulEquipmentChangedV8 has copy, drop {
+    soul_id: ID, soul_state_id: ID, loadout_id: ID, holder: address,
+    ownership_epoch: u64, revision: u64, selection_count: u64, commitment: vector<u8>,
 }
 
 /// Individual same-transaction proof. It has no abilities and must be ordered
@@ -422,6 +852,19 @@ public struct SelectionAccessProofV8 {
     source_content_commitment: vector<u8>,
     source_epoch: u64,
     pricing_commitment: vector<u8>,
+}
+
+/// Transaction-local, non-droppable evidence for one exact attachment. The
+/// private mode bit prevents content-only equipment evidence authorizing Complete.
+public struct PackDefinitionProofV8 {
+    loadout_id: ID,
+    loadout_revision: u64,
+    loadout_commitment: vector<u8>,
+    binding_index: u64,
+    release_id: ID,
+    definition_commitment: vector<u8>,
+    profiles: vector<PartProfileV8>,
+    completion_checked: bool,
 }
 
 /// One-use bridge from an entitlement-checked selection proof to Output's
@@ -564,6 +1007,7 @@ public struct RuntimePackRegistrationWitnessV8 {
     release_id: ID,
     release_content_commitment: vector<u8>,
     sequence: u64,
+    definition_sources: PackStyleDefinitionSourcesV8,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -579,6 +1023,7 @@ public struct PartProfileCommitmentInputV8 has drop {
 public struct RuntimePolicyCommitmentInputV8 has drop {
     domain: vector<u8>, version: u64, root_content_commitment: vector<u8>,
     profile_count: u64, profile_commitment: vector<u8>, admission_ceiling: u8,
+    item_assetization: bool,
 }
 public struct RuntimeReadinessCommitmentInputV8 has drop {
     domain: vector<u8>, version: u64, root_id: ID, root_version: u64,
@@ -586,7 +1031,15 @@ public struct RuntimeReadinessCommitmentInputV8 has drop {
     definition_profile_count: u64, definition_profile_commitment: vector<u8>,
     pack_registry_id: ID, pack_registry_revision: u64,
     pack_release_count: u64, external_admission_count: u64,
+    wardrobe_revision: u64, base_item_count: u64,
     admission_authority_id: ID, policy_commitment: vector<u8>,
+}
+public struct OwnedBaseItemCommitmentInputV8 has drop {
+    domain: vector<u8>, version: u64, item_id: ID,
+    root_id: ID, root_version: u64, root_content_commitment: vector<u8>,
+    definition_registry_id: ID, pack_registry_id: ID, base_registry_id: ID,
+    part_key: String, item_key: String, item_payload_commitment: vector<u8>,
+    holder: address, ownership_epoch: u64,
 }
 public struct MakerAccessEntitlementCommitmentInputV8 has drop {
     domain: vector<u8>, version: u64, pass_id: ID, root_id: ID,
@@ -607,7 +1060,9 @@ public struct PackStyleCommitmentInputV8 has drop {
 }
 public struct LoadoutCommitmentInputV8 has drop {
     domain: vector<u8>, version: u64, root_id: ID, root_version: u64,
-    root_content_commitment: vector<u8>, selections: vector<Option<LoadoutSelectionV8>>,
+    root_content_commitment: vector<u8>, attached_pack_definitions: vector<AttachedPackDefinitionV8>,
+    definition_slots: vector<DefinitionSlotV8>,
+    selections: vector<Option<LoadoutSelectionV8>>,
 }
 public struct SelectionCommitmentInputV8 has drop {
     domain: vector<u8>, version: u64, selection: LoadoutSelectionV8,
@@ -624,6 +1079,7 @@ public struct ExternalProductCommitmentInputV8 has drop {
     part_key: String, item_key: String, style_key: String, layer_track_key: String,
     color_channel_key: Option<String>, default_swatch_key: Option<String>,
     asset_blob_id: String, asset_sha256: vector<u8>,
+    asset_media_type: String, asset_byte_length: u64,
     asset_content_commitment: vector<u8>, transferable: bool,
 }
 public struct AttestationCommitmentInputV8 has drop {
@@ -674,6 +1130,13 @@ public struct PackLifecycleChangedV8 has copy, drop {
 public struct ExternalItemEquipChangedV8 has copy, drop {
     item_id: ID, loadout_id: ID, revision: u64, equipped: bool,
 }
+public struct BaseItemOwnershipChangedV8 has copy, drop {
+    item_id: ID, part_key: String, item_key: String,
+    previous_holder: Option<address>, holder: address, ownership_epoch: u64,
+}
+public struct BaseItemEquipChangedV8 has copy, drop {
+    item_id: ID, loadout_id: ID, revision: u64, equipped: bool,
+}
 
 public fun version_v8(): u64 { VERSION }
 public fun wardrobe_fixed_v8(): u8 { WARDROBE_FIXED }
@@ -688,7 +1151,6 @@ public fun admission_open_v8(): u8 { ADMISSION_OPEN }
 public fun source_base_v8(): u8 { SOURCE_BASE }
 public fun source_pack_v8(): u8 { SOURCE_PACK }
 public fun source_external_v8(): u8 { SOURCE_EXTERNAL }
-public fun base_item_gate_included_v8(): u8 { BASE_ITEM_GATE_INCLUDED }
 public fun access_free_v8(): u8 { ACCESS_FREE }
 public fun access_paid_v8(): u8 { ACCESS_PAID }
 public fun access_included_with_maker_v8(): u8 { ACCESS_INCLUDED_WITH_MAKER }
@@ -807,6 +1269,7 @@ public fun runtime_policy_commitment_v8(
     profile_count: u64,
     profile_commitment: vector<u8>,
     admission_ceiling: u8,
+    item_assetization: bool,
 ): vector<u8> {
     assert_hash(&root_content_commitment);
     assert!(profile_count > 0 && profile_count <= MAX_PART_PROFILES, EInvalidCount);
@@ -819,6 +1282,7 @@ public fun runtime_policy_commitment_v8(
         profile_count,
         profile_commitment,
         admission_ceiling,
+        item_assetization,
     }))
 }
 
@@ -831,18 +1295,19 @@ public fun new_runtime_registries_v8<PaymentCoin>(
     expected_profile_count: u64,
     expected_profile_commitment: vector<u8>,
     admission_ceiling: u8,
+    item_assetization: bool,
     ctx: &mut TxContext,
 ): (RuntimeDefinitionRegistryV8, PackRegistryV8, PackAdmissionAuthorityV8) {
     maker::assert_draft_admin_v8(root, admin);
     maker::assert_base_registry_identity_v8(
         root,
-        base::registry_id_v8(base_registry),
-        base::registry_root_id_v8(base_registry),
-        base::registry_maker_version_v8(base_registry),
-        base::registry_root_content_commitment_v8(base_registry),
+        sui::object::id(base_registry),
+        base::registry_root_id_v2(base_registry),
+        base::registry_maker_version_v2(base_registry),
+        base::registry_root_content_commitment_v2(base_registry),
     );
-    assert!(base::registry_sealed_v8(base_registry), ENotSealed);
-    assert!(expected_profile_count == base::registry_part_count_v8(base_registry), EInvalidCount);
+    assert!(base::registry_sealed_v2(base_registry), ENotSealed);
+    assert!(expected_profile_count == base::registry_part_count_v2(base_registry), EInvalidCount);
     assert!(expected_profile_count > 0 && expected_profile_count <= MAX_PART_PROFILES, EInvalidCount);
     assert_admission_ceiling(admission_ceiling);
     assert_hash(&expected_profile_commitment);
@@ -854,9 +1319,10 @@ public fun new_runtime_registries_v8<PaymentCoin>(
         expected_profile_count,
         expected_profile_commitment,
         admission_ceiling,
+        item_assetization,
     );
     assert!(&policy_commitment
-        == maker::root_expected_pack_admission_policy_commitment_v8(root), EInvalidCommitment);
+        == maker::root_expected_pack_admission_policy_commitment_v2(root), EInvalidCommitment);
     let definition_uid = object::new(ctx);
     let definition_registry_id = definition_uid.to_inner();
     let authority_uid = object::new(ctx);
@@ -869,12 +1335,13 @@ public fun new_runtime_registries_v8<PaymentCoin>(
         root_id,
         root_version,
         root_content_commitment,
-        base_registry_id: base::registry_id_v8(base_registry),
+        base_registry_id: sui::object::id(base_registry),
         expected_profile_count,
         observed_profile_count: 0,
         expected_profile_commitment,
         rolling_profile_commitment: empty_profile_commitment_v8(root_content_commitment),
         admission_ceiling,
+        item_assetization,
         sealed: false,
         profile_keys: vector[],
         profiles: table::new(ctx),
@@ -891,9 +1358,12 @@ public fun new_runtime_registries_v8<PaymentCoin>(
         revision: 0,
         release_count: 0,
         external_admission_count: 0,
+        wardrobe_revision: 0,
+        base_item_count: 0,
         releases: table::new(ctx),
         semantic_releases: table::new(ctx),
         external_admissions: table::new(ctx),
+        base_item_owners: table::new(ctx),
     };
     let authority = PackAdmissionAuthorityV8 {
         id: authority_uid,
@@ -924,14 +1394,14 @@ public fun append_part_profile_v8<PaymentCoin>(
 ) {
     assert_definition_write(registry, root, admin, base_registry, sequence);
     assert!(sequence < registry.expected_profile_count, EInvalidCount);
-    let part = base::borrow_part_v8(base_registry, part_key);
-    assert!(base::part_key_v8(part) == &part_key, EInvalidBinding);
-    assert!(base::part_sequence_v8(part)
-        == base::registry_track_count_v8(base_registry) + sequence, EPartOrder);
-    let required = base::part_required_v8(part);
+    let part = base::borrow_part_v2(base_registry, part_key);
+    let (base_part_key, base_part_sequence, required, part_payload_commitment) =
+        base::part_identity_terms_v2(part);
+    assert!(base_part_key == &part_key, EInvalidBinding);
+    assert!(base_part_sequence == sequence, EPartOrder);
     assert_profile_policy(
         wardrobe_mode, behavior, capacity, registry.admission_ceiling, required);
-    let core_part_payload_commitment = *base::part_payload_commitment_v8(part);
+    let core_part_payload_commitment = *part_payload_commitment;
     let profile_commitment = advance_profile_commitment_v8(
         registry.root_content_commitment,
         sequence,
@@ -974,6 +1444,8 @@ public fun seal_runtime_definitions_v8<PaymentCoin>(
     assert!(registry.observed_profile_count == registry.expected_profile_count, EInvalidCount);
     assert!(registry.profile_keys.length() == registry.expected_profile_count, EInvalidCount);
     assert!(registry.rolling_profile_commitment == registry.expected_profile_commitment, EInvalidCommitment);
+    let total_capacity = total_slot_capacity(registry);
+    assert!(total_capacity > 0 && total_capacity <= MAX_LOADOUT_SELECTIONS, EInvalidCount);
     registry.sealed = true;
 }
 
@@ -993,6 +1465,8 @@ public fun runtime_activation_readiness_v8<PaymentCoin>(
     assert!(packs.revision == 0, ENotReady);
     assert!(packs.release_count == 0, ENotReady);
     assert!(packs.external_admission_count == 0, ENotReady);
+    assert!(packs.wardrobe_revision == 0, ENotReady);
+    assert!(packs.base_item_count == 0, ENotReady);
     let definition_registry_id = object::id(definitions);
     let pack_registry_id = object::id(packs);
     let admission_authority_id = object::id(authority);
@@ -1010,6 +1484,8 @@ public fun runtime_activation_readiness_v8<PaymentCoin>(
             pack_registry_revision: packs.revision,
             pack_release_count: packs.release_count,
             external_admission_count: packs.external_admission_count,
+            wardrobe_revision: packs.wardrobe_revision,
+            base_item_count: packs.base_item_count,
             admission_authority_id,
             policy_commitment: packs.admission_policy_commitment,
         },
@@ -1024,6 +1500,25 @@ public fun runtime_activation_readiness_v8<PaymentCoin>(
         policy_commitment: packs.admission_policy_commitment,
         companion_commitment,
     }
+}
+
+public fun bind_runtime_companion_v2<PaymentCoin>(
+    builder: MakerRuntimeCompanionBindingBuilderV2<PaymentCoin>,
+    root: &MakerRootV8<PaymentCoin>, admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8, catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    definitions: &RuntimeDefinitionRegistryV8, packs: &PackRegistryV8,
+    authority: &PackAdmissionAuthorityV8, ctx: &TxContext,
+): MakerRuntimeCompanionBindingBuilderV2<PaymentCoin> {
+    maker::assert_companion_builder_root_v2(&builder, root, admin, ctx);
+    maker::assert_product_release_catalog_v8(root, catalog);
+    let receipt = runtime_activation_readiness_v8(definitions, packs, authority, root);
+    let (_, _, _, definitions_id, packs_id, authority_id, policy, _) =
+        consume_activation_readiness_v8(receipt);
+    assert!(&policy == maker::root_expected_pack_admission_policy_commitment_v2(root),
+        EInvalidPolicy);
+    companion::append_runtime_v2(builder, MakerCompanionBindingWitnessV2 {},
+        protocol_config, catalog, replacement, definitions_id, packs_id, authority_id, ctx)
 }
 
 public(package) fun consume_activation_readiness_v8(
@@ -1194,6 +1689,7 @@ public fun append_unprotected_pack_style_v8<PaymentCoin>(
     definitions: &RuntimeDefinitionRegistryV8,
     base_registry: &BaseDefinitionRegistryV8,
     sequence: u64,
+    definition_sources: PackStyleDefinitionSourcesV8,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -1214,12 +1710,14 @@ public fun append_unprotected_pack_style_v8<PaymentCoin>(
     assert!(definitions.root_version == release.root_version, EInvalidBinding);
     assert!(definitions.root_content_commitment == release.root_content_commitment, EInvalidBinding);
     assert!(definitions.sealed, ENotSealed);
-    assert!(definitions.profiles.contains(PartProfileKeyV8 { part_key }), EMissing);
-    assert_pack_style_base_references(
-        definitions, base_registry, release, &part_key, &layer_track_key,
+    let _profile = pack_style_part_profile(definitions, release, definition_sources.part, part_key);
+    assert_pack_style_references(
+        definitions, base_registry, release, &definition_sources, &part_key, &layer_track_key,
         &color_channel_key, &default_swatch_key);
+    assert_pack_style_visibility_definitions(base_registry, release, &definition_sources, part_key, item_key, style_key);
     let style = PackStyleV8 {
         index: sequence,
+        definition_sources,
         part_key,
         item_key,
         style_key,
@@ -1253,6 +1751,7 @@ public(package) fun new_pack_registration_witness_v8<PaymentCoin>(
     cap: &PackAdminCapV8,
     definitions: &RuntimeDefinitionRegistryV8,
     sequence: u64,
+    definition_sources: PackStyleDefinitionSourcesV8,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -1267,7 +1766,7 @@ public(package) fun new_pack_registration_witness_v8<PaymentCoin>(
     assert!(definitions.root_version == release.root_version, EInvalidBinding);
     assert!(definitions.root_content_commitment == release.root_content_commitment, EInvalidBinding);
     assert!(definitions.sealed, ENotSealed);
-    assert!(definitions.profiles.contains(PartProfileKeyV8 { part_key }), EMissing);
+    let _profile = pack_style_part_profile(definitions, release, definition_sources.part, part_key);
     assert_key(&item_key);
     assert_key(&style_key);
     assert_hash(&asset_content_commitment);
@@ -1275,6 +1774,7 @@ public(package) fun new_pack_registration_witness_v8<PaymentCoin>(
         release_id: object::id(release),
         release_content_commitment: release.content_commitment,
         sequence,
+        definition_sources,
         part_key,
         item_key,
         style_key,
@@ -1288,6 +1788,7 @@ public(package) fun append_certified_pack_style_v8<PaymentCoin>(
     definitions: &RuntimeDefinitionRegistryV8,
     base_registry: &BaseDefinitionRegistryV8,
     witness: RuntimePackRegistrationWitnessV8,
+    definition_sources: PackStyleDefinitionSourcesV8,
     layer_track_key: String,
     color_channel_key: Option<String>,
     default_swatch_key: Option<String>,
@@ -1303,6 +1804,7 @@ public(package) fun append_certified_pack_style_v8<PaymentCoin>(
         release_id,
         release_content_commitment,
         sequence,
+        definition_sources: witness_sources,
         part_key,
         item_key,
         style_key,
@@ -1311,13 +1813,16 @@ public(package) fun append_certified_pack_style_v8<PaymentCoin>(
     assert!(release_id == object::id(release), EInvalidBinding);
     assert!(release_content_commitment == release.content_commitment, EInvalidBinding);
     assert!(asset_content_commitment == witness_asset_content, EInvalidBinding);
+    assert!(definition_sources == witness_sources, EInvalidBinding);
     assert!(sequence == release.observed_style_count, EInvalidSequence);
-    assert!(definitions.profiles.contains(PartProfileKeyV8 { part_key }), EMissing);
-    assert_pack_style_base_references(
-        definitions, base_registry, release, &part_key, &layer_track_key,
+    let _profile = pack_style_part_profile(definitions, release, definition_sources.part, part_key);
+    assert_pack_style_references(
+        definitions, base_registry, release, &definition_sources, &part_key, &layer_track_key,
         &color_channel_key, &default_swatch_key);
+    assert_pack_style_visibility_definitions(base_registry, release, &definition_sources, part_key, item_key, style_key);
     let style = PackStyleV8 {
         index: sequence,
+        definition_sources,
         part_key,
         item_key,
         style_key,
@@ -1354,6 +1859,10 @@ public fun seal_pack_release_v8<PaymentCoin>(
 ) {
     assert_pack_write(release, cap, ctx);
     assert!(release.lifecycle == PACK_DRAFT, EInvalidLifecycle);
+    assert!(!df::exists(&release.id, PackDefinitionsDraftKeyV8 {}), EInvalidPolicy);
+    // Finalized definitions are immutable and every appended Style has already
+    // resolved its scoped references. Only an unfinished definition draft blocks
+    // sealing; the exact declared Style count/commitment still must match.
     assert!(release.observed_style_count == release.expected_style_count, EInvalidCount);
     assert!(release.rolling_style_commitment == release.expected_style_commitment, EInvalidCommitment);
     release.lifecycle = PACK_SEALED;
@@ -1568,16 +2077,17 @@ public fun issue_included_pack_pass_v8<PaymentCoin>(
 }
 
 /// Builds the only Runtime authority accepted when Physical installs a
-/// post-activation Pack policy. The exact Physical call capability and marker
-/// origins prevent another package from turning Pack IDs into policy rows.
+/// post-activation Pack policy. The private exact Physical witness and current
+/// replacement prevent another package from turning Pack IDs into policy rows.
 public fun new_physical_pack_policy_witness_v8<
     PaymentCoin,
-    PhysicalOriginalMarker,
-    PhysicalCallableMarker,
+    PhysicalAuthority: drop,
 >(
     root: &MakerRootV8<PaymentCoin>,
+    physical_authority: PhysicalAuthority,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
     packs: &PackRegistryV8,
     release: &PackReleaseV8<PaymentCoin>,
     pack_admin: &PackAdminCapV8,
@@ -1587,11 +2097,7 @@ public fun new_physical_pack_policy_witness_v8<
     style_key: String,
     ctx: &TxContext,
 ): RuntimePhysicalPackPolicyWitnessV8 {
-    assert_physical_caller<
-        PaymentCoin,
-        PhysicalOriginalMarker,
-        PhysicalCallableMarker,
-    >(root, catalog, physical_call_cap, packs);
+    assert_physical_caller(root, physical_authority, protocol_config, catalog, replacement, packs);
     assert_active_pack_admission(packs, release);
     assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
     assert_pack_control(release, pack_admin, ctx);
@@ -1643,12 +2149,13 @@ public fun new_physical_pack_policy_witness_v8<
 /// witnesses before minting.
 public fun new_physical_pack_access_witness_v8<
     PaymentCoin,
-    PhysicalOriginalMarker,
-    PhysicalCallableMarker,
+    PhysicalAuthority: drop,
 >(
     root: &MakerRootV8<PaymentCoin>,
+    physical_authority: PhysicalAuthority,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
     packs: &PackRegistryV8,
     release: &PackReleaseV8<PaymentCoin>,
     pack_treasury: &PackTreasuryV8<PaymentCoin>,
@@ -1657,11 +2164,7 @@ public fun new_physical_pack_access_witness_v8<
     selection_index: u64,
     ctx: &TxContext,
 ): RuntimePhysicalPackAccessWitnessV8 {
-    assert_physical_caller<
-        PaymentCoin,
-        PhysicalOriginalMarker,
-        PhysicalCallableMarker,
-    >(root, catalog, physical_call_cap, packs);
+    assert_physical_caller(root, physical_authority, protocol_config, catalog, replacement, packs);
     assert_active_pack_admission(packs, release);
     assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
     assert_treasury(release, pack_treasury);
@@ -1725,24 +2228,28 @@ public fun new_physical_pack_access_witness_v8<
     }
 }
 
-/// Physical consumes the policy witness under the same exact call capability.
+/// Physical consumes the policy witness under exact current package authority.
 public fun consume_physical_pack_policy_witness_v8<
-    PhysicalOriginalMarker,
-    PhysicalCallableMarker,
+    PaymentCoin,
+    PhysicalAuthority: drop,
 >(
     witness: RuntimePhysicalPackPolicyWitnessV8,
+    physical_authority: PhysicalAuthority,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
 ): (
     ID, u64, vector<u8>, ID, u64, ID, String, vector<u8>, address, u64,
     ID, ID, u64, String, String, String, String, Option<String>,
     Option<String>, String, vector<u8>, vector<u8>, bool, vector<u8>,
     vector<u8>, vector<u8>,
 ) {
-    binding::assert_physical_call_cap_v8(catalog, physical_call_cap);
-    binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(
-        binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
-    );
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
+    binding::assert_exact_witness_type_v2<PhysicalAuthority>(
+        binding::binding_at_v2(binding::catalog_binding_v8(catalog), 4),
+        &b"physical_v8", &b"PhysicalRuntimeWitnessV2");
+    let _ = physical_authority;
     let RuntimePhysicalPackPolicyWitnessV8 {
         root_id, root_version, root_content_commitment,
         pack_registry_id, pack_registry_revision, release_id,
@@ -1754,6 +2261,7 @@ public fun consume_physical_pack_policy_witness_v8<
         seal_binding_commitment, style_commitment,
         style_identity_commitment,
     } = witness;
+    maker::assert_root_identity_v8(root, root_id, root_version, &root_content_commitment);
     (
         root_id, root_version, root_content_commitment,
         pack_registry_id, pack_registry_revision, release_id,
@@ -1767,23 +2275,27 @@ public fun consume_physical_pack_policy_witness_v8<
     )
 }
 
-/// Physical consumes the live Pack access witness under the same exact cap.
+/// Physical consumes the live Pack access witness under current package authority.
 public fun consume_physical_pack_access_witness_v8<
-    PhysicalOriginalMarker,
-    PhysicalCallableMarker,
+    PaymentCoin,
+    PhysicalAuthority: drop,
 >(
     witness: RuntimePhysicalPackAccessWitnessV8,
+    physical_authority: PhysicalAuthority,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
 ): (
     ID, u64, vector<u8>, address, ID, u64, ID, String, vector<u8>, ID,
     ID, vector<u8>, ID, u64, vector<u8>, u64, vector<u8>, vector<u8>,
     String, String, String, String, vector<u8>, vector<u8>,
 ) {
-    binding::assert_physical_call_cap_v8(catalog, physical_call_cap);
-    binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(
-        binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
-    );
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
+    binding::assert_exact_witness_type_v2<PhysicalAuthority>(
+        binding::binding_at_v2(binding::catalog_binding_v8(catalog), 4),
+        &b"physical_v8", &b"PhysicalRuntimeWitnessV2");
+    let _ = physical_authority;
     let RuntimePhysicalPackAccessWitnessV8 {
         root_id, root_version, root_content_commitment, holder,
         pack_registry_id, pack_registry_revision, release_id,
@@ -1793,6 +2305,7 @@ public fun consume_physical_pack_access_witness_v8<
         pricing_commitment, part_key, item_key, style_key, layer_track_key,
         asset_content_commitment, style_identity_commitment,
     } = witness;
+    maker::assert_root_identity_v8(root, root_id, root_version, &root_content_commitment);
     (
         root_id, root_version, root_content_commitment, holder,
         pack_registry_id, pack_registry_revision, release_id,
@@ -1804,8 +2317,8 @@ public fun consume_physical_pack_access_witness_v8<
     )
 }
 
-/// Package-private mutation reached only after runtime_binding_v8 consumes
-/// Core's exact no-ability OutputRuntimeRequestV8 in the same transaction.
+/// Package-private mutation reached after runtime_binding_v8 validates Output's
+/// installed caller cap and current replacement authority in this transaction.
 public(package) fun authorize_pack_complete_line_v8<PaymentCoin>(
     release: &mut PackReleaseV8<PaymentCoin>,
     registry: &PackRegistryV8,
@@ -1903,7 +2416,7 @@ public(package) fun consume_pack_complete_line_v8(
 }
 
 /// Consumes and settles an authorized paid Pack Complete line. The line has no
-/// abilities and can only be created after Core's exact Output request was
+/// abilities and can only be created after Output's exact caller cap was
 /// consumed, so no caller can retain, copy, or forge a reusable charge.
 public fun settle_paid_pack_complete_line_v8<PaymentCoin>(
     line: PackCompleteLineV8,
@@ -1968,6 +2481,8 @@ public fun new_external_item_product_v8<PaymentCoin>(
     default_swatch_key: Option<String>,
     asset_blob_id: String,
     asset_sha256: vector<u8>,
+    asset_media_type: String,
+    asset_byte_length: u64,
     asset_content_commitment: vector<u8>,
     transferable: bool,
     ctx: &mut TxContext,
@@ -1982,10 +2497,10 @@ public fun new_external_item_product_v8<PaymentCoin>(
     assert_key(&item_key);
     assert_key(&style_key);
     assert_key(&layer_track_key);
-    let _track = base::borrow_track_v8(base_registry, layer_track_key);
+    let _track = base::borrow_track_v2(base_registry, layer_track_key);
     assert_color_pair(&color_channel_key, &default_swatch_key);
     if (color_channel_key.is_some()) {
-        let _color = base::borrow_color_v8(
+        let _color = base::borrow_color_v2(
             base_registry,
             *color_channel_key.borrow(),
             *default_swatch_key.borrow(),
@@ -1993,6 +2508,7 @@ public fun new_external_item_product_v8<PaymentCoin>(
     };
     assert_locator(&asset_blob_id);
     assert_hash(&asset_sha256);
+    assert_asset_descriptor(&asset_media_type, asset_byte_length);
     assert_hash(&asset_content_commitment);
     let compatibility_commitment = hash::sha2_256(bcs::to_bytes(
         &ExternalProductCommitmentInputV8 {
@@ -2010,6 +2526,8 @@ public fun new_external_item_product_v8<PaymentCoin>(
             default_swatch_key,
             asset_blob_id,
             asset_sha256,
+            asset_media_type,
+            asset_byte_length,
             asset_content_commitment,
             transferable,
         },
@@ -2045,6 +2563,8 @@ public fun new_external_item_product_v8<PaymentCoin>(
         default_swatch_key,
         asset_blob_id,
         asset_sha256,
+        asset_media_type,
+        asset_byte_length,
         asset_content_commitment,
         compatibility_commitment,
         content_commitment,
@@ -2272,6 +2792,468 @@ fun prepare_owned_item_transfer(
     item.ownership_epoch = item.ownership_epoch + 1;
 }
 
+/// Claims one official Base Item for this holder. The exact Maker access pass
+/// is the issuance entitlement; the registry prevents a second claim of the
+/// same Item by the same holder.
+public fun claim_owned_base_item_v8<PaymentCoin>(
+    packs: &mut PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8,
+    part_key: String,
+    item_key: String,
+    ctx: &mut TxContext,
+): OwnedBaseItemV8 {
+    assert_root_active(root);
+    assert_pack_registry_identity(packs, definitions, root);
+    assert_definition_binding(definitions, root, base_registry);
+    assert!(definitions.sealed, ENotSealed);
+    assert!(definitions.item_assetization, EInvalidPolicy);
+    core_treasury::assert_maker_access_pass_v8(root, maker_access, ctx.sender());
+    let item = base::borrow_item_v2(base_registry, part_key, item_key);
+    base::assert_public_item_v2(item);
+    let key = BaseItemHolderKeyV8 { part_key, item_key, holder: ctx.sender() };
+    assert!(!packs.base_item_owners.contains(key), EDuplicate);
+    let uid = object::new(ctx);
+    let item_id = uid.to_inner();
+    let owned = OwnedBaseItemV8 {
+        id: uid,
+        version: VERSION,
+        root_id: definitions.root_id,
+        root_version: definitions.root_version,
+        root_content_commitment: definitions.root_content_commitment,
+        definition_registry_id: object::id(definitions),
+        pack_registry_id: object::id(packs),
+        base_registry_id: definitions.base_registry_id,
+        part_key,
+        item_key,
+        item_payload_commitment: *base::item_payload_commitment_v2(item),
+        holder: ctx.sender(),
+        ownership_epoch: 0,
+        transferable: true,
+        equip_lock: option::none(),
+    };
+    packs.base_item_owners.add(key, BaseItemOwnershipRecordV8 {
+        item_id,
+        ownership_epoch: 0,
+    });
+    packs.wardrobe_revision = packs.wardrobe_revision + 1;
+    packs.base_item_count = packs.base_item_count + 1;
+    event::emit(BaseItemOwnershipChangedV8 {
+        item_id,
+        part_key,
+        item_key,
+        previous_holder: option::none(),
+        holder: ctx.sender(),
+        ownership_epoch: 0,
+    });
+    owned
+}
+
+public fun transfer_new_owned_base_item_to_holder_v8(item: OwnedBaseItemV8) {
+    let holder = item.holder;
+    transfer::transfer(item, holder)
+}
+
+/// Transfers custody and atomically rotates the one-per-holder entitlement.
+/// An equipped item can never move to a second wallet.
+public fun transfer_owned_base_item_v8(
+    packs: &mut PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    mut item: OwnedBaseItemV8,
+    recipient: address,
+    ctx: &TxContext,
+) {
+    prepare_owned_base_item_transfer(packs, definitions, &mut item, recipient, ctx);
+    transfer::transfer(item, recipient)
+}
+
+fun prepare_owned_base_item_transfer(
+    packs: &mut PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    item: &mut OwnedBaseItemV8,
+    recipient: address,
+    ctx: &TxContext,
+) {
+    assert_owned_base_holder(item, ctx);
+    rotate_owned_base_item_holder(packs, definitions, item, recipient)
+}
+
+/// Called only after either the wallet-holder or exact market-custody proof.
+/// Keep the one-per-holder registry mutation identical in both paths.
+fun rotate_owned_base_item_holder(
+    packs: &mut PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    item: &mut OwnedBaseItemV8,
+    recipient: address,
+) {
+    assert_owned_base_item_registry(item, packs, definitions);
+    assert!(item.transferable, EItemNotTransferable);
+    assert!(item.equip_lock.is_none(), EEquipLocked);
+    assert!(recipient != @0x0 && recipient != item.holder, EInvalidRecipient);
+    let old_key = BaseItemHolderKeyV8 {
+        part_key: item.part_key,
+        item_key: item.item_key,
+        holder: item.holder,
+    };
+    let old_record = packs.base_item_owners.remove(old_key);
+    assert!(old_record.item_id == object::id(item), EInvalidBinding);
+    assert!(old_record.ownership_epoch == item.ownership_epoch, EInvalidBinding);
+    let new_key = BaseItemHolderKeyV8 {
+        part_key: item.part_key,
+        item_key: item.item_key,
+        holder: recipient,
+    };
+    assert!(!packs.base_item_owners.contains(new_key), ERecipientAlreadyOwned);
+    let previous_holder = item.holder;
+    item.holder = recipient;
+    item.ownership_epoch = item.ownership_epoch + 1;
+    packs.base_item_owners.add(new_key, BaseItemOwnershipRecordV8 {
+        item_id: object::id(item),
+        ownership_epoch: item.ownership_epoch,
+    });
+    packs.wardrobe_revision = packs.wardrobe_revision + 1;
+    event::emit(BaseItemOwnershipChangedV8 {
+        item_id: object::id(item),
+        part_key: item.part_key,
+        item_key: item.item_key,
+        previous_holder: option::some(previous_holder),
+        holder: recipient,
+        ownership_epoch: item.ownership_epoch,
+    })
+}
+
+/// The instance becomes an address-owned child of the listing. Its logical
+/// holder, epoch and Base entitlement remain reserved until buy or cancellation.
+public fun custody_owned_base_item_for_market_v8<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    packs: &PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    item: OwnedBaseItemV8,
+    ctx: &TxContext,
+): EquipmentMarketCustodyTicketV8 {
+    assert_equipment_market_current(root, protocol_config, catalog, replacement,
+        market_call_cap, market_registry, market_treasury);
+    assert_equipment_market_base_registries(root, packs, definitions);
+    assert_definition_binding(definitions, root, base_registry);
+    assert_owned_base_item(&item, packs, definitions, base_registry, ctx);
+    assert!(item.transferable, EItemNotTransferable);
+    assert!(item.equip_lock.is_none(), EEquipLocked);
+    let custody = new_equipment_market_custody(root, catalog, market_registry,
+        market_treasury, listing_parent, object::id(&item), SOURCE_BASE,
+        item.base_registry_id, equipment_market_asset_commitment(&item),
+        item.holder, item.ownership_epoch);
+    emit_equipment_market_transition(&custody, 0, item.holder, item.ownership_epoch);
+    transfer::transfer(item, custody.listing_id.to_address());
+    EquipmentMarketCustodyTicketV8 { binding: custody }
+}
+
+/// Ownership is independent of current product admission/lifecycle. A genuine
+/// already-issued transferable instance may be sold without buying access again.
+public fun custody_owned_external_item_for_market_v8<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    product: &ExternalItemProductV8,
+    item: OwnedExternalItemV8,
+    ctx: &TxContext,
+): EquipmentMarketCustodyTicketV8 {
+    assert_equipment_market_current(root, protocol_config, catalog, replacement,
+        market_call_cap, market_registry, market_treasury);
+    assert_owned_holder(&item, ctx);
+    maker::assert_root_identity_v8(root, product.root_id, product.root_version,
+        &product.root_content_commitment);
+    assert!(product.version == VERSION, EInvalidBinding);
+    assert!(item.product_id == object::id(product), EInvalidBinding);
+    assert!(item.product_content_commitment == product.content_commitment, EInvalidBinding);
+    assert!(item.asset_content_commitment == product.asset_content_commitment, EInvalidBinding);
+    assert!(item.transferable == product.transferable && item.transferable, EItemNotTransferable);
+    assert!(item.equip_lock.is_none(), EEquipLocked);
+    let custody = new_equipment_market_custody(root, catalog, market_registry,
+        market_treasury, listing_parent, object::id(&item), SOURCE_EXTERNAL,
+        item.product_id, equipment_market_asset_commitment(&item),
+        item.holder, item.ownership_epoch);
+    emit_equipment_market_transition(&custody, 0, item.holder, item.ownership_epoch);
+    transfer::transfer(item, custody.listing_id.to_address());
+    EquipmentMarketCustodyTicketV8 { binding: custody }
+}
+
+public fun consume_equipment_market_custody_ticket_v8(
+    ticket: EquipmentMarketCustodyTicketV8,
+): EquipmentMarketCustodyBindingV8 {
+    let EquipmentMarketCustodyTicketV8 { binding } = ticket;
+    binding
+}
+
+public fun borrow_equipment_market_custody_ticket_binding_v8(
+    ticket: &EquipmentMarketCustodyTicketV8,
+): &EquipmentMarketCustodyBindingV8 { &ticket.binding }
+
+/// No active/protocol-revision gate: cancellation returns only to the recorded
+/// seller and leaves all ownership/entitlement bytes unchanged.
+public fun return_owned_base_item_from_market_v8<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    packs: &PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    receiving: Receiving<OwnedBaseItemV8>,
+    custody: &EquipmentMarketCustodyBindingV8,
+) {
+    assert_equipment_market_custody(root, catalog, replacement, market_call_cap,
+        market_registry, market_treasury, listing_parent, custody);
+    assert_equipment_market_base_registries(root, packs, definitions);
+    let item = receive_market_base_item(listing_parent, receiving, custody);
+    assert_owned_base_item_registry(&item, packs, definitions);
+    assert_owned_base_item_record(&item, packs);
+    emit_equipment_market_transition(custody, 2, item.holder, item.ownership_epoch);
+    transfer::transfer(item, custody.holder)
+}
+
+public fun return_owned_external_item_from_market_v8<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    receiving: Receiving<OwnedExternalItemV8>,
+    custody: &EquipmentMarketCustodyBindingV8,
+) {
+    assert_equipment_market_custody(root, catalog, replacement, market_call_cap,
+        market_registry, market_treasury, listing_parent, custody);
+    let item = receive_market_external_item(listing_parent, receiving, custody);
+    emit_equipment_market_transition(custody, 2, item.holder, item.ownership_epoch);
+    transfer::transfer(item, custody.holder)
+}
+
+/// Market must settle payment in the same transaction. Only its private cap
+/// can reach this primitive; the buyer is always the transaction sender.
+public fun purchase_owned_base_item_from_market_v8<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    packs: &mut PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    receiving: Receiving<OwnedBaseItemV8>,
+    custody: &EquipmentMarketCustodyBindingV8,
+    ctx: &TxContext,
+) {
+    assert_equipment_market_current(root, protocol_config, catalog, replacement,
+        market_call_cap, market_registry, market_treasury);
+    assert_equipment_market_custody(root, catalog, replacement, market_call_cap,
+        market_registry, market_treasury, listing_parent, custody);
+    assert_equipment_market_base_registries(root, packs, definitions);
+    let mut item = receive_market_base_item(listing_parent, receiving, custody);
+    rotate_owned_base_item_holder(packs, definitions, &mut item, ctx.sender());
+    emit_equipment_market_transition(custody, 1, item.holder, item.ownership_epoch);
+    transfer::transfer(item, ctx.sender())
+}
+
+public fun purchase_owned_external_item_from_market_v8<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    receiving: Receiving<OwnedExternalItemV8>,
+    custody: &EquipmentMarketCustodyBindingV8,
+    ctx: &TxContext,
+) {
+    assert_equipment_market_current(root, protocol_config, catalog, replacement,
+        market_call_cap, market_registry, market_treasury);
+    assert_equipment_market_custody(root, catalog, replacement, market_call_cap,
+        market_registry, market_treasury, listing_parent, custody);
+    let mut item = receive_market_external_item(listing_parent, receiving, custody);
+    assert!(ctx.sender() != @0x0 && ctx.sender() != item.holder, EInvalidRecipient);
+    item.holder = ctx.sender();
+    item.ownership_epoch = item.ownership_epoch + 1;
+    emit_equipment_market_transition(custody, 1, item.holder, item.ownership_epoch);
+    transfer::transfer(item, ctx.sender())
+}
+
+#[allow(lint(unused_object_with_fields))]
+fun assert_equipment_market_authority<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+) {
+    binding::assert_runtime_caller_cap_v1(market_call_cap, 1, replacement, catalog);
+    maker::assert_product_release_catalog_v8(root, catalog);
+    let market_binding = binding::binding_at_v2(binding::catalog_binding_v8(catalog), 5);
+    binding::assert_exact_single_argument_type_v2<MarketRegistry, PaymentCoin>(
+        market_binding, &b"market_v8", &b"MarketRegistryV8");
+    binding::assert_exact_single_argument_type_v2<MarketTreasury, PaymentCoin>(
+        market_binding, &b"market_v8", &b"MarketTreasuryV8");
+    assert!(companion::market_registry_id_v2(maker::root_companion_registry_ids_v2(root))
+        == object::id(market_registry), EInvalidEquipmentMarketAuthority);
+    // The exact Market package checks registry -> treasury before exposing its
+    // private cap; later releases also match the frozen treasury ID below.
+    assert!(object::id(market_registry) != object::id(market_treasury), EInvalidEquipmentMarketAuthority);
+}
+
+fun assert_equipment_market_current<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+) {
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
+    assert_equipment_market_authority(root, catalog, replacement, market_call_cap,
+        market_registry, market_treasury);
+}
+
+fun assert_equipment_market_base_registries<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    packs: &PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+) {
+    assert_pack_registry_identity(packs, definitions, root);
+    let ids = maker::root_companion_registry_ids_v2(root);
+    assert!(companion::pack_registry_id_v2(ids) == object::id(packs), EInvalidBinding);
+    assert!(companion::runtime_definition_registry_id_v2(ids) == object::id(definitions), EInvalidBinding);
+    assert!(definitions.sealed, ENotSealed);
+}
+
+fun equipment_market_asset_commitment<Asset: key>(asset: &Asset): vector<u8> {
+    let mut bytes = b"animacraft-v8/runtime/equipment-market-asset";
+    bytes.append(bcs::to_bytes(asset));
+    hash::sha2_256(bytes)
+}
+
+fun new_equipment_market_custody<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &UID,
+    asset_id: ID,
+    asset_kind: u8,
+    source_id: ID,
+    asset_commitment: vector<u8>,
+    holder: address,
+    ownership_epoch: u64,
+): EquipmentMarketCustodyBindingV8 {
+    let (_, _, _, product, call_cap_set, _) = binding::catalog_terms_v2(catalog);
+    EquipmentMarketCustodyBindingV8 {
+        version: VERSION,
+        catalog_id: binding::catalog_id_v8(catalog),
+        product_binding_commitment: *binding::product_binding_commitment_v8(product),
+        call_cap_set_commitment: *call_cap_set,
+        market_authority_id: binding::catalog_authority_id_v2(catalog, 4),
+        market_registry_id: object::id(market_registry),
+        market_treasury_id: object::id(market_treasury),
+        listing_id: object::uid_to_inner(listing_parent),
+        root_id: maker::root_id_v8(root),
+        maker_version: maker::root_maker_version_v8(root),
+        root_content_commitment: *maker::root_content_commitment_v8(root),
+        asset_id, asset_kind, source_id, asset_commitment, holder, ownership_epoch,
+    }
+}
+
+fun assert_equipment_market_custody<PaymentCoin, MarketRegistry: key, MarketTreasury: key>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &UID,
+    custody: &EquipmentMarketCustodyBindingV8,
+) {
+    assert_equipment_market_authority(root, catalog, replacement, market_call_cap,
+        market_registry, market_treasury);
+    let (_, _, _, product, call_cap_set, _) = binding::catalog_terms_v2(catalog);
+    assert!(custody.version == VERSION
+        && custody.catalog_id == binding::catalog_id_v8(catalog)
+        && &custody.product_binding_commitment == binding::product_binding_commitment_v8(product)
+        && &custody.call_cap_set_commitment == call_cap_set
+        && custody.market_authority_id == binding::catalog_authority_id_v2(catalog, 4)
+        && custody.market_registry_id == object::id(market_registry)
+        && custody.market_treasury_id == object::id(market_treasury)
+        && custody.listing_id == object::uid_to_inner(listing_parent), EInvalidEquipmentMarketCustody);
+    maker::assert_root_identity_v8(root, custody.root_id, custody.maker_version,
+        &custody.root_content_commitment);
+}
+
+fun receive_market_base_item(
+    listing_parent: &mut UID,
+    receiving: Receiving<OwnedBaseItemV8>,
+    custody: &EquipmentMarketCustodyBindingV8,
+): OwnedBaseItemV8 {
+    assert!(custody.asset_kind == SOURCE_BASE, EInvalidEquipmentMarketCustody);
+    let item = transfer::receive(listing_parent, receiving);
+    assert!(object::id(&item) == custody.asset_id && item.base_registry_id == custody.source_id
+        && item.holder == custody.holder && item.ownership_epoch == custody.ownership_epoch
+        && item.version == VERSION && item.transferable && item.equip_lock.is_none()
+        && equipment_market_asset_commitment(&item) == custody.asset_commitment,
+        EInvalidEquipmentMarketCustody);
+    item
+}
+
+fun receive_market_external_item(
+    listing_parent: &mut UID,
+    receiving: Receiving<OwnedExternalItemV8>,
+    custody: &EquipmentMarketCustodyBindingV8,
+): OwnedExternalItemV8 {
+    assert!(custody.asset_kind == SOURCE_EXTERNAL, EInvalidEquipmentMarketCustody);
+    let item = transfer::receive(listing_parent, receiving);
+    assert!(object::id(&item) == custody.asset_id && item.product_id == custody.source_id
+        && item.holder == custody.holder && item.ownership_epoch == custody.ownership_epoch
+        && item.version == VERSION && item.transferable && item.equip_lock.is_none()
+        && equipment_market_asset_commitment(&item) == custody.asset_commitment,
+        EInvalidEquipmentMarketCustody);
+    item
+}
+
+fun emit_equipment_market_transition(
+    custody: &EquipmentMarketCustodyBindingV8,
+    action: u8,
+    holder: address,
+    ownership_epoch: u64,
+) {
+    event::emit(EquipmentMarketCustodyTransitionV8 {
+        action, listing_id: custody.listing_id, asset_id: custody.asset_id,
+        asset_kind: custody.asset_kind, source_id: custody.source_id,
+        previous_holder: custody.holder, holder,
+        previous_ownership_epoch: custody.ownership_epoch, ownership_epoch,
+        asset_commitment: custody.asset_commitment,
+    });
+}
+
 public fun create_maker_loadout_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     definitions: &RuntimeDefinitionRegistryV8,
@@ -2279,14 +3261,25 @@ public fun create_maker_loadout_v8<PaymentCoin>(
     maker_access: &MakerAccessPassV8,
     ctx: &mut TxContext,
 ): MakerLoadoutV8 {
+    create_loadout(root, definitions, packs, maker_access, false, ctx)
+}
+
+fun create_loadout<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>, definitions: &RuntimeDefinitionRegistryV8,
+    packs: &PackRegistryV8, maker_access: &MakerAccessPassV8,
+    equipment_layout: bool, ctx: &mut TxContext,
+): MakerLoadoutV8 {
     assert_root_active(root);
     assert_definition_identity(definitions, root);
     assert!(definitions.sealed, ENotSealed);
     assert_pack_registry_identity(packs, definitions, root);
     core_treasury::assert_maker_access_pass_v8(root, maker_access, ctx.sender());
+    let slot_count = if (equipment_layout) definitions.profile_keys.length() else total_slot_capacity(definitions);
+    let definition_slots = definition_slots_for_layout(definitions, equipment_layout);
+    assert!(slot_count > 0 && slot_count <= MAX_LOADOUT_SELECTIONS, EInvalidCount);
     let mut selections = vector[];
     let mut i = 0;
-    while (i < definitions.expected_profile_count) {
+    while (i < slot_count) {
         selections.push_back(option::none());
         i = i + 1;
     };
@@ -2294,9 +3287,11 @@ public fun create_maker_loadout_v8<PaymentCoin>(
         definitions.root_id,
         definitions.root_version,
         definitions.root_content_commitment,
+        &vector[],
+        &definition_slots,
         &selections,
     );
-    MakerLoadoutV8 {
+    let mut loadout = MakerLoadoutV8 {
         id: object::new(ctx),
         version: VERSION,
         root_id: definitions.root_id,
@@ -2304,19 +3299,179 @@ public fun create_maker_loadout_v8<PaymentCoin>(
         root_content_commitment: definitions.root_content_commitment,
         definition_registry_id: object::id(definitions),
         pack_registry_id: object::id(packs),
-        maker_access_pass_id: core_treasury::maker_access_pass_id_v8(maker_access),
+        maker_access_pass_id: sui::object::id(maker_access),
         maker_access_commitment: maker_access_entitlement_commitment_v8(maker_access),
         holder: ctx.sender(),
         revision: 0,
+        attached_pack_definitions: vector[],
+        definition_slots,
         selections,
         selection_count: 0,
         commitment,
-    }
+    };
+    if (equipment_layout) df::add(&mut loadout.id, SoulEquipmentLayoutKeyV8 {}, true);
+    loadout
 }
 
 public fun transfer_maker_loadout_to_holder_v8(loadout: MakerLoadoutV8) {
+    assert!(!is_soul_equipment_v8(&loadout), EEquipLocked);
     let holder = loadout.holder;
     transfer::transfer(loadout, holder)
+}
+
+public fun is_soul_equipment_v8(loadout: &MakerLoadoutV8): bool {
+    df::exists_with_type<SoulEquipmentKeyV8, SoulEquipmentBindingV8>(&loadout.id, SoulEquipmentKeyV8 {})
+}
+
+fun has_equipment_layout(loadout: &MakerLoadoutV8): bool {
+    df::exists_with_type<SoulEquipmentLayoutKeyV8, bool>(&loadout.id, SoulEquipmentLayoutKeyV8 {})
+}
+
+fun loadout_part_capacity(loadout: &MakerLoadoutV8, profile: &PartProfileV8): u64 {
+    if (has_equipment_layout(loadout)) 1 else profile.capacity
+}
+public fun soul_equipment_binding_v8(loadout: &MakerLoadoutV8): &SoulEquipmentBindingV8 {
+    df::borrow(&loadout.id, SoulEquipmentKeyV8 {})
+}
+public fun soul_equipment_soul_id_v8(loadout: &MakerLoadoutV8): ID { soul_equipment_binding_v8(loadout).soul_id }
+public fun soul_equipment_state_id_v8(loadout: &MakerLoadoutV8): ID { soul_equipment_binding_v8(loadout).soul_state_id }
+
+fun assert_soul_equipment_claim<W: drop>(witness: &W, binding: &SoulEquipmentBindingV8) {
+    assert!(bcs::to_bytes(witness) == bcs::to_bytes(&SoulEquipmentOwnerClaimV8 {
+        soul_id: binding.soul_id, soul_state_id: binding.soul_state_id,
+        holder: binding.holder, ownership_epoch: binding.ownership_epoch,
+    }), EWrongHolder);
+}
+
+// create_loadout always allocates a fresh UID in this transaction.
+// The type-level linter also sees the separate owned Player loadout path; no
+// caller-supplied loadout can reach this share.
+#[allow(lint(share_owned))]
+public fun create_soul_equipment_v8<PaymentCoin, W: drop>(
+    root: &MakerRootV8<PaymentCoin>, protocol: &ProtocolConfigV8,
+    definitions: &RuntimeDefinitionRegistryV8, packs: &PackRegistryV8,
+    maker_access: &MakerAccessPassV8, soul_id: ID, soul_state_id: ID,
+    ownership_epoch: u64, witness: W, ctx: &mut TxContext,
+): ID {
+    maker::assert_current_protocol_config_v8(root, protocol);
+    native_binding::assert_owner_witness_v8<W>(protocol);
+    let binding = SoulEquipmentBindingV8 {
+        soul_id, soul_state_id, holder: ctx.sender(), ownership_epoch,
+        protocol_config_id: object::id(protocol),
+    };
+    assert_soul_equipment_claim(&witness, &binding);
+    let _ = witness;
+    let mut loadout = create_loadout(root, definitions, packs, maker_access, true, ctx);
+    df::add(&mut loadout.id, SoulEquipmentKeyV8 {}, binding);
+    let id = object::id(&loadout);
+    emit_soul_equipment_changed(&loadout, soul_equipment_binding_v8(&loadout));
+    transfer::share_object(loadout);
+    id
+}
+
+/// Read-only live native-owner authorization. Keep the binding installed and
+/// require the exact frozen witness type; existing selections retain their own
+/// entitlement checks in Runtime/Seal after this native guard succeeds.
+public fun assert_soul_equipment_read_v8<W: drop>(
+    equipment: &MakerLoadoutV8, protocol: &ProtocolConfigV8,
+    witness: W, ctx: &TxContext,
+) {
+    native_binding::assert_owner_witness_v8<W>(protocol);
+    assert!(equipment.version == VERSION && is_soul_equipment_v8(equipment)
+        && has_equipment_layout(equipment), EInvalidBinding);
+    let binding = soul_equipment_binding_v8(equipment);
+    assert!(binding.protocol_config_id == object::id(protocol), EInvalidBinding);
+    assert!(binding.holder == ctx.sender() && equipment.holder == ctx.sender(), EWrongHolder);
+    assert_soul_equipment_claim(&witness, binding);
+    let _ = witness;
+}
+
+public fun begin_soul_equipment_update_v8<W: drop>(
+    loadout: &mut MakerLoadoutV8, protocol: &ProtocolConfigV8,
+    expected_revision: u64, witness: W, ctx: &TxContext,
+): SoulEquipmentUpdateV8 {
+    assert!(has_equipment_layout(loadout), EInvalidBinding);
+    native_binding::assert_owner_witness_v8<W>(protocol);
+    let binding = *soul_equipment_binding_v8(loadout);
+    assert!(binding.protocol_config_id == object::id(protocol), EInvalidBinding);
+    assert!(binding.holder == ctx.sender() && loadout.holder == ctx.sender(), EWrongHolder);
+    assert!(loadout.revision == expected_revision, EStaleRevision);
+    assert_soul_equipment_claim(&witness, &binding);
+    let _ = witness;
+    let binding = df::remove(&mut loadout.id, SoulEquipmentKeyV8 {});
+    SoulEquipmentUpdateV8 { loadout_id: object::id(loadout), binding }
+}
+
+/// An adapter borrows the same transaction-wide guard for each mutation. Raw
+/// Player mutations still reject bound equipment; opening it always creates
+/// this non-droppable final-validation obligation.
+public fun assert_soul_equipment_update_v8(
+    loadout: &MakerLoadoutV8, update: &SoulEquipmentUpdateV8, ctx: &TxContext,
+) {
+    assert_equipment_update_binding(loadout, update);
+    assert!(update.binding.holder == ctx.sender(), EWrongHolder);
+}
+
+fun assert_equipment_update_binding(loadout: &MakerLoadoutV8, update: &SoulEquipmentUpdateV8) {
+    assert!(update.loadout_id == object::id(loadout) && loadout.version == VERSION
+        && loadout.holder == update.binding.holder && !is_soul_equipment_v8(loadout)
+        && has_equipment_layout(loadout), EInvalidBinding);
+}
+
+/// One final condition check, not a Complete authorization. Empty/sparse
+/// equipment, outstanding combination rules and recovery without entitlement
+/// or decrypt access remain valid. Only selected definition visibility applies.
+public fun finish_soul_equipment_update_v8(
+    loadout: &mut MakerLoadoutV8, definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8, pack_proofs: vector<PackDefinitionProofV8>, update: SoulEquipmentUpdateV8,
+) {
+    assert_equipment_update_binding(loadout, &update);
+    assert!(loadout.definition_registry_id == object::id(definitions)
+        && definitions.version == VERSION && definitions.root_id == loadout.root_id
+        && definitions.root_version == loadout.root_version
+        && definitions.root_content_commitment == loadout.root_content_commitment,
+        EInvalidBinding);
+    assert!(definitions.sealed && base::registry_sealed_v2(base_registry), ENotSealed);
+    assert!(definitions.base_registry_id == object::id(base_registry)
+        && base::registry_root_id_v2(base_registry) == loadout.root_id
+        && base::registry_maker_version_v2(base_registry) == loadout.root_version
+        && base::registry_root_content_commitment_v2(base_registry) == &loadout.root_content_commitment,
+        EInvalidBinding);
+    let _ = consume_pack_definition_proofs(loadout, definitions, pack_proofs, false);
+    assert_loadout_visibility(loadout, base_registry);
+    let SoulEquipmentUpdateV8 { loadout_id: _, binding } = update;
+    df::add(&mut loadout.id, SoulEquipmentKeyV8 {}, binding);
+    emit_soul_equipment_changed(loadout, &binding);
+}
+
+fun emit_soul_equipment_changed(loadout: &MakerLoadoutV8, binding: &SoulEquipmentBindingV8) {
+    event::emit(SoulEquipmentChangedV8 {
+        soul_id: binding.soul_id, soul_state_id: binding.soul_state_id,
+        loadout_id: object::id(loadout), holder: binding.holder,
+        ownership_epoch: binding.ownership_epoch, revision: loadout.revision,
+        selection_count: loadout.selection_count, commitment: loadout.commitment,
+    });
+}
+
+/// Close only empty equipment. Every actual instance must first be unequipped,
+/// so closing cannot strand a wallet component's lock or sell it with the Soul.
+public fun close_soul_equipment_v8<W: drop>(
+    mut loadout: MakerLoadoutV8, protocol: &ProtocolConfigV8,
+    revision: u64, witness: W, ctx: &TxContext,
+): ID {
+    let guard = begin_soul_equipment_update_v8(&mut loadout, protocol, revision, witness, ctx);
+    assert!(loadout.selection_count == 0, EEquipLocked);
+    let SoulEquipmentUpdateV8 { loadout_id, binding: _ } = guard;
+    let _: bool = df::remove(&mut loadout.id, SoulEquipmentLayoutKeyV8 {});
+    let MakerLoadoutV8 {
+        id, version: _, root_id: _, root_version: _, root_content_commitment: _,
+        definition_registry_id: _, pack_registry_id: _, maker_access_pass_id: _,
+        maker_access_commitment: _, holder: _, revision: _, attached_pack_definitions: _, definition_slots: _, selections,
+        selection_count: _, commitment: _,
+    } = loadout;
+    selections.do!(|selection| assert!(selection.is_none(), EEquipLocked));
+    id.delete();
+    loadout_id
 }
 
 public fun select_base_style_v8<PaymentCoin>(
@@ -2327,6 +3482,7 @@ public fun select_base_style_v8<PaymentCoin>(
     base_registry: &BaseDefinitionRegistryV8,
     maker_access: &MakerAccessPassV8,
     expected_revision: u64,
+    target_selection_index: Option<u64>,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -2336,42 +3492,114 @@ public fun select_base_style_v8<PaymentCoin>(
     assert_loadout_write(loadout, root, definitions, packs, expected_revision, ctx);
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert_definition_binding(definitions, root, base_registry);
+    assert!(!definitions.item_assetization, EOwnedInstanceRequired);
     let profile = definitions.profiles.borrow(PartProfileKeyV8 { part_key });
-    assert_slot_empty(loadout, profile.index);
-    let item = base::borrow_item_v8(base_registry, part_key, item_key);
-    assert!(base::item_gate_kind_v8(item) == BASE_ITEM_GATE_INCLUDED, EInvalidPolicy);
-    let style = base::borrow_style_v8(base_registry, part_key, item_key, style_key);
-    let layer_track_key = *base::style_layer_track_key_v8(style);
-    let _track = base::borrow_track_v8(base_registry, layer_track_key);
-    let color_channel_key = *base::style_color_channel_key_v8(style);
+    let selection_index = selection_slot(loadout, definitions, profile, target_selection_index);
+    let item = base::borrow_item_v2(base_registry, part_key, item_key);
+    base::assert_public_item_v2(item);
+    let style = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
+    let layer_track_key = *base::style_layer_track_key_v2(style);
+    let _track = base::borrow_track_v2(base_registry, layer_track_key);
+    let color_channel_key = *base::style_color_channel_key_v2(style);
     let selected_swatch = exact_selected_swatch(
         base_registry,
         &color_channel_key,
         swatch_key,
     );
     let selection = LoadoutSelectionV8 {
-        selection_index: profile.index,
+        selection_index,
         part_key,
         item_key,
         style_key,
         color_channel_key,
         swatch_key: selected_swatch,
         layer_track_key,
-        asset_blob_id: *base::style_asset_blob_id_v8(style),
-        asset_sha256: *base::style_asset_sha256_v8(style),
-        asset_content_commitment: *base::style_payload_commitment_v8(style),
+        asset_blob_id: *base::style_asset_blob_id_v2(style),
+        asset_sha256: *base::style_asset_sha256_v2(style),
+        asset_content_commitment: *base::style_payload_commitment_v2(style),
         source_class: SOURCE_BASE,
         source_definition_id: loadout.root_id,
         source_semantic_id: b"".to_string(),
         access_subject: loadout.maker_access_pass_id,
         source_epoch: 0,
         pricing_commitment: loadout.maker_access_commitment,
-        protected: base::style_protected_v8(style),
+        protected: base::style_protected_v2(style),
         seal_binding_commitment: vector[],
     };
     // Fail closed until the exact Seal certificate is present.
     assert!(!selection.protected, ENotReady);
-    install_selection(loadout, profile.index, selection);
+    install_selection(loadout, selection_index, selection);
+}
+
+/// Equips one Style from an exact holder-owned Base Item. The Item object is
+/// locked to the installed global slot until the matching unequip call.
+public fun equip_owned_base_style_v8<PaymentCoin>(
+    loadout: &mut MakerLoadoutV8,
+    item: &mut OwnedBaseItemV8,
+    root: &MakerRootV8<PaymentCoin>,
+    definitions: &RuntimeDefinitionRegistryV8,
+    packs: &PackRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    maker_access: &MakerAccessPassV8,
+    expected_revision: u64,
+    target_selection_index: Option<u64>,
+    style_key: String,
+    swatch_key: Option<String>,
+    ctx: &TxContext,
+) {
+    assert_loadout_write(loadout, root, definitions, packs, expected_revision, ctx);
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert_definition_binding(definitions, root, base_registry);
+    assert!(definitions.item_assetization, EInvalidPolicy);
+    assert_owned_base_item(item, packs, definitions, base_registry, ctx);
+    assert!(item.equip_lock.is_none(), EEquipLocked);
+    let profile = definitions.profiles.borrow(PartProfileKeyV8 {
+        part_key: item.part_key,
+    });
+    let selection_index = selection_slot(loadout, definitions, profile, target_selection_index);
+    let style = base::borrow_style_v2(
+        base_registry, item.part_key, item.item_key, style_key,
+    );
+    let layer_track_key = *base::style_layer_track_key_v2(style);
+    let _track = base::borrow_track_v2(base_registry, layer_track_key);
+    let color_channel_key = *base::style_color_channel_key_v2(style);
+    let selected_swatch = exact_selected_swatch(
+        base_registry, &color_channel_key, swatch_key,
+    );
+    let selection = LoadoutSelectionV8 {
+        selection_index,
+        part_key: item.part_key,
+        item_key: item.item_key,
+        style_key,
+        color_channel_key,
+        swatch_key: selected_swatch,
+        layer_track_key,
+        asset_blob_id: *base::style_asset_blob_id_v2(style),
+        asset_sha256: *base::style_asset_sha256_v2(style),
+        asset_content_commitment: *base::style_payload_commitment_v2(style),
+        source_class: SOURCE_BASE,
+        source_definition_id: loadout.root_id,
+        source_semantic_id: b"".to_string(),
+        access_subject: object::id(item),
+        source_epoch: item.ownership_epoch,
+        pricing_commitment: owned_base_item_commitment(item),
+        protected: base::style_protected_v2(style),
+        seal_binding_commitment: vector[],
+    };
+    assert!(!selection.protected, ENotReady);
+    let next_revision = loadout.revision + 1;
+    install_selection(loadout, selection_index, selection);
+    item.equip_lock = option::some(EquipLockV8 {
+        loadout_id: object::id(loadout),
+        equip_revision: next_revision,
+        selection_index,
+    });
+    event::emit(BaseItemEquipChangedV8 {
+        item_id: object::id(item),
+        loadout_id: object::id(loadout),
+        revision: next_revision,
+        equipped: true,
+    });
 }
 
 public(package) fun select_protected_base_style_after_seal_v8<PaymentCoin>(
@@ -2382,6 +3610,7 @@ public(package) fun select_protected_base_style_after_seal_v8<PaymentCoin>(
     base_registry: &BaseDefinitionRegistryV8,
     maker_access: &MakerAccessPassV8,
     expected_revision: u64,
+    target_selection_index: Option<u64>,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -2389,31 +3618,32 @@ public(package) fun select_protected_base_style_after_seal_v8<PaymentCoin>(
     seal_binding_commitment: vector<u8>,
     ctx: &TxContext,
 ) {
+    assert!(!definitions.item_assetization, EOwnedInstanceRequired);
     assert_loadout_write(loadout, root, definitions, packs, expected_revision, ctx);
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert_definition_binding(definitions, root, base_registry);
     assert_hash(&seal_binding_commitment);
     let profile = definitions.profiles.borrow(PartProfileKeyV8 { part_key });
-    assert_slot_empty(loadout, profile.index);
-    let item = base::borrow_item_v8(base_registry, part_key, item_key);
-    assert!(base::item_gate_kind_v8(item) == BASE_ITEM_GATE_INCLUDED, EInvalidPolicy);
-    let style = base::borrow_style_v8(base_registry, part_key, item_key, style_key);
-    assert!(base::style_protected_v8(style), EInvalidProof);
-    let layer_track_key = *base::style_layer_track_key_v8(style);
-    let _track = base::borrow_track_v8(base_registry, layer_track_key);
-    let color_channel_key = *base::style_color_channel_key_v8(style);
+    let selection_index = selection_slot(loadout, definitions, profile, target_selection_index);
+    let item = base::borrow_item_v2(base_registry, part_key, item_key);
+    base::assert_public_item_v2(item);
+    let style = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
+    assert!(base::style_protected_v2(style), EInvalidProof);
+    let layer_track_key = *base::style_layer_track_key_v2(style);
+    let _track = base::borrow_track_v2(base_registry, layer_track_key);
+    let color_channel_key = *base::style_color_channel_key_v2(style);
     let selected_swatch = exact_selected_swatch(base_registry, &color_channel_key, swatch_key);
     let selection = LoadoutSelectionV8 {
-        selection_index: profile.index,
+        selection_index,
         part_key,
         item_key,
         style_key,
         color_channel_key,
         swatch_key: selected_swatch,
         layer_track_key,
-        asset_blob_id: *base::style_asset_blob_id_v8(style),
-        asset_sha256: *base::style_asset_sha256_v8(style),
-        asset_content_commitment: *base::style_payload_commitment_v8(style),
+        asset_blob_id: *base::style_asset_blob_id_v2(style),
+        asset_sha256: *base::style_asset_sha256_v2(style),
+        asset_content_commitment: *base::style_payload_commitment_v2(style),
         source_class: SOURCE_BASE,
         source_definition_id: loadout.root_id,
         source_semantic_id: b"".to_string(),
@@ -2423,7 +3653,127 @@ public(package) fun select_protected_base_style_after_seal_v8<PaymentCoin>(
         protected: true,
         seal_binding_commitment,
     };
-    install_selection(loadout, profile.index, selection);
+    install_selection(loadout, selection_index, selection);
+}
+
+/// Assetized Base variant. The holder-owned Item remains locked to the exact
+/// installed slot while Seal's snapshot commitment proves the protected row.
+public(package) fun equip_protected_owned_base_style_after_seal_v8<PaymentCoin>(
+    loadout: &mut MakerLoadoutV8,
+    item: &mut OwnedBaseItemV8,
+    root: &MakerRootV8<PaymentCoin>,
+    definitions: &RuntimeDefinitionRegistryV8,
+    packs: &PackRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    maker_access: &MakerAccessPassV8,
+    expected_revision: u64,
+    target_selection_index: Option<u64>,
+    style_key: String,
+    swatch_key: Option<String>,
+    seal_binding_commitment: vector<u8>,
+    ctx: &TxContext,
+) {
+    assert_loadout_write(loadout, root, definitions, packs, expected_revision, ctx);
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert_definition_binding(definitions, root, base_registry);
+    assert!(definitions.item_assetization, EInvalidPolicy);
+    assert_owned_base_item(item, packs, definitions, base_registry, ctx);
+    assert!(item.equip_lock.is_none(), EEquipLocked);
+    assert_hash(&seal_binding_commitment);
+    let profile = definitions.profiles.borrow(PartProfileKeyV8 {
+        part_key: item.part_key,
+    });
+    let selection_index = selection_slot(loadout, definitions, profile, target_selection_index);
+    let style = base::borrow_style_v2(
+        base_registry, item.part_key, item.item_key, style_key,
+    );
+    assert!(base::style_protected_v2(style), EInvalidProof);
+    let layer_track_key = *base::style_layer_track_key_v2(style);
+    let _track = base::borrow_track_v2(base_registry, layer_track_key);
+    let color_channel_key = *base::style_color_channel_key_v2(style);
+    let selected_swatch = exact_selected_swatch(
+        base_registry, &color_channel_key, swatch_key,
+    );
+    let selection = LoadoutSelectionV8 {
+        selection_index,
+        part_key: item.part_key,
+        item_key: item.item_key,
+        style_key,
+        color_channel_key,
+        swatch_key: selected_swatch,
+        layer_track_key,
+        asset_blob_id: *base::style_asset_blob_id_v2(style),
+        asset_sha256: *base::style_asset_sha256_v2(style),
+        asset_content_commitment: *base::style_payload_commitment_v2(style),
+        source_class: SOURCE_BASE,
+        source_definition_id: loadout.root_id,
+        source_semantic_id: b"".to_string(),
+        access_subject: object::id(item),
+        source_epoch: item.ownership_epoch,
+        pricing_commitment: owned_base_item_commitment(item),
+        protected: true,
+        seal_binding_commitment,
+    };
+    let next_revision = loadout.revision + 1;
+    install_selection(loadout, selection_index, selection);
+    item.equip_lock = option::some(EquipLockV8 {
+        loadout_id: object::id(loadout),
+        equip_revision: next_revision,
+        selection_index,
+    });
+    event::emit(BaseItemEquipChangedV8 {
+        item_id: object::id(item),
+        loadout_id: object::id(loadout),
+        revision: next_revision,
+        equipped: true,
+    });
+}
+
+/// Explicit holder action, not a side effect of global Pack admission. Existing
+/// ranges/selections remain byte-for-byte unchanged; new slots append at the end.
+public fun attach_pack_definitions_v8<PaymentCoin>(
+    loadout: &mut MakerLoadoutV8, root: &MakerRootV8<PaymentCoin>,
+    definitions: &RuntimeDefinitionRegistryV8, packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, pass: &PackPassV8,
+    maker_access: &MakerAccessPassV8, expected_revision: u64, ctx: &TxContext,
+) {
+    assert_loadout_write(loadout, root, definitions, packs, expected_revision, ctx);
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert_active_pack_admission(packs, release);
+    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert_pack_pass(release, pass, ctx.sender());
+    let profiles = pack_part_profiles_v8(definitions, release);
+    append_pack_definition_slots(loadout, object::id(release),
+        pack_definitions_v8(release).commitment, &profiles);
+}
+
+fun append_pack_definition_slots(
+    loadout: &mut MakerLoadoutV8, release_id: ID, definition_commitment: vector<u8>, profiles: &vector<PartProfileV8>,
+) {
+    assert!(release_id != loadout.root_id, EInvalidBinding);
+    assert_hash(&definition_commitment);
+    assert!(loadout.attached_pack_definitions.length() < MAX_LOADOUT_SELECTIONS, EInvalidCount);
+    loadout.attached_pack_definitions.do_ref!(|binding| {
+        assert!(binding.release_id != release_id, EDuplicate);
+    });
+    loadout.attached_pack_definitions.push_back(AttachedPackDefinitionV8 { release_id, definition_commitment });
+    let mut start = loadout.selections.length();
+    profiles.do_ref!(|profile| {
+        assert!(profile.capacity > 0 && profile.capacity <= MAX_PART_CAPACITY, EInvalidCount);
+        let capacity = loadout_part_capacity(loadout, profile);
+        assert!(start + capacity <= MAX_LOADOUT_SELECTIONS, EInvalidCount);
+        loadout.definition_slots.push_back(DefinitionSlotV8 {
+            source_definition_id: release_id, part_key: profile.part_key,
+            profile_commitment: profile.profile_commitment, start, capacity,
+        });
+        let end = start + capacity;
+        while (start < end) {
+            loadout.selections.push_back(option::none());
+            start = start + 1;
+        };
+    });
+    loadout.revision = loadout.revision + 1;
+    recompute_loadout(loadout);
 }
 
 public fun select_pack_style_v8<PaymentCoin>(
@@ -2436,6 +3786,7 @@ public fun select_pack_style_v8<PaymentCoin>(
     pass: &PackPassV8,
     maker_access: &MakerAccessPassV8,
     expected_revision: u64,
+    target_selection_index: Option<u64>,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -2447,14 +3798,16 @@ public fun select_pack_style_v8<PaymentCoin>(
     assert_active_pack_admission(packs, release);
     assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
     assert_pack_pass(release, pass, ctx.sender());
-    let profile = definitions.profiles.borrow(PartProfileKeyV8 { part_key });
-    assert_slot_empty(loadout, profile.index);
     let style = release.styles.borrow(PackStyleKeyV8 { part_key, item_key, style_key });
+    assert_pack_definition_attachment(loadout, release);
     assert_definition_binding(definitions, root, base_registry);
-    let selected_swatch = exact_pack_swatch(base_registry, style, swatch_key);
+    let profile = pack_style_part_profile(definitions, release, style.definition_sources.part, part_key);
+    let selection_index = scoped_selection_slot(loadout,
+        pack_definition_source_id(release, style.definition_sources.part), &profile, target_selection_index);
+    let selected_swatch = exact_pack_swatch(base_registry, release, style, swatch_key);
     let pricing_commitment = pack_pricing_commitment(release);
     let selection = LoadoutSelectionV8 {
-        selection_index: profile.index,
+        selection_index,
         part_key,
         item_key,
         style_key,
@@ -2474,7 +3827,7 @@ public fun select_pack_style_v8<PaymentCoin>(
         protected: style.protected,
         seal_binding_commitment: style.seal_binding_commitment,
     };
-    install_selection(loadout, profile.index, selection);
+    install_selection(loadout, selection_index, selection);
 }
 
 public fun equip_external_style_v8<PaymentCoin>(
@@ -2486,6 +3839,7 @@ public fun equip_external_style_v8<PaymentCoin>(
     product: &ExternalItemProductV8,
     maker_access: &MakerAccessPassV8,
     expected_revision: u64,
+    target_selection_index: Option<u64>,
     ctx: &TxContext,
 ) {
     assert_loadout_write(loadout, root, definitions, packs, expected_revision, ctx);
@@ -2494,11 +3848,11 @@ public fun equip_external_style_v8<PaymentCoin>(
     let profile = definitions.profiles.borrow(PartProfileKeyV8 { part_key: product.part_key });
     assert!(profile.wardrobe_mode == WARDROBE_SLOT, EFixedPart);
     assert_external_profile_behavior(profile);
-    assert_slot_empty(loadout, profile.index);
+    let selection_index = selection_slot(loadout, definitions, profile, target_selection_index);
     assert!(item.equip_lock.is_none(), EEquipLocked);
     let next_revision = loadout.revision + 1;
     let selection = LoadoutSelectionV8 {
-        selection_index: profile.index,
+        selection_index,
         part_key: product.part_key,
         item_key: product.item_key,
         style_key: product.style_key,
@@ -2517,11 +3871,11 @@ public fun equip_external_style_v8<PaymentCoin>(
         protected: false,
         seal_binding_commitment: vector[],
     };
-    install_selection(loadout, profile.index, selection);
+    install_selection(loadout, selection_index, selection);
     item.equip_lock = option::some(EquipLockV8 {
         loadout_id: object::id(loadout),
         equip_revision: next_revision,
-        selection_index: profile.index,
+        selection_index,
     });
     event::emit(ExternalItemEquipChangedV8 {
         item_id: object::id(item),
@@ -2541,13 +3895,36 @@ public fun unequip_external_style_v8(
 ) {
     assert_loadout_holder_revision(loadout, expected_revision, ctx);
     assert_owned_holder(item, ctx);
-    let lock = item.equip_lock.destroy_some();
+    let lock = item.equip_lock.extract();
     assert!(lock.loadout_id == object::id(loadout), ENotEquipped);
     let selection = loadout.selections.borrow(lock.selection_index).borrow();
     assert!(selection.source_class == SOURCE_EXTERNAL, ENotEquipped);
     assert!(selection.access_subject == object::id(item), ENotEquipped);
     clear_selection(loadout, lock.selection_index);
     event::emit(ExternalItemEquipChangedV8 {
+        item_id: object::id(item),
+        loadout_id: object::id(loadout),
+        revision: loadout.revision,
+        equipped: false,
+    });
+}
+
+public fun unequip_owned_base_style_v8(
+    loadout: &mut MakerLoadoutV8,
+    item: &mut OwnedBaseItemV8,
+    expected_revision: u64,
+    ctx: &TxContext,
+) {
+    assert_loadout_holder_revision(loadout, expected_revision, ctx);
+    assert_owned_base_holder(item, ctx);
+    let lock = item.equip_lock.extract();
+    assert!(lock.loadout_id == object::id(loadout), ENotEquipped);
+    let selection = loadout.selections.borrow(lock.selection_index).borrow();
+    assert!(selection.source_class == SOURCE_BASE, ENotEquipped);
+    assert!(selection.access_subject == object::id(item), ENotEquipped);
+    assert!(selection.source_epoch == item.ownership_epoch, ENotEquipped);
+    clear_selection(loadout, lock.selection_index);
+    event::emit(BaseItemEquipChangedV8 {
         item_id: object::id(item),
         loadout_id: object::id(loadout),
         revision: loadout.revision,
@@ -2567,6 +3944,8 @@ public fun clear_non_external_selection_v8(
     assert_loadout_holder_revision(loadout, expected_revision, ctx);
     let selection = loadout.selections.borrow(selection_index).borrow();
     assert!(selection.source_class != SOURCE_EXTERNAL, EEquipLocked);
+    assert!(selection.source_class != SOURCE_BASE
+        || selection.access_subject == loadout.maker_access_pass_id, EEquipLocked);
     clear_selection(loadout, selection_index);
 }
 
@@ -2579,29 +3958,72 @@ public fun prove_base_selection_v8<PaymentCoin>(
     selection_index: u64,
     ctx: &TxContext,
 ): SelectionAccessProofV8 {
+    assert!(!definitions.item_assetization, EOwnedInstanceRequired);
     assert!(loadout.holder == ctx.sender(), EWrongHolder);
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert!(loadout.definition_registry_id == object::id(definitions), EInvalidBinding);
-    assert!(definitions.base_registry_id == base::registry_id_v8(base_registry), EInvalidBinding);
-    assert!(base::registry_root_id_v8(base_registry) == loadout.root_id, EInvalidBinding);
-    assert!(base::registry_maker_version_v8(base_registry) == loadout.root_version, EInvalidBinding);
-    assert!(base::registry_root_content_commitment_v8(base_registry)
+    assert!(definitions.base_registry_id == sui::object::id(base_registry), EInvalidBinding);
+    assert!(base::registry_root_id_v2(base_registry) == loadout.root_id, EInvalidBinding);
+    assert!(base::registry_maker_version_v2(base_registry) == loadout.root_version, EInvalidBinding);
+    assert!(base::registry_root_content_commitment_v2(base_registry)
         == &loadout.root_content_commitment, EInvalidBinding);
     let selection = loadout.selections.borrow(selection_index).borrow();
     assert!(selection.source_class == SOURCE_BASE, EInvalidProof);
     assert!(selection.access_subject == loadout.maker_access_pass_id, EInvalidProof);
     assert!(selection.pricing_commitment == loadout.maker_access_commitment, EInvalidProof);
-    let item = base::borrow_item_v8(
+    let item = base::borrow_item_v2(
         base_registry, selection.part_key, selection.item_key);
-    assert!(base::item_gate_kind_v8(item) == BASE_ITEM_GATE_INCLUDED, EInvalidPolicy);
-    let style = base::borrow_style_v8(
+    base::assert_public_item_v2(item);
+    let style = base::borrow_style_v2(
         base_registry, selection.part_key, selection.item_key, selection.style_key,
     );
-    assert!(base::style_layer_track_key_v8(style) == &selection.layer_track_key, EInvalidProof);
-    assert!(base::style_asset_blob_id_v8(style) == &selection.asset_blob_id, EInvalidProof);
-    assert!(base::style_asset_sha256_v8(style) == &selection.asset_sha256, EInvalidProof);
-    assert!(base::style_payload_commitment_v8(style) == &selection.asset_content_commitment, EInvalidProof);
-    assert!(!selection.protected && !base::style_protected_v8(style), ENotReady);
+    assert!(base::style_layer_track_key_v2(style) == &selection.layer_track_key, EInvalidProof);
+    assert!(base::style_asset_blob_id_v2(style) == &selection.asset_blob_id, EInvalidProof);
+    assert!(base::style_asset_sha256_v2(style) == &selection.asset_sha256, EInvalidProof);
+    assert!(base::style_payload_commitment_v2(style) == &selection.asset_content_commitment, EInvalidProof);
+    assert!(!selection.protected && !base::style_protected_v2(style), ENotReady);
+    new_selection_proof(loadout, selection, loadout.root_content_commitment)
+}
+
+public fun prove_owned_base_selection_v8<PaymentCoin>(
+    loadout: &MakerLoadoutV8,
+    item: &OwnedBaseItemV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    packs: &PackRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8,
+    selection_index: u64,
+    ctx: &TxContext,
+): SelectionAccessProofV8 {
+    assert!(loadout.holder == ctx.sender(), EWrongHolder);
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert_pack_registry_identity(packs, definitions, root);
+    assert_definition_binding(definitions, root, base_registry);
+    assert!(definitions.item_assetization, EInvalidPolicy);
+    assert_owned_base_item(item, packs, definitions, base_registry, ctx);
+    let lock = item.equip_lock.borrow();
+    assert!(lock.loadout_id == object::id(loadout), ENotEquipped);
+    assert!(lock.selection_index == selection_index, ENotEquipped);
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    assert!(selection.source_class == SOURCE_BASE, EInvalidProof);
+    assert!(selection.access_subject == object::id(item), EInvalidProof);
+    assert!(selection.source_epoch == item.ownership_epoch, EInvalidProof);
+    assert!(selection.pricing_commitment == owned_base_item_commitment(item), EInvalidProof);
+    assert!(selection.part_key == item.part_key && selection.item_key == item.item_key,
+        EInvalidProof);
+    let style = base::borrow_style_v2(
+        base_registry, selection.part_key, selection.item_key, selection.style_key,
+    );
+    assert!(base::style_layer_track_key_v2(style) == &selection.layer_track_key,
+        EInvalidProof);
+    assert!(base::style_asset_blob_id_v2(style) == &selection.asset_blob_id,
+        EInvalidProof);
+    assert!(base::style_asset_sha256_v2(style) == &selection.asset_sha256,
+        EInvalidProof);
+    assert!(base::style_payload_commitment_v2(style)
+        == &selection.asset_content_commitment, EInvalidProof);
+    assert!(!selection.protected && !base::style_protected_v2(style), ENotReady);
     new_selection_proof(loadout, selection, loadout.root_content_commitment)
 }
 
@@ -2615,25 +4037,70 @@ public(package) fun prove_protected_base_selection_after_seal_v8<PaymentCoin>(
     seal_binding_commitment: vector<u8>,
     ctx: &TxContext,
 ): SelectionAccessProofV8 {
+    assert!(!definitions.item_assetization, EOwnedInstanceRequired);
     assert!(loadout.holder == ctx.sender(), EWrongHolder);
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert!(loadout.definition_registry_id == object::id(definitions), EInvalidBinding);
-    assert!(definitions.base_registry_id == base::registry_id_v8(base_registry), EInvalidBinding);
+    assert!(definitions.base_registry_id == sui::object::id(base_registry), EInvalidBinding);
     let selection = loadout.selections.borrow(selection_index).borrow();
     assert!(selection.source_class == SOURCE_BASE && selection.protected, EInvalidProof);
     assert!(selection.access_subject == loadout.maker_access_pass_id, EInvalidProof);
     assert!(selection.pricing_commitment == loadout.maker_access_commitment, EInvalidProof);
     assert!(selection.seal_binding_commitment == seal_binding_commitment, EInvalidProof);
-    let item = base::borrow_item_v8(
+    let item = base::borrow_item_v2(
         base_registry, selection.part_key, selection.item_key);
-    assert!(base::item_gate_kind_v8(item) == BASE_ITEM_GATE_INCLUDED, EInvalidPolicy);
-    let style = base::borrow_style_v8(
+    base::assert_public_item_v2(item);
+    let style = base::borrow_style_v2(
         base_registry, selection.part_key, selection.item_key, selection.style_key);
-    assert!(base::style_protected_v8(style), EInvalidProof);
-    assert!(base::style_layer_track_key_v8(style) == &selection.layer_track_key, EInvalidProof);
-    assert!(base::style_asset_blob_id_v8(style) == &selection.asset_blob_id, EInvalidProof);
-    assert!(base::style_asset_sha256_v8(style) == &selection.asset_sha256, EInvalidProof);
-    assert!(base::style_payload_commitment_v8(style) == &selection.asset_content_commitment, EInvalidProof);
+    assert!(base::style_protected_v2(style), EInvalidProof);
+    assert!(base::style_layer_track_key_v2(style) == &selection.layer_track_key, EInvalidProof);
+    assert!(base::style_asset_blob_id_v2(style) == &selection.asset_blob_id, EInvalidProof);
+    assert!(base::style_asset_sha256_v2(style) == &selection.asset_sha256, EInvalidProof);
+    assert!(base::style_payload_commitment_v2(style) == &selection.asset_content_commitment, EInvalidProof);
+    new_selection_proof(loadout, selection, loadout.root_content_commitment)
+}
+
+public(package) fun prove_protected_owned_base_selection_after_seal_v8<PaymentCoin>(
+    loadout: &MakerLoadoutV8,
+    item: &OwnedBaseItemV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    packs: &PackRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8,
+    selection_index: u64,
+    seal_binding_commitment: vector<u8>,
+    ctx: &TxContext,
+): SelectionAccessProofV8 {
+    assert!(loadout.holder == ctx.sender(), EWrongHolder);
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert_pack_registry_identity(packs, definitions, root);
+    assert_definition_binding(definitions, root, base_registry);
+    assert!(definitions.item_assetization, EInvalidPolicy);
+    assert_owned_base_item(item, packs, definitions, base_registry, ctx);
+    let lock = item.equip_lock.borrow();
+    assert!(lock.loadout_id == object::id(loadout), ENotEquipped);
+    assert!(lock.selection_index == selection_index, ENotEquipped);
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    assert!(selection.source_class == SOURCE_BASE && selection.protected, EInvalidProof);
+    assert!(selection.access_subject == object::id(item), EInvalidProof);
+    assert!(selection.source_epoch == item.ownership_epoch, EInvalidProof);
+    assert!(selection.pricing_commitment == owned_base_item_commitment(item), EInvalidProof);
+    assert!(selection.seal_binding_commitment == seal_binding_commitment, EInvalidProof);
+    assert!(selection.part_key == item.part_key && selection.item_key == item.item_key,
+        EInvalidProof);
+    let style = base::borrow_style_v2(
+        base_registry, selection.part_key, selection.item_key, selection.style_key,
+    );
+    assert!(base::style_protected_v2(style), EInvalidProof);
+    assert!(base::style_layer_track_key_v2(style) == &selection.layer_track_key,
+        EInvalidProof);
+    assert!(base::style_asset_blob_id_v2(style) == &selection.asset_blob_id,
+        EInvalidProof);
+    assert!(base::style_asset_sha256_v2(style) == &selection.asset_sha256,
+        EInvalidProof);
+    assert!(base::style_payload_commitment_v2(style)
+        == &selection.asset_content_commitment, EInvalidProof);
     new_selection_proof(loadout, selection, loadout.root_content_commitment)
 }
 
@@ -2647,14 +4114,15 @@ public(package) fun new_base_entitlement_witness_v8<PaymentCoin>(
     seal_binding_commitment: vector<u8>,
     ctx: &TxContext,
 ): RuntimeBaseEntitlementWitnessV8 {
+    assert!(!definitions.item_assetization, EOwnedInstanceRequired);
     core_treasury::assert_maker_access_pass_v8(root, maker_access, ctx.sender());
     assert!(loadout.maker_access_pass_id
-        == core_treasury::maker_access_pass_id_v8(maker_access), EInvalidProof);
+        == sui::object::id(maker_access), EInvalidProof);
     assert!(loadout.maker_access_commitment
         == maker_access_entitlement_commitment_v8(maker_access), EInvalidProof);
     assert!(loadout.holder == ctx.sender(), EWrongHolder);
     assert!(loadout.definition_registry_id == object::id(definitions), EInvalidBinding);
-    assert!(definitions.base_registry_id == base::registry_id_v8(base_registry), EInvalidBinding);
+    assert!(definitions.base_registry_id == sui::object::id(base_registry), EInvalidBinding);
     assert_root_compatibility(loadout.root_id, loadout.root_version,
         &loadout.root_content_commitment, root);
     let selection = loadout.selections.borrow(selection_index).borrow();
@@ -2662,23 +4130,74 @@ public(package) fun new_base_entitlement_witness_v8<PaymentCoin>(
     assert!(selection.access_subject == loadout.maker_access_pass_id, EInvalidProof);
     assert!(selection.pricing_commitment == loadout.maker_access_commitment, EInvalidProof);
     assert!(selection.seal_binding_commitment == seal_binding_commitment, EInvalidProof);
-    let item = base::borrow_item_v8(
+    let item = base::borrow_item_v2(
         base_registry, selection.part_key, selection.item_key);
-    assert!(base::item_gate_kind_v8(item) == BASE_ITEM_GATE_INCLUDED, EInvalidPolicy);
-    let style = base::borrow_style_v8(
+    base::assert_public_item_v2(item);
+    let style = base::borrow_style_v2(
         base_registry, selection.part_key, selection.item_key, selection.style_key);
-    assert!(base::style_protected_v8(style), EInvalidProof);
-    assert!(base::style_payload_commitment_v8(style) == &selection.asset_content_commitment,
+    assert!(base::style_protected_v2(style), EInvalidProof);
+    assert!(base::style_payload_commitment_v2(style) == &selection.asset_content_commitment,
         EInvalidProof);
     RuntimeBaseEntitlementWitnessV8 {
         loadout_id: object::id(loadout),
         loadout_revision: loadout.revision,
         selection_index,
         holder: ctx.sender(),
-        entitlement_id: core_treasury::maker_access_pass_id_v8(maker_access),
+        entitlement_id: sui::object::id(maker_access),
         entitlement_commitment: maker_access_entitlement_commitment_v8(maker_access),
         asset_content_commitment: selection.asset_content_commitment,
     }
+}
+
+public(package) fun new_owned_base_entitlement_witness_v8<PaymentCoin>(
+    loadout: &MakerLoadoutV8,
+    item: &OwnedBaseItemV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    packs: &PackRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8,
+    selection_index: u64,
+    seal_binding_commitment: vector<u8>,
+    ctx: &TxContext,
+): RuntimeBaseEntitlementWitnessV8 {
+    assert!(loadout.holder == ctx.sender(), EWrongHolder);
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert_pack_registry_identity(packs, definitions, root);
+    assert_definition_binding(definitions, root, base_registry);
+    assert!(definitions.item_assetization, EInvalidPolicy);
+    assert_owned_base_item(item, packs, definitions, base_registry, ctx);
+    let lock = item.equip_lock.borrow();
+    assert!(lock.loadout_id == object::id(loadout), ENotEquipped);
+    assert!(lock.selection_index == selection_index, ENotEquipped);
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    assert!(selection.source_class == SOURCE_BASE && selection.protected, EInvalidProof);
+    assert!(selection.access_subject == object::id(item), EInvalidProof);
+    assert!(selection.source_epoch == item.ownership_epoch, EInvalidProof);
+    assert!(selection.pricing_commitment == owned_base_item_commitment(item), EInvalidProof);
+    assert!(selection.seal_binding_commitment == seal_binding_commitment, EInvalidProof);
+    let style = base::borrow_style_v2(
+        base_registry, selection.part_key, selection.item_key, selection.style_key,
+    );
+    assert!(base::style_protected_v2(style), EInvalidProof);
+    assert!(base::style_payload_commitment_v2(style)
+        == &selection.asset_content_commitment, EInvalidProof);
+    RuntimeBaseEntitlementWitnessV8 {
+        loadout_id: object::id(loadout),
+        loadout_revision: loadout.revision,
+        selection_index,
+        holder: ctx.sender(),
+        entitlement_id: object::id(item),
+        entitlement_commitment: owned_base_item_commitment(item),
+        asset_content_commitment: loadout.selections.borrow(selection_index)
+            .borrow().asset_content_commitment,
+    }
+}
+
+public(package) fun owned_base_item_entitlement_commitment_v8(
+    item: &OwnedBaseItemV8,
+): vector<u8> {
+    owned_base_item_commitment(item)
 }
 
 public fun prove_pack_selection_v8<PaymentCoin>(
@@ -2704,6 +4223,7 @@ public fun prove_pack_selection_v8<PaymentCoin>(
     assert!(selection.access_subject == object::id(pass), EInvalidProof);
     assert!(selection.source_epoch == 0, EInvalidProof);
     assert!(selection.pricing_commitment == pack_pricing_commitment(release), EInvalidProof);
+    assert_pack_definition_attachment(loadout, release);
     let style = release.styles.borrow(PackStyleKeyV8 {
         part_key: selection.part_key,
         item_key: selection.item_key,
@@ -2739,6 +4259,7 @@ public(package) fun prove_protected_pack_selection_after_seal_v8<PaymentCoin>(
     assert!(selection.access_subject == object::id(pass), EInvalidProof);
     assert!(selection.source_epoch == 0, EInvalidProof);
     assert!(selection.pricing_commitment == pack_pricing_commitment(release), EInvalidProof);
+    assert_pack_definition_attachment(loadout, release);
     let style = release.styles.borrow(PackStyleKeyV8 {
         part_key: selection.part_key,
         item_key: selection.item_key,
@@ -2918,66 +4439,82 @@ public fun consume_physical_selection_witness_v8(
 public fun seal_ordered_selection_proofs_v8(
     loadout: &MakerLoadoutV8,
     definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    pack_proofs: vector<PackDefinitionProofV8>,
     mut proofs: vector<SelectionAccessProofV8>,
     ctx: &TxContext,
 ): RuntimeLoadoutAuthorizationV8 {
     assert!(loadout.holder == ctx.sender(), EWrongHolder);
     assert!(loadout.definition_registry_id == object::id(definitions), EInvalidBinding);
     assert!(definitions.sealed, ENotSealed);
+    assert!(definitions.base_registry_id == sui::object::id(base_registry), EInvalidBinding);
+    let profiles = consume_pack_definition_proofs(loadout, definitions, pack_proofs, true);
+    assert!(base::registry_sealed_v2(base_registry), ENotSealed);
+    assert!(base::registry_root_id_v2(base_registry) == loadout.root_id, EInvalidBinding);
+    assert!(base::registry_maker_version_v2(base_registry) == loadout.root_version, EInvalidBinding);
+    assert!(base::registry_root_content_commitment_v2(base_registry)
+        == &loadout.root_content_commitment, EInvalidBinding);
     assert!(proofs.length() == loadout.selection_count, EProofOrder);
     proofs.reverse();
     let mut ordered_selection_commitments = vector[];
     let mut ordered_pricing_commitments = vector[];
     let mut used_packs = vector[];
+    let mut profile_index = 0;
     let mut selection_index = 0;
-    while (selection_index < loadout.selections.length()) {
-        let maybe_selection = loadout.selections.borrow(selection_index);
-        let profile = definitions.profiles.borrow(PartProfileKeyV8 {
-            part_key: *definitions.profile_keys.borrow(selection_index),
-        });
-        if (profile.required) {
-            assert!(maybe_selection.is_some(), ERequiredPart);
-        };
-        if (maybe_selection.is_some()) {
-            let selection = maybe_selection.borrow();
-            let proof = proofs.pop_back();
-            let SelectionAccessProofV8 {
-                loadout_id,
-                loadout_revision,
-                loadout_commitment,
-                selection_index: proof_index,
-                selection_commitment,
-                source_class,
-                source_definition_id,
-                source_semantic_id,
-                source_content_commitment,
-                source_epoch,
-                pricing_commitment,
-            } = proof;
-            assert!(loadout_id == object::id(loadout), EInvalidProof);
-            assert!(loadout_revision == loadout.revision, EInvalidProof);
-            assert!(loadout_commitment == loadout.commitment, EInvalidProof);
-            assert!(proof_index == selection_index, EProofOrder);
-            assert!(source_class == selection.source_class, EInvalidProof);
-            assert!(source_definition_id == selection.source_definition_id, EInvalidProof);
-            assert!(source_semantic_id == selection.source_semantic_id, EInvalidProof);
-            assert!(source_epoch == selection.source_epoch, EInvalidProof);
-            assert!(pricing_commitment == selection.pricing_commitment, EInvalidProof);
-            assert!(selection_commitment == selection_commitment_v8(*selection), EInvalidProof);
-            ordered_selection_commitments.push_back(selection_commitment);
-            ordered_pricing_commitments.push_back(pricing_commitment);
-            if (source_class == SOURCE_PACK
-                && !used_pack_contains(&used_packs, source_definition_id)) {
-                used_packs.push_back(UsedPackV8 {
-                    release_id: source_definition_id,
-                    semantic_pack_id: source_semantic_id,
-                    release_content_commitment: source_content_commitment,
+    while (profile_index < profiles.length()) {
+        let profile = &profiles[profile_index];
+        let profile_end = selection_index + loadout_part_capacity(loadout, profile);
+        let mut profile_selection_count = 0u64;
+        while (selection_index < profile_end) {
+            let maybe_selection = loadout.selections.borrow(selection_index);
+            if (maybe_selection.is_some()) {
+                profile_selection_count = profile_selection_count + 1;
+                let selection = maybe_selection.borrow();
+                assert!(&selection.part_key == &profile.part_key, EInvalidBinding);
+                let proof = proofs.pop_back();
+                let SelectionAccessProofV8 {
+                    loadout_id,
+                    loadout_revision,
+                    loadout_commitment,
+                    selection_index: proof_index,
+                    selection_commitment,
+                    source_class,
+                    source_definition_id,
+                    source_semantic_id,
+                    source_content_commitment,
+                    source_epoch,
                     pricing_commitment,
-                });
+                } = proof;
+                assert!(loadout_id == object::id(loadout), EInvalidProof);
+                assert!(loadout_revision == loadout.revision, EInvalidProof);
+                assert!(loadout_commitment == loadout.commitment, EInvalidProof);
+                assert!(proof_index == selection_index, EProofOrder);
+                assert!(source_class == selection.source_class, EInvalidProof);
+                assert!(source_definition_id == selection.source_definition_id, EInvalidProof);
+                assert!(source_semantic_id == selection.source_semantic_id, EInvalidProof);
+                assert!(source_epoch == selection.source_epoch, EInvalidProof);
+                assert!(pricing_commitment == selection.pricing_commitment, EInvalidProof);
+                assert!(selection_commitment == selection_commitment_v8(*selection), EInvalidProof);
+                ordered_selection_commitments.push_back(selection_commitment);
+                ordered_pricing_commitments.push_back(pricing_commitment);
+                if (source_class == SOURCE_PACK
+                    && !used_pack_contains(&used_packs, source_definition_id)) {
+                    used_packs.push_back(UsedPackV8 {
+                        release_id: source_definition_id,
+                        semantic_pack_id: source_semantic_id,
+                        release_content_commitment: source_content_commitment,
+                        pricing_commitment,
+                    });
+                };
             };
+            selection_index = selection_index + 1;
         };
-        selection_index = selection_index + 1;
+        if (profile.required) assert!(profile_selection_count > 0, ERequiredPart);
+        profile_index = profile_index + 1;
     };
+    assert!(selection_index == loadout.selections.length(), EPartOrder);
+    assert_loadout_rules(loadout, base_registry);
+    assert_loadout_visibility(loadout, base_registry);
     assert!(proofs.is_empty(), EProofOrder);
     proofs.destroy_empty();
     RuntimeLoadoutAuthorizationV8 {
@@ -3037,6 +4574,9 @@ public fun definition_registry_commitment_v8(registry: &RuntimeDefinitionRegistr
 public fun definition_profile_count_v8(registry: &RuntimeDefinitionRegistryV8): u64 {
     registry.observed_profile_count
 }
+public fun definition_item_assetization_v8(registry: &RuntimeDefinitionRegistryV8): bool {
+    registry.item_assetization
+}
 public fun part_profile_v8(registry: &RuntimeDefinitionRegistryV8, part_key: String): &PartProfileV8 {
     registry.profiles.borrow(PartProfileKeyV8 { part_key })
 }
@@ -3055,6 +4595,21 @@ public fun pack_registry_release_count_v8(registry: &PackRegistryV8): u64 { regi
 public fun pack_registry_external_count_v8(registry: &PackRegistryV8): u64 {
     registry.external_admission_count
 }
+public fun pack_registry_wardrobe_revision_v8(registry: &PackRegistryV8): u64 {
+    registry.wardrobe_revision
+}
+public fun pack_registry_base_item_count_v8(registry: &PackRegistryV8): u64 {
+    registry.base_item_count
+}
+public fun pack_registry_base_item_owner_v8(
+    registry: &PackRegistryV8, part_key: String, item_key: String, holder: address,
+): Option<BaseItemOwnershipRecordV8> {
+    let key = BaseItemHolderKeyV8 { part_key, item_key, holder };
+    if (registry.base_item_owners.contains(key)) option::some(*registry.base_item_owners.borrow(key))
+    else option::none()
+}
+public fun base_item_ownership_id_v8(record: &BaseItemOwnershipRecordV8): ID { record.item_id }
+public fun base_item_ownership_epoch_v8(record: &BaseItemOwnershipRecordV8): u64 { record.ownership_epoch }
 public fun pack_release_id_v8<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): ID { object::id(release) }
 public fun pack_release_lifecycle_v8<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): u8 {
     release.lifecycle
@@ -3076,20 +4631,30 @@ public fun maker_access_entitlement_commitment_v8(pass: &MakerAccessPassV8): vec
     hash::sha2_256(bcs::to_bytes(&MakerAccessEntitlementCommitmentInputV8 {
         domain: b"animacraft-v8/runtime/maker-access-entitlement",
         version: VERSION,
-        pass_id: core_treasury::maker_access_pass_id_v8(pass),
-        root_id: core_treasury::maker_access_pass_root_id_v8(pass),
-        maker_version: core_treasury::maker_access_pass_maker_version_v8(pass),
+        pass_id: sui::object::id(pass),
+        root_id: core_treasury::maker_access_pass_root_id_v2(pass),
+        maker_version: core_treasury::maker_access_pass_maker_version_v2(pass),
         root_content_commitment:
-            *core_treasury::maker_access_pass_root_content_commitment_v8(pass),
-        holder: core_treasury::maker_access_pass_holder_v8(pass),
-        paid_atomic: core_treasury::maker_access_pass_paid_atomic_v8(pass),
-        issued_at_ms: core_treasury::maker_access_pass_issued_at_ms_v8(pass),
+            *core_treasury::maker_access_pass_root_content_commitment_v2(pass),
+        holder: core_treasury::maker_access_pass_holder_v2(pass),
+        paid_atomic: core_treasury::maker_access_pass_paid_atomic_v2(pass),
+        issued_at_ms: core_treasury::maker_access_pass_issued_at_ms_v2(pass),
     }))
 }
 public fun loadout_id_v8(loadout: &MakerLoadoutV8): ID { object::id(loadout) }
 public fun loadout_revision_v8(loadout: &MakerLoadoutV8): u64 { loadout.revision }
 public fun loadout_commitment_v8(loadout: &MakerLoadoutV8): &vector<u8> { &loadout.commitment }
 public fun loadout_selection_count_v8(loadout: &MakerLoadoutV8): u64 { loadout.selection_count }
+public fun loadout_attached_pack_definitions_v8(loadout: &MakerLoadoutV8): &vector<AttachedPackDefinitionV8> {
+    &loadout.attached_pack_definitions
+}
+public fun loadout_definition_slots_v8(loadout: &MakerLoadoutV8): &vector<DefinitionSlotV8> {
+    &loadout.definition_slots
+}
+/// Preserve slot identity, including empty slots, in immutable completed recipes.
+public fun loadout_selections_v8(loadout: &MakerLoadoutV8): &vector<Option<LoadoutSelectionV8>> {
+    &loadout.selections
+}
 public fun loadout_selection_v8(loadout: &MakerLoadoutV8, index: u64): &Option<LoadoutSelectionV8> {
     loadout.selections.borrow(index)
 }
@@ -3102,6 +4667,23 @@ public fun used_pack_pricing_commitment_v8(used: &UsedPackV8): &vector<u8> {
     &used.pricing_commitment
 }
 public fun owned_item_locked_v8(item: &OwnedExternalItemV8): bool { item.equip_lock.is_some() }
+public fun owned_item_holder_v8(item: &OwnedExternalItemV8): address { item.holder }
+public fun owned_item_ownership_epoch_v8(item: &OwnedExternalItemV8): u64 { item.ownership_epoch }
+public fun owned_base_item_id_v8(item: &OwnedBaseItemV8): ID { object::id(item) }
+public fun owned_base_item_holder_v8(item: &OwnedBaseItemV8): address { item.holder }
+public fun owned_base_item_ownership_epoch_v8(item: &OwnedBaseItemV8): u64 { item.ownership_epoch }
+public fun owned_base_item_part_key_v8(item: &OwnedBaseItemV8): &String { &item.part_key }
+public fun owned_base_item_item_key_v8(item: &OwnedBaseItemV8): &String { &item.item_key }
+public fun owned_base_item_locked_v8(item: &OwnedBaseItemV8): bool {
+    item.equip_lock.is_some()
+}
+public fun equipment_market_custody_listing_id_v8(binding: &EquipmentMarketCustodyBindingV8): ID { binding.listing_id }
+public fun equipment_market_custody_asset_id_v8(binding: &EquipmentMarketCustodyBindingV8): ID { binding.asset_id }
+public fun equipment_market_custody_asset_kind_v8(binding: &EquipmentMarketCustodyBindingV8): u8 { binding.asset_kind }
+public fun equipment_market_custody_source_id_v8(binding: &EquipmentMarketCustodyBindingV8): ID { binding.source_id }
+public fun equipment_market_custody_holder_v8(binding: &EquipmentMarketCustodyBindingV8): address { binding.holder }
+public fun equipment_market_custody_ownership_epoch_v8(binding: &EquipmentMarketCustodyBindingV8): u64 { binding.ownership_epoch }
+public fun equipment_market_custody_asset_commitment_v8(binding: &EquipmentMarketCustodyBindingV8): &vector<u8> { &binding.asset_commitment }
 public fun pack_treasury_balance_v8<PaymentCoin>(treasury: &PackTreasuryV8<PaymentCoin>): u64 {
     balance::value(&treasury.revenue)
 }
@@ -3181,6 +4763,9 @@ fun new_pack_pass<PaymentCoin>(
     issued_at_ms: u64,
     ctx: &mut TxContext,
 ): PackPassV8 {
+    let key = PackAccessKeyV8 { holder: ctx.sender() };
+    assert!(!df::exists(&release.id, key), EPackAccessAlreadyIssued);
+    df::add(&mut release.id, key, true);
     release.pass_count = release.pass_count + 1;
     let commitment = hash::sha2_256(bcs::to_bytes(&PackPassCommitmentInputV8 {
         domain: b"animacraft-v8/runtime/pack-pass",
@@ -3226,11 +4811,89 @@ fun clear_selection(loadout: &mut MakerLoadoutV8, index: u64) {
     recompute_loadout(loadout);
 }
 
+// A Base-scoped Style can still depend on Pack-owned tracks, colors or rules.
+// Such a Release must enter the explicit attachment/proof chain even when it
+// contributes no Part slots. Selection source alone cannot represent that fact.
+fun assert_pack_definition_attachment<PaymentCoin>(
+    loadout: &MakerLoadoutV8, release: &PackReleaseV8<PaymentCoin>,
+) {
+    if (!df::exists(&release.id, PackDefinitionsKeyV8 {})) return;
+    let owned = pack_definitions_v8(release);
+    assert!(owned.version == VERSION && owned.release_id == object::id(release)
+        && owned.release_content_commitment == release.content_commitment, EInvalidBinding);
+    let mut count = 0u64;
+    loadout.attached_pack_definitions.do_ref!(|binding| {
+        if (binding.release_id == object::id(release)) {
+            assert!(binding.definition_commitment == owned.commitment, EInvalidBinding);
+            count = count + 1;
+        };
+    });
+    assert!(count == 1, EInvalidBinding);
+}
+
+fun consume_pack_definition_proofs(
+    loadout: &MakerLoadoutV8, definitions: &RuntimeDefinitionRegistryV8,
+    mut proofs: vector<PackDefinitionProofV8>, completion: bool,
+): vector<PartProfileV8> {
+    assert!(definitions.version == VERSION && definitions.sealed
+        && loadout.definition_registry_id == object::id(definitions)
+        && loadout.root_id == definitions.root_id && loadout.root_version == definitions.root_version
+        && loadout.root_content_commitment == definitions.root_content_commitment, EInvalidBinding);
+    assert!(proofs.length() == loadout.attached_pack_definitions.length(), EProofOrder);
+    let mut slots = definition_slots_for_layout(definitions, has_equipment_layout(loadout));
+    let mut profiles = vector[];
+    definitions.profile_keys.do_ref!(|key| { profiles.push_back(*definitions.profiles.borrow(PartProfileKeyV8 { part_key: *key })); });
+    let mut capacity = 0;
+    slots.do_ref!(|slot| { capacity = capacity + slot.capacity; });
+    let mut index = 0;
+    let mut seen = vector[];
+    proofs.reverse();
+    while (!proofs.is_empty()) {
+        let PackDefinitionProofV8 { loadout_id, loadout_revision, loadout_commitment,
+            binding_index, release_id, definition_commitment, profiles: own_profiles, completion_checked } = proofs.pop_back();
+        let binding = &loadout.attached_pack_definitions[index];
+        assert!(binding_index == index, EProofOrder);
+        assert!(loadout_id == object::id(loadout) && loadout_revision == loadout.revision
+            && loadout_commitment == loadout.commitment, EInvalidProof);
+        assert!(!completion || completion_checked, EInvalidProof);
+        assert!(release_id == binding.release_id && definition_commitment == binding.definition_commitment
+            && release_id != loadout.root_id && !seen.contains(&release_id), EInvalidProof);
+        seen.push_back(release_id);
+        own_profiles.do_ref!(|profile| {
+            let part_capacity = loadout_part_capacity(loadout, profile);
+            assert!(profile.capacity > 0 && profile.capacity <= MAX_PART_CAPACITY
+                && capacity + part_capacity <= MAX_LOADOUT_SELECTIONS, EInvalidCount);
+            slots.push_back(DefinitionSlotV8 { source_definition_id: release_id, part_key: profile.part_key,
+                profile_commitment: profile.profile_commitment, start: capacity, capacity: part_capacity });
+            profiles.push_back(*profile); capacity = capacity + part_capacity;
+        });
+        index = index + 1;
+    };
+    proofs.destroy_empty();
+    assert!(loadout.definition_slots == slots && loadout.selections.length() == capacity, EInvalidBinding);
+    let mut count = 0;
+    slots.do_ref!(|slot| {
+        let mut position = slot.start;
+        while (position < slot.start + slot.capacity) {
+            if (loadout.selections[position].is_some()) {
+                let selection = loadout.selections[position].borrow();
+                assert!(selection.selection_index == position && selection.part_key == slot.part_key, EInvalidBinding);
+                count = count + 1;
+            };
+            position = position + 1;
+        };
+    });
+    assert!(count == loadout.selection_count, EInvalidCount);
+    profiles
+}
+
 fun recompute_loadout(loadout: &mut MakerLoadoutV8) {
     loadout.commitment = canonical_loadout_commitment(
         loadout.root_id,
         loadout.root_version,
         loadout.root_content_commitment,
+        &loadout.attached_pack_definitions,
+        &loadout.definition_slots,
         &loadout.selections,
     );
 }
@@ -3239,6 +4902,8 @@ fun canonical_loadout_commitment(
     root_id: ID,
     root_version: u64,
     root_content_commitment: vector<u8>,
+    attached_pack_definitions: &vector<AttachedPackDefinitionV8>,
+    definition_slots: &vector<DefinitionSlotV8>,
     selections: &vector<Option<LoadoutSelectionV8>>,
 ): vector<u8> {
     hash::sha2_256(bcs::to_bytes(&LoadoutCommitmentInputV8 {
@@ -3247,6 +4912,8 @@ fun canonical_loadout_commitment(
         root_id,
         root_version,
         root_content_commitment,
+        attached_pack_definitions: *attached_pack_definitions,
+        definition_slots: *definition_slots,
         selections: *selections,
     }))
 }
@@ -3309,44 +4976,95 @@ fun exact_selected_swatch(
 ): Option<String> {
     assert!(channel.is_some() == swatch.is_some(), EInvalidBinding);
     if (channel.is_some()) {
-        let _color = base::borrow_color_v8(base_registry, *channel.borrow(), *swatch.borrow());
+        let _color = base::borrow_color_v2(base_registry, *channel.borrow(), *swatch.borrow());
     };
     swatch
 }
 
-fun exact_pack_swatch(
+fun exact_pack_swatch<PaymentCoin>(
     base_registry: &BaseDefinitionRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>,
     style: &PackStyleV8,
     swatch: Option<String>,
 ): Option<String> {
     assert!(style.color_channel_key.is_some() == swatch.is_some(), EInvalidBinding);
+    assert!(style.definition_sources.color.is_some() == swatch.is_some(), EInvalidBinding);
     if (swatch.is_some()) {
-        let _color = base::borrow_color_v8(
-            base_registry, *style.color_channel_key.borrow(), *swatch.borrow());
+        let _color = resolve_pack_color_v8(base_registry, release,
+            pack_definition_source_id(release, *style.definition_sources.color.borrow()),
+            *style.color_channel_key.borrow(), *swatch.borrow());
     };
     swatch
 }
 
-fun assert_pack_style_base_references<PaymentCoin>(
+fun assert_pack_style_visibility_definitions<PaymentCoin>(
+    base_registry: &BaseDefinitionRegistryV8, release: &PackReleaseV8<PaymentCoin>,
+    sources: &PackStyleDefinitionSourcesV8, part_key: String, item_key: String, style_key: String,
+) {
+    if (!df::exists(&release.id, PackDefinitionsKeyV8 {})) return;
+    let rows = &pack_definitions_v8(release).rows;
+    let item = base::borrow_pack_visibility_v2(rows, 1, part_key, item_key, option::none());
+    let (item_source, tokens, _) = base::pack_visibility_terms_v2(item);
+    let inherited = sources.part == 1 && base::contains_item_v2(base_registry, part_key, item_key);
+    assert!(item_source == if (inherited) 1 else 2, EInvalidBinding);
+    if (inherited) {
+        assert!(tokens == base::item_visibility_tokens_v1(base::borrow_item_v2(base_registry, part_key, item_key)), EInvalidBinding);
+        assert!(!base::contains_style_v2(base_registry, part_key, item_key, style_key), EInvalidBinding);
+    };
+    let style = base::borrow_pack_visibility_v2(rows, 2, part_key, item_key, option::some(style_key));
+    let (style_source, _, _) = base::pack_visibility_terms_v2(style);
+    assert!(style_source == 2, EInvalidBinding);
+}
+
+fun pack_style_part_profile<PaymentCoin>(
+    definitions: &RuntimeDefinitionRegistryV8, release: &PackReleaseV8<PaymentCoin>,
+    source: u8, part_key: String,
+): PartProfileV8 {
+    assert!(definitions.sealed && definitions.root_id == release.root_id
+        && definitions.root_version == release.root_version
+        && definitions.root_content_commitment == release.root_content_commitment, EInvalidBinding);
+    assert!(source == 1 || source == 2, EInvalidPolicy);
+    if (source == 1) {
+        let profile = definitions.profiles.borrow(PartProfileKeyV8 { part_key });
+        assert_pack_profile(profile);
+        *profile
+    } else {
+        let profiles = pack_part_profiles_v8(definitions, release);
+        let mut index = 0;
+        while (index < profiles.length()) {
+            if (profiles[index].part_key == part_key) return profiles[index];
+            index = index + 1;
+        };
+        abort EInvalidBinding
+    }
+}
+
+fun assert_pack_style_references<PaymentCoin>(
     definitions: &RuntimeDefinitionRegistryV8,
     base_registry: &BaseDefinitionRegistryV8,
     release: &PackReleaseV8<PaymentCoin>,
+    sources: &PackStyleDefinitionSourcesV8,
     part_key: &String,
     layer_track_key: &String,
     color_channel_key: &Option<String>,
     default_swatch_key: &Option<String>,
 ) {
-    assert!(definitions.base_registry_id == base::registry_id_v8(base_registry), EInvalidBinding);
-    assert!(base::registry_root_id_v8(base_registry) == release.root_id, EInvalidBinding);
-    assert!(base::registry_maker_version_v8(base_registry) == release.root_version, EInvalidBinding);
-    assert!(base::registry_root_content_commitment_v8(base_registry)
+    assert!(!df::exists(&release.id, PackDefinitionsDraftKeyV8 {}), EInvalidPolicy);
+    assert!(definitions.base_registry_id == sui::object::id(base_registry), EInvalidBinding);
+    assert!(base::registry_root_id_v2(base_registry) == release.root_id, EInvalidBinding);
+    assert!(base::registry_maker_version_v2(base_registry) == release.root_version, EInvalidBinding);
+    assert!(base::registry_root_content_commitment_v2(base_registry)
         == &release.root_content_commitment, EInvalidBinding);
-    let _part = base::borrow_part_v8(base_registry, *part_key);
-    let _track = base::borrow_track_v8(base_registry, *layer_track_key);
+    let _part = resolve_pack_part_v8(base_registry, release,
+        pack_definition_source_id(release, sources.part), *part_key);
+    let _track = resolve_pack_track_v8(base_registry, release,
+        pack_definition_source_id(release, sources.track), *layer_track_key);
     assert_color_pair(color_channel_key, default_swatch_key);
+    assert!(sources.color.is_some() == color_channel_key.is_some(), EInvalidBinding);
     if (color_channel_key.is_some()) {
-        let _color = base::borrow_color_v8(
-            base_registry, *color_channel_key.borrow(), *default_swatch_key.borrow());
+        let _color = resolve_pack_color_v8(
+            base_registry, release, pack_definition_source_id(release, *sources.color.borrow()),
+            *color_channel_key.borrow(), *default_swatch_key.borrow());
     };
 }
 
@@ -3367,26 +5085,25 @@ fun pack_pricing_commitment<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): 
 
 fun assert_physical_caller<
     PaymentCoin,
-    PhysicalOriginalMarker,
-    PhysicalCallableMarker,
+    PhysicalAuthority: drop,
 >(
     root: &MakerRootV8<PaymentCoin>,
+    physical_authority: PhysicalAuthority,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
     packs: &PackRegistryV8,
 ) {
-    binding::assert_physical_call_cap_v8(catalog, physical_call_cap);
-    binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(
-        binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
-    );
-    maker::assert_active_capability_registry_v8(root);
-    let capability = maker::root_capability_registry_binding_v8(root);
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
+    binding::assert_exact_witness_type_v2<PhysicalAuthority>(
+        binding::binding_at_v2(binding::catalog_binding_v8(catalog), 4),
+        &b"physical_v8", &b"PhysicalRuntimeWitnessV2");
+    let _ = physical_authority;
+    maker::assert_product_release_catalog_v8(root, catalog);
+    assert!(maker::root_lifecycle_v8(root) == maker::lifecycle_active_v8(), EInvalidLifecycle);
+    let registry_ids = maker::root_companion_registry_ids_v2(root);
     assert!(
-        maker::capability_catalog_id_v8(capability) == binding::catalog_id_v8(catalog),
-        EInvalidBinding,
-    );
-    assert!(
-        maker::capability_pack_registry_id_v8(capability) == object::id(packs),
+        companion::pack_registry_id_v2(registry_ids) == object::id(packs),
         EInvalidBinding,
     );
     assert!(packs.version == VERSION, EInvalidBinding);
@@ -3396,14 +5113,9 @@ fun assert_physical_caller<
         packs.root_version,
         &packs.root_content_commitment,
     );
-    let admission = maker::root_pack_admission_binding_v8(root);
-    assert!(
-        maker::pack_registry_id_v8(admission) == object::id(packs),
-        EInvalidBinding,
-    );
     assert!(
         &packs.admission_policy_commitment
-            == maker::pack_admission_policy_commitment_v8(admission),
+            == maker::root_expected_pack_admission_policy_commitment_v2(root),
         EInvalidBinding,
     );
 }
@@ -3460,7 +5172,7 @@ fun assert_loadout_maker_access<PaymentCoin>(
         &loadout.root_content_commitment, root);
     assert!(loadout.holder == ctx.sender(), EWrongHolder);
     assert!(loadout.maker_access_pass_id
-        == core_treasury::maker_access_pass_id_v8(maker_access), EInvalidProof);
+        == sui::object::id(maker_access), EInvalidProof);
     assert!(loadout.maker_access_commitment
         == maker_access_entitlement_commitment_v8(maker_access), EInvalidProof);
 }
@@ -3502,12 +5214,12 @@ fun assert_definition_binding<PaymentCoin>(
     base_registry: &BaseDefinitionRegistryV8,
 ) {
     assert_definition_identity(registry, root);
-    assert!(registry.base_registry_id == base::registry_id_v8(base_registry), EInvalidBinding);
-    assert!(base::registry_root_id_v8(base_registry) == registry.root_id, EInvalidBinding);
-    assert!(base::registry_maker_version_v8(base_registry) == registry.root_version, EInvalidBinding);
-    assert!(base::registry_root_content_commitment_v8(base_registry)
+    assert!(registry.base_registry_id == sui::object::id(base_registry), EInvalidBinding);
+    assert!(base::registry_root_id_v2(base_registry) == registry.root_id, EInvalidBinding);
+    assert!(base::registry_maker_version_v2(base_registry) == registry.root_version, EInvalidBinding);
+    assert!(base::registry_root_content_commitment_v2(base_registry)
         == &registry.root_content_commitment, EInvalidBinding);
-    assert!(base::registry_sealed_v8(base_registry), ENotSealed);
+    assert!(base::registry_sealed_v2(base_registry), ENotSealed);
 }
 
 fun assert_definition_identity<PaymentCoin>(
@@ -3532,7 +5244,7 @@ fun assert_pack_registry_identity<PaymentCoin>(
     assert!(packs.root_content_commitment == definitions.root_content_commitment, EInvalidBinding);
     assert!(packs.definition_registry_id == object::id(definitions), EInvalidBinding);
     assert!(&packs.admission_policy_commitment
-        == maker::root_expected_pack_admission_policy_commitment_v8(root), EInvalidBinding);
+        == maker::root_expected_pack_admission_policy_commitment_v2(root), EInvalidBinding);
 }
 
 fun assert_authority_identity<PaymentCoin>(
@@ -3569,6 +5281,7 @@ fun assert_loadout_write<PaymentCoin>(
 fun assert_loadout_holder_revision(
     loadout: &MakerLoadoutV8, expected_revision: u64, ctx: &TxContext,
 ) {
+    assert!(!is_soul_equipment_v8(loadout), EEquipLocked);
     assert!(loadout.version == VERSION, EInvalidBinding);
     assert!(loadout.holder == ctx.sender(), EWrongHolder);
     assert!(loadout.revision == expected_revision, EStaleRevision);
@@ -3577,6 +5290,392 @@ fun assert_loadout_holder_revision(
 fun assert_slot_empty(loadout: &MakerLoadoutV8, index: u64) {
     assert!(index < loadout.selections.length(), EPartOrder);
     assert!(loadout.selections.borrow(index).is_none(), EDuplicate);
+}
+
+fun total_slot_capacity(definitions: &RuntimeDefinitionRegistryV8): u64 {
+    let mut total = 0;
+    let mut profile_index = 0;
+    while (profile_index < definitions.profile_keys.length()) {
+        let profile = definitions.profiles.borrow(PartProfileKeyV8 {
+            part_key: *definitions.profile_keys.borrow(profile_index),
+        });
+        total = total + profile.capacity;
+        assert!(total <= MAX_LOADOUT_SELECTIONS, EInvalidCount);
+        profile_index = profile_index + 1;
+    };
+    total
+}
+
+#[test_only]
+fun base_definition_slots(definitions: &RuntimeDefinitionRegistryV8): vector<DefinitionSlotV8> {
+    definition_slots_for_layout(definitions, false)
+}
+
+fun definition_slots_for_layout(definitions: &RuntimeDefinitionRegistryV8, equipment_layout: bool): vector<DefinitionSlotV8> {
+    let mut slots = vector[];
+    let mut start = 0;
+    definitions.profile_keys.do_ref!(|key| {
+        let profile = definitions.profiles.borrow(PartProfileKeyV8 { part_key: *key });
+        let capacity = if (equipment_layout) 1 else profile.capacity;
+        slots.push_back(DefinitionSlotV8 {
+            source_definition_id: definitions.root_id, part_key: profile.part_key,
+            profile_commitment: profile.profile_commitment, start, capacity,
+        });
+        start = start + capacity;
+        assert!(start <= MAX_LOADOUT_SELECTIONS, EInvalidCount);
+    });
+    slots
+}
+
+fun profile_slot_start(
+    loadout: &MakerLoadoutV8,
+    profile: &PartProfileV8,
+): u64 {
+    definition_profile_slot_start(loadout, loadout.root_id, profile)
+}
+
+fun definition_profile_slot_start(
+    loadout: &MakerLoadoutV8, source_definition_id: ID, profile: &PartProfileV8,
+): u64 {
+    let mut index = 0;
+    while (index < loadout.definition_slots.length()) {
+        let slot = loadout.definition_slots.borrow(index);
+        if (slot.source_definition_id == source_definition_id && slot.part_key == profile.part_key) {
+            assert!(slot.profile_commitment == profile.profile_commitment
+                && slot.capacity == loadout_part_capacity(loadout, profile), EInvalidBinding);
+            return slot.start
+        };
+        index = index + 1;
+    };
+    abort EInvalidBinding
+}
+
+/// Explicit slots preserve sparse named loadouts and exact Player recipes.
+/// None is the ordinary add operation; Some never moves an occupied selection
+/// or escapes the selected Part's flattened capacity range.
+fun selection_slot(
+    loadout: &MakerLoadoutV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    profile: &PartProfileV8,
+    target_selection_index: Option<u64>,
+): u64 {
+    assert!(definitions.sealed && definitions.root_id == loadout.root_id, EInvalidBinding);
+    scoped_selection_slot(loadout, loadout.root_id, profile, target_selection_index)
+}
+
+fun scoped_selection_slot(
+    loadout: &MakerLoadoutV8, source_definition_id: ID, profile: &PartProfileV8,
+    target_selection_index: Option<u64>,
+): u64 {
+    let start = if (source_definition_id == loadout.root_id) profile_slot_start(loadout, profile)
+        else definition_profile_slot_start(loadout, source_definition_id, profile);
+    let end = start + loadout_part_capacity(loadout, profile);
+    assert!(end <= loadout.selections.length(), EPartOrder);
+    if (target_selection_index.is_some()) {
+        let index = target_selection_index.destroy_some();
+        assert!(index >= start && index < end, EPartOrder);
+        assert_slot_empty(loadout, index);
+        return index
+    };
+    let mut index = start;
+    while (index < end) {
+        if (loadout.selections[index].is_none()) return index;
+        index = index + 1;
+    };
+    abort EDuplicate
+}
+
+fun selection_matches_rule_selector(
+    selection: &LoadoutSelectionV8,
+    selector: &base::SemanticSelectorV2,
+): bool {
+    assert!(selection.source_class <= SOURCE_EXTERNAL, EInvalidProof);
+    let source_key = if (selection.source_class == SOURCE_PACK) {
+        option::some(selection.source_semantic_id)
+    } else if (selection.source_class == SOURCE_EXTERNAL) {
+        let mut bytes = b"0x";
+        bytes.append(sui::address::to_string(
+            selection.source_definition_id.to_address()).into_bytes());
+        option::some(string::utf8(bytes))
+    } else {
+        option::none()
+    };
+    // Core reserves 0 for ANY; Runtime's concrete source classes start at 0.
+    base::semantic_selector_matches_v2(selector, selection.source_class + 1,
+        &source_key, &selection.part_key, &selection.item_key, &selection.style_key)
+}
+
+#[test_only]
+fun selection_contains_selector(
+    loadout: &MakerLoadoutV8,
+    selector: &base::SemanticSelectorV2,
+): bool {
+    let mut selection_index = 0;
+    while (selection_index < loadout.selections.length()) {
+        let maybe_selection = loadout.selections.borrow(selection_index);
+        if (maybe_selection.is_some()) {
+            let selection = maybe_selection.borrow();
+            if (selection_matches_rule_selector(selection, selector)) return true;
+        };
+        selection_index = selection_index + 1;
+    };
+    false
+}
+
+/// Authoring BASE means the combined local document: inherited Base content
+/// plus this Release's additions. Other Packs never become local BASE. ANY and
+/// explicit source selectors retain Core semantics within the exact Part scope.
+fun pack_selector_contains<PaymentCoin>(
+    loadout: &MakerLoadoutV8, release: &PackReleaseV8<PaymentCoin>,
+    selector: &base::SemanticSelectorV2,
+): bool {
+    let (source, _, part_key, _, _) = base::semantic_selector_terms_v2(selector);
+    let mut definition_id = release.root_id;
+    base::pack_parts_v2(&pack_definitions_v8(release).rows).do_ref!(|row| {
+        let (key, _, _, _) = base::part_identity_terms_v2(row);
+        if (key == part_key) definition_id = object::id(release);
+    });
+    scoped_pack_selector_contains(loadout, selector, definition_id,
+        if (source == 1) option::some(object::id(release)) else option::none())
+}
+
+// Inherited Item programs use Root Part ranges without interpreting Pack
+// additions as BASE. Authored programs may map only their own exact Release.
+fun scoped_pack_selector_contains(
+    loadout: &MakerLoadoutV8, selector: &base::SemanticSelectorV2,
+    definition_id: ID, local_release: Option<ID>,
+): bool {
+    let (_, _, part_key, _, _) = base::semantic_selector_terms_v2(selector);
+    let mut start = 0;
+    let mut end = 0;
+    let mut found = false;
+    loadout.definition_slots.do_ref!(|slot| {
+        if (slot.source_definition_id == definition_id && &slot.part_key == part_key) {
+            assert!(!found, EInvalidBinding);
+            found = true; start = slot.start; end = start + slot.capacity;
+        };
+    });
+    assert!(end <= loadout.selections.length(), EInvalidBinding);
+    let mut index = start;
+    while (index < end) {
+        if (loadout.selections[index].is_some()) {
+            let selection = loadout.selections[index].borrow();
+            let local_addition = local_release.is_some() && selection.source_class == SOURCE_PACK
+                && selection.source_definition_id == *local_release.borrow();
+            if (local_addition) {
+                if (base::semantic_selector_matches_v2(selector, 1, &option::none(),
+                    &selection.part_key, &selection.item_key, &selection.style_key)) return true;
+            } else if (selection_matches_rule_selector(selection, selector)) return true;
+        };
+        index = index + 1;
+    };
+    false
+}
+
+fun assert_pack_visibility_program<PaymentCoin>(
+    loadout: &MakerLoadoutV8, release: &PackReleaseV8<PaymentCoin>,
+    tokens: &vector<base::VisibilityTokenV1>,
+) {
+    let mut selected = vector[];
+    tokens.do_ref!(|token| {
+        let selector = base::visibility_token_selector_v1(token);
+        if (selector.is_some()) selected.push_back(pack_selector_contains(loadout, release, selector.borrow()));
+    });
+    assert!(base::visibility_is_satisfied_v1(tokens, &selected), ERuleViolation);
+}
+
+fun assert_inherited_pack_item_visibility_program(
+    loadout: &MakerLoadoutV8, tokens: &vector<base::VisibilityTokenV1>,
+) {
+    let mut selected = vector[];
+    tokens.do_ref!(|token| {
+        let selector = base::visibility_token_selector_v1(token);
+        if (selector.is_some()) selected.push_back(scoped_pack_selector_contains(
+            loadout, selector.borrow(), loadout.root_id, option::none()));
+    });
+    assert!(base::visibility_is_satisfied_v1(tokens, &selected), ERuleViolation);
+}
+
+/// Read-only content validation; not an entitlement proof or completion permit.
+/// The final proof must still certify access and consume every committed binding.
+public fun validate_attached_pack_definitions_v8<PaymentCoin>(
+    loadout: &MakerLoadoutV8, definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, binding_index: u64, ctx: &TxContext,
+) {
+    validate_attached_pack_definitions_internal(loadout, definitions, base_registry, release, binding_index, true, ctx);
+}
+
+public fun prove_attached_pack_definitions_v8<PaymentCoin>(
+    loadout: &MakerLoadoutV8, definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8, root: &MakerRootV8<PaymentCoin>, packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, pass: &PackPassV8, maker_access: &MakerAccessPassV8,
+    binding_index: u64, ctx: &TxContext,
+): PackDefinitionProofV8 {
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert!(object::id(packs) == loadout.pack_registry_id, EInvalidBinding);
+    assert_active_pack_admission(packs, release);
+    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert_pack_pass(release, pass, ctx.sender());
+    validate_attached_pack_definitions_internal(loadout, definitions, base_registry, release, binding_index, true, ctx);
+    new_pack_definition_proof(loadout, definitions, release, binding_index, true)
+}
+
+public fun prove_equipment_pack_definitions_v8<PaymentCoin>(
+    loadout: &MakerLoadoutV8, definitions: &RuntimeDefinitionRegistryV8, base_registry: &BaseDefinitionRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, binding_index: u64, ctx: &TxContext,
+): PackDefinitionProofV8 {
+    validate_attached_pack_definitions_internal(loadout, definitions, base_registry, release, binding_index, false, ctx);
+    new_pack_definition_proof(loadout, definitions, release, binding_index, false)
+}
+
+fun new_pack_definition_proof<PaymentCoin>(
+    loadout: &MakerLoadoutV8, definitions: &RuntimeDefinitionRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, binding_index: u64, completion_checked: bool,
+): PackDefinitionProofV8 {
+    PackDefinitionProofV8 { loadout_id: object::id(loadout), loadout_revision: loadout.revision,
+        loadout_commitment: loadout.commitment, binding_index, release_id: object::id(release),
+        definition_commitment: pack_definitions_v8(release).commitment,
+        profiles: pack_part_profiles_v8(definitions, release), completion_checked }
+}
+
+fun validate_attached_pack_definitions_internal<PaymentCoin>(
+    loadout: &MakerLoadoutV8, definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8, release: &PackReleaseV8<PaymentCoin>,
+    binding_index: u64, completion: bool, ctx: &TxContext,
+) {
+    assert!(loadout.holder == ctx.sender(), EWrongHolder);
+    assert!(loadout.definition_registry_id == object::id(definitions)
+        && loadout.root_id == definitions.root_id && loadout.root_version == definitions.root_version
+        && loadout.root_content_commitment == definitions.root_content_commitment, EInvalidBinding);
+    assert!(definitions.base_registry_id == object::id(base_registry), EInvalidBinding);
+    assert_pack_reference_source(base_registry, release, release.root_id);
+    assert!(binding_index < loadout.attached_pack_definitions.length(), EInvalidBinding);
+    let binding = &loadout.attached_pack_definitions[binding_index];
+    let owned = pack_definitions_v8(release);
+    base::assert_pack_additive_definitions_v2(base_registry, &owned.rows);
+    assert!(binding.release_id == object::id(release)
+        && binding.definition_commitment == owned.commitment, EInvalidBinding);
+    let profiles = pack_part_profiles_v8(definitions, release);
+    let mut observed = 0;
+    loadout.definition_slots.do_ref!(|slot| {
+        if (slot.source_definition_id == object::id(release)) observed = observed + 1;
+    });
+    assert!(observed == profiles.length(), EInvalidBinding);
+    profiles.do_ref!(|profile| {
+        let start = definition_profile_slot_start(loadout, object::id(release), profile);
+        let end = start + loadout_part_capacity(loadout, profile);
+        assert!(end <= loadout.selections.length(), EInvalidBinding);
+        let mut selected = false;
+        let mut index = start;
+        while (index < end) {
+            if (loadout.selections[index].is_some()) selected = true;
+            index = index + 1;
+        };
+        if (selected) assert_pack_visibility_program(loadout, release,
+            base::part_visibility_tokens_v1(base::borrow_pack_part_v2(&owned.rows, profile.part_key)));
+    });
+    loadout.selections.do_ref!(|maybe_selection| {
+        if (maybe_selection.is_some()) {
+            let selection = maybe_selection.borrow();
+            if (selection.source_class == SOURCE_PACK && selection.source_definition_id == object::id(release)) {
+                let style = release.styles.borrow(PackStyleKeyV8 { part_key: selection.part_key,
+                    item_key: selection.item_key, style_key: selection.style_key });
+                assert_pack_style_visibility_definitions(base_registry, release, &style.definition_sources,
+                    selection.part_key, selection.item_key, selection.style_key);
+                let profile = pack_style_part_profile(definitions, release, style.definition_sources.part, selection.part_key);
+                let definition_id = if (style.definition_sources.part == 1) loadout.root_id else object::id(release);
+                let start = definition_profile_slot_start(loadout, definition_id, &profile);
+                assert!(selection.selection_index >= start
+                    && selection.selection_index < start + loadout_part_capacity(loadout, &profile), EInvalidBinding);
+                let item_row = base::borrow_pack_visibility_v2(&owned.rows, 1, selection.part_key,
+                    selection.item_key, option::none());
+                let (item_source, item_tokens, _) = base::pack_visibility_terms_v2(item_row);
+                if (item_source == 1) assert_inherited_pack_item_visibility_program(loadout, item_tokens)
+                else assert_pack_visibility_program(loadout, release, item_tokens);
+                let style_row = base::borrow_pack_visibility_v2(&owned.rows, 2, selection.part_key,
+                    selection.item_key, option::some(selection.style_key));
+                let (_, style_tokens, _) = base::pack_visibility_terms_v2(style_row);
+                assert_pack_visibility_program(loadout, release, style_tokens);
+            };
+        };
+    });
+    if (completion) base::pack_rules_v2(&owned.rows).do_ref!(|rule| {
+        let (_, trigger, _, targets, _) = base::rule_terms_v2(rule);
+        let trigger_selected = pack_selector_contains(loadout, release, trigger);
+        let mut matches = vector[];
+        targets.do_ref!(|target| { matches.push_back(pack_selector_contains(loadout, release, target)); });
+        assert!(base::rule_is_satisfied_v2(rule, trigger_selected, &matches), ERuleViolation);
+    });
+}
+
+fun assert_visibility_program(
+    loadout: &MakerLoadoutV8, tokens: &vector<base::VisibilityTokenV1>,
+) {
+    let mut selected = vector[];
+    let mut index = 0;
+    while (index < tokens.length()) {
+        let selector = base::visibility_token_selector_v1(&tokens[index]);
+        if (selector.is_some()) {
+            selected.push_back(scoped_pack_selector_contains(loadout, selector.borrow(), loadout.root_id, option::none()));
+        };
+        index = index + 1;
+    };
+    assert!(base::visibility_is_satisfied_v1(tokens, &selected), ERuleViolation);
+}
+
+/// Root definition ranges only. Pack row programs are validated by the typed
+/// attachment proof; no replacement is chosen implicitly.
+fun assert_loadout_visibility(
+    loadout: &MakerLoadoutV8, base_registry: &BaseDefinitionRegistryV8,
+) {
+    let mut index = 0;
+    while (index < loadout.selections.length()) {
+        let selection = &loadout.selections[index];
+        let mut base_slot = false;
+        loadout.definition_slots.do_ref!(|slot| {
+            if (slot.source_definition_id == loadout.root_id && index >= slot.start && index < slot.start + slot.capacity) base_slot = true;
+        });
+        if (selection.is_some() && base_slot) {
+            let selection = selection.borrow();
+            assert_visibility_program(loadout, base::part_visibility_tokens_v1(
+                base::borrow_part_v2(base_registry, selection.part_key)));
+            if (selection.source_class == SOURCE_BASE) {
+                assert_visibility_program(loadout, base::item_visibility_tokens_v1(
+                    base::borrow_item_v2(base_registry, selection.part_key, selection.item_key)));
+                assert_visibility_program(loadout, base::style_visibility_tokens_v1(
+                    base::borrow_style_v2(base_registry, selection.part_key,
+                        selection.item_key, selection.style_key)));
+            };
+        };
+        index = index + 1;
+    };
+}
+
+fun assert_loadout_rule(loadout: &MakerLoadoutV8, rule: &base::RuleRowV2) {
+    let (_, trigger, _, targets, _) = base::rule_terms_v2(rule);
+    let trigger_selected = scoped_pack_selector_contains(loadout, trigger, loadout.root_id, option::none());
+    let mut target_matches = vector[];
+    let mut target_index = 0u64;
+    while (target_index < targets.length()) {
+        target_matches.push_back(scoped_pack_selector_contains(
+            loadout, &targets[target_index], loadout.root_id, option::none()));
+        target_index = target_index + 1;
+    };
+    assert!(base::rule_is_satisfied_v2(rule, trigger_selected, &target_matches),
+        ERuleViolation);
+}
+
+fun assert_loadout_rules(
+    loadout: &MakerLoadoutV8,
+    base_registry: &BaseDefinitionRegistryV8,
+) {
+    let mut rule_index = 0;
+    let rule_count = base::registry_rule_count_v2(base_registry);
+    while (rule_index < rule_count) {
+        assert_loadout_rule(loadout, base::borrow_rule_at_v2(base_registry, rule_index));
+        rule_index = rule_index + 1;
+    };
 }
 
 fun assert_release_compatibility<PaymentCoin>(
@@ -3632,6 +5731,73 @@ fun assert_owned_holder(item: &OwnedExternalItemV8, ctx: &TxContext) {
     assert!(item.holder == ctx.sender(), EWrongHolder);
 }
 
+fun assert_owned_base_holder(item: &OwnedBaseItemV8, ctx: &TxContext) {
+    assert!(item.version == VERSION, EInvalidBinding);
+    assert!(item.holder == ctx.sender(), EWrongHolder);
+}
+
+fun assert_owned_base_item_registry(
+    item: &OwnedBaseItemV8,
+    packs: &PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+) {
+    assert!(definitions.item_assetization, EInvalidPolicy);
+    assert!(item.root_id == definitions.root_id, EInvalidBinding);
+    assert!(item.root_version == definitions.root_version, EInvalidBinding);
+    assert!(item.root_content_commitment == definitions.root_content_commitment,
+        EInvalidBinding);
+    assert!(item.definition_registry_id == object::id(definitions), EInvalidBinding);
+    assert!(item.pack_registry_id == object::id(packs), EInvalidBinding);
+    assert!(item.base_registry_id == definitions.base_registry_id, EInvalidBinding);
+    assert!(packs.definition_registry_id == object::id(definitions), EInvalidBinding);
+}
+
+fun assert_owned_base_item(
+    item: &OwnedBaseItemV8,
+    packs: &PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    ctx: &TxContext,
+) {
+    assert_owned_base_holder(item, ctx);
+    assert_owned_base_item_registry(item, packs, definitions);
+    assert!(item.base_registry_id == sui::object::id(base_registry), EInvalidBinding);
+    let base_item = base::borrow_item_v2(base_registry, item.part_key, item.item_key);
+    base::assert_public_item_v2(base_item);
+    assert!(base::item_payload_commitment_v2(base_item)
+        == &item.item_payload_commitment, EInvalidBinding);
+    assert_owned_base_item_record(item, packs);
+}
+
+fun assert_owned_base_item_record(item: &OwnedBaseItemV8, packs: &PackRegistryV8) {
+    let record = packs.base_item_owners.borrow(BaseItemHolderKeyV8 {
+        part_key: item.part_key,
+        item_key: item.item_key,
+        holder: item.holder,
+    });
+    assert!(record.item_id == object::id(item), EInvalidBinding);
+    assert!(record.ownership_epoch == item.ownership_epoch, EInvalidBinding);
+}
+
+fun owned_base_item_commitment(item: &OwnedBaseItemV8): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(&OwnedBaseItemCommitmentInputV8 {
+        domain: b"animacraft-v8/runtime/owned-base-item",
+        version: VERSION,
+        item_id: object::id(item),
+        root_id: item.root_id,
+        root_version: item.root_version,
+        root_content_commitment: item.root_content_commitment,
+        definition_registry_id: item.definition_registry_id,
+        pack_registry_id: item.pack_registry_id,
+        base_registry_id: item.base_registry_id,
+        part_key: item.part_key,
+        item_key: item.item_key,
+        item_payload_commitment: item.item_payload_commitment,
+        holder: item.holder,
+        ownership_epoch: item.ownership_epoch,
+    }))
+}
+
 fun assert_pack_pass<PaymentCoin>(
     release: &PackReleaseV8<PaymentCoin>, pass: &PackPassV8, holder: address,
 ) {
@@ -3671,6 +5837,9 @@ fun assert_pack_style(style: &PackStyleV8) {
     assert_key(&style.style_key);
     assert_key(&style.layer_track_key);
     assert_color_pair(&style.color_channel_key, &style.default_swatch_key);
+    assert!(style.definition_sources.color.is_some() == style.color_channel_key.is_some(), EInvalidBinding);
+    let _ = new_pack_style_definition_sources_v8(style.definition_sources.part,
+        style.definition_sources.track, style.definition_sources.color);
     assert_locator(&style.asset_blob_id);
     assert_hash(&style.asset_sha256);
     assert_hash(&style.asset_content_commitment);
@@ -3688,7 +5857,7 @@ fun assert_profile_policy(
 ) {
     assert!(wardrobe_mode == WARDROBE_FIXED || wardrobe_mode == WARDROBE_SLOT, EInvalidPolicy);
     assert!(behavior <= BEHAVIOR_HYBRID, EInvalidPolicy);
-    assert!(capacity == 1, EInvalidPolicy);
+    assert!(capacity > 0 && capacity <= MAX_PART_CAPACITY, EInvalidPolicy);
     assert_admission_ceiling(admission_ceiling);
     if (wardrobe_mode == WARDROBE_FIXED) {
         assert!(behavior == BEHAVIOR_FIXED, EInvalidPolicy);
@@ -3702,6 +5871,13 @@ fun assert_profile_policy(
 
 fun assert_external_profile_behavior(profile: &PartProfileV8) {
     assert!(behavior_accepts_external(profile.behavior), EAdmissionDenied);
+}
+
+fun assert_pack_profile(profile: &PartProfileV8) {
+    assert!(profile.wardrobe_mode == WARDROBE_SLOT, EFixedPart);
+    assert!(profile.behavior == BEHAVIOR_SOUL_LOCAL
+        || profile.behavior == BEHAVIOR_OPEN
+        || profile.behavior == BEHAVIOR_HYBRID, EAdmissionDenied);
 }
 
 fun behavior_accepts_external(behavior: u8): bool {
@@ -3754,6 +5930,23 @@ fun assert_key(value: &String) {
 
 fun assert_locator(value: &String) {
     assert!(value.length() > 0 && value.length() <= MAX_LOCATOR_BYTES, EInvalidKey);
+}
+
+fun assert_asset_media_type(value: &String) {
+    assert!(value.length() > 0 && value.length() <= MAX_MEDIA_TYPE_BYTES, EInvalidKey);
+    assert!(
+        value == &b"image/avif".to_string()
+            || value == &b"image/gif".to_string()
+            || value == &b"image/jpeg".to_string()
+            || value == &b"image/png".to_string()
+            || value == &b"image/webp".to_string(),
+        EInvalidPolicy,
+    );
+}
+
+fun assert_asset_descriptor(media_type: &String, byte_length: u64) {
+    assert_asset_media_type(media_type);
+    assert!(byte_length > 0 && byte_length <= MAX_ASSET_BYTES, EInvalidCount);
 }
 
 fun assert_hash(value: &vector<u8>) {
@@ -3825,9 +6018,331 @@ fun fixed_profile_is_valid_and_keeps_capacity_one() {
     assert_profile_policy(WARDROBE_FIXED, BEHAVIOR_FIXED, 1, ADMISSION_OPEN, false);
 }
 
-#[test, expected_failure(abort_code = EInvalidPolicy)]
-fun profile_rejects_multi_selection_capacity() {
+#[test]
+fun composable_slot_profile_accepts_pack_styles() {
+    let profile = test_profile(WARDROBE_SLOT, BEHAVIOR_SOUL_LOCAL, true);
+    assert_pack_profile(&profile);
+}
+
+#[test, expected_failure(abort_code = EFixedPart)]
+fun fixed_profile_rejects_pack_styles() {
+    let profile = test_profile(WARDROBE_FIXED, BEHAVIOR_FIXED, true);
+    assert_pack_profile(&profile);
+}
+
+#[test]
+fun slot_profile_accepts_multi_selection_capacity() {
     assert_profile_policy(WARDROBE_SLOT, BEHAVIOR_HYBRID, 2, ADMISSION_OPEN, false);
+    assert_profile_policy(WARDROBE_SLOT, BEHAVIOR_SOUL_LOCAL, MAX_PART_CAPACITY,
+        ADMISSION_CERTIFIED, true);
+}
+
+#[test]
+fun flattened_part_slots_allocate_every_capacity_position_exactly_once() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 70, 0, 0, 0);
+    let definitions = test_definitions_with_capacity(&mut ctx, 2);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 2);
+    let root_id = loadout.root_id;
+    let profile = definitions.profiles.borrow(PartProfileKeyV8 {
+        part_key: b"body".to_string(),
+    });
+    let first = selection_slot(&loadout, &definitions, profile, option::none());
+    assert!(first == 0, EPartOrder);
+    install_selection(&mut loadout, first, test_selection(
+        first, b"one".to_string(), SOURCE_BASE, root_id));
+    let second = selection_slot(&loadout, &definitions, profile, option::none());
+    assert!(second == 1, EPartOrder);
+    install_selection(&mut loadout, second, test_selection(
+        second, b"two".to_string(), SOURCE_BASE, root_id));
+    assert!(loadout.selection_count == 2, EInvalidCount);
+    destroy_test_definitions(definitions);
+    destroy_test_loadout(loadout);
+}
+
+#[test]
+fun definition_layout_is_committed_and_does_not_reindex_on_profile_index_change() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 72, 0, 0, 0);
+    let definitions = test_definitions_with_capacity(&mut ctx, 2);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 2);
+    loadout.definition_slots = base_definition_slots(&definitions);
+    recompute_loadout(&mut loadout);
+    let committed = loadout.commitment;
+    let mut profile = *definitions.profiles.borrow(PartProfileKeyV8 { part_key: b"body".to_string() });
+    // The persisted definition identity/range, not mutable index metadata,
+    // decides the meaning of an existing loadout's positions.
+    profile.index = 99;
+    assert!(profile_slot_start(&loadout, &profile) == 0, EPartOrder);
+    loadout.definition_slots[0].source_definition_id = object::id_from_address(@0x22);
+    recompute_loadout(&mut loadout);
+    assert!(committed != loadout.commitment, EInvalidProof);
+    loadout.definition_slots = base_definition_slots(&definitions);
+    loadout.definition_slots[0].profile_commitment = test_hash(99);
+    recompute_loadout(&mut loadout);
+    assert!(committed != loadout.commitment, EInvalidProof);
+    destroy_test_definitions(definitions);
+    destroy_test_loadout(loadout);
+}
+
+#[test]
+fun definition_slot_bcs_matches_client() {
+    let slot = DefinitionSlotV8 { source_definition_id: object::id_from_address(@0x11),
+        part_key: b"body".to_string(), profile_commitment: test_hash(2), start: 0, capacity: 2 };
+    assert!(bcs::to_bytes(&slot) == x"000000000000000000000000000000000000000000000000000000000000001104626f647920020202020202020202020202020202020202020202020202020202020202020200000000000000000200000000000000", EInvalidProof);
+}
+
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun definition_layout_rejects_same_key_from_another_release() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 73, 0, 0, 0);
+    let definitions = test_definitions_with_capacity(&mut ctx, 2);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 2);
+    loadout.definition_slots[0].source_definition_id = object::id_from_address(@0x22);
+    let profile = definitions.profiles.borrow(PartProfileKeyV8 { part_key: b"body".to_string() });
+    let _ = profile_slot_start(&loadout, profile);
+    destroy_test_definitions(definitions);
+    destroy_test_loadout(loadout);
+}
+
+#[test_only]
+fun explicit_slot_case(case: u8) {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 71, 0, 0, 0);
+    let mut definitions = test_definitions_with_capacity(&mut ctx, 2);
+    let mut second = test_profile(WARDROBE_SLOT, BEHAVIOR_HYBRID, false);
+    second.index = 1;
+    second.part_key = b"hat".to_string();
+    second.capacity = 2;
+    definitions.profiles.add(PartProfileKeyV8 { part_key: second.part_key }, second);
+    definitions.profile_keys.push_back(second.part_key);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 4);
+    loadout.definition_slots = base_definition_slots(&definitions);
+    recompute_loadout(&mut loadout);
+    let target = if (case == 1) 1 else if (case == 2) 4 else 3;
+    let slot = selection_slot(&loadout, &definitions, &second, option::some(target));
+    assert!(slot == 3, EPartOrder);
+    let mut selected = test_selection(slot, b"sparse".to_string(), SOURCE_PACK, loadout.root_id);
+    selected.part_key = second.part_key;
+    install_selection(&mut loadout, slot, selected);
+    assert!(loadout.selections[0].is_none() && loadout.selections[1].is_none()
+        && loadout.selections[2].is_none() && loadout.selections[3].is_some(), EPartOrder);
+    if (case == 3) {
+        let _ = selection_slot(&loadout, &definitions, &second, option::some(3));
+        abort EInvalidProof
+    };
+    // None still chooses the first available slot inside this Part only.
+    assert!(selection_slot(&loadout, &definitions, &second, option::none()) == 2, EPartOrder);
+    let sparse_commitment = loadout.commitment;
+    clear_selection(&mut loadout, slot);
+    assert!(loadout.selection_count == 0 && loadout.revision == 2, EInvalidCount);
+    let restored = selection_slot(&loadout, &definitions, &second, option::some(3));
+    install_selection(&mut loadout, restored, selected);
+    assert!(loadout.commitment == sparse_commitment && loadout.revision == 3
+        && loadout.selection_count == 1 && loadout.selections[2].is_none(), EInvalidProof);
+    let _ = definitions.profiles.remove(PartProfileKeyV8 { part_key: second.part_key });
+    destroy_test_definitions(definitions);
+    destroy_test_loadout(loadout);
+}
+
+#[test]
+fun explicit_target_slot_preserves_sparse_second_part_and_none_first_empty() { explicit_slot_case(0); }
+
+#[test, expected_failure(abort_code = EPartOrder)]
+fun explicit_target_slot_rejects_another_part() { explicit_slot_case(1); }
+
+#[test, expected_failure(abort_code = EPartOrder)]
+fun explicit_target_slot_rejects_outside_capacity() { explicit_slot_case(2); }
+
+#[test, expected_failure(abort_code = EDuplicate)]
+fun explicit_target_slot_rejects_occupied_slot() { explicit_slot_case(3); }
+
+#[test]
+fun rule_selection_preserves_source_item_and_style_identity() {
+    let product_id = object::id_from_address(@0x11);
+    let local = test_selection(0, b"blue".to_string(), SOURCE_BASE, product_id);
+    let pack = test_selection(0, b"blue".to_string(), SOURCE_PACK, product_id);
+    let external = test_selection(0, b"blue".to_string(), SOURCE_EXTERNAL, product_id);
+    let part = base::new_semantic_selector_v2(0, option::none(),
+        b"body".to_string(), option::none(), option::none());
+    let local_style = base::new_semantic_selector_v2(1, option::none(),
+        b"body".to_string(), option::some(b"item".to_string()),
+        option::some(b"blue".to_string()));
+    let pack_style = base::new_semantic_selector_v2(2, option::some(b"pack".to_string()),
+        b"body".to_string(), option::some(b"item".to_string()),
+        option::some(b"blue".to_string()));
+    let wrong_pack = base::new_semantic_selector_v2(2, option::some(b"other".to_string()),
+        b"body".to_string(), option::some(b"item".to_string()), option::none());
+    let product = base::new_semantic_selector_v2(3, option::some(
+        b"0x0000000000000000000000000000000000000000000000000000000000000011".to_string()),
+        b"body".to_string(), option::some(b"item".to_string()), option::none());
+    let other_product = base::new_semantic_selector_v2(3, option::some(
+        b"0x0000000000000000000000000000000000000000000000000000000000000012".to_string()),
+        b"body".to_string(), option::some(b"item".to_string()), option::none());
+    assert!(selection_matches_rule_selector(&local, &local_style), ERuleViolation);
+    assert!(!selection_matches_rule_selector(&pack, &local_style), ERuleViolation);
+    assert!(selection_matches_rule_selector(&pack, &pack_style), ERuleViolation);
+    assert!(!selection_matches_rule_selector(&local, &pack_style), ERuleViolation);
+    assert!(!selection_matches_rule_selector(&pack, &wrong_pack), ERuleViolation);
+    assert!(selection_matches_rule_selector(&external, &product), ERuleViolation);
+    assert!(!selection_matches_rule_selector(&external, &other_product), ERuleViolation);
+    assert!(!selection_matches_rule_selector(&pack, &product), ERuleViolation);
+    assert!(selection_matches_rule_selector(&local, &part)
+        && selection_matches_rule_selector(&pack, &part)
+        && selection_matches_rule_selector(&external, &part), ERuleViolation);
+    let red = test_selection(0, b"red".to_string(), SOURCE_BASE, product_id);
+    assert!(!selection_matches_rule_selector(&red, &local_style), ERuleViolation);
+}
+
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun require_rule_all_rejects_one_missing_target() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 70, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    let root_id = loadout.root_id;
+    install_selection(&mut loadout, 0,
+        test_selection(0, b"blue".to_string(), SOURCE_BASE, root_id));
+    assert_loadout_rule(&loadout, &test_style_rule(RULE_REQUIRE, 0));
+    destroy_test_loadout(loadout);
+}
+
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun exclude_rule_rejects_any_one_target() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 70, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    let root_id = loadout.root_id;
+    install_selection(&mut loadout, 0,
+        test_selection(0, b"blue".to_string(), SOURCE_BASE, root_id));
+    assert_loadout_rule(&loadout, &test_style_rule(RULE_EXCLUDE, 1));
+    destroy_test_loadout(loadout);
+}
+
+#[test]
+fun rule_loadout_matches_any_and_inactive_trigger() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 70, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    assert_loadout_rule(&loadout, &test_style_rule(RULE_REQUIRE, 0));
+    assert_loadout_rule(&loadout, &test_style_rule(RULE_EXCLUDE, 1));
+    let root_id = loadout.root_id;
+    install_selection(&mut loadout, 0,
+        test_selection(0, b"blue".to_string(), SOURCE_BASE, root_id));
+    assert_loadout_rule(&loadout, &test_style_rule(RULE_REQUIRE, 1));
+    destroy_test_loadout(loadout);
+}
+
+#[test_only]
+fun test_style_rule(kind: u8, target_mode: u8): base::RuleRowV2 {
+    let trigger = base::new_semantic_selector_v2(0, option::none(),
+        b"body".to_string(), option::none(), option::none());
+    let blue = base::new_semantic_selector_v2(1, option::none(),
+        b"body".to_string(), option::some(b"item".to_string()),
+        option::some(b"blue".to_string()));
+    let red = base::new_semantic_selector_v2(1, option::none(),
+        b"body".to_string(), option::some(b"item".to_string()),
+        option::some(b"red".to_string()));
+    base::new_rule_row_v2(0, b"styles".to_string(), kind, trigger,
+        target_mode, vector[blue, red], test_hash(10))
+}
+
+#[test_only]
+fun visibility_authorization_case(subject: u8, source: u8, predicate_source: u8, negate: bool) {
+    let hint = 220 + (subject as u64) * 1000 + (source as u64) * 100
+        + (predicate_source as u64) * 10 + if (negate) 1 else 0;
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, hint, 0, 0, 0);
+    let source_id = object::id_from_address(@0x11);
+    let source_key = if (predicate_source == 2) option::some(b"pack".to_string())
+        else if (predicate_source == 3) option::some(
+            b"0x0000000000000000000000000000000000000000000000000000000000000011".to_string())
+        else option::none();
+    let mut tokens = vector[base::new_visibility_token_v1(0, option::some(
+        base::new_semantic_selector_v2(predicate_source, source_key, b"part".to_string(),
+            option::some(b"item".to_string()), option::some(b"style".to_string()))), 0)];
+    if (negate) tokens.push_back(base::new_visibility_token_v1(1, option::none(), 1));
+    let registry = base::new_visibility_registry_for_testing(tokens, subject, &mut ctx);
+    let mut definitions = test_definitions_with_capacity(&mut ctx, 1);
+    let mut profile = definitions.profiles.remove(PartProfileKeyV8 { part_key: b"body".to_string() });
+    profile.part_key = b"part".to_string();
+    definitions.profiles.add(PartProfileKeyV8 { part_key: profile.part_key }, profile);
+    definitions.profile_keys = vector[profile.part_key];
+    definitions.base_registry_id = object::id(&registry);
+    definitions.root_id = base::registry_root_id_v2(&registry);
+    definitions.root_version = base::registry_maker_version_v2(&registry);
+    definitions.root_content_commitment = *base::registry_root_content_commitment_v2(&registry);
+    let mut loadout = test_loadout(&mut ctx);
+    loadout.root_id = definitions.root_id;
+    loadout.root_version = definitions.root_version;
+    loadout.root_content_commitment = definitions.root_content_commitment;
+    loadout.definition_registry_id = object::id(&definitions);
+    let mut selection = test_selection(0, b"style".to_string(), source, source_id);
+    loadout.definition_slots = base_definition_slots(&definitions);
+    selection.part_key = b"part".to_string();
+    install_selection(&mut loadout, 0, selection);
+    let original_commitment = loadout.commitment;
+    let original_revision = loadout.revision;
+    let proof = new_selection_proof(&loadout, loadout.selections[0].borrow(), test_hash(6));
+    let authorization = seal_ordered_selection_proofs_v8(
+        &loadout, &definitions, &registry, vector[], vector[proof], &ctx);
+    let (_, _, _, _, _, _, _, _, _, _) = consume_loadout_authorization_v8(authorization, &loadout);
+    assert!(loadout.commitment == original_commitment && loadout.revision == original_revision
+        && loadout.selection_count == 1, EInvalidProof);
+    let _ = definitions.profiles.remove(PartProfileKeyV8 { part_key: profile.part_key });
+    profile.part_key = b"body".to_string();
+    definitions.profiles.add(PartProfileKeyV8 { part_key: profile.part_key }, profile);
+    destroy_test_definitions(definitions);
+    destroy_test_loadout(loadout);
+    base::share_base_definition_registry_for_testing(registry);
+}
+
+#[test]
+fun visibility_authorization_accepts_selected_base_part_item_and_style() {
+    visibility_authorization_case(0, SOURCE_BASE, 1, false);
+    visibility_authorization_case(1, SOURCE_BASE, 1, false);
+    visibility_authorization_case(2, SOURCE_BASE, 1, false);
+}
+
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun visibility_authorization_rejects_false_selected_style() {
+    visibility_authorization_case(2, SOURCE_BASE, 1, true);
+}
+
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun visibility_authorization_rejects_false_selected_item() {
+    visibility_authorization_case(1, SOURCE_BASE, 1, true);
+}
+
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun visibility_authorization_rejects_false_host_part() {
+    visibility_authorization_case(0, SOURCE_BASE, 1, true);
+}
+
+#[test]
+fun visibility_authorization_matches_exact_pack_and_external_sources() {
+    visibility_authorization_case(0, SOURCE_PACK, 2, false);
+    visibility_authorization_case(0, SOURCE_EXTERNAL, 3, false);
+    visibility_authorization_case(0, SOURCE_PACK, 1, true);
+    visibility_authorization_case(0, SOURCE_EXTERNAL, 1, true);
+}
+
+#[test]
+fun visibility_authorization_does_not_apply_unselected_base_style_to_other_sources() {
+    visibility_authorization_case(2, SOURCE_PACK, 1, false);
+    visibility_authorization_case(2, SOURCE_EXTERNAL, 1, false);
+}
+
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun visibility_authorization_pack_same_name_does_not_satisfy_base() {
+    visibility_authorization_case(0, SOURCE_PACK, 1, false);
+}
+
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun visibility_authorization_external_same_name_does_not_satisfy_base() {
+    visibility_authorization_case(0, SOURCE_EXTERNAL, 1, false);
+}
+
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun visibility_authorization_base_same_name_does_not_satisfy_pack() {
+    visibility_authorization_case(2, SOURCE_BASE, 2, false);
+}
+
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun profile_rejects_capacity_above_product_limit() {
+    assert_profile_policy(WARDROBE_SLOT, BEHAVIOR_HYBRID,
+        MAX_PART_CAPACITY + 1, ADMISSION_OPEN, false);
 }
 
 #[test, expected_failure(abort_code = EInvalidPolicy)]
@@ -3876,6 +6391,21 @@ fun all_pack_complete_modes_validate() {
     assert_complete_policy(COMPLETE_FREE_QUOTA_THEN_PAID, 10, 2, 100);
     assert_complete_policy(COMPLETE_PAID_EVERY_TIME, 10, 0, 0);
     assert_complete_policy(COMPLETE_FREE_QUOTA_THEN_BLOCK, 0, 2, 2);
+}
+
+#[test]
+fun external_render_asset_descriptor_accepts_supported_image() {
+    assert_asset_descriptor(&b"image/png".to_string(), 12582912);
+}
+
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun external_render_asset_descriptor_rejects_non_image_media() {
+    assert_asset_descriptor(&b"text/html".to_string(), 1);
+}
+
+#[test, expected_failure(abort_code = EInvalidCount)]
+fun external_render_asset_descriptor_rejects_zero_bytes() {
+    assert_asset_descriptor(&b"image/png".to_string(), 0);
 }
 
 #[test, expected_failure(abort_code = EInvalidPolicy)]
@@ -4022,6 +6552,73 @@ fun equipped_owned_item_cannot_transfer() {
     destroy_test_owned_item(item);
 }
 
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun equipped_owned_base_item_cannot_transfer() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 64, 0, 0, 0);
+    let (definitions, mut packs, mut item) = test_owned_base_fixture(&mut ctx);
+    item.equip_lock = option::some(EquipLockV8 {
+        loadout_id: object::id_from_address(@0x33),
+        equip_revision: 1,
+        selection_index: 0,
+    });
+    prepare_owned_base_item_transfer(
+        &mut packs, &definitions, &mut item, @0xB11, &ctx,
+    );
+    destroy_test_owned_base_fixture(definitions, packs, item);
+}
+
+#[test]
+fun unlocked_owned_base_item_transfer_rotates_registry_and_epoch() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 65, 0, 0, 0);
+    let (definitions, mut packs, mut item) = test_owned_base_fixture(&mut ctx);
+    let original_commitment = owned_base_item_commitment(&item);
+    prepare_owned_base_item_transfer(
+        &mut packs, &definitions, &mut item, @0xB11, &ctx,
+    );
+    assert!(item.holder == @0xB11, EWrongHolder);
+    assert!(item.ownership_epoch == 1, EInvalidBinding);
+    assert!(packs.wardrobe_revision == 1, EInvalidBinding);
+    let record = packs.base_item_owners.borrow(BaseItemHolderKeyV8 {
+        part_key: item.part_key,
+        item_key: item.item_key,
+        holder: @0xB11,
+    });
+    assert!(record.item_id == object::id(&item), EInvalidBinding);
+    assert!(record.ownership_epoch == 1, EInvalidBinding);
+    assert!(owned_base_item_commitment(&item) != original_commitment, EInvalidCommitment);
+    destroy_test_owned_base_fixture(definitions, packs, item);
+}
+
+#[test, expected_failure(abort_code = ERecipientAlreadyOwned)]
+fun owned_base_item_transfer_rejects_duplicate_recipient_entitlement() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 66, 0, 0, 0);
+    let (definitions, mut packs, mut item) = test_owned_base_fixture(&mut ctx);
+    packs.base_item_owners.add(BaseItemHolderKeyV8 {
+        part_key: item.part_key,
+        item_key: item.item_key,
+        holder: @0xB11,
+    }, BaseItemOwnershipRecordV8 {
+        item_id: object::id_from_address(@0x44),
+        ownership_epoch: 0,
+    });
+    prepare_owned_base_item_transfer(
+        &mut packs, &definitions, &mut item, @0xB11, &ctx,
+    );
+    destroy_test_owned_base_fixture(definitions, packs, item);
+}
+
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun generic_clear_cannot_bypass_owned_base_item_lock() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 67, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    let mut selection = test_selection(0, b"style".to_string(), SOURCE_BASE,
+        loadout.root_id);
+    selection.access_subject = object::id_from_address(@0x44);
+    install_selection(&mut loadout, 0, selection);
+    clear_non_external_selection_v8(&mut loadout, 0, 1, &ctx);
+    destroy_test_loadout(loadout);
+}
+
 #[test]
 fun unlocked_owned_item_transfer_increments_ownership_epoch() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 5, 0, 0, 0);
@@ -4151,12 +6748,13 @@ public fun new_physical_runtime_fixture_for_testing<PaymentCoin>(
         root_id,
         root_version,
         root_content_commitment,
-        base_registry_id: maker::root_base_registry_id_v8(root),
+        base_registry_id: maker::root_base_registry_id_v2(root),
         expected_profile_count: 0,
         observed_profile_count: 0,
         expected_profile_commitment: test_hash(70),
         rolling_profile_commitment: test_hash(70),
         admission_ceiling: ADMISSION_DISABLED,
+        item_assetization: false,
         sealed: true,
         profile_keys: vector[],
         profiles: table::new(ctx),
@@ -4170,13 +6768,16 @@ public fun new_physical_runtime_fixture_for_testing<PaymentCoin>(
         definition_registry_id: definition_id,
         admission_authority_id: authority_id,
         admission_policy_commitment:
-            *maker::root_expected_pack_admission_policy_commitment_v8(root),
+            *maker::root_expected_pack_admission_policy_commitment_v2(root),
         revision: 0,
         release_count: 0,
         external_admission_count: 0,
+        wardrobe_revision: 0,
+        base_item_count: 0,
         releases: table::new(ctx),
         semantic_releases: table::new(ctx),
         external_admissions: table::new(ctx),
+        base_item_owners: table::new(ctx),
     };
     let authority = PackAdmissionAuthorityV8 {
         id: authority_uid,
@@ -4186,6 +6787,26 @@ public fun new_physical_runtime_fixture_for_testing<PaymentCoin>(
         root_content_commitment,
     };
     (definitions, packs, authority)
+}
+
+#[test_only]
+/// Derives fixture row bytes only; creates no release, pass, admission or cap.
+/// Upper integration tests append the same row through the public author API.
+public fun physical_pack_style_commitment_for_testing<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): vector<u8> {
+    let content = *maker::root_content_commitment_v8(root);
+    let release_content = test_hash(71);
+    advance_pack_style_commitment_v8(content, release_content, 0,
+        empty_pack_style_commitment_v8(content, release_content), PackStyleV8 {
+            index: 0, definition_sources: new_pack_style_definition_sources_v8(1, 1, option::none()),
+            part_key: b"part".to_string(), item_key: b"pack-item".to_string(),
+            style_key: b"pack-style".to_string(), layer_track_key: b"track".to_string(),
+            color_channel_key: option::none(), default_swatch_key: option::none(),
+            asset_blob_id: b"pack-style-blob".to_string(), asset_sha256: test_hash(72),
+            asset_content_commitment: test_hash(73), protected: false,
+            seal_binding_commitment: vector[], style_commitment: test_hash(74),
+        })
 }
 
 #[test_only]
@@ -4220,6 +6841,7 @@ public fun add_physical_pack_fixture_for_testing<PaymentCoin>(
     let release_content_commitment = test_hash(71);
     let style = PackStyleV8 {
         index: 0,
+        definition_sources: new_pack_style_definition_sources_v8(1, 1, option::none()),
         part_key: b"part".to_string(),
         item_key: b"pack-item".to_string(),
         style_key: b"pack-style".to_string(),
@@ -4342,10 +6964,13 @@ public fun add_physical_pack_fixture_for_testing<PaymentCoin>(
         seal_binding_commitment: vector[],
     };
     let selections = vector[option::some(selection)];
+    let definition_slots = base_definition_slots(definitions);
     let loadout_commitment = canonical_loadout_commitment(
         packs.root_id,
         packs.root_version,
         packs.root_content_commitment,
+        &vector[],
+        &definition_slots,
         &selections,
     );
     let loadout = MakerLoadoutV8 {
@@ -4360,6 +6985,8 @@ public fun add_physical_pack_fixture_for_testing<PaymentCoin>(
         maker_access_commitment: test_hash(77),
         holder: ctx.sender(),
         revision: 0,
+        attached_pack_definitions: vector[],
+        definition_slots,
         selections,
         selection_count: 1,
         commitment: loadout_commitment,
@@ -4504,17 +7131,20 @@ public fun destroy_physical_runtime_fixture_for_testing(
     let PackRegistryV8 { id: pack_uid, version: _, root_id: _, root_version: _,
         root_content_commitment: _, definition_registry_id: _,
         admission_authority_id: _, admission_policy_commitment: _, revision: _,
-        release_count: _, external_admission_count: _, releases,
-        semantic_releases, external_admissions } = packs;
+        release_count: _, external_admission_count: _, wardrobe_revision: _,
+        base_item_count: _, releases, semantic_releases, external_admissions,
+        base_item_owners } = packs;
     releases.destroy_empty();
     semantic_releases.destroy_empty();
     external_admissions.destroy_empty();
+    base_item_owners.destroy_empty();
     pack_uid.delete();
     let RuntimeDefinitionRegistryV8 { id: definition_uid, version: _, root_id: _,
         root_version: _, root_content_commitment: _, base_registry_id: _,
         expected_profile_count: _, observed_profile_count: _,
         expected_profile_commitment: _, rolling_profile_commitment: _,
-        admission_ceiling: _, sealed: _, profile_keys: _, profiles } = definitions;
+        admission_ceiling: _, item_assetization: _, sealed: _, profile_keys: _,
+        profiles } = definitions;
     profiles.destroy_empty();
     definition_uid.delete();
     let PackAdmissionAuthorityV8 { id: authority_uid, version: _, root_id: _,
@@ -4561,10 +7191,66 @@ fun test_selection(
 }
 
 #[test_only]
+fun test_profile(
+    wardrobe_mode: u8,
+    behavior: u8,
+    required: bool,
+): PartProfileV8 {
+    PartProfileV8 {
+        index: 0,
+        part_key: b"body".to_string(),
+        core_part_payload_commitment: test_hash(1),
+        required,
+        wardrobe_mode,
+        behavior,
+        capacity: 1,
+        admission_ceiling: ADMISSION_OPEN,
+        profile_commitment: test_hash(2),
+    }
+}
+
+#[test_only]
 fun test_loadout(ctx: &mut TxContext): MakerLoadoutV8 {
+    test_loadout_with_capacity(ctx, 1)
+}
+
+#[test]
+fun completed_selection_copy_preserves_sparse_slots_after_loadout_mutation() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 901, 0, 0, 0);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 500);
+    let mut first = test_selection(1, b"first".to_string(), SOURCE_BASE, loadout.root_id);
+    first.color_channel_key = option::some(b"tint".to_string());
+    first.swatch_key = option::some(b"red".to_string());
+    let mut last = test_selection(499, b"last".to_string(), SOURCE_PACK, loadout.root_id);
+    last.color_channel_key = option::some(b"tint".to_string());
+    last.swatch_key = option::some(b"blue".to_string());
+    last.protected = true;
+    last.seal_binding_commitment = test_hash(7);
+    *loadout.selections.borrow_mut(1) = option::some(first);
+    *loadout.selections.borrow_mut(499) = option::some(last);
+    let copied = *loadout_selections_v8(&loadout);
+    let before = canonical_loadout_commitment(loadout.root_id, 1, test_hash(9), &loadout.attached_pack_definitions, &loadout.definition_slots, &copied);
+    *loadout.selections.borrow_mut(1) = option::none();
+    loadout.selections.borrow_mut(499).borrow_mut().swatch_key = option::some(b"green".to_string());
+    assert!(copied.length() == 500 && copied[0].is_none() && copied[2].is_none(), 100);
+    assert!(*copied[1].borrow() == first && *copied[499].borrow() == last, 101);
+    assert!(before == canonical_loadout_commitment(loadout.root_id, 1, test_hash(9), &loadout.attached_pack_definitions, &loadout.definition_slots, &copied), 102);
+    assert!(before != canonical_loadout_commitment(loadout.root_id, 1, test_hash(9), &loadout.attached_pack_definitions, &loadout.definition_slots, &loadout.selections), 103);
+    destroy_test_loadout(loadout);
+}
+
+#[test_only]
+fun test_loadout_with_capacity(ctx: &mut TxContext, capacity: u64): MakerLoadoutV8 {
     let root_id = object::id_from_address(@0x11);
-    let selections = vector[option::none()];
-    let commitment = canonical_loadout_commitment(root_id, 1, test_hash(9), &selections);
+    let mut selections = vector[];
+    let mut index = 0;
+    while (index < capacity) {
+        selections.push_back(option::none());
+        index = index + 1;
+    };
+    let definition_slots = vector[DefinitionSlotV8 { source_definition_id: root_id,
+        part_key: b"body".to_string(), profile_commitment: test_hash(2), start: 0, capacity }];
+    let commitment = canonical_loadout_commitment(root_id, 1, test_hash(9), &vector[], &definition_slots, &selections);
     MakerLoadoutV8 {
         id: object::new(ctx),
         version: VERSION,
@@ -4577,10 +7263,166 @@ fun test_loadout(ctx: &mut TxContext): MakerLoadoutV8 {
         maker_access_commitment: test_hash(14),
         holder: @0xA11,
         revision: 0,
+        attached_pack_definitions: vector[],
+        definition_slots,
         selections,
         selection_count: 0,
         commitment,
     }
+}
+
+#[test_only]
+fun test_definitions_with_capacity(
+    ctx: &mut TxContext,
+    capacity: u64,
+): RuntimeDefinitionRegistryV8 {
+    let mut profiles = table::new(ctx);
+    profiles.add(PartProfileKeyV8 { part_key: b"body".to_string() }, PartProfileV8 {
+        index: 0,
+        part_key: b"body".to_string(),
+        core_part_payload_commitment: test_hash(1),
+        required: true,
+        wardrobe_mode: WARDROBE_SLOT,
+        behavior: BEHAVIOR_HYBRID,
+        capacity,
+        admission_ceiling: ADMISSION_OPEN,
+        profile_commitment: test_hash(2),
+    });
+    RuntimeDefinitionRegistryV8 {
+        id: object::new(ctx),
+        version: VERSION,
+        root_id: object::id_from_address(@0x11),
+        root_version: 1,
+        root_content_commitment: test_hash(9),
+        base_registry_id: object::id_from_address(@0x15),
+        expected_profile_count: 1,
+        observed_profile_count: 1,
+        expected_profile_commitment: test_hash(2),
+        rolling_profile_commitment: test_hash(2),
+        admission_ceiling: ADMISSION_OPEN,
+        item_assetization: false,
+        sealed: true,
+        profile_keys: vector[b"body".to_string()],
+        profiles,
+    }
+}
+
+#[test_only]
+fun test_owned_base_fixture(
+    ctx: &mut TxContext,
+): (RuntimeDefinitionRegistryV8, PackRegistryV8, OwnedBaseItemV8) {
+    let mut definitions = test_definitions_with_capacity(ctx, 1);
+    definitions.item_assetization = true;
+    let pack_uid = object::new(ctx);
+    let pack_id = pack_uid.to_inner();
+    let item_uid = object::new(ctx);
+    let item_id = item_uid.to_inner();
+    let part_key = b"body".to_string();
+    let item_key = b"item".to_string();
+    let mut owners = table::new(ctx);
+    owners.add(BaseItemHolderKeyV8 {
+        part_key,
+        item_key,
+        holder: @0xA11,
+    }, BaseItemOwnershipRecordV8 {
+        item_id,
+        ownership_epoch: 0,
+    });
+    let packs = PackRegistryV8 {
+        id: pack_uid,
+        version: VERSION,
+        root_id: definitions.root_id,
+        root_version: definitions.root_version,
+        root_content_commitment: definitions.root_content_commitment,
+        definition_registry_id: object::id(&definitions),
+        admission_authority_id: object::id_from_address(@0x16),
+        admission_policy_commitment: test_hash(16),
+        revision: 0,
+        release_count: 0,
+        external_admission_count: 0,
+        wardrobe_revision: 0,
+        base_item_count: 1,
+        releases: table::new(ctx),
+        semantic_releases: table::new(ctx),
+        external_admissions: table::new(ctx),
+        base_item_owners: owners,
+    };
+    let item = OwnedBaseItemV8 {
+        id: item_uid,
+        version: VERSION,
+        root_id: definitions.root_id,
+        root_version: definitions.root_version,
+        root_content_commitment: definitions.root_content_commitment,
+        definition_registry_id: object::id(&definitions),
+        pack_registry_id: pack_id,
+        base_registry_id: definitions.base_registry_id,
+        part_key,
+        item_key,
+        item_payload_commitment: test_hash(17),
+        holder: @0xA11,
+        ownership_epoch: 0,
+        transferable: true,
+        equip_lock: option::none(),
+    };
+    (definitions, packs, item)
+}
+
+#[test_only]
+fun destroy_test_owned_base_fixture(
+    definitions: RuntimeDefinitionRegistryV8,
+    mut packs: PackRegistryV8,
+    item: OwnedBaseItemV8,
+) {
+    let _record = packs.base_item_owners.remove(BaseItemHolderKeyV8 {
+        part_key: item.part_key,
+        item_key: item.item_key,
+        holder: item.holder,
+    });
+    let PackRegistryV8 {
+        id: pack_id, version: _, root_id: _, root_version: _,
+        root_content_commitment: _, definition_registry_id: _,
+        admission_authority_id: _, admission_policy_commitment: _, revision: _,
+        release_count: _, external_admission_count: _, wardrobe_revision: _,
+        base_item_count: _, releases, semantic_releases, external_admissions,
+        base_item_owners,
+    } = packs;
+    releases.destroy_empty();
+    semantic_releases.destroy_empty();
+    external_admissions.destroy_empty();
+    base_item_owners.destroy_empty();
+    pack_id.delete();
+    let OwnedBaseItemV8 {
+        id: item_id, version: _, root_id: _, root_version: _,
+        root_content_commitment: _, definition_registry_id: _, pack_registry_id: _,
+        base_registry_id: _, part_key: _, item_key: _, item_payload_commitment: _,
+        holder: _, ownership_epoch: _, transferable: _, equip_lock: _,
+    } = item;
+    item_id.delete();
+    destroy_test_definitions(definitions);
+}
+
+#[test_only]
+fun destroy_test_definitions(mut definitions: RuntimeDefinitionRegistryV8) {
+    definitions.profile_keys.do_ref!(|key| {
+        if (definitions.profiles.contains(PartProfileKeyV8 { part_key: *key })) {
+            let _ = definitions.profiles.remove(PartProfileKeyV8 { part_key: *key });
+        };
+    });
+    // Some older Player fixtures deliberately rename the profile-key vector
+    // while retaining the original row to exercise invalid-identity handling.
+    vector[b"body".to_string(), b"part".to_string()].do!(|key| {
+        if (definitions.profiles.contains(PartProfileKeyV8 { part_key: key })) {
+            let _ = definitions.profiles.remove(PartProfileKeyV8 { part_key: key });
+        };
+    });
+    let RuntimeDefinitionRegistryV8 {
+        id, version: _, root_id: _, root_version: _, root_content_commitment: _,
+        base_registry_id: _, expected_profile_count: _, observed_profile_count: _,
+        expected_profile_commitment: _, rolling_profile_commitment: _,
+        admission_ceiling: _, item_assetization: _, sealed: _, profile_keys: _, profiles,
+    } = definitions;
+    profiles.destroy_empty();
+    id.delete();
 }
 
 #[test_only]
@@ -4622,6 +7464,894 @@ fun test_pack_release(
 }
 
 #[test_only]
+fun test_pack_visibility_row(
+    semantic: String, subject: u8, source: u8, part: String, item: String,
+    style: Option<String>, tokens: vector<base::VisibilityTokenV1>,
+): base::PackVisibilityRowV2 {
+    base::new_pack_visibility_row_v2(subject, source, part, item, style, tokens,
+        base::visibility_program_commitment_v1(source,
+            if (source == 1) option::none() else option::some(semantic),
+            subject, part, option::some(item), style, &tokens))
+}
+
+#[test_only]
+fun pack_rule_context_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 904, 0, 0, 0);
+    let registry = base::new_visibility_registry_for_testing(vector[], 0, &mut ctx);
+    let mut definitions = test_definitions_with_capacity(&mut ctx, 2);
+    definitions.root_id = base::registry_root_id_v2(&registry);
+    definitions.root_version = base::registry_maker_version_v2(&registry);
+    definitions.root_content_commitment = *base::registry_root_content_commitment_v2(&registry);
+    definitions.base_registry_id = object::id(&registry);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 2);
+    loadout.definition_registry_id = object::id(&definitions);
+    loadout.root_id = definitions.root_id; loadout.root_version = definitions.root_version;
+    loadout.root_content_commitment = definitions.root_content_commitment;
+    loadout.definition_slots[0].source_definition_id = definitions.root_id;
+    let mut release = test_pack_release(&mut ctx);
+    release.root_id = definitions.root_id; release.root_version = definitions.root_version;
+    release.root_content_commitment = definitions.root_content_commitment;
+    release.lifecycle = PACK_DRAFT;
+    let cap_uid = object::new(&mut ctx);
+    release.admin_cap_id = cap_uid.to_inner();
+    let cap = PackAdminCapV8 { id: cap_uid, version: VERSION, release_id: object::id(&release), owner: @0xA11, control_epoch: 0 };
+    let body = base::new_semantic_selector_v2(if (case == 10) 2 else if (case == 12) 0 else 1,
+        if (case == 10) option::some(b"other".to_string()) else option::none(),
+        b"body".to_string(), option::none(), option::none());
+    let tokens = if (case == 8) vector[base::new_visibility_token_v1(0, option::some(body), 0)] else vector[];
+    let part = base::new_part_row_v2(0, b"addon".to_string(), b"Addon".to_string(), 0, 0, 0, true, false, 1, 2,
+        vector[], tokens, base::visibility_program_commitment_v1(2, option::some(release.semantic_pack_id),
+            0, b"addon".to_string(), option::none(), option::none(), &tokens), test_hash(2));
+    let mut targets = vector[body];
+    if (case == 3) targets.push_back(base::new_semantic_selector_v2(1, option::none(), b"addon".to_string(),
+        option::some(b"not-selected".to_string()), option::none()));
+    let rule = base::new_rule_row_v2(0, b"context-rule".to_string(), if (case == 2) 1 else 0,
+        base::new_semantic_selector_v2(if (case == 5 || case == 7) 0 else 1, option::none(),
+            b"addon".to_string(), option::none(), option::none()),
+        if (case == 2 || case == 3) 1 else 0, targets, test_hash(3));
+    let style_tokens = if (case == 13 || case == 14) vector[base::new_visibility_token_v1(0, option::some(body), 0)] else vector[];
+    let mut visibility = vector[test_pack_visibility_row(release.semantic_pack_id, 1, 2,
+        b"addon".to_string(), b"item".to_string(), option::none(), vector[])];
+    if (case != 15) visibility.push_back(test_pack_visibility_row(release.semantic_pack_id, 2, 2,
+        b"addon".to_string(), b"item".to_string(), option::some(b"own-item".to_string()), style_tokens));
+    let rows = base::new_pack_definition_rows_v2(release.semantic_pack_id, vector[], vector[], vector[part],
+        if (case == 8 || case >= 13) vector[] else vector[rule], visibility);
+    let commitment = pack_definitions_commitment_v8(object::id(&release), release.content_commitment, &rows);
+    register_pack_definitions_v8(&mut release, &cap, &registry, rows, commitment, &ctx);
+    let profiles = pack_part_profiles_v8(&definitions, &release);
+    append_pack_definition_slots(&mut loadout, object::id(&release), commitment, &profiles);
+    if (case == 9) loadout.attached_pack_definitions[0].definition_commitment = test_hash(99);
+    let mut own = test_selection(2, b"own-item".to_string(), SOURCE_PACK, object::id(&release));
+    own.part_key = b"addon".to_string();
+    own.source_semantic_id = release.semantic_pack_id;
+    let style_key = PackStyleKeyV8 { part_key: own.part_key, item_key: own.item_key, style_key: own.style_key };
+    release.styles.add(style_key, PackStyleV8 { index: 0,
+        definition_sources: new_pack_style_definition_sources_v8(2, 1, option::none()),
+        part_key: own.part_key, item_key: own.item_key, style_key: own.style_key,
+        layer_track_key: own.layer_track_key, color_channel_key: option::none(), default_swatch_key: option::none(),
+        asset_blob_id: own.asset_blob_id, asset_sha256: own.asset_sha256, asset_content_commitment: own.asset_content_commitment,
+        protected: false, seal_binding_commitment: vector[], style_commitment: test_hash(11) });
+    if (case == 4 || case == 5 || case == 7) {
+        own.source_class = SOURCE_EXTERNAL; own.source_definition_id = object::id_from_address(@0xBAD);
+    };
+    if (case == 6) {
+        let other = object::id_from_address(@0xBAD);
+        append_pack_definition_slots(&mut loadout, other, test_hash(44), &profiles);
+        own.selection_index = 4; own.source_definition_id = other;
+        install_selection(&mut loadout, 4, own);
+    } else install_selection(&mut loadout, 2, own);
+    if (case != 1 && case != 7 && case != 8 && case != 14) {
+        let mut inherited = test_selection(0, b"body-item".to_string(), SOURCE_BASE, loadout.root_id);
+        if (case >= 10 && case <= 12) {
+            inherited.source_class = SOURCE_PACK;
+            inherited.source_definition_id = object::id_from_address(@0xBAD);
+            inherited.source_semantic_id = b"other".to_string();
+        };
+        install_selection(&mut loadout, 0, inherited);
+    };
+    validate_attached_pack_definitions_v8(&loadout, &definitions, &registry, &release, 0, &ctx);
+    let _ = release.styles.remove(style_key);
+    let _: PackDefinitionsV8 = df::remove(&mut release.id, PackDefinitionsKeyV8 {});
+    let PackAdminCapV8 { id, version: _, release_id: _, owner: _, control_epoch: _ } = cap; id.delete();
+    destroy_test_pack_release(release);
+    destroy_test_loadout(loadout);
+    destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry);
+}
+
+#[test]
+fun pack_rule_context_local_base_matches_owned_addition() { pack_rule_context_case(0) }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun pack_rule_context_require_missing_target_rejects() { pack_rule_context_case(1) }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun pack_rule_context_exclude_reuses_core_semantics() { pack_rule_context_case(2) }
+#[test]
+fun pack_rule_context_require_any_retains_alternatives() { pack_rule_context_case(3) }
+#[test]
+fun pack_rule_context_external_is_not_local_base() { pack_rule_context_case(4) }
+#[test]
+fun pack_rule_context_any_retains_external_in_exact_part() { pack_rule_context_case(5) }
+#[test]
+fun pack_rule_context_same_named_foreign_part_cannot_trigger() { pack_rule_context_case(6) }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun pack_rule_context_checks_without_pack_sourced_selection() { pack_rule_context_case(7) }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun pack_rule_context_part_visibility_rejects_missing_dependency() { pack_rule_context_case(8) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_rule_context_rejects_different_attachment_commitment() { pack_rule_context_case(9) }
+#[test]
+fun pack_rule_context_explicit_pack_target_keeps_semantic_identity() { pack_rule_context_case(10) }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun pack_rule_context_foreign_pack_cannot_satisfy_local_base() { pack_rule_context_case(11) }
+#[test]
+fun pack_rule_context_any_target_keeps_foreign_pack() { pack_rule_context_case(12) }
+#[test]
+fun pack_rule_context_style_visibility_accepts_dependency() { pack_rule_context_case(13) }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun pack_rule_context_style_visibility_rejects_missing_dependency() { pack_rule_context_case(14) }
+#[test, expected_failure(abort_code = 6, location = animacraft_v8_core::base_registry_v8)]
+fun pack_rule_context_style_visibility_metadata_is_required() { pack_rule_context_case(15) }
+
+#[test_only]
+fun pack_inherited_visibility_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 906, 0, 0, 0);
+    let tokens = vector[base::new_visibility_token_v1(0, option::some(base::new_semantic_selector_v2(
+        0, option::none(), b"part".to_string(), option::some(b"item".to_string()), option::some(b"style".to_string()))), 0)];
+    let registry = base::new_visibility_registry_for_testing(tokens, 1, &mut ctx);
+    let mut definitions = test_definitions_with_capacity(&mut ctx, 2);
+    let mut profile = definitions.profiles.remove(PartProfileKeyV8 { part_key: b"body".to_string() });
+    profile.part_key = b"part".to_string(); definitions.profile_keys = vector[profile.part_key];
+    definitions.profiles.add(PartProfileKeyV8 { part_key: profile.part_key }, profile);
+    definitions.root_id = base::registry_root_id_v2(&registry);
+    definitions.root_version = base::registry_maker_version_v2(&registry);
+    definitions.root_content_commitment = *base::registry_root_content_commitment_v2(&registry);
+    definitions.base_registry_id = object::id(&registry);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 2);
+    loadout.definition_registry_id = object::id(&definitions);
+    loadout.root_id = definitions.root_id; loadout.root_version = definitions.root_version;
+    loadout.root_content_commitment = definitions.root_content_commitment;
+    loadout.definition_slots[0].source_definition_id = definitions.root_id;
+    loadout.definition_slots[0].part_key = b"part".to_string();
+    let mut release = test_pack_release(&mut ctx);
+    release.root_id = definitions.root_id; release.root_version = definitions.root_version;
+    release.root_content_commitment = definitions.root_content_commitment;
+    release.lifecycle = PACK_DRAFT;
+    let cap_uid = object::new(&mut ctx); release.admin_cap_id = cap_uid.to_inner();
+    let cap = PackAdminCapV8 { id: cap_uid, version: VERSION, release_id: object::id(&release), owner: @0xA11, control_epoch: 0 };
+    let style_key = if (case == 3) b"style".to_string() else b"added".to_string();
+    let rows = base::new_pack_definition_rows_v2(release.semantic_pack_id, vector[], vector[], vector[], vector[], vector[
+        test_pack_visibility_row(release.semantic_pack_id, 1, 1, b"part".to_string(), b"item".to_string(),
+            option::none(), if (case == 2) vector[] else tokens),
+        test_pack_visibility_row(release.semantic_pack_id, 2, 2, b"part".to_string(), b"item".to_string(),
+            option::some(style_key), vector[]),
+    ]);
+    let commitment = pack_definitions_commitment_v8(object::id(&release), release.content_commitment, &rows);
+    register_pack_definitions_v8(&mut release, &cap, &registry, rows, commitment, &ctx);
+    append_pack_definition_slots(&mut loadout, object::id(&release), commitment, &vector[]);
+    let mut own = test_selection(0, style_key, SOURCE_PACK, object::id(&release));
+    own.part_key = b"part".to_string(); own.source_semantic_id = release.semantic_pack_id;
+    let key = PackStyleKeyV8 { part_key: own.part_key, item_key: own.item_key, style_key: own.style_key };
+    release.styles.add(key, PackStyleV8 { index: 0,
+        definition_sources: new_pack_style_definition_sources_v8(1, 1, option::none()),
+        part_key: own.part_key, item_key: own.item_key, style_key: own.style_key, layer_track_key: own.layer_track_key,
+        color_channel_key: option::none(), default_swatch_key: option::none(), asset_blob_id: own.asset_blob_id,
+        asset_sha256: own.asset_sha256, asset_content_commitment: own.asset_content_commitment,
+        protected: false, seal_binding_commitment: vector[], style_commitment: test_hash(11) });
+    install_selection(&mut loadout, 0, own);
+    let mut dependency = test_selection(if (case == 1) 2 else 1, b"style".to_string(), SOURCE_BASE, loadout.root_id);
+    dependency.part_key = b"part".to_string();
+    if (case == 1) {
+        let mut profile = test_profile(WARDROBE_SLOT, BEHAVIOR_HYBRID, false);
+        profile.part_key = b"part".to_string();
+        append_pack_definition_slots(&mut loadout, object::id_from_address(@0xBAD), test_hash(44), &vector[profile]);
+        dependency.source_class = SOURCE_EXTERNAL; dependency.source_definition_id = object::id_from_address(@0xBAD);
+    };
+    install_selection(&mut loadout, dependency.selection_index, dependency);
+    validate_attached_pack_definitions_v8(&loadout, &definitions, &registry, &release, 0, &ctx);
+    let _ = release.styles.remove(key);
+    let _: PackDefinitionsV8 = df::remove(&mut release.id, PackDefinitionsKeyV8 {});
+    let PackAdminCapV8 { id, version: _, release_id: _, owner: _, control_epoch: _ } = cap; id.delete();
+    destroy_test_pack_release(release); destroy_test_loadout(loadout); destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry);
+}
+
+#[test]
+fun pack_inherited_visibility_any_matches_base_scope() { pack_inherited_visibility_case(0) }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun pack_inherited_visibility_any_rejects_foreign_same_named_scope() { pack_inherited_visibility_case(1) }
+#[test, expected_failure(abort_code = 11, location = animacraft_v8_core::base_registry_v8)]
+fun pack_inherited_visibility_cannot_replace_base_item_program() { pack_inherited_visibility_case(2) }
+#[test, expected_failure(abort_code = 5, location = animacraft_v8_core::base_registry_v8)]
+fun pack_inherited_visibility_cannot_shadow_base_style() { pack_inherited_visibility_case(3) }
+
+#[test_only]
+fun pack_definition_proof_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 910, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    if (case != 1 && case != 3 && case != 10) df::add(&mut loadout.id, SoulEquipmentLayoutKeyV8 {}, true);
+    let (mut definitions, registry) = equipment_visibility_definitions_for_testing(&mut loadout, vector[], 0, &mut ctx);
+    // Optional Base profile isolates zero-selection final-consumer behavior.
+    definitions.profile_keys.do_ref!(|key| {
+        definitions.profiles.borrow_mut(PartProfileKeyV8 { part_key: *key }).required = false;
+    });
+    let mut release = test_pack_release(&mut ctx);
+    release.root_id = loadout.root_id; release.root_version = loadout.root_version;
+    release.root_content_commitment = loadout.root_content_commitment; release.lifecycle = PACK_DRAFT;
+    let cap_uid = object::new(&mut ctx); release.admin_cap_id = cap_uid.to_inner();
+    let cap = PackAdminCapV8 { id: cap_uid, version: VERSION, release_id: object::id(&release), owner: ctx.sender(), control_epoch: 0 };
+    let own_part = case == 2 || case == 3 || case == 14 || case == 15;
+    let part = base::new_part_row_v2(0, b"addon".to_string(), b"Addon".to_string(), 0, 0, 0, true, false, 1, 2,
+        vector[], vector[], base::visibility_program_commitment_v1(2, option::some(release.semantic_pack_id),
+            0, b"addon".to_string(), option::none(), option::none(), &vector[]), test_hash(3));
+    let rule = base::new_rule_row_v2(0, b"pending-complete".to_string(), 0,
+        base::new_semantic_selector_v2(1, option::none(), b"addon".to_string(), option::none(), option::none()), 0,
+        vector[base::new_semantic_selector_v2(2, option::some(b"absent".to_string()), b"part".to_string(), option::none(), option::none())], test_hash(4));
+    let rows = base::new_pack_definition_rows_v2(release.semantic_pack_id, vector[], vector[],
+        if (own_part) vector[part] else vector[], if (case == 14 || case == 15) vector[rule] else vector[],
+        if (own_part) vector[
+            test_pack_visibility_row(release.semantic_pack_id, 1, 2, b"addon".to_string(), b"item".to_string(), option::none(), vector[]),
+            test_pack_visibility_row(release.semantic_pack_id, 2, 2, b"addon".to_string(), b"item".to_string(), option::some(b"style".to_string()), vector[]),
+        ] else vector[]);
+    let commitment = pack_definitions_commitment_v8(object::id(&release), release.content_commitment, &rows);
+    register_pack_definitions_v8(&mut release, &cap, &registry, rows, commitment, &ctx);
+    append_pack_definition_slots(&mut loadout, object::id(&release), commitment, &pack_part_profiles_v8(&definitions, &release));
+    if (own_part) {
+        let mut selection = test_selection(3, b"style".to_string(), SOURCE_PACK, object::id(&release));
+        selection.part_key = b"addon".to_string(); selection.source_semantic_id = release.semantic_pack_id;
+        release.styles.add(PackStyleKeyV8 { part_key: selection.part_key, item_key: selection.item_key, style_key: selection.style_key },
+            PackStyleV8 { index: 0, definition_sources: new_pack_style_definition_sources_v8(2, 1, option::none()),
+                part_key: selection.part_key, item_key: selection.item_key, style_key: selection.style_key,
+                layer_track_key: selection.layer_track_key, color_channel_key: option::none(), default_swatch_key: option::none(),
+                asset_blob_id: selection.asset_blob_id, asset_sha256: selection.asset_sha256, asset_content_commitment: selection.asset_content_commitment,
+                protected: false, seal_binding_commitment: vector[], style_commitment: test_hash(8) });
+        install_selection(&mut loadout, 3, selection);
+    };
+    if (case == 13) append_pack_definition_slots(&mut loadout, object::id_from_address(@0xBAD), test_hash(9), &vector[]);
+    if (case == 15) validate_attached_pack_definitions_v8(&loadout, &definitions, &registry, &release, 0, &ctx);
+    // Equipment producer is public. Completion mode below isolates the final
+    // consumer only; the public entitlement producer has its own full fixture.
+    let mut proof = prove_equipment_pack_definitions_v8(&loadout, &definitions, &registry, &release, 0, &ctx);
+    if (case == 1 || case == 3) proof.completion_checked = true;
+    if (case == 4) proof.loadout_revision = proof.loadout_revision + 1;
+    if (case == 5) proof.loadout_commitment = test_hash(99);
+    if (case == 6 || case == 13) proof.binding_index = 1;
+    if (case == 7) proof.release_id = object::id_from_address(@0xBAD);
+    if (case == 11) loadout.definition_slots[0].capacity = 2;
+    if (case == 12) proof.loadout_id = object::id_from_address(@0xBAD);
+    let mut proofs = vector[proof];
+    if (case == 8) {
+        let PackDefinitionProofV8 { loadout_id: _, loadout_revision: _, loadout_commitment: _, binding_index: _,
+            release_id: _, definition_commitment: _, profiles: _, completion_checked: _ } = proofs.pop_back();
+    };
+    if (case == 9 || case == 13) proofs.push_back(prove_equipment_pack_definitions_v8(
+        &loadout, &definitions, &registry, &release, 0, &ctx));
+    if (case == 1 || case == 3 || case == 10) {
+        let selections = if (own_part) vector[new_selection_proof(&loadout, loadout.selections[3].borrow(), release.content_commitment)] else vector[];
+        let authorization = seal_ordered_selection_proofs_v8(&loadout, &definitions, &registry, proofs, selections, &ctx);
+        assert!(authorization.used_packs.length() == if (own_part) 1 else 0, EInvalidProof);
+        let (_, _, _, _, _, _, _, _, _, _) = consume_loadout_authorization_v8(authorization, &loadout);
+    } else {
+        let guard = SoulEquipmentUpdateV8 { loadout_id: object::id(&loadout), binding: SoulEquipmentBindingV8 {
+            soul_id: object::id_from_address(@0x42), soul_state_id: object::id_from_address(@0x43),
+            holder: ctx.sender(), ownership_epoch: 0, protocol_config_id: object::id_from_address(@0x44) } };
+        finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, proofs, guard);
+        assert!(is_soul_equipment_v8(&loadout), EInvalidProof);
+    };
+    if (own_part) { let _ = release.styles.remove(PackStyleKeyV8 { part_key: b"addon".to_string(), item_key: b"item".to_string(), style_key: b"style".to_string() }); };
+    let _: PackDefinitionsV8 = df::remove(&mut release.id, PackDefinitionsKeyV8 {});
+    let PackAdminCapV8 { id, version: _, release_id: _, owner: _, control_epoch: _ } = cap; id.delete();
+    destroy_test_pack_release(release); destroy_test_loadout(loadout); destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry);
+}
+
+#[test]
+fun pack_definition_proof_equipment_empty_attachment_finishes() { pack_definition_proof_case(0) }
+#[test]
+fun pack_definition_proof_completion_empty_attachment_not_charged() { pack_definition_proof_case(1) }
+#[test]
+fun pack_definition_proof_equipment_owned_part_finishes() { pack_definition_proof_case(2) }
+#[test]
+fun pack_definition_proof_completion_owned_part_traverses_selection() { pack_definition_proof_case(3) }
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun pack_definition_proof_rejects_stale_revision() { pack_definition_proof_case(4) }
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun pack_definition_proof_rejects_stale_commitment() { pack_definition_proof_case(5) }
+#[test, expected_failure(abort_code = EProofOrder)]
+fun pack_definition_proof_rejects_wrong_index() { pack_definition_proof_case(6) }
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun pack_definition_proof_rejects_wrong_release() { pack_definition_proof_case(7) }
+#[test, expected_failure(abort_code = EProofOrder)]
+fun pack_definition_proof_requires_zero_part_attachment() { pack_definition_proof_case(8) }
+#[test, expected_failure(abort_code = EProofOrder)]
+fun pack_definition_proof_rejects_duplicate_proof() { pack_definition_proof_case(9) }
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun pack_definition_proof_equipment_cannot_authorize_completion() { pack_definition_proof_case(10) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_definition_proof_rejects_different_layout() { pack_definition_proof_case(11) }
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun pack_definition_proof_rejects_other_loadout() { pack_definition_proof_case(12) }
+#[test, expected_failure(abort_code = EProofOrder)]
+fun pack_definition_proof_rejects_wrong_order_for_two_bindings() { pack_definition_proof_case(13) }
+#[test]
+fun pack_definition_proof_equipment_keeps_pending_complete_rule() { pack_definition_proof_case(14) }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun pack_definition_proof_completion_requires_pack_rule() { pack_definition_proof_case(15) }
+
+#[test_only]
+fun pack_definition_public_producer_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 911, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (config, protocol_admin) = protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let economics = maker::new_economics_snapshot_v8<sui::sui::SUI>(&config, 0, 0, 0, 0, 0, 0);
+    let rights = maker::new_onchain_native_rights_snapshot_v8(&ctx, 250, 250, 500);
+    let (mut root, mut registry, treasury, maker_admin) = animacraft_v8_core::core_v8::new_initial_maker_draft_v8<sui::sui::SUI>(
+        &config, b"proof-test".to_string(), test_hash(1), test_hash(2), test_hash(3), test_hash(4),
+        b"manifest".to_string(), test_hash(5), test_hash(6), base::new_base_definition_counts_v8(1, 0, 1, 1, 1, 0, 1),
+        base::minimal_author_rows_commitment_for_testing(), test_hash(7), economics, rights, &clock, &mut ctx);
+    base::populate_and_seal_minimal_for_testing(&mut registry, &mut root, &maker_admin);
+    maker::set_lifecycle_for_testing(&mut root, 1);
+    let access = core_treasury::new_maker_access_for_testing(&root, ctx.sender(), &mut ctx);
+    let (mut definitions, mut packs, authority) = new_physical_runtime_fixture_for_testing(&root, &mut ctx);
+    let mut profile = test_profile(WARDROBE_FIXED, BEHAVIOR_FIXED, true); profile.part_key = b"part".to_string();
+    definitions.profile_keys = vector[profile.part_key];
+    definitions.profiles.add(PartProfileKeyV8 { part_key: profile.part_key }, profile);
+    let mut loadout = test_loadout(&mut ctx);
+    loadout.root_id = object::id(&root); loadout.root_version = maker::root_maker_version_v8(&root);
+    loadout.root_content_commitment = *maker::root_content_commitment_v8(&root);
+    loadout.definition_registry_id = object::id(&definitions); loadout.pack_registry_id = object::id(&packs);
+    loadout.maker_access_pass_id = object::id(&access); loadout.maker_access_commitment = maker_access_entitlement_commitment_v8(&access);
+    loadout.definition_slots = base_definition_slots(&definitions); recompute_loadout(&mut loadout);
+    select_base_style_v8(&mut loadout, &root, &definitions, &packs, &registry, &access, 0, option::some(0),
+        b"part".to_string(), b"item".to_string(), b"style".to_string(), option::none(), &ctx);
+    let mut release = test_pack_release(&mut ctx);
+    release.root_id = loadout.root_id; release.root_version = loadout.root_version;
+    release.root_content_commitment = loadout.root_content_commitment; release.lifecycle = PACK_DRAFT;
+    let cap_uid = object::new(&mut ctx); release.admin_cap_id = cap_uid.to_inner();
+    let cap = PackAdminCapV8 { id: cap_uid, version: VERSION, release_id: object::id(&release), owner: ctx.sender(), control_epoch: 0 };
+    let rows = base::new_pack_definition_rows_v2(release.semantic_pack_id, vector[], vector[], vector[], vector[], vector[]);
+    let commitment = pack_definitions_commitment_v8(object::id(&release), release.content_commitment, &rows);
+    register_pack_definitions_v8(&mut release, &cap, &registry, rows, commitment, &ctx);
+    // Sealed lifecycle and issued pass are controlled prerequisites: publication
+    // remains guarded. Admission, public proof production, and consumption run.
+    release.lifecycle = PACK_SEALED;
+    admit_pack_release_v8(&mut packs, &authority, &definitions, &root, &maker_admin, &mut release, 0, &ctx);
+    let pass = new_pack_pass(&mut release, 0, 0, &mut ctx);
+    append_pack_definition_slots(&mut loadout, object::id(&release), commitment, &vector[]);
+    if (case == 1) packs.releases.borrow_mut(object::id(&release)).admission_state = ADMISSION_REVOKED;
+    if (case == 2) release.lifecycle = PACK_PAUSED;
+    let proof = prove_attached_pack_definitions_v8(&loadout, &definitions, &registry, &root, &packs, &release, &pass, &access, 0, &ctx);
+    let selection = prove_base_selection_v8(&loadout, &definitions, &registry, &root, &access, 0, &ctx);
+    let authorization = seal_ordered_selection_proofs_v8(&loadout, &definitions, &registry, vector[proof], vector[selection], &ctx);
+    assert!(authorization.used_packs.is_empty(), EInvalidProof);
+    let (_, _, _, _, _, _, _, _, _, _) = consume_loadout_authorization_v8(authorization, &loadout);
+    std::unit_test::destroy(release); std::unit_test::destroy(pass); std::unit_test::destroy(cap);
+    std::unit_test::destroy(packs); std::unit_test::destroy(authority); std::unit_test::destroy(access);
+    destroy_test_loadout(loadout); destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry); core_treasury::destroy_maker_treasury_for_testing(treasury);
+    maker::destroy_maker_for_testing(root, maker_admin); clock.destroy_for_testing();
+    protocol::destroy_protocol_for_testing(config, protocol_admin);
+}
+
+#[test]
+fun pack_definition_public_producer_authorizes_real_entitlements() { pack_definition_public_producer_case(0) }
+#[test, expected_failure(abort_code = EAdmissionDenied)]
+fun pack_definition_public_producer_rejects_revoked_admission() { pack_definition_public_producer_case(1) }
+#[test, expected_failure(abort_code = EInvalidLifecycle)]
+fun pack_definition_public_producer_rejects_paused_release() { pack_definition_public_producer_case(2) }
+
+#[test_only]
+fun pack_attachment_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 903, 0, 0, 0);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 2);
+    let slots = loadout.definition_slots;
+    let selections = loadout.selections;
+    let before = loadout.commitment;
+    let release_id = object::id_from_address(@0x22);
+    append_pack_definition_slots(&mut loadout, release_id, test_hash(1), &vector[]);
+    assert!(loadout.definition_slots == slots && loadout.selections == selections
+        && loadout.selection_count == 0 && loadout.revision == 1
+        && loadout.commitment != before, EInvalidProof);
+    assert!(loadout.attached_pack_definitions == vector[AttachedPackDefinitionV8 {
+        release_id, definition_commitment: test_hash(1) }], EInvalidProof);
+    if (case == 1) append_pack_definition_slots(&mut loadout, release_id, test_hash(1), &vector[]);
+    if (case == 2) {
+        let definitions = test_definitions_with_capacity(&mut ctx, 2);
+        loadout.definition_registry_id = object::id(&definitions);
+        let _ = consume_pack_definition_proofs(&loadout, &definitions, vector[], true);
+        destroy_test_definitions(definitions);
+    };
+    let pinned = loadout.commitment;
+    loadout.attached_pack_definitions[0].definition_commitment = test_hash(2);
+    recompute_loadout(&mut loadout);
+    assert!(loadout.commitment != pinned, EInvalidProof);
+    loadout.attached_pack_definitions[0].definition_commitment = test_hash(1);
+    append_pack_definition_slots(&mut loadout, object::id_from_address(@0x23), test_hash(3), &vector[]);
+    let ordered = loadout.commitment;
+    loadout.attached_pack_definitions.reverse();
+    recompute_loadout(&mut loadout);
+    assert!(ordered != loadout.commitment && loadout.definition_slots == slots, EInvalidProof);
+    destroy_test_loadout(loadout);
+}
+
+#[test_only]
+fun pack_selection_attachment_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 912, 0, 0, 0);
+    let mut release = test_pack_release(&mut ctx);
+    let mut loadout = test_loadout(&mut ctx);
+    let rows = base::new_pack_definition_rows_v2(release.semantic_pack_id,
+        vector[], vector[], vector[], vector[], vector[]);
+    let commitment = pack_definitions_commitment_v8(object::id(&release), release.content_commitment, &rows);
+    if (case != 0) {
+        let value = PackDefinitionsV8 { version: VERSION, release_id: object::id(&release),
+            release_content_commitment: release.content_commitment, rows, commitment };
+        df::add(&mut release.id, PackDefinitionsKeyV8 {}, value);
+        if (case != 1) loadout.attached_pack_definitions.push_back(AttachedPackDefinitionV8 {
+            release_id: if (case == 4) object::id_from_address(@0xBAD) else object::id(&release),
+            definition_commitment: if (case == 3) test_hash(99) else commitment,
+        });
+        if (case == 5) {
+            let duplicate = loadout.attached_pack_definitions[0];
+            loadout.attached_pack_definitions.push_back(duplicate);
+        };
+    };
+    // Zero owned Parts is intentional: Base-scoped Styles need this binding too.
+    assert_pack_definition_attachment(&loadout, &release);
+    if (case != 0) { let _: PackDefinitionsV8 = df::remove(&mut release.id, PackDefinitionsKeyV8 {}); };
+    destroy_test_loadout(loadout);
+    destroy_test_pack_release(release);
+}
+
+#[test]
+fun pack_selection_attachment_preserves_simple_release() { pack_selection_attachment_case(0) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_selection_attachment_requires_zero_part_definitions() { pack_selection_attachment_case(1) }
+#[test]
+fun pack_selection_attachment_accepts_exact_binding() { pack_selection_attachment_case(2) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_selection_attachment_rejects_changed_commitment() { pack_selection_attachment_case(3) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_selection_attachment_rejects_other_release() { pack_selection_attachment_case(4) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_selection_attachment_rejects_duplicate() { pack_selection_attachment_case(5) }
+
+#[test]
+fun pack_attachment_without_parts_or_selections_changes_commitment() { pack_attachment_case(0) }
+#[test, expected_failure(abort_code = EDuplicate)]
+fun pack_attachment_without_parts_cannot_duplicate() { pack_attachment_case(1) }
+#[test, expected_failure(abort_code = EProofOrder)]
+fun pack_attachment_without_selected_styles_still_requires_proof() { pack_attachment_case(2) }
+#[test]
+fun pack_attachment_bcs_matches_clients() {
+    let binding = AttachedPackDefinitionV8 { release_id: object::id_from_address(@0x22), definition_commitment: test_hash(1) };
+    assert!(bcs::to_bytes(&binding) == x"0000000000000000000000000000000000000000000000000000000000000022200101010101010101010101010101010101010101010101010101010101010101", EInvalidProof);
+}
+
+#[test_only]
+fun pack_reference_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 902, 0, 0, 0);
+    let registry = base::new_visibility_registry_for_testing(vector[], 0, &mut ctx);
+    let mut release = test_pack_release(&mut ctx);
+    release.root_id = base::registry_root_id_v2(&registry);
+    release.root_version = base::registry_maker_version_v2(&registry);
+    release.root_content_commitment = *base::registry_root_content_commitment_v2(&registry);
+    release.lifecycle = PACK_DRAFT;
+    let cap_uid = object::new(&mut ctx);
+    release.admin_cap_id = cap_uid.to_inner();
+    let cap = PackAdminCapV8 { id: cap_uid, version: VERSION, release_id: object::id(&release),
+        owner: @0xA11, control_epoch: 0 };
+    let track = base::new_track_row_v2(0, b"overlay".to_string(), b"Pack Track".to_string(), 99, false);
+    let swatch = base::new_color_swatch_v2(b"red".to_string(), b"Red".to_string(), 0xff0000ff, vector[]);
+    let color = base::new_color_channel_row_v2(0, b"pack-tint".to_string(), b"Tint".to_string(), b"red".to_string(), vector[swatch]);
+    let part = base::new_part_row_v2(0, b"addon".to_string(), b"Pack Part".to_string(), 0, 0, 0,
+        true, false, if (case == 15 || case == 24) 0 else 1, 2, vector[], vector[], base::visibility_program_commitment_v1(2,
+            option::some(release.semantic_pack_id), 0, b"addon".to_string(), option::none(), option::none(), &vector[]), test_hash(2));
+    let style_part = if (case == 8 || case >= 22) b"addon".to_string() else b"part".to_string();
+    let rows = base::new_pack_definition_rows_v2(release.semantic_pack_id,
+        vector[track], vector[color], vector[part], vector[], vector[
+            test_pack_visibility_row(release.semantic_pack_id, 1, 2, style_part,
+                b"pack-item".to_string(), option::none(), vector[]),
+            test_pack_visibility_row(release.semantic_pack_id, 2, 2, style_part,
+                b"pack-item".to_string(), option::some(b"pack-style".to_string()), vector[]),
+        ]);
+    let commitment = pack_definitions_commitment_v8(object::id(&release), release.content_commitment, &rows);
+    register_pack_definitions_v8(&mut release, &cap, &registry, rows, commitment, &ctx);
+    let own_id = object::id(&release);
+    if (case == 1) {
+        let _ = resolve_pack_track_v8(&registry, &release, object::id_from_address(@0xBAD), b"overlay".to_string());
+    };
+    if (case == 2) {
+        let _ = resolve_pack_color_v8(&registry, &release, own_id, b"pack-tint".to_string(), b"missing".to_string());
+    };
+    if (case == 3) {
+        let _ = resolve_pack_color_v8(&registry, &release, release.root_id, b"pack-tint".to_string(), b"red".to_string());
+    };
+    if (case == 4) release.root_content_commitment = test_hash(99);
+    if (case == 5) release.content_commitment = test_hash(99);
+    assert!(*resolve_pack_track_v8(&registry, &release, own_id, b"overlay".to_string()) == track, EInvalidProof);
+    assert!(*resolve_pack_track_v8(&registry, &release, release.root_id, b"track".to_string())
+        == *base::borrow_track_v2(&registry, b"track".to_string()), EInvalidProof);
+    assert!(*resolve_pack_track_v8(&registry, &release, release.root_id, b"track".to_string()) != track, EInvalidProof);
+    assert!(*resolve_pack_part_v8(&registry, &release, own_id, b"addon".to_string()) == part, EInvalidProof);
+    assert!(*resolve_pack_part_v8(&registry, &release, release.root_id, b"part".to_string()) != part, EInvalidProof);
+    assert!(*resolve_pack_color_v8(&registry, &release, own_id, b"pack-tint".to_string(), b"red".to_string()) == swatch, EInvalidProof);
+    if ((case >= 6 && case <= 9) || (case >= 22 && case <= 29)) {
+        let mut definitions = test_definitions_with_capacity(&mut ctx, 2);
+        definitions.root_id = release.root_id;
+        definitions.root_version = release.root_version;
+        definitions.root_content_commitment = release.root_content_commitment;
+        definitions.base_registry_id = object::id(&registry);
+        let mut profile = definitions.profiles.remove(PartProfileKeyV8 { part_key: b"body".to_string() });
+        profile.part_key = b"part".to_string();
+        definitions.profile_keys = vector[profile.part_key];
+        definitions.profiles.add(PartProfileKeyV8 { part_key: profile.part_key }, profile);
+        let sources = new_pack_style_definition_sources_v8(if (case == 8 || case >= 22) 2 else 1,
+            if (case == 9) 1 else 2, if (case == 7) option::none() else option::some(2));
+        let previous = release.rolling_style_commitment;
+        if (case >= 25) {
+            // Declare the expected complete Style before the real append. Never
+            // fake observed counts or copy the resulting rolling commitment.
+            let expected_style = PackStyleV8 { index: 0, definition_sources: sources,
+                part_key: style_part, item_key: b"pack-item".to_string(), style_key: b"pack-style".to_string(),
+                layer_track_key: b"overlay".to_string(), color_channel_key: option::some(b"pack-tint".to_string()),
+                default_swatch_key: option::some(b"red".to_string()), asset_blob_id: b"blob".to_string(),
+                asset_sha256: test_hash(7), asset_content_commitment: test_hash(8), protected: false,
+                seal_binding_commitment: vector[], style_commitment: test_hash(9) };
+            release.expected_style_commitment = if (case == 27) test_hash(99) else advance_pack_style_commitment_v8(
+                release.root_content_commitment, release.content_commitment, 0, previous, expected_style);
+            if (case == 26) release.expected_style_count = 2;
+        };
+        if (case == 22 || case == 23) {
+            // Runtime witness/append test only: external Seal certification is
+            // deliberately not asserted by this controlled fixture.
+            let witness = new_pack_registration_witness_v8(&release, &cap, &definitions,
+                0, sources, style_part, b"pack-item".to_string(), b"pack-style".to_string(), test_hash(8), &ctx);
+            append_certified_pack_style_v8(&mut release, &cap, &definitions, &registry, witness,
+                if (case == 23) new_pack_style_definition_sources_v8(2, 1, option::some(2)) else sources,
+                b"overlay".to_string(), option::some(b"pack-tint".to_string()), option::some(b"red".to_string()),
+                b"blob".to_string(), test_hash(7), test_hash(8), test_hash(10), test_hash(9), &ctx);
+        } else {
+            append_unprotected_pack_style_v8(&mut release, &cap, &definitions, &registry, 0, sources,
+                style_part, b"pack-item".to_string(), b"pack-style".to_string(), if (case == 9) b"track".to_string() else b"overlay".to_string(),
+                option::some(b"pack-tint".to_string()), option::some(b"red".to_string()), b"blob".to_string(),
+                test_hash(7), test_hash(8), test_hash(9), &ctx);
+        };
+        let style = release.styles.borrow(PackStyleKeyV8 { part_key: style_part,
+            item_key: b"pack-item".to_string(), style_key: b"pack-style".to_string() });
+        assert!(style.definition_sources == sources && release.observed_style_count == 1, EInvalidProof);
+        assert!(exact_pack_swatch(&registry, &release, style, option::some(b"red".to_string()))
+            == option::some(b"red".to_string()), EInvalidProof);
+        let mut substituted = *style;
+        substituted.definition_sources.track = if (sources.track == 1) 2 else 1;
+        assert!(release.rolling_style_commitment != advance_pack_style_commitment_v8(
+            release.root_content_commitment, release.content_commitment, 0, previous, substituted), EInvalidProof);
+        substituted = *style;
+        substituted.definition_sources.color = option::some(1);
+        assert!(release.rolling_style_commitment != advance_pack_style_commitment_v8(
+            release.root_content_commitment, release.content_commitment, 0, previous, substituted), EInvalidProof);
+        if (case >= 25) {
+            if (case == 28) {
+                let wrong_author = tx_context::new_from_hint(@0xBAD, 903, 0, 0, 0);
+                seal_pack_release_v8(&mut release, &cap, &wrong_author);
+            } else seal_pack_release_v8(&mut release, &cap, &ctx);
+            assert!(release.lifecycle == PACK_SEALED && release.observed_style_count == 1
+                && release.rolling_style_commitment == release.expected_style_commitment, EInvalidProof);
+            if (case == 29) seal_pack_release_v8(&mut release, &cap, &ctx);
+        };
+        let mut profile = definitions.profiles.remove(PartProfileKeyV8 { part_key: b"part".to_string() });
+        profile.part_key = b"body".to_string();
+        definitions.profiles.add(PartProfileKeyV8 { part_key: profile.part_key }, profile);
+        destroy_test_definitions(definitions);
+        let _ = release.styles.remove(PackStyleKeyV8 { part_key: style_part,
+            item_key: b"pack-item".to_string(), style_key: b"pack-style".to_string() });
+    };
+    if (case >= 10 && case <= 21) {
+        let mut definitions = test_definitions_with_capacity(&mut ctx, 2);
+        definitions.root_id = release.root_id;
+        definitions.root_version = release.root_version;
+        definitions.root_content_commitment = release.root_content_commitment;
+        if (case == 12) definitions.admission_ceiling = ADMISSION_DISABLED;
+        if (case == 13) definitions.sealed = false;
+        let profiles = pack_part_profiles_v8(&definitions, &release);
+        assert!(profiles.length() == 1 && profiles[0].part_key == b"addon".to_string()
+            && profiles[0].capacity == 2 && !profiles[0].required
+            && profiles[0].wardrobe_mode == if (case == 15) WARDROBE_FIXED else WARDROBE_SLOT, EInvalidProof);
+        assert!(profiles[0].behavior == if (case == 15) BEHAVIOR_FIXED
+            else if (case == 12) BEHAVIOR_SOUL_LOCAL else BEHAVIOR_HYBRID, EInvalidProof);
+        let mut loadout = test_loadout_with_capacity(&mut ctx, if (case == 16) 499 else 2);
+        let occupied = test_selection(0, b"kept".to_string(), SOURCE_BASE, loadout.root_id);
+        install_selection(&mut loadout, 0, occupied);
+        let previous_slots = loadout.definition_slots;
+        let previous_selections = loadout.selections;
+        let revision = loadout.revision;
+        let commitment = loadout.commitment;
+        if (case == 19) {
+            let _ = scoped_selection_slot(&loadout, own_id, &profiles[0], option::none());
+        };
+        append_pack_definition_slots(&mut loadout, own_id, pack_definitions_v8(&release).commitment, &profiles);
+        assert!(loadout.revision == revision + 1 && loadout.commitment != commitment
+            && loadout.selection_count == 1, EInvalidProof);
+        assert!(loadout.definition_slots[0] == previous_slots[0]
+            && loadout.selections[0] == previous_selections[0]
+            && loadout.selections[1] == previous_selections[1], EInvalidProof);
+        assert!(loadout.definition_slots[1].source_definition_id == own_id
+            && loadout.definition_slots[1].start == 2 && loadout.definition_slots[1].capacity == 2
+            && loadout.definition_slots[1].profile_commitment == profiles[0].profile_commitment
+            && loadout.selections.length() == 4
+            && loadout.selections[2].is_none() && loadout.selections[3].is_none(), EInvalidProof);
+        if (case == 11) append_pack_definition_slots(&mut loadout, own_id, pack_definitions_v8(&release).commitment, &profiles);
+        if (case == 14) {
+            // Same local Part name in another Release gets a distinct stable range.
+            let next_id = object::id_from_address(@0xBAD);
+            append_pack_definition_slots(&mut loadout, next_id, test_hash(44), &profiles);
+            assert!(loadout.definition_slots[1].start == 2
+                && loadout.definition_slots[2].start == 4
+                && loadout.definition_slots[2].source_definition_id == next_id
+                && loadout.selections[0] == previous_selections[0], EInvalidProof);
+        };
+        if (case >= 17) {
+            // Even with an identical Base key, resolve only this Release's range.
+            loadout.definition_slots[0].part_key = profiles[0].part_key;
+            let profile = pack_style_part_profile(&definitions, &release, 2, profiles[0].part_key);
+            if (case == 20) loadout.definition_slots[1].profile_commitment = test_hash(99);
+            let position = scoped_selection_slot(&loadout, own_id, &profile,
+                if (case == 18) option::some(0) else option::none());
+            assert!(position == 2, EInvalidProof);
+            install_selection(&mut loadout, position, test_selection(position, b"own-a".to_string(), SOURCE_PACK, own_id));
+            let next = scoped_selection_slot(&loadout, own_id, &profile, option::none());
+            assert!(next == 3 && loadout.selections[0] == previous_selections[0], EInvalidProof);
+            install_selection(&mut loadout, next, test_selection(next, b"own-b".to_string(), SOURCE_PACK, own_id));
+            if (case == 21) { let _ = scoped_selection_slot(&loadout, own_id, &profile, option::none()); };
+        };
+        destroy_test_loadout(loadout);
+        destroy_test_definitions(definitions);
+    };
+    let _: PackDefinitionsV8 = df::remove(&mut release.id, PackDefinitionsKeyV8 {});
+    let PackAdminCapV8 { id, version: _, release_id: _, owner: _, control_epoch: _ } = cap;
+    id.delete();
+    destroy_test_pack_release(release);
+    base::share_base_definition_registry_for_testing(registry);
+}
+
+#[test]
+fun pack_reference_exact_source_preserves_additive_keys() { pack_reference_case(0) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_reference_rejects_foreign_definition() { pack_reference_case(1) }
+#[test, expected_failure(abort_code = 6, location = animacraft_v8_core::base_registry_v8)]
+fun pack_reference_never_substitutes_default_swatch() { pack_reference_case(2) }
+#[test, expected_failure(abort_code = 6, location = animacraft_v8_core::base_registry_v8)]
+fun pack_reference_never_falls_back_to_other_scope() { pack_reference_case(3) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_reference_rejects_other_parent_content() { pack_reference_case(4) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_reference_rejects_changed_release_content() { pack_reference_case(5) }
+#[test]
+fun pack_reference_public_append_persists_owned_track_color_sources() { pack_reference_case(6) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_reference_append_rejects_missing_color_source() { pack_reference_case(7) }
+#[test]
+fun pack_reference_append_resolves_owned_part_profile() { pack_reference_case(8) }
+#[test]
+fun pack_reference_public_append_allows_independent_base_track_pack_color() { pack_reference_case(9) }
+#[test]
+fun pack_reference_scope_bcs_matches_clients() {
+    assert!(bcs::to_bytes(&new_pack_style_definition_sources_v8(1, 2, option::some(2))) == x"01020102", EInvalidProof);
+    assert!(bcs::to_bytes(&new_pack_style_definition_sources_v8(1, 1, option::none())) == x"010100", EInvalidProof);
+}
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun pack_reference_scope_rejects_any() { new_pack_style_definition_sources_v8(0, 1, option::none()); }
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun pack_reference_scope_rejects_external_color() { new_pack_style_definition_sources_v8(1, 1, option::some(3)); }
+#[test]
+fun pack_reference_owned_profiles_attach_without_reindexing() { pack_reference_case(10) }
+#[test, expected_failure(abort_code = EDuplicate)]
+fun pack_reference_attach_rejects_duplicate_release() { pack_reference_case(11) }
+#[test]
+fun pack_reference_owned_profiles_preserve_closed_admission() { pack_reference_case(12) }
+#[test, expected_failure(abort_code = ENotSealed)]
+fun pack_reference_owned_profiles_reject_unsealed_parent() { pack_reference_case(13) }
+#[test]
+fun pack_reference_attach_second_pack_preserves_prior_ranges() { pack_reference_case(14) }
+#[test]
+fun pack_reference_owned_profiles_preserve_fixed_parts() { pack_reference_case(15) }
+#[test, expected_failure(abort_code = EInvalidCount)]
+fun pack_reference_attach_rejects_total_capacity_overflow() { pack_reference_case(16) }
+#[test]
+fun pack_reference_owned_selection_uses_exact_attached_range() { pack_reference_case(17) }
+#[test, expected_failure(abort_code = EPartOrder)]
+fun pack_reference_owned_selection_cannot_target_base_slot() { pack_reference_case(18) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_reference_owned_selection_requires_attachment() { pack_reference_case(19) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_reference_owned_selection_requires_exact_profile_hash() { pack_reference_case(20) }
+#[test, expected_failure(abort_code = EDuplicate)]
+fun pack_reference_owned_selection_stops_at_part_capacity() { pack_reference_case(21) }
+#[test]
+fun pack_reference_protected_witness_resolves_owned_part() { pack_reference_case(22) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_reference_protected_witness_rejects_source_substitution() { pack_reference_case(23) }
+#[test]
+fun pack_reference_public_append_accepts_own_fixed_part() { pack_reference_case(24) }
+#[test]
+fun pack_reference_authored_seal_after_exact_scoped_append() { pack_reference_case(25) }
+#[test, expected_failure(abort_code = EInvalidCount)]
+fun pack_reference_authored_seal_rejects_missing_style() { pack_reference_case(26) }
+#[test, expected_failure(abort_code = EInvalidCommitment)]
+fun pack_reference_authored_seal_rejects_wrong_style_commitment() { pack_reference_case(27) }
+#[test, expected_failure(abort_code = EWrongControl)]
+fun pack_reference_authored_seal_rejects_other_author() { pack_reference_case(28) }
+#[test, expected_failure(abort_code = EInvalidLifecycle)]
+fun pack_reference_authored_seal_cannot_repeat() { pack_reference_case(29) }
+
+#[test_only]
+fun pack_definitions_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 901, 0, 0, 0);
+    let registry = base::new_visibility_registry_for_testing(vector[], 0, &mut ctx);
+    let mut release = test_pack_release(&mut ctx);
+    release.root_id = base::registry_root_id_v2(&registry);
+    release.root_version = base::registry_maker_version_v2(&registry);
+    release.root_content_commitment = *base::registry_root_content_commitment_v2(&registry);
+    release.lifecycle = if (case == 2) PACK_ACTIVE else PACK_DRAFT;
+    let cap_uid = object::new(&mut ctx);
+    release.admin_cap_id = cap_uid.to_inner();
+    let cap = PackAdminCapV8 { id: cap_uid, version: VERSION, release_id: object::id(&release),
+        owner: if (case == 1) @0xBAD else @0xA11, control_epoch: 0 };
+    if (case == 3) release.observed_style_count = 1;
+    if (case == 8) release.root_content_commitment = test_hash(99);
+    let mut tracks = vector[base::new_track_row_v2(0, b"overlay".to_string(), b"Overlay".to_string(), 2, false)];
+    if (case >= 9) tracks.push_back(base::new_track_row_v2(1, b"upper".to_string(), b"Upper".to_string(), 3, false));
+    let swatches = vector[base::new_color_swatch_v2(b"red".to_string(), b"Red".to_string(), 1, vector[]),
+        base::new_color_swatch_v2(b"blue".to_string(), b"Blue".to_string(), 2, vector[])];
+    let colors = if (case >= 14) vector[base::new_color_channel_row_v2(0, b"tint".to_string(),
+        b"Tint".to_string(), b"blue".to_string(), swatches)] else vector[];
+    let rows = base::new_pack_definition_rows_v2(
+        if (case == 7) b"other".to_string() else release.semantic_pack_id,
+        tracks,
+        colors, vector[], vector[], vector[]);
+    let expected = pack_definitions_commitment_v8(object::id(&release), release.content_commitment, &rows);
+    assert!(expected != pack_definitions_commitment_v8(object::id_from_address(@0x22),
+        release.content_commitment, &rows), EInvalidProof);
+    if (case >= 9) {
+        begin_pack_definitions_v8(&mut release, &cap, expected, &ctx);
+        assert!(!df::exists(&release.id, PackDefinitionsKeyV8 {}), EInvalidProof);
+        if (case == 12) register_pack_definitions_v8(&mut release, &cap, &registry, rows, expected, &ctx);
+        if (case == 13) {
+            release.observed_style_count = release.expected_style_count;
+            release.rolling_style_commitment = release.expected_style_commitment;
+            seal_pack_release_v8(&mut release, &cap, &ctx);
+        };
+        append_pack_definitions_v8(&mut release, &cap, 0, vector[tracks[0]], vector[], vector[], vector[], vector[], &ctx);
+        if (case == 11) finalize_pack_definitions_v8(&mut release, &cap, &registry, 1, &ctx);
+        append_pack_definitions_v8(&mut release, &cap, if (case == 10) 0 else 1,
+            vector[tracks[1]], vector[], vector[], vector[], vector[], &ctx);
+        if (case >= 14) {
+            if (case == 20) {
+                let wrong_author = tx_context::new_from_hint(@0xBAD, 903, 0, 0, 0);
+                begin_pack_color_v8(&mut release, &cap, 2, 0, b"tint".to_string(), b"Tint".to_string(),
+                    b"blue".to_string(), 2, &wrong_author);
+            };
+            begin_pack_color_v8(&mut release, &cap, 2, 0, b"tint".to_string(), b"Tint".to_string(),
+                b"blue".to_string(), 2, &ctx);
+            if (case == 18) append_pack_definitions_v8(&mut release, &cap, 3,
+                vector[], vector[], vector[], vector[], vector[], &ctx);
+            if (case == 19) finalize_pack_definitions_v8(&mut release, &cap, &registry, 3, &ctx);
+            if (case == 21) seal_pack_release_v8(&mut release, &cap, &ctx);
+            append_pack_color_v8(&mut release, &cap, 3, 0, vector[swatches[0]], &ctx);
+            assert!(!df::exists(&release.id, PackDefinitionsKeyV8 {}), EInvalidProof);
+            if (case == 16) finish_pack_color_v8(&mut release, &cap, 4, &ctx);
+            append_pack_color_v8(&mut release, &cap, if (case == 15) 3 else 4,
+                if (case == 22) 0 else 1, vector[swatches[if (case == 17) 0 else 1]], &ctx);
+            finish_pack_color_v8(&mut release, &cap, 5, &ctx);
+            assert!(!df::exists(&release.id, PackColorDraftKeyV8 {}), EInvalidProof);
+        };
+        finalize_pack_definitions_v8(&mut release, &cap, &registry, if (case >= 14) 6 else 2, &ctx);
+        assert!(!df::exists(&release.id, PackDefinitionsDraftKeyV8 {}), EInvalidProof);
+    } else register_pack_definitions_v8(&mut release, &cap, &registry, rows,
+        if (case == 4) test_hash(0) else expected, &ctx);
+    let saved = pack_definitions_v8(&release);
+    assert!(saved.release_id == object::id(&release) && saved.rows == rows
+        && saved.commitment == expected, EInvalidProof);
+    if (case == 5) register_pack_definitions_v8(&mut release, &cap, &registry, rows, expected, &ctx);
+    if (case == 6) {
+        seal_pack_release_v8(&mut release, &cap, &ctx);
+    };
+    let _: PackDefinitionsV8 = df::remove(&mut release.id, PackDefinitionsKeyV8 {});
+    let PackAdminCapV8 { id, version: _, release_id: _, owner: _, control_epoch: _ } = cap;
+    id.delete();
+    destroy_test_pack_release(release);
+    base::share_base_definition_registry_for_testing(registry);
+}
+
+#[test]
+fun pack_definitions_register_exact_immutable_release_rows() { pack_definitions_case(0) }
+#[test]
+fun pack_definitions_chunks_finalize_same_exact_rows() { pack_definitions_case(9) }
+#[test, expected_failure(abort_code = EInvalidSequence)]
+fun pack_definitions_chunks_reject_replayed_ordinal() { pack_definitions_case(10) }
+#[test, expected_failure(abort_code = EInvalidCommitment)]
+fun pack_definitions_chunks_reject_incomplete_content() { pack_definitions_case(11) }
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun pack_definitions_chunks_reject_atomic_replacement() { pack_definitions_case(12) }
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun pack_definitions_chunks_cannot_seal_partial_release() { pack_definitions_case(13) }
+#[test]
+fun pack_definitions_color_chunks_match_complete_rows() { pack_definitions_case(14) }
+#[test, expected_failure(abort_code = EInvalidSequence)]
+fun pack_definitions_color_chunks_reject_replayed_chunk() { pack_definitions_case(15) }
+#[test, expected_failure(abort_code = 8, location = animacraft_v8_core::base_registry_v8)]
+fun pack_definitions_color_chunks_reject_partial_finish() { pack_definitions_case(16) }
+#[test, expected_failure(abort_code = 5, location = animacraft_v8_core::base_registry_v8)]
+fun pack_definitions_color_chunks_reject_cross_batch_duplicate() { pack_definitions_case(17) }
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun pack_definitions_color_chunks_block_outer_append() { pack_definitions_case(18) }
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun pack_definitions_color_chunks_block_outer_finalize() { pack_definitions_case(19) }
+#[test, expected_failure(abort_code = EWrongControl)]
+fun pack_definitions_color_chunks_reject_other_author() { pack_definitions_case(20) }
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun pack_definitions_color_chunks_block_seal() { pack_definitions_case(21) }
+#[test, expected_failure(abort_code = 4, location = animacraft_v8_core::base_registry_v8)]
+fun pack_definitions_color_chunks_reject_rebased_swatch_offset() { pack_definitions_case(22) }
+#[test]
+fun pack_profile_commitment_matches_client() {
+    let content = test_hash(20);
+    let previous = empty_profile_commitment_v8(content);
+    assert!(advance_profile_commitment_v8(content, 0, previous, b"plume".to_string(),
+        test_hash(32), false, WARDROBE_SLOT, BEHAVIOR_HYBRID, 2, ADMISSION_CERTIFIED)
+        == x"8d135d901e9ec1c72cc028bdef5b4601c6d36a5f60fc57daace0a477c734f6b5", EInvalidCommitment);
+}
+#[test]
+fun pack_definitions_commitment_matches_client() {
+    assert!(bcs::to_bytes(&PackDefinitionsKeyV8 {}) == x"00", EInvalidCommitment);
+    let rows = base::new_pack_definition_rows_v2(b"extras".to_string(), vector[], vector[], vector[], vector[], vector[]);
+    assert!(pack_definitions_commitment_v8(object::id_from_address(@0x22), test_hash(1), &rows)
+        == x"f1adc4b85ba61f64a2061b721acaa691b3b20d01772b76d85860e6a7b65d82d4", EInvalidCommitment);
+}
+#[test, expected_failure(abort_code = EWrongControl)]
+fun pack_definitions_reject_other_author() { pack_definitions_case(1) }
+#[test, expected_failure(abort_code = EInvalidLifecycle)]
+fun pack_definitions_reject_active_release() { pack_definitions_case(2) }
+#[test, expected_failure(abort_code = EInvalidCount)]
+fun pack_definitions_reject_existing_styles() { pack_definitions_case(3) }
+#[test, expected_failure(abort_code = EInvalidCommitment)]
+fun pack_definitions_reject_wrong_commitment() { pack_definitions_case(4) }
+#[test, expected_failure(abort_code = EDuplicate)]
+fun pack_definitions_cannot_replace_attached_rows() { pack_definitions_case(5) }
+#[test, expected_failure(abort_code = EInvalidCount)]
+fun pack_definitions_cannot_seal_before_expected_styles() { pack_definitions_case(6) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_definitions_reject_other_semantic_pack() { pack_definitions_case(7) }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun pack_definitions_reject_other_base_content() { pack_definitions_case(8) }
+
+#[test, expected_failure(abort_code = EPackAccessAlreadyIssued)]
+fun pack_access_rejects_duplicate_holder() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 81, 0, 0, 0);
+    let mut release = test_pack_release(&mut ctx);
+    transfer_pack_pass_to_holder_v8(new_pack_pass(&mut release, 10, 0, &mut ctx));
+    transfer_pack_pass_to_holder_v8(new_pack_pass(&mut release, 10, 1, &mut ctx));
+    destroy_test_pack_release(release);
+}
+
+#[test]
+fun pack_access_distinct_holders_are_independent() {
+    let mut scenario = sui::test_scenario::begin(@0xA11);
+    let mut release = test_pack_release(scenario.ctx());
+    assert!(scenario.ctx().sender() == @0xA11, EWrongHolder);
+    transfer_pack_pass_to_holder_v8(new_pack_pass(&mut release, 0, 0, scenario.ctx()));
+    transfer::share_object(release);
+    // TxContext sender is native transaction state, not a per-value field.
+    scenario.next_tx(@0xB0B);
+    let mut release = scenario.take_shared<PackReleaseV8<sui::sui::SUI>>();
+    assert!(scenario.ctx().sender() == @0xB0B, EWrongHolder);
+    transfer_pack_pass_to_holder_v8(new_pack_pass(&mut release, 10, 1, scenario.ctx()));
+    assert!(release.pass_count == 2, EInvalidCount);
+    assert!(df::remove<PackAccessKeyV8, bool>(&mut release.id, PackAccessKeyV8 { holder: @0xA11 }), EInvalidProof);
+    assert!(df::remove<PackAccessKeyV8, bool>(&mut release.id, PackAccessKeyV8 { holder: @0xB0B }), EInvalidProof);
+    sui::test_scenario::return_shared(release);
+    scenario.end();
+}
+
+#[test_only]
 fun destroy_test_pack_release(release: PackReleaseV8<sui::sui::SUI>) {
     let PackReleaseV8 {
         id, version: _, root_id: _, root_version: _, root_content_commitment: _,
@@ -4639,14 +8369,837 @@ fun destroy_test_pack_release(release: PackReleaseV8<sui::sui::SUI>) {
 }
 
 #[test_only]
-fun destroy_test_loadout(loadout: MakerLoadoutV8) {
+fun destroy_test_loadout(mut loadout: MakerLoadoutV8) {
+    if (has_equipment_layout(&loadout)) {
+        let _: bool = df::remove(&mut loadout.id, SoulEquipmentLayoutKeyV8 {});
+    };
+    if (is_soul_equipment_v8(&loadout)) {
+        let _: SoulEquipmentBindingV8 = df::remove(&mut loadout.id, SoulEquipmentKeyV8 {});
+    };
     let MakerLoadoutV8 {
         id, version: _, root_id: _, root_version: _, root_content_commitment: _,
         definition_registry_id: _, pack_registry_id: _, maker_access_pass_id: _,
-        maker_access_commitment: _, holder: _, revision: _,
+        maker_access_commitment: _, holder: _, revision: _, attached_pack_definitions: _, definition_slots: _,
         selections: _, selection_count: _, commitment: _,
     } = loadout;
     id.delete();
+}
+
+
+#[test_only]
+fun equipment_fixture(ctx: &mut TxContext): (
+    MakerLoadoutV8, ProtocolConfigV8,
+    animacraft_v8_core::protocol_config_v8::ProtocolAdminCapV8,
+) {
+    let (mut config, admin) = protocol::new_protocol_for_testing<u64>(true, ctx);
+    native_binding::install_soulidity_binding_v8<
+        animacraft_v8_core::soul::Soul,
+        animacraft_v8_core::animacraft_v8_binding::MintBindingWitnessV8,
+        animacraft_v8_core::animacraft_v8_binding::SoulOwnerWitnessV8,
+    >(&mut config, &admin);
+    let mut loadout = test_loadout(ctx);
+    df::add(&mut loadout.id, SoulEquipmentLayoutKeyV8 {}, true);
+    df::add(&mut loadout.id, SoulEquipmentKeyV8 {}, SoulEquipmentBindingV8 {
+        soul_id: object::id_from_address(@0x42),
+        soul_state_id: object::id_from_address(@0x43),
+        holder: ctx.sender(), ownership_epoch: 2,
+        protocol_config_id: object::id(&config),
+    });
+    (loadout, config, admin)
+}
+
+#[test_only]
+fun equipment_test_update(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 801, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    // Sui's test sender is VM-global, not stored independently in each context.
+    if (case == 6) { let _wrong_ctx = tx_context::new_from_hint(@0xB22, 802, 0, 0, 0); };
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        object::id_from_address(if (case == 1) @0x99 else @0x42),
+        object::id_from_address(if (case == 2) @0x99 else @0x43),
+        if (case == 3) @0xB22 else @0xA11,
+        if (case == 4) 3 else 2,
+    );
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config,
+        if (case == 5) 1 else 0, witness, &ctx);
+    assert!(!is_soul_equipment_v8(&loadout), 100);
+    if (case == 7) {
+        let mut other = test_loadout(&mut ctx);
+        finish_test_empty_equipment(&mut other, guard, &mut ctx);
+        destroy_test_loadout(other);
+    } else {
+        assert_loadout_holder_revision(&loadout, 0, &ctx);
+        finish_test_empty_equipment(&mut loadout, guard, &mut ctx);
+        assert!(is_soul_equipment_v8(&loadout)
+            && soul_equipment_soul_id_v8(&loadout) == object::id_from_address(@0x42)
+            && soul_equipment_state_id_v8(&loadout) == object::id_from_address(@0x43)
+            && soul_equipment_binding_v8(&loadout).ownership_epoch == 2, 101);
+    };
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test_only]
+fun equipment_single_slot_case(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 901 + (case as u64), 0, 0, 0);
+    let definitions = test_definitions_with_capacity(&mut ctx, 3);
+    let profile = *definitions.profiles.borrow(PartProfileKeyV8 { part_key: b"body".to_string() });
+    let player = test_loadout_with_capacity(&mut ctx, 3);
+    assert!(selection_slot(&player, &definitions, &profile, option::some(2)) == 2, 121);
+    assert!(base_definition_slots(&definitions)[0].capacity == 3, 122);
+    let (mut equipment, config, admin) = equipment_fixture(&mut ctx);
+    equipment.definition_registry_id = object::id(&definitions);
+    equipment.definition_slots = definition_slots_for_layout(&definitions, true);
+    recompute_loadout(&mut equipment);
+    let guard = begin_soul_equipment_update_v8(&mut equipment, &config, 0,
+        animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+            object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+    assert!(!is_soul_equipment_v8(&equipment) && has_equipment_layout(&equipment), 123);
+    assert!(equipment.definition_slots[0].capacity == 1 && equipment.selections.length() == 1, 124);
+    assert!(selection_slot(&equipment, &definitions, &profile, option::none()) == 0, 125);
+    if (case == 1) {
+        let selection = test_selection(0, b"style".to_string(), SOURCE_BASE, equipment.root_id);
+        install_selection(&mut equipment, 0, selection);
+        let _ = selection_slot(&equipment, &definitions, &profile, option::none());
+    };
+    if (case == 2) { let _ = selection_slot(&equipment, &definitions, &profile, option::some(1)); };
+    if (case == 3) {
+        equipment.definition_slots[0].capacity = 3;
+        equipment.selections = vector[option::none(), option::none(), option::none()];
+        let _ = consume_pack_definition_proofs(&equipment, &definitions, vector[], false);
+    };
+    // A Pack-owned Part with the same label/key is a separate definition, not
+    // another slot in the Base Part. Its Maker capacity still does not apply.
+    let release_id = object::id_from_address(@0x99);
+    append_pack_definition_slots(&mut equipment, release_id, test_hash(4), &vector[profile]);
+    assert!(equipment.definition_slots[1].capacity == 1 && equipment.definition_slots[1].start == 1
+        && equipment.selections.length() == 2, 126);
+    assert!(scoped_selection_slot(&equipment, release_id, &profile, option::none()) == 1, 127);
+    let proof = PackDefinitionProofV8 { loadout_id: object::id(&equipment), loadout_revision: equipment.revision,
+        loadout_commitment: equipment.commitment, binding_index: 0, release_id,
+        definition_commitment: test_hash(4), profiles: vector[profile], completion_checked: false };
+    let profiles = consume_pack_definition_proofs(&equipment, &definitions, vector[proof], false);
+    assert!(profiles.length() == 2 && profiles[0].capacity == 3 && profiles[1].capacity == 3, 128);
+    // This unit exercises layout while the actual public guard is open. Final
+    // visibility validation is covered separately by the equipment journey tests.
+    std::unit_test::destroy(guard);
+    destroy_test_loadout(equipment); destroy_test_loadout(player);
+    destroy_test_definitions(definitions);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test]
+fun equipment_single_slot_survives_guard_and_pack_proofs_without_changing_player() { equipment_single_slot_case(0); }
+#[test, expected_failure(abort_code = EDuplicate)]
+fun equipment_single_slot_rejects_second_item() { equipment_single_slot_case(1); }
+#[test, expected_failure(abort_code = EPartOrder)]
+fun equipment_single_slot_rejects_explicit_extra_position() { equipment_single_slot_case(2); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun equipment_single_slot_rejects_forged_multi_capacity_proof_layout() { equipment_single_slot_case(3); }
+
+/// Adapt pre-existing empty-equipment tests to an actual sealed definition
+/// registry. This is test-only setup, not an alternate guard consumer.
+#[test_only]
+fun finish_test_empty_equipment(
+    loadout: &mut MakerLoadoutV8, guard: SoulEquipmentUpdateV8, ctx: &mut TxContext,
+) {
+    assert!(loadout.selection_count == 0, 110);
+    let (definitions, base) = equipment_visibility_definitions_for_testing(loadout, vector[], 0, ctx);
+    finish_soul_equipment_update_v8(loadout, &definitions, &base, vector[], guard);
+    destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(base);
+}
+
+#[test_only]
+public fun equipment_visibility_definitions_for_testing(
+    loadout: &mut MakerLoadoutV8, tokens: vector<base::VisibilityTokenV1>, subject: u8, ctx: &mut TxContext,
+): (RuntimeDefinitionRegistryV8, BaseDefinitionRegistryV8) {
+    let registry = base::new_equipment_visibility_registry_for_testing(tokens, subject, ctx);
+    while (loadout.selections.length() < 3) loadout.selections.push_back(option::none());
+    let mut definitions = test_definitions_with_capacity(ctx, 1);
+    let mut profile = definitions.profiles.remove(PartProfileKeyV8 { part_key: b"body".to_string() });
+    definitions.profile_keys = vector[b"part".to_string(), b"spare".to_string(), b"dependent".to_string()];
+    let mut profile_index = 0;
+    definitions.profile_keys.do_ref!(|key| {
+        profile.part_key = *key; profile.index = profile_index;
+        definitions.profiles.add(PartProfileKeyV8 { part_key: *key }, profile);
+        profile_index = profile_index + 1;
+    });
+    definitions.expected_profile_count = 3; definitions.observed_profile_count = 3;
+    definitions.base_registry_id = object::id(&registry);
+    definitions.root_id = base::registry_root_id_v2(&registry);
+    definitions.root_version = base::registry_maker_version_v2(&registry);
+    definitions.root_content_commitment = *base::registry_root_content_commitment_v2(&registry);
+    loadout.root_id = definitions.root_id;
+    loadout.root_version = definitions.root_version;
+    loadout.root_content_commitment = definitions.root_content_commitment;
+    loadout.definition_registry_id = object::id(&definitions);
+    loadout.definition_slots = base_definition_slots(&definitions);
+    loadout.commitment = canonical_loadout_commitment(loadout.root_id, loadout.root_version,
+        loadout.root_content_commitment, &loadout.attached_pack_definitions, &loadout.definition_slots, &loadout.selections);
+    (definitions, registry)
+}
+
+#[test_only]
+public fun destroy_equipment_visibility_definitions_for_testing(definitions: RuntimeDefinitionRegistryV8) {
+    destroy_test_definitions(definitions);
+}
+
+#[test_only]
+public fun install_equipment_visibility_selection_for_testing(
+    loadout: &mut MakerLoadoutV8, index: u64, source: u8, protected: bool,
+) {
+    while (loadout.selections.length() <= index) loadout.selections.push_back(option::none());
+    let mut selection = test_selection(index, b"style".to_string(), source,
+        if (source == SOURCE_EXTERNAL) object::id_from_address(@0x11) else loadout.root_id);
+    selection.part_key = loadout.definition_slots[index].part_key;
+    selection.access_subject = loadout.maker_access_pass_id;
+    selection.protected = protected;
+    install_selection(loadout, index, selection);
+}
+
+#[test_only]
+fun equipment_visibility_tokens(source: u8, negate: bool): vector<base::VisibilityTokenV1> {
+    let source_key = if (source == 2) option::some(b"pack".to_string())
+        else if (source == 3) option::some(
+            b"0x0000000000000000000000000000000000000000000000000000000000000011".to_string())
+        else option::none();
+    let mut tokens = vector[base::new_visibility_token_v1(0, option::some(base::new_semantic_selector_v2(
+        source, source_key, b"part".to_string(), option::some(b"item".to_string()),
+        option::some(b"style".to_string()))), 0)];
+    if (negate) tokens.push_back(base::new_visibility_token_v1(1, option::none(), 1));
+    tokens
+}
+
+#[test_only]
+fun equipment_visibility_finish_case(subject: u8, source: u8, predicate: u8, negate: bool, empty: bool) {
+    let hint = 840 + (subject as u64) * 1000 + (source as u64) * 100
+        + (predicate as u64) * 10 + if (negate) 2 else if (empty) 1 else 0;
+    let mut ctx = tx_context::new_from_hint(@0xA11, hint, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let (definitions, registry) = equipment_visibility_definitions_for_testing(&mut loadout,
+        equipment_visibility_tokens(predicate, negate), subject, &mut ctx);
+    if (!empty) install_equipment_visibility_selection_for_testing(&mut loadout, 0, source, false);
+    let revision = loadout.revision;
+    let commitment = loadout.commitment;
+    let selections = loadout.selections;
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, revision,
+        animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+            object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+    assert_soul_equipment_update_v8(&loadout, &guard, &ctx);
+    finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], guard);
+    assert!(loadout.revision == revision && loadout.commitment == commitment
+        && loadout.selections == selections && is_soul_equipment_v8(&loadout), 111);
+    destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test]
+fun equipment_final_visibility_accepts_sparse_selected_base_all_three_levels() {
+    equipment_visibility_finish_case(0, SOURCE_BASE, 1, false, false);
+    equipment_visibility_finish_case(1, SOURCE_BASE, 1, false, false);
+    equipment_visibility_finish_case(2, SOURCE_BASE, 1, false, false);
+}
+#[test]
+fun equipment_final_visibility_accepts_empty_despite_required_profile_and_false_program() {
+    equipment_visibility_finish_case(0, SOURCE_BASE, 1, false, true);
+}
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_final_visibility_rejects_false_part() { equipment_visibility_finish_case(0, SOURCE_BASE, 1, true, false); }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_final_visibility_rejects_false_item() { equipment_visibility_finish_case(1, SOURCE_BASE, 1, true, false); }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_final_visibility_rejects_false_style() { equipment_visibility_finish_case(2, SOURCE_BASE, 1, true, false); }
+#[test]
+fun equipment_final_visibility_matches_any_pack_and_external_product() {
+    equipment_visibility_finish_case(0, SOURCE_BASE, 0, false, false);
+    equipment_visibility_finish_case(0, SOURCE_PACK, 2, false, false);
+    equipment_visibility_finish_case(0, SOURCE_EXTERNAL, 3, false, false);
+}
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_final_visibility_pack_name_cannot_satisfy_base_selector() { equipment_visibility_finish_case(0, SOURCE_PACK, 1, false, false); }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_final_visibility_base_name_cannot_satisfy_pack_selector() { equipment_visibility_finish_case(0, SOURCE_BASE, 2, false, false); }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_final_visibility_external_name_cannot_satisfy_base_selector() { equipment_visibility_finish_case(0, SOURCE_EXTERNAL, 1, false, false); }
+#[test]
+fun equipment_final_visibility_does_not_apply_unselected_base_style_to_pack_or_external() {
+    equipment_visibility_finish_case(2, SOURCE_PACK, 1, false, false);
+    equipment_visibility_finish_case(2, SOURCE_EXTERNAL, 1, false, false);
+}
+
+#[test_only]
+fun equipment_visibility_atomic_case(mode: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 841, 0, 0, 0);
+    let (mut loadout, mut config, admin) = equipment_fixture(&mut ctx);
+    let (definitions, registry) = equipment_visibility_definitions_for_testing(&mut loadout,
+        equipment_visibility_tokens(1, false), 0, &mut ctx);
+    install_equipment_visibility_selection_for_testing(&mut loadout, 0, SOURCE_BASE, true);
+    install_equipment_visibility_selection_for_testing(&mut loadout, 2, SOURCE_PACK, true);
+    let original = loadout.selections;
+    let original_commitment = loadout.commitment;
+    // Removal/finalization does not acquire purchase/decrypt authority and
+    // does not require an active Maker or enabled protocol.
+    protocol::set_protocol_enabled_v8(&mut config, &admin, false);
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 2,
+        animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+            object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+    assert_soul_equipment_update_v8(&loadout, &guard, &ctx);
+    clear_non_external_selection_v8(&mut loadout, 0, 2, &ctx);
+    // The selected Pack now has a false host Part; the transaction may repair
+    // it or clear everything before the only final validation.
+    assert!(loadout.revision == 3 && loadout.selection_count == 1, 112);
+    if (mode == 1) {
+        assert_soul_equipment_update_v8(&loadout, &guard, &ctx);
+        clear_non_external_selection_v8(&mut loadout, 2, 3, &ctx);
+    } else if (mode == 2) {
+        assert_soul_equipment_update_v8(&loadout, &guard, &ctx);
+        // Use the same install primitive used by real BASE/Pack selection.
+        install_selection(&mut loadout, 0, *original[0].borrow());
+    } else if (mode == 3) {
+        clear_non_external_selection_v8(&mut loadout, 2, 2, &ctx);
+    };
+    finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], guard);
+    assert!(loadout.revision == 4 && is_soul_equipment_v8(&loadout), 113);
+    if (mode == 1) {
+        assert!(loadout.selection_count == 0 && loadout.selections.length() == 3, 114);
+    } else {
+        assert!(loadout.selections == original && loadout.commitment == original_commitment, 115);
+    };
+    destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_atomic_removing_dependency_rejects_final_invalid_state() { equipment_visibility_atomic_case(0); }
+#[test]
+fun equipment_atomic_all_clear_allows_intermediate_invalid_and_empty_final() { equipment_visibility_atomic_case(1); }
+#[test]
+fun equipment_atomic_replacement_restores_identity_after_intermediate_invalid() { equipment_visibility_atomic_case(2); }
+#[test, expected_failure(abort_code = EStaleRevision)]
+fun equipment_atomic_each_mutation_requires_adjacent_revision() { equipment_visibility_atomic_case(3); }
+
+#[test_only]
+fun equipment_visibility_binding_case(mode: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 842, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let (mut definitions, registry) = equipment_visibility_definitions_for_testing(&mut loadout, vector[], 0, &mut ctx);
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 0,
+        animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+            object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+    if (mode == 0) definitions.base_registry_id = object::id_from_address(@0x99);
+    if (mode == 1) definitions.sealed = false;
+    if (mode == 2) definitions.root_id = object::id_from_address(@0x99);
+    if (mode == 3) definitions.root_version = definitions.root_version + 1;
+    if (mode == 4) definitions.root_content_commitment = test_hash(99);
+    if (mode == 5) loadout.definition_registry_id = object::id_from_address(@0x99);
+    if (mode == 6) definitions.version = 99;
+    if (mode == 7) {
+        let other = test_loadout(&mut ctx);
+        assert_soul_equipment_update_v8(&other, &guard, &ctx);
+        destroy_test_loadout(other);
+    };
+    if (mode == 8) {
+        let second = begin_soul_equipment_update_v8(&mut loadout, &config, 0,
+            animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+                object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+        finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], second);
+    };
+    finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], guard);
+    destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun equipment_finish_rejects_wrong_base_id() { equipment_visibility_binding_case(0); }
+#[test, expected_failure(abort_code = ENotSealed)]
+fun equipment_finish_rejects_unsealed_definitions() { equipment_visibility_binding_case(1); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun equipment_finish_rejects_definition_root_drift() { equipment_visibility_binding_case(2); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun equipment_finish_rejects_definition_root_version_drift() { equipment_visibility_binding_case(3); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun equipment_finish_rejects_definition_root_hash_drift() { equipment_visibility_binding_case(4); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun equipment_finish_rejects_other_definitions_id() { equipment_visibility_binding_case(5); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun equipment_finish_rejects_wrong_definitions_version() { equipment_visibility_binding_case(6); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun equipment_mutation_guard_rejects_other_loadout() { equipment_visibility_binding_case(7); }
+#[test, expected_failure(abort_code = 1, location = sui::dynamic_field)]
+fun equipment_update_cannot_begin_twice() { equipment_visibility_binding_case(8); }
+
+#[test, expected_failure(abort_code = ENotSealed)]
+fun equipment_finish_rejects_exact_but_unsealed_base_registry() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 843, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let economics = maker::new_economics_snapshot_v8<u64>(&config, 0, 0, 0, 0, 0, 0);
+    let rights = maker::new_onchain_native_rights_snapshot_v8(&ctx, 250, 250, 500);
+    let (root, registry, treasury, maker_admin) = animacraft_v8_core::core_v8::new_initial_maker_draft_v8<u64>(
+        &config, b"equipment-test".to_string(), test_hash(1), test_hash(2), test_hash(3), test_hash(4),
+        b"manifest".to_string(), test_hash(5), test_hash(6), base::new_base_definition_counts_v8(1, 0, 1, 1, 1, 0, 1),
+        base::minimal_author_rows_commitment_for_testing(), test_hash(7), economics, rights, &clock, &mut ctx);
+    let mut definitions = test_definitions_with_capacity(&mut ctx, 1);
+    definitions.base_registry_id = object::id(&registry);
+    definitions.root_id = base::registry_root_id_v2(&registry);
+    definitions.root_version = base::registry_maker_version_v2(&registry);
+    definitions.root_content_commitment = *base::registry_root_content_commitment_v2(&registry);
+    loadout.root_id = definitions.root_id;
+    loadout.root_version = definitions.root_version;
+    loadout.root_content_commitment = definitions.root_content_commitment;
+    loadout.definition_registry_id = object::id(&definitions);
+    loadout.definition_slots = base_definition_slots(&definitions);
+    recompute_loadout(&mut loadout);
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 0,
+        animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+            object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+    finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], guard);
+    destroy_test_loadout(loadout);
+    destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry);
+    core_treasury::destroy_maker_treasury_for_testing(treasury);
+    maker::destroy_maker_for_testing(root, maker_admin);
+    clock.destroy_for_testing();
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test_only]
+fun equipment_instance_final_failure_case(external: bool, clear_all: bool) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 844, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let (definitions, registry) = equipment_visibility_definitions_for_testing(&mut loadout,
+        equipment_visibility_tokens(if (external) 3 else 1, false), 0, &mut ctx);
+    install_equipment_visibility_selection_for_testing(&mut loadout, 0, if (external) SOURCE_EXTERNAL else SOURCE_BASE, false);
+    install_equipment_visibility_selection_for_testing(&mut loadout, 2, SOURCE_PACK, false);
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 2,
+        animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+            object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+    if (external) {
+        let mut item = OwnedExternalItemV8 {
+            id: object::new(&mut ctx), version: VERSION, product_id: object::id_from_address(@0x11),
+            product_content_commitment: test_hash(1), asset_content_commitment: test_hash(2),
+            holder: ctx.sender(), ownership_epoch: 0, transferable: true,
+            equip_lock: option::some(EquipLockV8 { loadout_id: object::id(&loadout), equip_revision: 1, selection_index: 0 }),
+        };
+        loadout.selections[0].borrow_mut().access_subject = object::id(&item);
+        unequip_external_style_v8(&mut loadout, &mut item, 2, &ctx);
+        assert!(item.equip_lock.is_none() && loadout.revision == 3, 116);
+        if (clear_all) clear_non_external_selection_v8(&mut loadout, 2, 3, &ctx);
+        // A false final host condition aborts this same transaction after the
+        // real lock/revision mutation; there is no earlier successful finish.
+        finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], guard);
+        assert!(clear_all && loadout.selection_count == 0 && loadout.revision == 4, 117);
+        destroy_test_owned_item(item);
+    } else {
+        let (item_definitions, packs, mut item) = test_owned_base_fixture(&mut ctx);
+        loadout.selections[0].borrow_mut().access_subject = object::id(&item);
+        loadout.selections[0].borrow_mut().source_epoch = item.ownership_epoch;
+        item.equip_lock = option::some(EquipLockV8 { loadout_id: object::id(&loadout), equip_revision: 1, selection_index: 0 });
+        unequip_owned_base_style_v8(&mut loadout, &mut item, 2, &ctx);
+        assert!(item.equip_lock.is_none() && loadout.revision == 3, 116);
+        if (clear_all) clear_non_external_selection_v8(&mut loadout, 2, 3, &ctx);
+        finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], guard);
+        assert!(clear_all && loadout.selection_count == 0 && loadout.revision == 4, 117);
+        destroy_test_owned_base_fixture(item_definitions, packs, item);
+    };
+    destroy_test_definitions(definitions);
+    base::share_base_definition_registry_for_testing(registry);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_final_failure_aborts_after_owned_base_lock_and_revision_mutation() { equipment_instance_final_failure_case(false, false); }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_final_failure_aborts_after_external_lock_and_revision_mutation() { equipment_instance_final_failure_case(true, false); }
+#[test]
+fun equipment_all_clear_keeps_owned_base_unlock_and_final_empty() { equipment_instance_final_failure_case(false, true); }
+#[test]
+fun equipment_all_clear_keeps_external_unlock_and_final_empty() { equipment_instance_final_failure_case(true, true); }
+
+/// Real public select/remove/reselect against author-appended and sealed rows.
+/// Only the access entitlement is a test-only precondition, not an issuance test.
+#[test_only]
+fun equipment_public_replacement_case(mode: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 845, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let track = base::new_track_row_v2(0, b"track".to_string(), b"Track".to_string(), 0, false);
+    let tokens = equipment_visibility_tokens(1, false);
+    let part = base::new_part_row_v2(0, b"part".to_string(), b"Part".to_string(), 0, 0, 0,
+        true, true, 1, 1, vector[b"track".to_string()], tokens,
+        base::visibility_program_commitment_v1(1, option::none(), 0, b"part".to_string(), option::none(), option::none(), &tokens), test_hash(11));
+    let spare = base::new_part_row_v2(1, b"spare".to_string(), b"Spare".to_string(), 0, 1, 1,
+        true, false, 1, 1, vector[b"track".to_string()], vector[],
+        base::visibility_program_commitment_v1(1, option::none(), 0, b"spare".to_string(), option::none(), option::none(), &vector[]), test_hash(16));
+    let dependent = base::new_part_row_v2(2, b"dependent".to_string(), b"Dependent".to_string(), 0, 2, 2,
+        true, false, 1, 1, vector[b"track".to_string()], tokens,
+        base::visibility_program_commitment_v1(1, option::none(), 0, b"dependent".to_string(), option::none(), option::none(), &tokens), test_hash(17));
+    let item = base::new_item_row_v2(0, b"part".to_string(), b"item".to_string(), b"Item".to_string(),
+        0, 0, b"style".to_string(), vector[], base::visibility_program_commitment_v1(1, option::none(), 1,
+            b"part".to_string(), option::some(b"item".to_string()), option::none(), &vector[]), test_hash(12));
+    let style = base::new_style_row_v2(0, b"part".to_string(), b"item".to_string(), b"style".to_string(),
+        b"Style".to_string(), 0, b"track".to_string(), option::none(), option::none(), b"asset".to_string(),
+        b"blob".to_string(), test_hash(13), false, base::new_transform_fixed_v1(base::new_signed_milli_v1(false, 0),
+            base::new_signed_milli_v1(false, 0), 1_000_000, base::new_signed_milli_v1(false, 0)), 1_000_000, 0,
+        option::none(), vector[], base::visibility_program_commitment_v1(1, option::none(), 2,
+            b"part".to_string(), option::some(b"item".to_string()), option::some(b"style".to_string()), &vector[]), test_hash(14));
+    let trigger = base::new_semantic_selector_v2(1, option::none(), b"part".to_string(),
+        option::some(b"item".to_string()), option::some(b"style".to_string()));
+    let target = base::new_semantic_selector_v2(2, option::some(b"missing-pack".to_string()), b"part".to_string(),
+        option::some(b"item".to_string()), option::some(b"style".to_string()));
+    let rule = base::new_rule_row_v2(0, b"complete-only-require".to_string(), 0, trigger, 0, vector[target], test_hash(15));
+    let asset = base::new_asset_row_v2(0, b"asset".to_string(), b"image".to_string(), b"image/png".to_string(), 32, test_hash(13));
+    let rows = vector[bcs::to_bytes(&track), bcs::to_bytes(&part), bcs::to_bytes(&spare), bcs::to_bytes(&dependent), bcs::to_bytes(&item),
+        bcs::to_bytes(&style), bcs::to_bytes(&rule), bcs::to_bytes(&asset)];
+    let categories = vector[0u8, 2, 2, 2, 3, 4, 5, 6];
+    let category_indices = vector[0, 0, 1, 2, 0, 0, 0, 0];
+    let mut rolling = base::author_rows_empty_commitment_v2();
+    let mut index = 0;
+    while (index < rows.length()) {
+        rolling = base::author_rows_advance_commitment_v2(categories[index], category_indices[index], index, rolling, rows[index]);
+        index = index + 1;
+    };
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let economics = maker::new_economics_snapshot_v8<u64>(&config, 0, 0, 0, 0, 0, 0);
+    let rights = maker::new_onchain_native_rights_snapshot_v8(&ctx, 250, 250, 500);
+    let (mut root, mut registry, treasury, maker_admin) = animacraft_v8_core::core_v8::new_initial_maker_draft_v8<u64>(
+        &config, b"equipment-test".to_string(), test_hash(1), test_hash(2), test_hash(3), test_hash(4),
+        b"manifest".to_string(), test_hash(5), test_hash(6), base::new_base_definition_counts_v8(1, 0, 3, 1, 1, 1, 1),
+        base::author_rows_seal_commitment_v2(vector[1, 0, 3, 1, 1, 1, 1], rolling), test_hash(7), economics, rights, &clock, &mut ctx);
+    base::append_track_v2(&mut registry, &root, &maker_admin, track);
+    base::append_part_v2(&mut registry, &root, &maker_admin, part);
+    base::append_part_v2(&mut registry, &root, &maker_admin, spare);
+    base::append_part_v2(&mut registry, &root, &maker_admin, dependent);
+    base::append_item_v2(&mut registry, &root, &maker_admin, item);
+    base::append_style_v2(&mut registry, &root, &maker_admin, style);
+    base::append_rule_v2(&mut registry, &root, &maker_admin, rule);
+    base::append_asset_v2(&mut registry, &root, &maker_admin, asset);
+    base::seal_base_definition_registry_v8(&mut registry, &mut root, &maker_admin);
+    maker::set_lifecycle_for_testing(&mut root, 1);
+    let access = core_treasury::new_maker_access_for_testing(&root, ctx.sender(), &mut ctx);
+    let (mut definitions, packs, authority) = new_physical_runtime_fixture_for_testing(&root, &mut ctx);
+    let mut profile = test_profile(WARDROBE_SLOT, BEHAVIOR_HYBRID, true);
+    profile.capacity = 1;
+    definitions.profile_keys = vector[b"part".to_string(), b"spare".to_string(), b"dependent".to_string()];
+    let mut profile_index = 0;
+    definitions.profile_keys.do_ref!(|key| {
+        profile.part_key = *key; profile.index = profile_index;
+        definitions.profiles.add(PartProfileKeyV8 { part_key: *key }, profile);
+        profile_index = profile_index + 1;
+    });
+    loadout.root_id = object::id(&root); loadout.root_version = maker::root_maker_version_v8(&root);
+    loadout.root_content_commitment = *maker::root_content_commitment_v8(&root);
+    loadout.definition_registry_id = object::id(&definitions); loadout.pack_registry_id = object::id(&packs);
+    loadout.maker_access_pass_id = object::id(&access); loadout.maker_access_commitment = maker_access_entitlement_commitment_v8(&access);
+    loadout.selections = vector[option::none(), option::none(), option::none()];
+    loadout.definition_slots = base_definition_slots(&definitions);
+    recompute_loadout(&mut loadout);
+    let initial_guard = begin_soul_equipment_update_v8(&mut loadout, &config, 0,
+        animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+            object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+    select_base_style_v8(&mut loadout, &root, &definitions, &packs, &registry, &access, 0, option::some(0),
+        b"part".to_string(), b"item".to_string(), b"style".to_string(), option::none(), &ctx);
+    install_equipment_visibility_selection_for_testing(&mut loadout, 2, SOURCE_PACK, false);
+    finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], initial_guard);
+    let original = loadout.selections;
+    let commitment = loadout.commitment;
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 2,
+        animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+            object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2), &ctx);
+    clear_non_external_selection_v8(&mut loadout, 0, 2, &ctx);
+    assert!(!selection_contains_selector(&loadout, &trigger) && loadout.selection_count == 1, 118);
+    if (mode != 1) select_base_style_v8(&mut loadout, &root, &definitions, &packs, &registry, &access,
+        if (mode == 2) 2 else 3, option::some(0), b"part".to_string(), b"item".to_string(),
+        b"style".to_string(), option::none(), &ctx);
+    // This is an actual nonempty registry Rule with an unsatisfied target.
+    // It remains a Complete-only gate, not a new equipment restriction.
+    assert!(base::registry_rule_count_v2(&registry) == 1 && !base::rule_is_satisfied_v2(
+        base::borrow_rule_at_v2(&registry, 0), true, &vector[false]), 119);
+    finish_soul_equipment_update_v8(&mut loadout, &definitions, &registry, vector[], guard);
+    assert!(loadout.revision == 4 && loadout.selections == original && loadout.commitment == commitment, 120);
+    destroy_test_definitions(definitions); std::unit_test::destroy(packs); std::unit_test::destroy(authority);
+    std::unit_test::destroy(access);
+    destroy_test_loadout(loadout);
+    base::share_base_definition_registry_for_testing(registry);
+    core_treasury::destroy_maker_treasury_for_testing(treasury);
+    maker::destroy_maker_for_testing(root, maker_admin);
+    clock.destroy_for_testing(); protocol::destroy_protocol_for_testing(config, admin);
+}
+#[test]
+fun equipment_public_reselect_repairs_intermediate_false_without_enforcing_complete_rules() { equipment_public_replacement_case(0); }
+#[test, expected_failure(abort_code = ERuleViolation)]
+fun equipment_public_remove_without_reselect_aborts_final_visibility() { equipment_public_replacement_case(1); }
+#[test, expected_failure(abort_code = EStaleRevision)]
+fun equipment_public_reselect_rejects_stale_revision_in_same_guard() { equipment_public_replacement_case(2); }
+
+#[test_only]
+public fun soul_equipment_read_fixture_for_testing(
+    soul_id: ID, soul_state_id: ID, holder: address, ownership_epoch: u64,
+    protocol_config_id: ID, ctx: &mut TxContext,
+): MakerLoadoutV8 {
+    let mut equipment = test_loadout(ctx);
+    equipment.holder = holder;
+    df::add(&mut equipment.id, SoulEquipmentLayoutKeyV8 {}, true);
+    df::add(&mut equipment.id, SoulEquipmentKeyV8 {}, SoulEquipmentBindingV8 {
+        soul_id, soul_state_id, holder, ownership_epoch, protocol_config_id,
+    });
+    equipment
+}
+
+#[test_only]
+public fun destroy_soul_equipment_read_fixture_for_testing(equipment: MakerLoadoutV8) {
+    destroy_test_loadout(equipment);
+}
+
+#[test_only]
+fun equipment_test_read(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 820, 0, 0, 0);
+    let (mut equipment, mut config, admin) = equipment_fixture(&mut ctx);
+    // Read authorization must not depend on enabled/new-issuance protocol state.
+    protocol::set_protocol_enabled_v8(&mut config, &admin, false);
+    if (case == 5) { ctx = tx_context::new_from_hint(@0xB22, 821, 0, 0, 0); };
+    if (case == 6) {
+        let binding: &mut SoulEquipmentBindingV8 = df::borrow_mut(&mut equipment.id, SoulEquipmentKeyV8 {});
+        binding.protocol_config_id = object::id_from_address(@0x99);
+    };
+    if (case == 7) { equipment.version = 7; };
+    if (case == 8) { equipment.holder = @0xB22; };
+    if (case == 9) { let _: SoulEquipmentBindingV8 = df::remove(&mut equipment.id, SoulEquipmentKeyV8 {}); };
+    let before = bcs::to_bytes(&equipment);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        object::id_from_address(if (case == 1) @0x99 else @0x42),
+        object::id_from_address(if (case == 2) @0x99 else @0x43),
+        if (case == 3) @0xB22 else @0xA11,
+        if (case == 4) 3 else 2,
+    );
+    assert_soul_equipment_read_v8(&equipment, &config, witness, &ctx);
+    assert!(case == 0 && bcs::to_bytes(&equipment) == before
+        && is_soul_equipment_v8(&equipment)
+        && soul_equipment_binding_v8(&equipment).ownership_epoch == 2
+        && soul_equipment_soul_id_v8(&equipment) == object::id_from_address(@0x42)
+        && soul_equipment_state_id_v8(&equipment) == object::id_from_address(@0x43), 110);
+    destroy_test_loadout(equipment);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test]
+fun soul_equipment_read_preserves_binding_and_allows_disabled_protocol() { equipment_test_read(0); }
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_read_rejects_wrong_soul() { equipment_test_read(1); }
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_read_rejects_wrong_state() { equipment_test_read(2); }
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_read_rejects_wrong_witness_holder() { equipment_test_read(3); }
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_read_rejects_changed_epoch() { equipment_test_read(4); }
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_read_rejects_wrong_sender() { equipment_test_read(5); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun soul_equipment_read_rejects_wrong_protocol() { equipment_test_read(6); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun soul_equipment_read_rejects_wrong_version() { equipment_test_read(7); }
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_read_rejects_wrong_loadout_holder() { equipment_test_read(8); }
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun soul_equipment_read_rejects_player_loadout() { equipment_test_read(9); }
+
+#[test, expected_failure(abort_code = 0, location = animacraft_v8_core::soulidity_binding_v8)]
+fun soul_equipment_read_rejects_same_bytes_wrong_witness_type() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 822, 0, 0, 0);
+    let (equipment, config, admin) = equipment_fixture(&mut ctx);
+    let witness = SoulEquipmentOwnerClaimV8 {
+        soul_id: object::id_from_address(@0x42), soul_state_id: object::id_from_address(@0x43),
+        holder: ctx.sender(), ownership_epoch: 2,
+    };
+    assert_soul_equipment_read_v8(&equipment, &config, witness, &ctx);
+    destroy_test_loadout(equipment);
+    protocol::destroy_protocol_for_testing(config, admin);
+    abort 110
+}
+
+#[test]
+fun soul_equipment_owner_round_trip_restores_exact_binding() { equipment_test_update(0); }
+
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_rejects_wrong_soul() { equipment_test_update(1); }
+
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_rejects_wrong_state() { equipment_test_update(2); }
+
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_rejects_wrong_witness_holder() { equipment_test_update(3); }
+
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_rejects_changed_ownership_epoch() { equipment_test_update(4); }
+
+#[test, expected_failure(abort_code = EStaleRevision)]
+fun soul_equipment_rejects_stale_revision() { equipment_test_update(5); }
+
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_equipment_rejects_wrong_sender() { equipment_test_update(6); }
+
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun soul_equipment_rejects_restore_to_other_loadout() { equipment_test_update(7); }
+
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun soul_equipment_rejects_raw_player_mutation() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 803, 0, 0, 0);
+    let (loadout, config, admin) = equipment_fixture(&mut ctx);
+    assert_loadout_holder_revision(&loadout, 0, &ctx);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun soul_equipment_rejects_player_transfer() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 804, 0, 0, 0);
+    let (loadout, config, admin) = equipment_fixture(&mut ctx);
+    transfer_maker_loadout_to_holder_v8(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test, expected_failure(abort_code = 0, location = native_binding)]
+fun soul_equipment_rejects_forged_type_with_identical_bytes() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 805, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let witness = SoulEquipmentOwnerClaimV8 {
+        soul_id: object::id_from_address(@0x42), soul_state_id: object::id_from_address(@0x43),
+        holder: ctx.sender(), ownership_epoch: 2,
+    };
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 0, witness, &ctx);
+    finish_test_empty_equipment(&mut loadout, guard, &mut ctx);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun soul_equipment_rejects_other_protocol_with_same_types() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 806, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let (other, other_config, other_admin) = equipment_fixture(&mut ctx);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2);
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &other_config, 0, witness, &ctx);
+    finish_test_empty_equipment(&mut loadout, guard, &mut ctx);
+    destroy_test_loadout(loadout);
+    destroy_test_loadout(other);
+    protocol::destroy_protocol_for_testing(config, admin);
+    protocol::destroy_protocol_for_testing(other_config, other_admin);
+}
+
+#[test]
+fun soul_equipment_unequip_releases_actual_base_instance_lock() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 807, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let (definitions, packs, mut item) = test_owned_base_fixture(&mut ctx);
+    let mut selection = test_selection(0, b"style".to_string(), SOURCE_BASE, loadout.root_id);
+    selection.access_subject = object::id(&item);
+    selection.source_epoch = item.ownership_epoch;
+    // Seed the already-equipped state; exercise the production unlock operation.
+    install_selection(&mut loadout, 0, selection);
+    item.equip_lock = option::some(EquipLockV8 {
+        loadout_id: object::id(&loadout), equip_revision: 1, selection_index: 0,
+    });
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2);
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 1, witness, &ctx);
+    unequip_owned_base_style_v8(&mut loadout, &mut item, 1, &ctx);
+    finish_test_empty_equipment(&mut loadout, guard, &mut ctx);
+    assert!(item.equip_lock.is_none() && loadout.selection_count == 0
+        && loadout.revision == 2 && is_soul_equipment_v8(&loadout), 102);
+    destroy_test_owned_base_fixture(definitions, packs, item);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+
+#[test_only]
+fun equipment_close_test(nonempty: bool) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 808, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    if (nonempty) {
+        let selection = test_selection(0, b"style".to_string(), SOURCE_EXTERNAL, loadout.root_id);
+        install_selection(&mut loadout, 0, selection);
+    };
+    let id = object::id(&loadout);
+    let revision = loadout.revision;
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2);
+    assert!(close_soul_equipment_v8(loadout, &config, revision, witness, &ctx) == id, 103);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test_only]
+fun equipment_clear_entitlement_test(case: u8) {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 810, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let source = if (case == 1) SOURCE_PACK else if (case == 3) SOURCE_EXTERNAL else SOURCE_BASE;
+    let mut selection = test_selection(0, b"style".to_string(), source, loadout.root_id);
+    selection.access_subject = if (case == 2 || case == 3) object::id_from_address(@0x99)
+        else loadout.maker_access_pass_id;
+    selection.protected = case == 4;
+    install_selection(&mut loadout, 0, selection);
+    if (case == 5) clear_non_external_selection_v8(&mut loadout, 0, 1, &ctx);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2);
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 1, witness, &ctx);
+    clear_non_external_selection_v8(&mut loadout, 0, 1, &ctx);
+    finish_test_empty_equipment(&mut loadout, guard, &mut ctx);
+    assert!(loadout.selection_count == 0 && loadout.selections[0].is_none()
+        && loadout.revision == 2 && is_soul_equipment_v8(&loadout), 106);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test]
+fun soul_equipment_clears_base_entitlement_without_source() { equipment_clear_entitlement_test(0); }
+#[test]
+fun soul_equipment_clears_pack_entitlement_without_source() { equipment_clear_entitlement_test(1); }
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun soul_equipment_clear_cannot_strand_owned_base_lock() { equipment_clear_entitlement_test(2); }
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun soul_equipment_clear_cannot_strand_external_lock() { equipment_clear_entitlement_test(3); }
+#[test]
+fun soul_equipment_clears_protected_entitlement_without_decryption() { equipment_clear_entitlement_test(4); }
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun soul_equipment_clear_rejects_raw_player_mutation() { equipment_clear_entitlement_test(5); }
+#[test]
+fun soul_equipment_empty_can_close() { equipment_close_test(false); }
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun soul_equipment_nonempty_cannot_close_and_strand_items() { equipment_close_test(true); }
+
+#[test]
+fun soul_equipment_unequip_releases_actual_external_instance_lock() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 809, 0, 0, 0);
+    let (mut loadout, config, admin) = equipment_fixture(&mut ctx);
+    let mut item = OwnedExternalItemV8 {
+        id: object::new(&mut ctx), version: VERSION,
+        product_id: object::id_from_address(@0x70),
+        product_content_commitment: test_hash(1), asset_content_commitment: test_hash(2),
+        holder: ctx.sender(), ownership_epoch: 0, transferable: true,
+        equip_lock: option::some(EquipLockV8 {
+            loadout_id: object::id(&loadout), equip_revision: 1, selection_index: 0,
+        }),
+    };
+    let mut selection = test_selection(0, b"style".to_string(), SOURCE_EXTERNAL, item.product_id);
+    selection.access_subject = object::id(&item);
+    install_selection(&mut loadout, 0, selection);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        object::id_from_address(@0x42), object::id_from_address(@0x43), ctx.sender(), 2);
+    let guard = begin_soul_equipment_update_v8(&mut loadout, &config, 1, witness, &ctx);
+    unequip_external_style_v8(&mut loadout, &mut item, 1, &ctx);
+    finish_test_empty_equipment(&mut loadout, guard, &mut ctx);
+    assert!(item.equip_lock.is_none() && loadout.selection_count == 0
+        && loadout.revision == 2 && is_soul_equipment_v8(&loadout), 104);
+    prepare_owned_item_transfer(&mut item, @0xB22, &ctx);
+    assert!(item.holder == @0xB22 && item.ownership_epoch == 1, 105);
+    destroy_test_owned_item(item);
+    destroy_test_loadout(loadout);
+    protocol::destroy_protocol_for_testing(config, admin);
 }
 
 #[test_only]

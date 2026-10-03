@@ -14,9 +14,10 @@ import {
   inspectFreshV8Cache,
   marketRuntimeFromMakerRuntime,
   parseFreshV8Route,
-} from '../app.js';
+} from '../maker-v8-market-controller.js';
 import { assertMakerV8Runtime, makerV8StableType } from '../maker-v8-runtime.js';
 import { runtimeAttestationRpc } from './fixtures/maker-v8-runtime-attestation.js';
+import { nativeGraphReleaseChecks } from '../scripts/native-soul-test-graph.mjs';
 
 const id = (byte) => `0x${byte.repeat(32)}`;
 const digest = (byte) => byte.repeat(32);
@@ -215,67 +216,90 @@ test('live action context binds route, wallet, activation, seven packages, refs,
   );
 });
 
-test('the UI exposes exactly fourteen static Market actions and accessible semantics', async () => {
+test('the approved original Animacraft information architecture stays intact while Market remains isolated in Soulidity', async () => {
   assert.equal(MARKET_V8_ACTIONS.length, 14);
   assert.equal(new Set(MARKET_V8_ACTIONS.map((action) => action.id)).size, 14);
   assert.deepEqual(
     MARKET_V8_ACTIONS.filter((action) => action.kind === 'PURCHASE').map((action) => action.lane),
     ['MAKER', 'SOUL', 'PHYSICAL_BASE', 'PHYSICAL_PACK'],
   );
-  const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
-  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8');
-  assert.match(html, /<main[\s>]/);
+  const [html, originalApp, workspaceView, marketApp] = await Promise.all([
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../original-product-app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace-v8-view.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-v8-market-controller.js', import.meta.url), 'utf8'),
+  ]);
+  assert.match(html, /<main id="appMain">/);
   assert.match(html, /aria-live="polite"/);
-  assert.match(html, /Skip to fresh v8 market/);
-  assert.match(app, /role="alert"/);
-  assert.match(app, /aria-pressed=/);
-  assert.match(app, /role="status" aria-live="polite"/);
+  for (const route of ['templates', 'make', 'creator', 'docs']) {
+    assert.match(html, new RegExp(`data-page=["']${route}["']`), route);
+  }
+  assert.doesNotMatch(html, /data-page=["'](?:collection|pack|market|mypage)["']/);
+  assert.match(html, /id="soulidityMySoulsLink"/);
+  assert.match(originalApp, /\['soulidityMySoulsLink', '\/my-souls', true\]/);
+  assert.match(html, /id="makerV4CreatorMount"/);
+  assert.match(html, /id="makerV4PlayerMount"/);
+  for (const label of ['Expansion Packs', 'Composable Items', 'Commerce & Rights', 'Soul Configuration', 'Preflight']) {
+    assert.match(workspaceView, new RegExp(label));
+  }
+  assert.match(html, /id="soulidityMarketLink"/);
+  assert.match(originalApp, /\['soulidityMarketLink', '\/market', false\]/);
+  assert.match(marketApp, /role="alert"/);
+  assert.match(marketApp, /aria-pressed=/);
+  assert.match(marketApp, /role="status" aria-live="polite"/);
 });
 
-test('production entry files have no retired imports, aliases, routes, or pending pseudo-state', async () => {
+test('production entry keeps the approved original product app on v8-only execution boundaries', async () => {
   const files = [
-    '../app.js', '../index.html', '../chain-error-ui.js', '../public-v8/config.js',
+    '../app.js', '../maker-v8-market-controller.js', '../index.html', '../chain-error-ui.js', '../public-v8/config.js',
     '../config.example.js', '../README.md', '../vite.config.js',
   ];
   const source = (await Promise.all(files.map((file) => readFile(new URL(file, import.meta.url), 'utf8')))).join('\n');
   const importLines = source.split('\n').filter((line) => /^\s*import\b/.test(line)).join('\n');
   assert.doesNotMatch(importLines, /maker-(?:commerce|composable|physical|publication|legacy)|expansion-pack|oc-handoff/i);
   assert.doesNotMatch(source, /SALE_PENDING|dual[-_ ]path/i);
-  assert.doesNotMatch(source, /data-page=|#templates|#creator|#make(?:\b|["'])/i);
-  assert.doesNotMatch(source, /ANIMACRAFT_CONFIG|makerV8ReleaseEnabled|commerceV\d|compositionV\d|physicalV\d/i);
-  assert.doesNotMatch(source, /SoulidityV8Adapters/);
-  assert.doesNotMatch(source, /OCMaker|MakerRootV5|Commerce v5|Composable Assets v6|v5 migration/i);
+  assert.match(source, /createOriginalProductApp/);
+  assert.doesNotMatch(source, /product-shell\.js|createProductShell|fresh-v8-bindings\.css|creator-workspace\.css/);
+  assert.match(source, /createMakerV8ProductBridge/);
+  assert.match(source, /createMakerV8ProductRuntime/);
   assert.match(source, /createProductionMakerV8BrowserAdapters/);
+  assert.match(source, /MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT/);
+  assert.doesNotMatch(source, /@mysten\/sui\/(?:jsonrpc|client)|SuiJsonRpcClient|getJsonRpcFullnodeUrl|JsonRpcProvider/);
+  assert.doesNotMatch(source, /["']jsonrpc["']\s*:\s*["']2\.0["']/);
+  assert.doesNotMatch(source, /\.(?:queryTransactionBlocks|getTransactionBlock|dryRunTransactionBlock|executeTransactionBlock|devInspectTransactionBlock)\s*\(/);
+  const publicEntry = await readFile(new URL('../app.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(publicEntry, /maker-v8-market(?:-controller)?\.js/);
   assert.match(source, /UNSUPPORTED_LEGACY_PRODUCT/);
   assert.match(source, /publicDir:\s*['"]public-v8['"]/);
-  assert.deepEqual(await readdir(new URL('../public-v8/', import.meta.url)), ['config.js']);
+  assert.deepEqual(
+    (await readdir(new URL('../public-v8/', import.meta.url))).sort(),
+    ['config.js', 'theme-bootstrap.js'],
+  );
 });
 
-test('production config is the certified Mainnet release and enables exact wallet execution', async () => {
+test('checked-in deployment config has complete explicit Mainnet authority, not a historical candidate tuple', async () => {
   const source = await readFile(new URL('../public-v8/config.js', import.meta.url), 'utf8');
   const context = { window: {} };
   runInNewContext(source, context);
   const runtime = assertMakerV8Runtime(JSON.parse(JSON.stringify(context.window.SoulidityMakerV8)));
   const execution = assertWebV8ExecutionConfig(JSON.parse(JSON.stringify(context.window.SoulidityV8Execution)));
   assert.equal(runtime.enabled, true);
-  assert.equal(runtime.catalogId, '0x98c4172b00ef802b801c01348ad9da640424ddbaee61a33eb835091305502498');
-  assert.equal(runtime.protocolConfigId, '0x598d25ca56848bfe0d51acc054784d186a81f827e791f2d523c197e0c7a89334');
-  assert.equal(runtime.protocolTreasuryId, '0x40a47df4956b33461163ba803d520156187fcf4c954a04984744f9a8b4c82736');
-  assert.deepEqual(
-    Object.fromEntries(Object.entries(runtime.roles)
-      .map(([role, identity]) => [role, identity.callablePackageId])),
-    {
-      core: '0xca762c5432604d6680fbdc87367c3956a2e7536eb2d12222eb929945d97c9e6e',
-      seal: '0x0f12dc22b720dc9d87cde8d76952ab252959cced372e8511abb54cbaa177e2a3',
-      runtime: '0xa2d7c3c289d884d5899eb0afdfae8abca7555fb8640b493016502196a7500476',
-      output: '0x09bb4c47e26b4cfa94d4c309ee9ba6d734cca6dc36111067c388deab12e20438',
-      physical: '0x88abc74b3e3ba58f96cd3bc23ccccb774b489657ddd7f64b959210a08e056936',
-      market: '0x85c13a96e7f5a90f9d9da9fe7ab0cd11b6b9d48366b376b07aa962c43d67ac0c',
-      release: '0x4ce1a661a5a427d607ec486ce8aaa7f7bb8e8c1f7f30770eca55e4a079a89297',
-    },
-  );
-  assert.equal(execution.allowWalletSignature, true);
-  assert.equal(execution.allowBroadcast, true);
+  assert.deepEqual(Object.keys(runtime.roles).sort(), [...roles].sort());
+  assert.equal(new Set(Object.values(runtime.roles).map(role => role.callablePackageId)).size, 7);
+  for (const value of [runtime.catalogId, runtime.protocolConfigId, runtime.protocolTreasuryId]) {
+    assert.match(value, /^0x[0-9a-f]{64}$/);
+  }
+  const native = context.window.SoulidityMakerV8.nativeSoulIntegration;
+  assert.equal(native.expectedNativeBinding.soulOriginalType, `${native.soulidityOriginalPackageId}::soul::Soul`);
+  assert.equal(native.expectedNativeBinding.soulDefiningType, `${native.soulidityCallablePackageId}::soul::Soul`);
+  assert.equal(execution.network, 'mainnet');
+  assert.equal(execution.chainIdentifier, '35834a8a');
+  // The Sept10 approved deployment replaced the earlier disabled candidate.
+  // This checks explicit policy shape; real authority is attested separately.
+  assert.equal(typeof execution.allowWalletSignature, 'boolean');
+  assert.equal(typeof execution.allowBroadcast, 'boolean');
+  assert.ok(Object.isFrozen(context.window.SoulidityMakerV8));
+  assert.ok(Object.isFrozen(context.window.SoulidityV8Execution));
   assert.doesNotMatch(source, /placeholderId|0x(?:10|11|12|13|14|15|16|80|81|82|83|84|85|86|87|88){32}/);
 });
 
@@ -284,12 +308,34 @@ test('CI pins the verified Sui CLI and gates all fresh web and Move artifacts', 
     new URL('../.github/workflows/repository-hygiene.yml', import.meta.url),
     'utf8',
   );
-  assert.match(workflow, /SUI_COMMIT:\s*51d177ad7d65102fc368b582408f466d97b31548/);
-  assert.match(workflow, /SUI_BINARY_SHA256:\s*c4318640723ebba4169bfe3d9e8ac10016d4e6380675e6f07d4e63eba6911f73/);
+  assert.match(workflow, /SUI_RELEASE:\s*mainnet-v1\.80\.1/);
+  assert.match(workflow, /SUI_ARCHIVE:\s*sui-mainnet-v1\.80\.1-ubuntu-x86_64\.tgz/);
+  assert.match(workflow, /SUI_ARCHIVE_SHA256:\s*97f9aed10e0c2fe3204ce4639ac992e1449b17c14f22f30e9f903ead54ac7336/);
+  assert.match(workflow, /sha256sum --check --strict/);
+  assert.ok(workflow.indexOf('sha256sum --check --strict') < workflow.indexOf('tar -xOzf'));
+  assert.match(workflow, /sui 1\.80\.1-671ba71e69c7/);
+  assert.doesNotMatch(workflow, /releases\.sui\.io|SUI_BINARY_SHA256|1\.78\.1/);
   assert.match(workflow, /npm run check/);
-  assert.match(workflow, /npm run scan:fresh:source/);
-  for (const command of ['move:build', 'move:test', 'move:probes', 'move:field-limits', 'move:size']) {
-    assert.match(workflow, new RegExp(`npm run ${command.replace(':', '\\:')}`));
+  const webJob = workflow.slice(workflow.indexOf('\n  web:'), workflow.indexOf('\n  move:'));
+  assert.doesNotMatch(webJob.slice(0, webJob.indexOf('\n    steps:')), /\$\{\{\s*runner\./,
+    'GitHub cannot resolve runner context at job-level env before assigning a runner');
+  for (const name of ['Prepare pinned external source prerequisites', 'Check production build']) {
+    const step = webJob.slice(webJob.indexOf(`- name: ${name}`)).split('\n      - name:')[0];
+    assert.match(step, /env:\n\s+MOVE_HOME: \$\{\{ runner\.temp \}\}\/native-soul-external-sources/,
+      'Source preparation and tests must use the same dedicated runner cache at step scope');
   }
-  assert.match(workflow, /--force[\s\\]+--disassemble[\s\\]+--warnings-are-errors/);
+  const prepareSources = webJob.indexOf('node scripts/prepare-native-soul-external-sources.mjs "$MOVE_HOME"');
+  assert.ok(prepareSources >= 0 && prepareSources < webJob.indexOf('run: npm run check'),
+    'Fresh Web runners must verify pinned external sources before the source/build-entry tests');
+  assert.match(workflow, /npm run scan:fresh:source/);
+  assert.match(workflow, /node scripts\/native-soul-test-graph\.mjs/);
+  assert.match(workflow, /--soulidity-root "\$GITHUB_WORKSPACE\/_paired\/soulidity"/);
+  assert.match(workflow, /--check release-gates/);
+  const checks = nativeGraphReleaseChecks();
+  for (const role of roles) for (const kind of ['package', 'probes', 'disassemble', 'size']) {
+    assert.ok(checks.includes(`${kind}:animacraft_v8_${role}`));
+  }
+  for (const check of ['package:soulidity', 'acceptance', 'build', 'disassemble:soulidity', 'field-limits']) {
+    assert.ok(checks.includes(check));
+  }
 });
