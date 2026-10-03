@@ -5,13 +5,13 @@
 version = 4
 
 [pinned.mainnet.MoveStdlib]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
 use_environment = "mainnet"
 manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
 deps = {}
 
 [pinned.mainnet.Sui]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
 use_environment = "mainnet"
 manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263195"
 deps = { MoveStdlib = "MoveStdlib" }
@@ -19,17 +19,47 @@ deps = { MoveStdlib = "MoveStdlib" }
 [pinned.mainnet.animacraft_v8_core]
 source = { local = "../../../animacraft_v8_core" }
 use_environment = "mainnet"
-manifest_digest = "D102AD9D5653054ABB17E21F853CF4E888E04AB30025D5DAC19DAF483C2B899B"
+manifest_digest = "5667F7AA4D1A345B86B7923771F24E793DB9D1C9999B9A259E19917BD1CD5C6F"
 deps = { Sui = "Sui" }
 
 [pinned.mainnet.animacraft_v8_seal]
 source = { local = "../.." }
 use_environment = "mainnet"
-manifest_digest = "7E21EE6C6E3651A039B6DC552FD981479289380693C6B891074570CDD314772A"
+manifest_digest = "C690CF960A84B4CA0E85357087B3967CF376CA7DB6BE3399351DDFFD198AA4EA"
 deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core" }
 
 [pinned.mainnet.animacraft_v8_seal_companion_probe]
 source = { root = true }
 use_environment = "mainnet"
-manifest_digest = "CB2B9A35C23F31AE48003711A244C4B57C6A8BC7A49AC78A7238C2F6967D3817"
+manifest_digest = "0E444DAFF2D3CDBD8991FD5FE4C9342050A09A80D4121FB17361039EF1BBB689"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_seal = "animacraft_v8_seal" }
+
+[pinned.testnet.MoveStdlib]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
+use_environment = "testnet"
+manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
+deps = {}
+
+[pinned.testnet.Sui]
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
+use_environment = "testnet"
+manifest_digest = "7AFB66695545775FBFBB2D3078ADFD084244D5002392E837FDE21D9EA1C6D01C"
+deps = { MoveStdlib = "MoveStdlib" }
+
+[pinned.testnet.animacraft_v8_core]
+source = { local = "../../../animacraft_v8_core" }
+use_environment = "testnet"
+manifest_digest = "60ADF412FBF6A8F886DB96A327E19EE11946A0F14EB7AD132D147351DFE46111"
+deps = { Sui = "Sui" }
+
+[pinned.testnet.animacraft_v8_seal]
+source = { local = "../.." }
+use_environment = "testnet"
+manifest_digest = "CAF8D86E63F07AAFD5FAB70E6313516B0CFB99DAD127FAA64426547FA8F3C2C8"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core" }
+
+[pinned.testnet.animacraft_v8_seal_companion_probe]
+source = { root = true }
+use_environment = "testnet"
+manifest_digest = "D8F6AC31B900F87F089FE48CAA69FE5FA5F69220F9D478DA0DE83D8B8638E29E"
 deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_seal = "animacraft_v8_seal" }

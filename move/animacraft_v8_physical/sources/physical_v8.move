@@ -3,20 +3,50 @@
 /// accepted by this module.
 module animacraft_v8_physical::physical_v8;
 
-use animacraft_v8_core::activation_v8::{Self as activation, PhysicalReadinessV8};
+use animacraft_v8_core::companion_binding_v2::{
+    Self as companion, MakerRuntimeCompanionBindingBuilderV2,
+};
+use animacraft_v8_core::package_binding_v8::FreshTupleReplacementBindingV2;
+use animacraft_v8_core::package_binding_v8::RuntimeCallerCapV1;
+
+/// Constructed only after this module validates its actual companion objects.
+public struct MakerCompanionBindingWitnessV2 has drop {}
+
+public fun bind_maker_physical_companion_v2<PaymentCoin>(
+    builder: MakerRuntimeCompanionBindingBuilderV2<PaymentCoin>,
+    root: &MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    config: &PhysicalPackageConfigV8,
+    registry: &PhysicalRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8,
+    ctx: &TxContext,
+): MakerRuntimeCompanionBindingBuilderV2<PaymentCoin> {
+    maker::assert_companion_builder_root_v2(&builder, root, admin, ctx);
+    binding::assert_catalog_current_v8(protocol_config, catalog);
+    binding::assert_replacement_current_v2(replacement, catalog);
+    assert_config(catalog, config);
+    assert_registry_identity(registry, root, base_registry, config);
+    assert_activation_ready(registry);
+    companion::append_physical_v2(builder, MakerCompanionBindingWitnessV2 {},
+        protocol_config, catalog, replacement, object::id(registry), ctx)
+}
+
+
+
 use animacraft_v8_core::base_registry_v8::{
     Self as base,
     BaseDefinitionRegistryV8,
-    StyleRowV8,
+    StyleRowV2,
 };
 use animacraft_v8_core::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
 use animacraft_v8_core::package_binding_v8::{
     Self as binding,
-    MarketRoleV8,
     PackageCallCapV8,
     PhysicalRoleV8,
     ProductReleaseCatalogV8,
-    ReleaseRoleV8,
 };
 use animacraft_v8_core::protocol_config_v8::{
     Self as protocol,
@@ -36,7 +66,6 @@ use animacraft_v8_output::output_v8::{
 use animacraft_v8_runtime::runtime_v8::{
     Self as runtime,
     MakerLoadoutV8,
-    PackAdmissionAuthorityV8,
     PackAdminCapV8,
     PackPassV8,
     PackRegistryV8,
@@ -45,7 +74,6 @@ use animacraft_v8_runtime::runtime_v8::{
     RuntimePhysicalPackAccessWitnessV8,
     RuntimePhysicalPackPolicyWitnessV8,
     RuntimePhysicalSelectionWitnessV8,
-    RuntimeDefinitionRegistryV8,
 };
 use std::bcs;
 use std::hash;
@@ -55,19 +83,6 @@ use sui::coin::{Self as coin, Coin};
 use sui::event;
 use sui::table::{Self as table, Table};
 use sui::transfer::Receiving;
-
-#[test_only]
-use animacraft_v8_core::core_v8 as core;
-#[test_only]
-use animacraft_v8_core::activation_v8;
-#[test_only]
-use animacraft_v8_core::protocol_config_v8::{CorePackageMarkerV8, ProtocolAdminCapV8};
-#[test_only]
-use animacraft_v8_output::output_v8::{OutputCallableMarkerV8, OutputOriginalMarkerV8};
-#[test_only]
-use animacraft_v8_runtime::runtime_v8::{RuntimeCallableMarkerV8, RuntimeOriginalMarkerV8};
-#[test_only]
-use animacraft_v8_seal::seal_v8::{SealCallableMarkerV8, SealOriginalMarkerV8};
 
 const VERSION: u64 = 8;
 const HASH_LENGTH: u64 = 32;
@@ -114,16 +129,17 @@ const EOwnershipEpochOverflow: u64 = 22;
 
 public struct PhysicalOriginalMarkerV8 has drop {}
 public struct PhysicalCallableMarkerV8 has drop {}
+public struct PhysicalSetupInstallWitnessV2 has drop {}
+public struct PhysicalRuntimeWitnessV2 has drop {}
 
-/// Catalog-installed package configuration. The Physical call capability is
-/// private and cannot be extracted, copied, dropped, or stored elsewhere.
+/// Catalog-installed configuration records consumption of the unique setup cap.
 public struct PhysicalPackageConfigV8 has key {
     id: UID,
     version: u64,
     catalog_id: ID,
     product_binding_commitment: vector<u8>,
     call_cap_set_commitment: vector<u8>,
-    physical_call_cap: PackageCallCapV8<PhysicalRoleV8>,
+    installation_commitment: vector<u8>,
 }
 
 public struct PhysicalPolicyKeyV8 has copy, drop, store {
@@ -579,24 +595,19 @@ public fun proof_none_v8(): u8 { PROOF_NONE }
 public fun proof_canonical_soul_v8(): u8 { PROOF_CANONICAL_SOUL }
 
 public fun new_physical_package_config_v8(
-    catalog: &ProductReleaseCatalogV8,
+    catalog: &mut ProductReleaseCatalogV8,
     physical_call_cap: PackageCallCapV8<PhysicalRoleV8>,
     ctx: &mut TxContext,
 ): PhysicalPackageConfigV8 {
-    binding::assert_physical_call_cap_v8(catalog, &physical_call_cap);
-    let product = binding::catalog_binding_v8(catalog);
-    binding::assert_type_origins_v8<PhysicalOriginalMarkerV8, PhysicalCallableMarkerV8>(
-        binding::physical_binding_v8(product),
-    );
+    let id = object::new(ctx);
+    let installation_commitment = binding::consume_physical_call_cap_v8(
+        catalog, physical_call_cap, PhysicalSetupInstallWitnessV2 {}, object::uid_to_inner(&id));
+    let (_, _, _, product, cap_set, _) = binding::catalog_terms_v2(catalog);
     PhysicalPackageConfigV8 {
-        id: object::new(ctx),
-        version: VERSION,
-        catalog_id: binding::catalog_id_v8(catalog),
+        id, version: VERSION, catalog_id: binding::catalog_id_v8(catalog),
         product_binding_commitment: *binding::product_binding_commitment_v8(product),
-        call_cap_set_commitment: *binding::call_cap_set_commitment_v8(
-            binding::catalog_call_cap_set_v8(catalog),
-        ),
-        physical_call_cap,
+        call_cap_set_commitment: *cap_set,
+        installation_commitment,
     }
 }
 
@@ -658,7 +669,7 @@ fun new_registry<PaymentCoin>(
         root_id: maker::root_id_v8(root),
         maker_version: maker::root_maker_version_v8(root),
         root_content_commitment: *maker::root_content_commitment_v8(root),
-        base_registry_id: base::registry_id_v8(base_registry),
+        base_registry_id: object::id(base_registry),
         expected_base_policy_count,
         observed_base_policy_count: 0,
         expected_base_policy_commitment,
@@ -697,7 +708,7 @@ public fun empty_base_policy_commitment_v8<PaymentCoin>(
         root_id: maker::root_id_v8(root),
         maker_version: maker::root_maker_version_v8(root),
         root_content_commitment: *maker::root_content_commitment_v8(root),
-        base_registry_id: base::registry_id_v8(base_registry),
+        base_registry_id: object::id(base_registry),
     }))
 }
 
@@ -709,7 +720,7 @@ public fun derive_base_style_identity_v8<PaymentCoin>(
     style_key: String,
 ): vector<u8> {
     assert_base_registry(root, base_registry);
-    let row = base::borrow_style_v8(base_registry, part_key, item_key, style_key);
+    let row = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
     derive_style_identity(root, base_registry, row)
 }
 
@@ -731,7 +742,7 @@ public fun derive_base_policy_row_commitment_v8<PaymentCoin>(
     assert_base_registry(root, base_registry);
     assert_hash(&material_policy_commitment);
     assert_policy_terms(issuance_kind, proof_kind, price_atomic, max_supply);
-    let style = base::borrow_style_v8(base_registry, part_key, item_key, style_key);
+    let style = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
     let style_identity_commitment = derive_style_identity(root, base_registry, style);
     hash::sha2_256(bcs::to_bytes(&BasePolicyRowCommitmentInputV8 {
         domain: b"animacraft-v8/physical/base-policy",
@@ -740,7 +751,7 @@ public fun derive_base_policy_row_commitment_v8<PaymentCoin>(
         root_id: maker::root_id_v8(root),
         maker_version: maker::root_maker_version_v8(root),
         root_content_commitment: *maker::root_content_commitment_v8(root),
-        base_registry_id: base::registry_id_v8(base_registry),
+        base_registry_id: object::id(base_registry),
         sequence,
         style_identity_commitment,
         material_policy_commitment,
@@ -849,13 +860,13 @@ fun append_base_style_policy<PaymentCoin>(
         transferable,
     );
     assert!(row_commitment == expected_row, EInvalidCommitment);
-    let style = base::borrow_style_v8(base_registry, part_key, item_key, style_key);
+    let style = base::borrow_style_v2(base_registry, part_key, item_key, style_key);
     let key = PhysicalPolicyKeyV8 {
         source_kind: SOURCE_BASE_STYLE,
-        source_id: base::registry_id_v8(base_registry),
-        part_key: *base::style_part_key_v8(style),
-        item_key: *base::style_item_key_v8(style),
-        style_key: *base::style_key_v8(style),
+        source_id: object::id(base_registry),
+        part_key: *base::style_part_key_v2(style),
+        item_key: *base::style_item_key_v2(style),
+        style_key: *base::style_key_v2(style),
     };
     assert!(!registry.base_policies.contains(key), EDuplicatePolicy);
     let next = advance_base_policy_commitment_v8(
@@ -868,7 +879,7 @@ fun append_base_style_policy<PaymentCoin>(
         sequence,
         source: PhysicalSourceBindingV8 {
             source_kind: SOURCE_BASE_STYLE,
-            source_id: base::registry_id_v8(base_registry),
+            source_id: object::id(base_registry),
             source_semantic_id: b"".to_string(),
             source_content_commitment: *maker::root_content_commitment_v8(root),
             source_treasury_id: option::none(),
@@ -879,19 +890,19 @@ fun append_base_style_policy<PaymentCoin>(
             registered_pack_admin_cap_id: option::none(),
         },
         style: PhysicalStyleDescriptorV8 {
-            part_key: *base::style_part_key_v8(style),
-            item_key: *base::style_item_key_v8(style),
-            style_key: *base::style_key_v8(style),
-            layer_track_key: *base::style_layer_track_key_v8(style),
-            color_channel_key: *base::style_color_channel_key_v8(style),
-            default_swatch_key: *base::style_default_swatch_key_v8(style),
-            style_asset_blob_id: *base::style_asset_blob_id_v8(style),
-            style_asset_sha256: *base::style_asset_sha256_v8(style),
-            style_protected: base::style_protected_v8(style),
+            part_key: *base::style_part_key_v2(style),
+            item_key: *base::style_item_key_v2(style),
+            style_key: *base::style_key_v2(style),
+            layer_track_key: *base::style_layer_track_key_v2(style),
+            color_channel_key: *base::style_color_channel_key_v2(style),
+            default_swatch_key: *base::style_default_swatch_key_v2(style),
+            style_asset_blob_id: *base::style_asset_blob_id_v2(style),
+            style_asset_sha256: *base::style_asset_sha256_v2(style),
+            style_protected: base::style_protected_v2(style),
         },
-        style_payload_commitment: *base::style_payload_commitment_v8(style),
+        style_payload_commitment: *base::style_payload_commitment_v2(style),
         style_seal_binding_commitment: vector[],
-        source_style_commitment: *base::style_payload_commitment_v8(style),
+        source_style_commitment: *base::style_payload_commitment_v2(style),
         style_identity_commitment: derive_style_identity(root, base_registry, style),
         material_policy_commitment,
         issuance_kind,
@@ -946,30 +957,23 @@ fun seal_registry(registry: &mut PhysicalRegistryV8) {
     });
 }
 
-public fun certify_physical_activation_readiness_v8<PaymentCoin>(
+public fun validate_physical_activation_readiness_v2<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     base_registry: &BaseDefinitionRegistryV8,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
     registry: &PhysicalRegistryV8,
-): PhysicalReadinessV8 {
+): vector<u8> {
+    binding::assert_catalog_current_v8(protocol_config, catalog);
+    binding::assert_replacement_current_v2(replacement, catalog);
+    maker::assert_product_release_catalog_v8(root, catalog);
     assert_config(catalog, config);
     assert_registry_identity(registry, root, base_registry, config);
     maker::assert_draft_v8(root);
     assert_activation_ready(registry);
-    let companion_commitment = derive_readiness_commitment(registry);
-    activation::certify_physical_readiness_v8<
-        PaymentCoin,
-        PhysicalOriginalMarkerV8,
-        PhysicalCallableMarkerV8,
-        PhysicalRegistryV8,
-    >(
-        root,
-        catalog,
-        &config.physical_call_cap,
-        registry,
-        companion_commitment,
-    )
+    derive_readiness_commitment(registry)
 }
 
 fun derive_readiness_commitment(registry: &PhysicalRegistryV8): vector<u8> {
@@ -1012,7 +1016,9 @@ public fun register_pack_style_policy_v8<PaymentCoin>(
     registry: &mut PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
     maker_admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
     packs: &PackRegistryV8,
     release: &PackReleaseV8<PaymentCoin>,
@@ -1030,6 +1036,7 @@ public fun register_pack_style_policy_v8<PaymentCoin>(
     transferable: bool,
     ctx: &TxContext,
 ) {
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
     assert_active_registry(registry, root, catalog, config);
     maker::assert_admin_v8(root, maker_admin);
     assert!(maker::root_owner_v8(root) == ctx.sender(), EWrongHolder);
@@ -1046,14 +1053,8 @@ public fun register_pack_style_policy_v8<PaymentCoin>(
         price_atomic,
         max_supply,
     );
-    let witness = runtime::new_physical_pack_policy_witness_v8<
-        PaymentCoin,
-        PhysicalOriginalMarkerV8,
-        PhysicalCallableMarkerV8,
-    >(
-        root,
-        catalog,
-        &config.physical_call_cap,
+    let witness = runtime::new_physical_pack_policy_witness_v8<PaymentCoin, PhysicalRuntimeWitnessV2>(
+        root, PhysicalRuntimeWitnessV2 {}, protocol_config, catalog, replacement,
         packs,
         release,
         pack_admin,
@@ -1065,7 +1066,10 @@ public fun register_pack_style_policy_v8<PaymentCoin>(
     );
     append_pack_policy_from_witness(
         registry,
+        root,
+        protocol_config,
         catalog,
+        replacement,
         config,
         expected_revision,
         witness,
@@ -1078,10 +1082,14 @@ public fun register_pack_style_policy_v8<PaymentCoin>(
     )
 }
 
-fun append_pack_policy_from_witness(
+#[allow(lint(unused_object_with_fields))]
+fun append_pack_policy_from_witness<PaymentCoin>(
     registry: &mut PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    config: &PhysicalPackageConfigV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    _config: &PhysicalPackageConfigV8,
     expected_revision: u64,
     witness: RuntimePhysicalPackPolicyWitnessV8,
     material_policy_commitment: vector<u8>,
@@ -1118,10 +1126,8 @@ fun append_pack_policy_from_witness(
         seal_binding_commitment,
         source_style_commitment,
         style_identity_commitment,
-    ) = runtime::consume_physical_pack_policy_witness_v8<
-        PhysicalOriginalMarkerV8,
-        PhysicalCallableMarkerV8,
-    >(witness, catalog, &config.physical_call_cap);
+    ) = runtime::consume_physical_pack_policy_witness_v8<PaymentCoin, PhysicalRuntimeWitnessV2>(
+        witness, PhysicalRuntimeWitnessV2 {}, root, protocol_config, catalog, replacement);
     assert!(registry.revision == expected_revision, EStaleRevision);
     assert!(root_id == registry.root_id, EInvalidBinding);
     assert!(maker_version == registry.maker_version, EInvalidBinding);
@@ -1225,13 +1231,16 @@ fun append_pack_policy_from_witness(
 public fun claim_free_base_style_v8<PaymentCoin>(
     registry: &mut PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
     selection_witness: RuntimePhysicalSelectionWitnessV8,
     loadout: &MakerLoadoutV8,
     expected_issued_count: u64,
     ctx: &mut TxContext,
 ): PhysicalAssetV8 {
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
     assert_active_registry(registry, root, catalog, config);
     let selection = consume_runtime_selection(selection_witness, loadout, ctx);
     assert_selection_root(registry, &selection, ctx);
@@ -1259,7 +1268,9 @@ public fun claim_free_base_style_v8<PaymentCoin>(
 public fun claim_free_pack_style_v8<PaymentCoin>(
     registry: &mut PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
     packs: &PackRegistryV8,
     release: &PackReleaseV8<PaymentCoin>,
@@ -1270,12 +1281,15 @@ public fun claim_free_pack_style_v8<PaymentCoin>(
     expected_issued_count: u64,
     ctx: &mut TxContext,
 ): PhysicalAssetV8 {
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
     assert_active_registry(registry, root, catalog, config);
     let selection = consume_runtime_selection(selection_witness, loadout, ctx);
     assert_selection_root(registry, &selection, ctx);
     let access = certify_pack_access(
         root,
+        protocol_config,
         catalog,
+        replacement,
         config,
         packs,
         release,
@@ -1313,6 +1327,7 @@ public fun purchase_base_style_v8<PaymentCoin>(
     registry: &mut PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
     protocol_config: &ProtocolConfigV8,
     protocol_treasury: &mut ProtocolTreasuryV8<PaymentCoin>,
@@ -1323,6 +1338,7 @@ public fun purchase_base_style_v8<PaymentCoin>(
     expected_issued_count: u64,
     ctx: &mut TxContext,
 ): PhysicalAssetV8 {
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
     assert_active_registry(registry, root, catalog, config);
     let selection = consume_runtime_selection(selection_witness, loadout, ctx);
     assert_selection_root(registry, &selection, ctx);
@@ -1371,6 +1387,7 @@ public fun purchase_pack_style_v8<PaymentCoin>(
     registry: &mut PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
     packs: &PackRegistryV8,
     release: &PackReleaseV8<PaymentCoin>,
@@ -1384,12 +1401,15 @@ public fun purchase_pack_style_v8<PaymentCoin>(
     expected_issued_count: u64,
     ctx: &mut TxContext,
 ): PhysicalAssetV8 {
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
     assert_active_registry(registry, root, catalog, config);
     let selection = consume_runtime_selection(selection_witness, loadout, ctx);
     assert_selection_root(registry, &selection, ctx);
     let access = certify_pack_access(
         root,
+        protocol_config,
         catalog,
+        replacement,
         config,
         packs,
         release,
@@ -1445,19 +1465,20 @@ public fun purchase_pack_style_v8<PaymentCoin>(
 public fun materialize_base_style_v8<PaymentCoin>(
     registry: &mut PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
     witness: PhysicalMaterializationWitnessV8,
     loadout: &MakerLoadoutV8,
     expected_issued_count: u64,
     ctx: &mut TxContext,
 ): PhysicalAssetV8 {
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
     assert_active_registry(registry, root, catalog, config);
     let (complete, selection, materialization_key, witness_commitment) =
-        output::consume_physical_materialization_witness_v8<
-            PhysicalOriginalMarkerV8,
-            PhysicalCallableMarkerV8,
-        >(witness, catalog, &config.physical_call_cap);
+        output::consume_physical_materialization_witness_v8<PhysicalRuntimeWitnessV2>(
+            witness, PhysicalRuntimeWitnessV2 {}, protocol_config, catalog, replacement);
     let soul_registry_id = assert_complete_binding(registry, root, &complete, ctx);
     assert_output_selection_current(&complete, &selection, loadout);
     let policy = *borrow_base_policy_v8(registry, &selection);
@@ -1492,7 +1513,9 @@ public fun materialize_base_style_v8<PaymentCoin>(
 public fun materialize_pack_style_v8<PaymentCoin>(
     registry: &mut PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
     packs: &PackRegistryV8,
     release: &PackReleaseV8<PaymentCoin>,
@@ -1503,17 +1526,18 @@ public fun materialize_pack_style_v8<PaymentCoin>(
     expected_issued_count: u64,
     ctx: &mut TxContext,
 ): PhysicalAssetV8 {
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
     assert_active_registry(registry, root, catalog, config);
     let (complete, selection, materialization_key, witness_commitment) =
-        output::consume_physical_materialization_witness_v8<
-            PhysicalOriginalMarkerV8,
-            PhysicalCallableMarkerV8,
-        >(witness, catalog, &config.physical_call_cap);
+        output::consume_physical_materialization_witness_v8<PhysicalRuntimeWitnessV2>(
+            witness, PhysicalRuntimeWitnessV2 {}, protocol_config, catalog, replacement);
     let soul_registry_id = assert_complete_binding(registry, root, &complete, ctx);
     assert_output_selection_current(&complete, &selection, loadout);
     let access = certify_pack_access(
         root,
+        protocol_config,
         catalog,
+        replacement,
         config,
         packs,
         release,
@@ -1556,8 +1580,6 @@ public fun materialize_pack_style_v8<PaymentCoin>(
 /// hash, source discriminator, holder, epoch, or transferable flag is accepted.
 public fun custody_base_physical_for_market_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -1565,8 +1587,9 @@ public fun custody_base_physical_for_market_v8<
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     physical_config: &PhysicalPackageConfigV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing_parent: &mut UID,
@@ -1576,8 +1599,6 @@ public fun custody_base_physical_for_market_v8<
 ): PhysicalMarketCustodyTicketV8 {
     assert_market_custody_current<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
@@ -1585,6 +1606,7 @@ public fun custody_base_physical_for_market_v8<
         root,
         protocol_config,
         catalog,
+        replacement,
         physical_config,
         market_call_cap,
         market_registry,
@@ -1594,11 +1616,13 @@ public fun custody_base_physical_for_market_v8<
     assert_asset_holder(&asset, ctx);
     assert!(asset.transferable, ENotTransferable);
     assert_market_asset_registry_binding(physical_registry, root, &asset);
-    let source_treasury_id = core_treasury::maker_treasury_id_v8(maker_treasury);
+    let source_treasury_id = object::id(maker_treasury);
     assert_base_market_source(physical_registry, root, &asset, source_treasury_id);
     custody_physical_for_market(
         physical_registry,
+        protocol_config,
         catalog,
+        replacement,
         physical_config,
         market_call_cap,
         market_registry,
@@ -1614,8 +1638,6 @@ public fun custody_base_physical_for_market_v8<
 /// by the registry policy and asset.
 public fun custody_pack_physical_for_market_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -1623,8 +1645,9 @@ public fun custody_pack_physical_for_market_v8<
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     physical_config: &PhysicalPackageConfigV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing_parent: &mut UID,
@@ -1634,8 +1657,6 @@ public fun custody_pack_physical_for_market_v8<
 ): PhysicalMarketCustodyTicketV8 {
     assert_market_custody_current<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
@@ -1643,6 +1664,7 @@ public fun custody_pack_physical_for_market_v8<
         root,
         protocol_config,
         catalog,
+        replacement,
         physical_config,
         market_call_cap,
         market_registry,
@@ -1655,7 +1677,9 @@ public fun custody_pack_physical_for_market_v8<
     assert_pack_market_source(&asset, source_treasury_id);
     custody_physical_for_market(
         physical_registry,
+        protocol_config,
         catalog,
+        replacement,
         physical_config,
         market_call_cap,
         market_registry,
@@ -1680,21 +1704,22 @@ public fun borrow_physical_market_custody_ticket_binding_v8(
     ticket: &PhysicalMarketCustodyTicketV8,
 ): &PhysicalMarketCustodyBindingV8 { &ticket.binding }
 
-/// Cancel/recover hook. Deliberately omits protocol/current/lifecycle checks:
+/// Cancel/recover hook. Retains the bound replacement/caller authority without
+/// requiring current protocol enablement, revision or ACTIVE lifecycle:
 /// PAUSED/ARCHIVED Root state, protocol disablement, or catalog snapshot drift
 /// cannot trap the seller's object. Logical holder/epoch/provenance are not
 /// mutated; the exact stored holder is the only return address.
 public fun return_physical_from_market_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
     physical_registry: &PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing_parent: &mut UID,
@@ -1703,13 +1728,13 @@ public fun return_physical_from_market_v8<
 ) {
     assert_market_authority<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
         root,
+        protocol_config,
         catalog,
+        replacement,
         market_call_cap,
         market_registry,
         market_treasury,
@@ -1717,7 +1742,9 @@ public fun return_physical_from_market_v8<
     assert_market_custody_live_binding(
         physical_registry,
         root,
+        protocol_config,
         catalog,
+        replacement,
         market_call_cap,
         market_registry,
         market_treasury,
@@ -1756,8 +1783,6 @@ public fun return_physical_from_market_v8<
 /// sender, not a caller-selected address. Only holder and epoch change.
 public fun purchase_base_physical_from_market_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -1765,8 +1790,9 @@ public fun purchase_base_physical_from_market_v8<
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     physical_config: &PhysicalPackageConfigV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing_parent: &mut UID,
@@ -1777,8 +1803,6 @@ public fun purchase_base_physical_from_market_v8<
 ) {
     assert_market_custody_current<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
@@ -1786,6 +1810,7 @@ public fun purchase_base_physical_from_market_v8<
         root,
         protocol_config,
         catalog,
+        replacement,
         physical_config,
         market_call_cap,
         market_registry,
@@ -1795,14 +1820,16 @@ public fun purchase_base_physical_from_market_v8<
     assert_market_custody_live_binding(
         physical_registry,
         root,
+        protocol_config,
         catalog,
+        replacement,
         market_call_cap,
         market_registry,
         market_treasury,
         listing_parent,
         custody,
     );
-    let source_treasury_id = core_treasury::maker_treasury_id_v8(maker_treasury);
+    let source_treasury_id = object::id(maker_treasury);
     assert!(custody.source_kind == SOURCE_BASE_STYLE, EInvalidMarketCustody);
     assert!(custody.source_treasury_id == source_treasury_id, EInvalidTreasury);
     let asset = receive_and_assert_market_asset(
@@ -1819,8 +1846,6 @@ public fun purchase_base_physical_from_market_v8<
 /// ACTIVE/current Pack purchase hook, statically distinct from the Base path.
 public fun purchase_pack_physical_from_market_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -1828,8 +1853,9 @@ public fun purchase_pack_physical_from_market_v8<
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     physical_config: &PhysicalPackageConfigV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing_parent: &mut UID,
@@ -1840,8 +1866,6 @@ public fun purchase_pack_physical_from_market_v8<
 ) {
     assert_market_custody_current<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
@@ -1849,6 +1873,7 @@ public fun purchase_pack_physical_from_market_v8<
         root,
         protocol_config,
         catalog,
+        replacement,
         physical_config,
         market_call_cap,
         market_registry,
@@ -1857,7 +1882,9 @@ public fun purchase_pack_physical_from_market_v8<
     assert_market_custody_live_binding(
         physical_registry,
         root,
+        protocol_config,
         catalog,
+        replacement,
         market_call_cap,
         market_registry,
         market_treasury,
@@ -1881,9 +1908,11 @@ public fun purchase_pack_physical_from_market_v8<
 #[allow(unused_mut_parameter)]
 fun custody_physical_for_market<MarketRegistry: key, MarketTreasury: key>(
     physical_registry: &PhysicalRegistryV8,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     physical_config: &PhysicalPackageConfigV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing_parent: &mut UID,
@@ -1892,7 +1921,9 @@ fun custody_physical_for_market<MarketRegistry: key, MarketTreasury: key>(
 ): PhysicalMarketCustodyTicketV8 {
     let custody = new_physical_market_custody_binding(
         physical_registry,
+        protocol_config,
         catalog,
+        replacement,
         physical_config,
         market_call_cap,
         market_registry,
@@ -1920,24 +1951,26 @@ fun custody_physical_for_market<MarketRegistry: key, MarketTreasury: key>(
 
 fun new_physical_market_custody_binding<MarketRegistry: key, MarketTreasury: key>(
     physical_registry: &PhysicalRegistryV8,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     physical_config: &PhysicalPackageConfigV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing_parent: &UID,
     asset: &PhysicalAssetV8,
     source_treasury_id: ID,
 ): PhysicalMarketCustodyBindingV8 {
-    let product = binding::catalog_binding_v8(catalog);
+    binding::assert_catalog_current_v8(protocol_config, catalog);
+    binding::assert_runtime_caller_cap_v1(market_call_cap, 1, replacement, catalog);
+    let (_, _, _, product, call_cap_set, _) = binding::catalog_terms_v2(catalog);
     PhysicalMarketCustodyBindingV8 {
         version: VERSION,
         catalog_id: binding::catalog_id_v8(catalog),
         product_binding_commitment: *binding::product_binding_commitment_v8(product),
-        call_cap_set_commitment: *binding::call_cap_set_commitment_v8(
-            binding::catalog_call_cap_set_v8(catalog),
-        ),
-        market_authority_id: binding::call_cap_authority_id_v8(market_call_cap),
+        call_cap_set_commitment: *call_cap_set,
+        market_authority_id: binding::catalog_authority_id_v2(catalog, 4),
         market_registry_id: object::id(market_registry),
         market_treasury_id: object::id(market_treasury),
         listing_id: object::uid_to_inner(listing_parent),
@@ -2083,7 +2116,8 @@ fun assert_active_registry<PaymentCoin>(
     config: &PhysicalPackageConfigV8,
 ) {
     assert_config(catalog, config);
-    maker::assert_active_capability_registry_v8(root);
+    assert!(maker::root_lifecycle_v8(root) == maker::lifecycle_active_v8(), ERegistryNotReady);
+    maker::assert_product_release_catalog_v8(root, catalog);
     maker::assert_root_identity_v8(
         root,
         registry.root_id,
@@ -2099,25 +2133,14 @@ fun assert_active_registry<PaymentCoin>(
     );
     assert!(registry.catalog_id == binding::catalog_id_v8(catalog), EInvalidBinding);
     assert!(registry.package_config_id == object::id(config), EInvalidBinding);
-    let capability = maker::root_capability_registry_binding_v8(root);
-    assert!(
-        maker::capability_catalog_id_v8(capability) == binding::catalog_id_v8(catalog),
-        EInvalidBinding,
-    );
-    assert!(
-        maker::capability_base_registry_id_v8(capability) == registry.base_registry_id,
-        EInvalidBinding,
-    );
-    assert!(
-        maker::capability_physical_registry_id_v8(capability) == object::id(registry),
-        EInvalidBinding,
-    );
+    maker::assert_base_registry_identity_v8(root, registry.base_registry_id,
+        registry.root_id, registry.maker_version, &registry.root_content_commitment);
+    assert!(companion::physical_registry_id_v2(maker::root_companion_registry_ids_v2(root))
+        == object::id(registry), EInvalidBinding);
 }
 
 fun assert_market_custody_current<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -2125,89 +2148,53 @@ fun assert_market_custody_current<
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     physical_config: &PhysicalPackageConfigV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
 ) {
-    binding::assert_catalog_current_v8(protocol_config, catalog);
+    maker::assert_active_live_authority_v2(root, protocol_config, catalog, replacement);
     maker::assert_current_protocol_config_v8(root, protocol_config);
     assert_active_registry(physical_registry, root, catalog, physical_config);
     assert_market_authority<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
-    >(root, catalog, market_call_cap, market_registry, market_treasury);
-    assert!(
-        physical_registry.product_binding_commitment
-            == *binding::product_binding_commitment_v8(
-                maker::root_product_release_binding_v8(root),
-            ),
-        EInvalidMarketAuthority,
-    );
-    assert!(
-        physical_registry.call_cap_set_commitment
-            == *binding::call_cap_set_commitment_v8(
-                maker::root_product_release_call_cap_set_v8(root),
-            ),
-        EInvalidMarketAuthority,
-    );
+    >(root, protocol_config, catalog, replacement, market_call_cap, market_registry, market_treasury);
+    assert!(&physical_registry.product_binding_commitment
+        == maker::root_product_release_binding_commitment_v8(root), EInvalidMarketAuthority);
+    assert!(&physical_registry.call_cap_set_commitment
+        == maker::root_product_release_call_cap_set_commitment_v8(root), EInvalidMarketAuthority);
 }
 
+#[allow(lint(unused_object_with_fields))]
 fun assert_market_authority<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
     root: &MakerRootV8<PaymentCoin>,
+    _protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
 ) {
-    binding::assert_market_call_cap_v8(catalog, market_call_cap);
-    let catalog_product = binding::catalog_binding_v8(catalog);
-    let market_binding = binding::market_binding_v8(catalog_product);
-    binding::assert_type_origins_v8<MarketOriginalMarker, MarketCallableMarker>(
-        market_binding,
-    );
-    binding::assert_type_original_v8<MarketRegistry>(market_binding);
-    binding::assert_type_original_v8<MarketTreasury>(market_binding);
-    assert!(
-        maker::root_product_release_catalog_id_v8(root) == binding::catalog_id_v8(catalog),
-        EInvalidMarketAuthority,
-    );
-    assert!(
-        binding::product_binding_commitment_v8(
-            maker::root_product_release_binding_v8(root),
-        ) == binding::product_binding_commitment_v8(catalog_product),
-        EInvalidMarketAuthority,
-    );
-    binding::assert_same_call_cap_set_v8(
-        maker::root_product_release_call_cap_set_v8(root),
-        binding::catalog_call_cap_set_v8(catalog),
-    );
-    let capability = maker::root_capability_registry_binding_v8(root);
-    assert!(
-        maker::capability_catalog_id_v8(capability) == binding::catalog_id_v8(catalog),
-        EInvalidMarketAuthority,
-    );
-    binding::assert_same_call_cap_set_v8(
-        maker::capability_call_cap_set_v8(capability),
-        binding::catalog_call_cap_set_v8(catalog),
-    );
-    assert!(
-        maker::capability_market_registry_id_v8(capability) == object::id(market_registry),
-        EInvalidMarketAuthority,
-    );
-    assert!(
-        maker::capability_market_treasury_id_v8(capability) == object::id(market_treasury),
-        EInvalidMarketAuthority,
-    );
+    binding::assert_replacement_current_v2(replacement, catalog);
+    binding::assert_runtime_caller_cap_v1(market_call_cap, 1, replacement, catalog);
+    maker::assert_product_release_catalog_v8(root, catalog);
+    let market_binding = binding::binding_at_v2(binding::catalog_binding_v8(catalog), 5);
+    binding::assert_exact_single_argument_type_v2<MarketRegistry, PaymentCoin>(
+        market_binding, &b"market_v8", &b"MarketRegistryV8");
+    binding::assert_exact_single_argument_type_v2<MarketTreasury, PaymentCoin>(
+        market_binding, &b"market_v8", &b"MarketTreasuryV8");
+    assert!(companion::market_registry_id_v2(maker::root_companion_registry_ids_v2(root))
+        == object::id(market_registry), EInvalidMarketAuthority);
+    // Market validates its immutable registry -> treasury relation before
+    // exposing its private caller cap. Ticket consumption also matches this ID.
+    assert!(object::id(market_registry) != object::id(market_treasury), EInvalidMarketAuthority);
 }
 
 fun assert_market_custody_live_binding<
@@ -2217,16 +2204,18 @@ fun assert_market_custody_live_binding<
 >(
     physical_registry: &PhysicalRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_call_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing_parent: &UID,
     custody: &PhysicalMarketCustodyBindingV8,
 ) {
-    let product = binding::catalog_binding_v8(catalog);
-    let call_cap_set = binding::catalog_call_cap_set_v8(catalog);
-    let capability = maker::root_capability_registry_binding_v8(root);
+    assert_market_authority<PaymentCoin, MarketRegistry, MarketTreasury>(
+        root, protocol_config, catalog, replacement, market_call_cap, market_registry, market_treasury);
+    let (_, _, _, product, call_cap_set, _) = binding::catalog_terms_v2(catalog);
     assert!(custody.version == VERSION, EInvalidMarketCustody);
     assert!(custody.catalog_id == binding::catalog_id_v8(catalog), EInvalidMarketCustody);
     assert!(
@@ -2236,11 +2225,11 @@ fun assert_market_custody_live_binding<
     );
     assert!(
         &custody.call_cap_set_commitment
-            == binding::call_cap_set_commitment_v8(call_cap_set),
+            == call_cap_set,
         EInvalidMarketCustody,
     );
     assert!(
-        custody.market_authority_id == binding::call_cap_authority_id_v8(market_call_cap),
+        custody.market_authority_id == binding::catalog_authority_id_v2(catalog, 4),
         EInvalidMarketCustody,
     );
     assert!(custody.market_registry_id == object::id(market_registry), EInvalidMarketCustody);
@@ -2255,7 +2244,7 @@ fun assert_market_custody_live_binding<
         EInvalidMarketCustody,
     );
     assert!(
-        maker::capability_physical_registry_id_v8(capability) == object::id(physical_registry),
+        companion::physical_registry_id_v2(maker::root_companion_registry_ids_v2(root)) == object::id(physical_registry),
         EInvalidMarketAuthority,
     );
     assert!(custody.root_id == maker::root_id_v8(root), EInvalidMarketCustody);
@@ -2327,10 +2316,7 @@ fun assert_market_custody_asset<PaymentCoin>(
     );
     if (asset.source.source_kind == SOURCE_BASE_STYLE) {
         assert!(asset.source.source_treasury_id.is_none(), EInvalidTreasury);
-        assert!(
-            custody.source_treasury_id == maker::root_maker_treasury_id_v8(root),
-            EInvalidTreasury,
-        );
+        maker::assert_maker_treasury_identity_v8(root, custody.source_treasury_id);
     } else {
         assert!(asset.source.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
         assert!(asset.source.source_treasury_id.is_some(), EInvalidTreasury);
@@ -2406,7 +2392,7 @@ fun assert_base_market_source<PaymentCoin>(
         EInvalidCommitment,
     );
     assert!(asset.source.source_treasury_id.is_none(), EInvalidTreasury);
-    assert!(source_treasury_id == maker::root_maker_treasury_id_v8(root), EInvalidTreasury);
+    maker::assert_maker_treasury_identity_v8(root, source_treasury_id);
     assert!(asset.source.pack_registry_id.is_none(), EInvalidBinding);
     assert!(asset.source.registered_pack_owner.is_none(), EInvalidBinding);
     assert!(asset.source.registered_pack_admin_cap_id.is_none(), EInvalidBinding);
@@ -2475,10 +2461,13 @@ fun consume_runtime_selection(
     }
 }
 
+#[allow(lint(unused_object_with_fields))]
 fun certify_pack_access<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    config: &PhysicalPackageConfigV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    _config: &PhysicalPackageConfigV8,
     packs: &PackRegistryV8,
     release: &PackReleaseV8<PaymentCoin>,
     pack_treasury: &PackTreasuryV8<PaymentCoin>,
@@ -2488,14 +2477,8 @@ fun certify_pack_access<PaymentCoin>(
     ctx: &TxContext,
 ): PhysicalPackAccessBindingV8 {
     let witness: RuntimePhysicalPackAccessWitnessV8 =
-        runtime::new_physical_pack_access_witness_v8<
-            PaymentCoin,
-            PhysicalOriginalMarkerV8,
-            PhysicalCallableMarkerV8,
-        >(
-            root,
-            catalog,
-            &config.physical_call_cap,
+        runtime::new_physical_pack_access_witness_v8<PaymentCoin, PhysicalRuntimeWitnessV2>(
+        root, PhysicalRuntimeWitnessV2 {}, protocol_config, catalog, replacement,
             packs,
             release,
             pack_treasury,
@@ -2529,10 +2512,8 @@ fun certify_pack_access<PaymentCoin>(
         layer_track_key,
         asset_content_commitment,
         style_identity_commitment,
-    ) = runtime::consume_physical_pack_access_witness_v8<
-        PhysicalOriginalMarkerV8,
-        PhysicalCallableMarkerV8,
-    >(witness, catalog, &config.physical_call_cap);
+    ) = runtime::consume_physical_pack_access_witness_v8<PaymentCoin, PhysicalRuntimeWitnessV2>(
+        witness, PhysicalRuntimeWitnessV2 {}, root, protocol_config, catalog, replacement);
     PhysicalPackAccessBindingV8 {
         root_id,
         maker_version,
@@ -2703,11 +2684,13 @@ fun assert_complete_binding<PaymentCoin>(
         output::physical_complete_maker_version_v8(complete),
         output::physical_complete_root_content_commitment_v8(complete),
     );
-    let capability = maker::root_capability_registry_binding_v8(root);
-    assert!(maker::capability_output_registry_id_v8(capability)
+    let companions = maker::root_companion_registry_ids_v2(root);
+    assert!(companion::physical_registry_id_v2(companions) == object::id(registry),
+        EInvalidBinding);
+    assert!(companion::output_registry_id_v2(companions)
         == output::physical_complete_output_registry_id_v8(complete),
         EInvalidBinding);
-    maker::capability_soul_registry_id_v8(capability)
+    companion::soul_registry_id_v2(companions)
 }
 
 fun assert_output_selection_current(
@@ -3001,7 +2984,7 @@ fun assert_asset_holder(asset: &PhysicalAssetV8, ctx: &TxContext) {
 fun derive_style_identity<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     base_registry: &BaseDefinitionRegistryV8,
-    row: &StyleRowV8,
+    row: &StyleRowV2,
 ): vector<u8> {
     hash::sha2_256(bcs::to_bytes(&BaseStyleIdentityInputV8 {
         domain: b"animacraft-v8/physical/base-style",
@@ -3009,48 +2992,34 @@ fun derive_style_identity<PaymentCoin>(
         root_id: maker::root_id_v8(root),
         maker_version: maker::root_maker_version_v8(root),
         root_content_commitment: *maker::root_content_commitment_v8(root),
-        base_registry_id: base::registry_id_v8(base_registry),
-        part_key: *base::style_part_key_v8(row),
-        item_key: *base::style_item_key_v8(row),
-        style_key: *base::style_key_v8(row),
-        layer_track_key: *base::style_layer_track_key_v8(row),
-        color_channel_key: *base::style_color_channel_key_v8(row),
-        default_swatch_key: *base::style_default_swatch_key_v8(row),
-        asset_blob_id: *base::style_asset_blob_id_v8(row),
-        asset_sha256: *base::style_asset_sha256_v8(row),
-        protected: base::style_protected_v8(row),
-        payload_commitment: *base::style_payload_commitment_v8(row),
+        base_registry_id: object::id(base_registry),
+        part_key: *base::style_part_key_v2(row),
+        item_key: *base::style_item_key_v2(row),
+        style_key: *base::style_key_v2(row),
+        layer_track_key: *base::style_layer_track_key_v2(row),
+        color_channel_key: *base::style_color_channel_key_v2(row),
+        default_swatch_key: *base::style_default_swatch_key_v2(row),
+        asset_blob_id: *base::style_asset_blob_id_v2(row),
+        asset_sha256: *base::style_asset_sha256_v2(row),
+        protected: base::style_protected_v2(row),
+        payload_commitment: *base::style_payload_commitment_v2(row),
     }))
 }
 
-fun assert_config(
-    catalog: &ProductReleaseCatalogV8,
-    config: &PhysicalPackageConfigV8,
-) {
+fun assert_config(catalog: &ProductReleaseCatalogV8, config: &PhysicalPackageConfigV8) {
     assert_config_binding(catalog, config);
-    binding::assert_type_origins_v8<PhysicalOriginalMarkerV8, PhysicalCallableMarkerV8>(
-        binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
-    );
+    binding::assert_exact_witness_type_v2<PhysicalSetupInstallWitnessV2>(
+        binding::binding_at_v2(binding::catalog_binding_v8(catalog), 4),
+        &b"physical_v8", &b"PhysicalSetupInstallWitnessV2");
 }
 
-fun assert_config_binding(
-    catalog: &ProductReleaseCatalogV8,
-    config: &PhysicalPackageConfigV8,
-) {
-    assert!(config.version == VERSION, EInvalidConfig);
-    assert!(config.catalog_id == binding::catalog_id_v8(catalog), EInvalidConfig);
-    let product = binding::catalog_binding_v8(catalog);
-    assert!(
-        &config.product_binding_commitment == binding::product_binding_commitment_v8(product),
-        EInvalidConfig,
-    );
-    assert!(
-        &config.call_cap_set_commitment == binding::call_cap_set_commitment_v8(
-            binding::catalog_call_cap_set_v8(catalog),
-        ),
-        EInvalidConfig,
-    );
-    binding::assert_physical_call_cap_v8(catalog, &config.physical_call_cap);
+fun assert_config_binding(catalog: &ProductReleaseCatalogV8, config: &PhysicalPackageConfigV8) {
+    assert!(config.version == VERSION && config.catalog_id == object::id(catalog), EInvalidConfig);
+    let (_, _, _, product, cap_set, _) = binding::catalog_terms_v2(catalog);
+    assert!(&config.product_binding_commitment == binding::product_binding_commitment_v8(product)
+        && &config.call_cap_set_commitment == cap_set, EInvalidConfig);
+    binding::assert_role_config_installation_v2(catalog, 4, object::id(config),
+        &config.installation_commitment);
 }
 
 fun assert_base_registry<PaymentCoin>(
@@ -3059,12 +3028,12 @@ fun assert_base_registry<PaymentCoin>(
 ) {
     maker::assert_base_registry_identity_v8(
         root,
-        base::registry_id_v8(base_registry),
-        base::registry_root_id_v8(base_registry),
-        base::registry_maker_version_v8(base_registry),
-        base::registry_root_content_commitment_v8(base_registry),
+        object::id(base_registry),
+        base::registry_root_id_v2(base_registry),
+        base::registry_maker_version_v2(base_registry),
+        base::registry_root_content_commitment_v2(base_registry),
     );
-    assert!(base::registry_sealed_v8(base_registry), ERegistryNotReady);
+    assert!(base::registry_sealed_v2(base_registry), ERegistryNotReady);
 }
 
 fun assert_registry_identity<PaymentCoin>(
@@ -3081,7 +3050,7 @@ fun assert_registry_identity<PaymentCoin>(
         &registry.root_content_commitment,
     );
     assert_base_registry(root, base_registry);
-    assert!(registry.base_registry_id == base::registry_id_v8(base_registry), EInvalidBinding);
+    assert!(registry.base_registry_id == object::id(base_registry), EInvalidBinding);
     assert!(registry.catalog_id == config.catalog_id, EInvalidBinding);
     assert!(registry.package_config_id == object::id(config), EInvalidBinding);
     assert!(
@@ -3575,13 +3544,123 @@ public fun physical_market_custody_provenance_commitment_v8(
     custody: &PhysicalMarketCustodyBindingV8,
 ): &vector<u8> { &custody.provenance_commitment }
 
-#[test_only]
-public struct PhysicalTestRegistryV8 has key { id: UID }
 
 #[test_only]
 public struct PhysicalMarketTestListingV8 has key {
     id: UID,
     custody: Option<PhysicalMarketCustodyBindingV8>,
+}
+
+#[test_only]
+public struct PhysicalAssetReadbackForTesting has copy, drop {
+    id: ID, holder: address, epoch: u64, provenance: vector<u8>,
+    asset_content: vector<u8>, source_id: ID, source_content: vector<u8>,
+}
+#[test_only]
+fun asset_readback_for_testing(asset: &PhysicalAssetV8): PhysicalAssetReadbackForTesting {
+    PhysicalAssetReadbackForTesting { id: object::id(asset), holder: asset.holder,
+        epoch: asset.ownership_epoch, provenance: asset.provenance_commitment,
+        asset_content: asset.asset_content_commitment, source_id: asset.source.source_id,
+        source_content: asset.source.source_content_commitment }
+}
+#[test_only]
+public fun assert_asset_readback_for_testing(
+    asset: &PhysicalAssetV8, expected: PhysicalAssetReadbackForTesting,
+    holder: address, epoch: u64,
+) {
+    assert!(object::id(asset) == expected.id, EInvalidMarketCustody);
+    assert!(asset.holder == holder, EWrongHolder);
+    assert!(asset.ownership_epoch == epoch, EStaleRevision);
+    assert!(asset.provenance_commitment == expected.provenance, EInvalidCommitment);
+    assert!(asset.asset_content_commitment == expected.asset_content, EInvalidCommitment);
+    assert!(asset.source.source_id == expected.source_id, EInvalidMarketCustody);
+    assert!(asset.source.source_content_commitment == expected.source_content, EInvalidCommitment);
+}
+
+/// Custody/Receiving integration only. The upper test issues the asset using
+/// actual entitlements, and supplies the real Market config's installed caller.
+#[test_only]
+public fun custody_asset_for_testing<MarketRegistry: key, MarketTreasury: key>(
+    pack: bool, mode: u8, registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<sui::sui::SUI>, protocol: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8, replacement: &FreshTupleReplacementBindingV2,
+    config: &PhysicalPackageConfigV8, caller: &RuntimeCallerCapV1,
+    market_registry: &MarketRegistry, market_treasury: &MarketTreasury,
+    maker_treasury: &MakerTreasuryV8<sui::sui::SUI>,
+    pack_treasury: &PackTreasuryV8<sui::sui::SUI>, asset: PhysicalAssetV8,
+    wrong_asset: Option<PhysicalAssetV8>, ctx: &mut TxContext,
+): (ID, ID, PhysicalAssetReadbackForTesting) {
+    let snapshot = asset_readback_for_testing(&asset);
+    let mut listing = PhysicalMarketTestListingV8 { id: object::new(ctx), custody: option::none() };
+    let ticket = if (pack) {
+        custody_pack_physical_for_market_v8(registry, root, protocol, catalog, replacement,
+            config, caller, market_registry, market_treasury, &mut listing.id, pack_treasury, asset, ctx)
+    } else {
+        custody_base_physical_for_market_v8(registry, root, protocol, catalog, replacement,
+            config, caller, market_registry, market_treasury, &mut listing.id, maker_treasury, asset, ctx)
+    };
+    let mut custody = consume_physical_market_custody_ticket_v8(ticket);
+    let mut listing_id = object::id(&listing);
+    let mut receiving_id = snapshot.id;
+    // Only positive setup paths inspect postconditions here. Mode 3 is the
+    // caller-gate negative path: unexpected acceptance must return normally,
+    // not be masked by an equivalent test-helper abort.
+    if (mode != 3) {
+        assert!(custody.listing_id == listing_id, EInvalidMarketCustody);
+        assert!(custody.asset_id == snapshot.id, EInvalidMarketCustody);
+        assert!(custody.source_kind == if (pack) { SOURCE_PACK_STYLE } else { SOURCE_BASE_STYLE },
+            EInvalidMarketCustody);
+        assert!(custody.source_treasury_id == if (pack) { object::id(pack_treasury) }
+            else { object::id(maker_treasury) }, EInvalidTreasury);
+        assert!(custody.holder == snapshot.holder, EWrongHolder);
+        assert!(custody.ownership_epoch == snapshot.epoch, EStaleRevision);
+        assert!(custody.transferable, ENotTransferable);
+    };
+    if (mode == 1) {
+        let mut wrong_listing = PhysicalMarketTestListingV8 { id: object::new(ctx), custody: option::none() };
+        listing_id = object::id(&wrong_listing);
+        // Preserve the original negative: bypass the field check so Sui's
+        // receive primitive, not a simulated owner string, checks the parent.
+        custody.listing_id = listing_id;
+        wrong_listing.custody = option::some(custody);
+        transfer::share_object(wrong_listing);
+    } else {
+        listing.custody = option::some(custody);
+    };
+    if (wrong_asset.is_some()) {
+        let wrong_asset = wrong_asset.destroy_some();
+        receiving_id = object::id(&wrong_asset);
+        transfer::transfer(wrong_asset, object::id(&listing).to_address());
+    } else { wrong_asset.destroy_none(); };
+    transfer::share_object(listing);
+    (listing_id, receiving_id, snapshot)
+}
+
+#[test_only]
+public fun return_binding_for_testing<MarketRegistry: key, MarketTreasury: key>(
+    registry: &PhysicalRegistryV8, root: &MakerRootV8<sui::sui::SUI>,
+    protocol: &ProtocolConfigV8, catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2, config: &PhysicalPackageConfigV8,
+    caller: &RuntimeCallerCapV1, market_registry: &MarketRegistry, market_treasury: &MarketTreasury,
+    maker_treasury: &MakerTreasuryV8<sui::sui::SUI>, asset: &PhysicalAssetV8, ctx: &mut TxContext,
+): (PhysicalMarketTestListingV8, PhysicalMarketCustodyBindingV8) {
+    assert_market_authority(root, protocol, catalog, replacement, caller, market_registry, market_treasury);
+    let listing = PhysicalMarketTestListingV8 { id: object::new(ctx), custody: option::none() };
+    let custody = new_physical_market_custody_binding(registry, protocol, catalog, replacement,
+        config, caller, market_registry, market_treasury, &listing.id, asset, object::id(maker_treasury));
+    (listing, custody)
+}
+#[test_only]
+public fun assert_return_authority_for_testing<MarketRegistry: key, MarketTreasury: key>(
+    registry: &PhysicalRegistryV8, root: &MakerRootV8<sui::sui::SUI>, protocol: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8, replacement: &FreshTupleReplacementBindingV2,
+    caller: &RuntimeCallerCapV1, market_registry: &MarketRegistry, market_treasury: &MarketTreasury,
+    listing: &PhysicalMarketTestListingV8, custody: &PhysicalMarketCustodyBindingV8, asset: &PhysicalAssetV8,
+) {
+    assert_market_authority(root, protocol, catalog, replacement, caller, market_registry, market_treasury);
+    assert_market_custody_live_binding(registry, root, protocol, catalog, replacement,
+        caller, market_registry, market_treasury, &listing.id, custody);
+    assert_market_custody_asset(custody, root, asset);
 }
 
 #[test_only]
@@ -3629,7 +3708,7 @@ fun receive_test_market_asset(
 }
 
 #[test_only]
-fun return_test_market_asset(
+public fun return_test_market_asset(
     mut listing: PhysicalMarketTestListingV8,
     receiving: Receiving<PhysicalAssetV8>,
 ) {
@@ -3642,7 +3721,7 @@ fun return_test_market_asset(
 }
 
 #[test_only]
-fun purchase_test_market_asset(
+public fun purchase_test_market_asset(
     mut listing: PhysicalMarketTestListingV8,
     receiving: Receiving<PhysicalAssetV8>,
     ctx: &TxContext,
@@ -3655,634 +3734,10 @@ fun purchase_test_market_asset(
 }
 
 #[test_only]
-fun destroy_empty_test_market_listing(listing: PhysicalMarketTestListingV8) {
+public fun destroy_empty_test_market_listing(listing: PhysicalMarketTestListingV8) {
     let PhysicalMarketTestListingV8 { id, custody } = listing;
     assert!(custody.is_none(), EInvalidMarketCustody);
     id.delete()
-}
-
-#[test_only]
-fun new_base_market_binding_fixture(
-    ctx: &mut TxContext,
-): (
-    ActivePhysicalFixtureV8,
-    PhysicalMarketTestListingV8,
-    PhysicalAssetV8,
-    PhysicalMarketCustodyBindingV8,
-) {
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 4, true, ctx,
-    );
-    let asset = issue_transferable_base_physical_for_market_testing(
-        &mut fixture.physical_registry,
-        ctx,
-    );
-    let listing = PhysicalMarketTestListingV8 {
-        id: object::new(ctx),
-        custody: option::none(),
-    };
-    let custody = new_physical_market_custody_binding(
-        &fixture.physical_registry,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
-        &listing.id,
-        &asset,
-        core_treasury::maker_treasury_id_v8(&fixture.maker_treasury),
-    );
-    (fixture, listing, asset, custody)
-}
-
-#[test_only]
-public struct ActivePhysicalFixtureV8 {
-    protocol_config: ProtocolConfigV8,
-    protocol_treasury: ProtocolTreasuryV8<sui::sui::SUI>,
-    protocol_admin: ProtocolAdminCapV8,
-    root: MakerRootV8<sui::sui::SUI>,
-    base_registry: BaseDefinitionRegistryV8,
-    maker_treasury: MakerTreasuryV8<sui::sui::SUI>,
-    maker_admin: MakerAdminCapV8,
-    catalog: ProductReleaseCatalogV8,
-    physical_config: PhysicalPackageConfigV8,
-    release_call_cap: PackageCallCapV8<ReleaseRoleV8>,
-    market_call_cap: PackageCallCapV8<MarketRoleV8>,
-    physical_registry: PhysicalRegistryV8,
-    runtime_definitions: RuntimeDefinitionRegistryV8,
-    pack_registry: PackRegistryV8,
-    admission_authority: PackAdmissionAuthorityV8,
-    pack_release: PackReleaseV8<sui::sui::SUI>,
-    pack_admin: PackAdminCapV8,
-    pack_treasury: PackTreasuryV8<sui::sui::SUI>,
-    pack_pass: PackPassV8,
-    loadout: MakerLoadoutV8,
-    seal_policy_config: PhysicalTestRegistryV8,
-    seal_registry: PhysicalTestRegistryV8,
-    output_registry: PhysicalTestRegistryV8,
-    soul_registry: PhysicalTestRegistryV8,
-    market_registry: Coin<sui::sui::SUI>,
-    market_treasury: Coin<sui::sui::SUI>,
-}
-
-#[test_only]
-fun new_active_physical_fixture(
-    base_issuance_kind: u8,
-    base_proof_kind: u8,
-    base_price_atomic: u64,
-    base_max_supply: u64,
-    base_transferable: bool,
-    ctx: &mut TxContext,
-): ActivePhysicalFixtureV8 {
-    let (protocol_config, protocol_treasury, protocol_admin) =
-        protocol::new_protocol_with_treasury_for_testing<sui::sui::SUI>(true, ctx);
-    let root_content = test_hash(90);
-    let counts = base::new_base_definition_counts_v8(1, 1, 1, 1, 0, 0);
-    let commitments = base::minimal_expected_commitments_for_testing(root_content);
-    let economics = maker::new_economics_snapshot_v8<sui::sui::SUI>(
-        &protocol_config,
-        maker::access_free_v8(),
-        0,
-        maker::complete_unlimited_free_v8(),
-        0,
-        0,
-        0,
-    );
-    let rights = maker::new_onchain_native_rights_snapshot_v8(ctx, 250, 250, 500);
-    let clock = sui::clock::create_for_testing(ctx);
-    let (mut root, mut base_registry, maker_treasury, maker_admin) =
-        core::new_initial_maker_draft_v8<sui::sui::SUI>(
-            &protocol_config,
-            b"physical-active-fixture".to_string(),
-            test_hash(91),
-            b"physical-active-manifest".to_string(),
-            test_hash(92),
-            root_content,
-            counts,
-            commitments,
-            test_hash(93),
-            economics,
-            rights,
-            &clock,
-            ctx,
-        );
-    clock.destroy_for_testing();
-    base::populate_and_seal_minimal_for_testing(
-        &mut base_registry,
-        &root,
-        &maker_admin,
-    );
-    let package_commitments = binding::new_package_commitments_v8(
-        test_hash(13),
-        test_hash(14),
-        test_hash(15),
-    );
-    let mut catalog = binding::certify_product_release_catalog_v8<
-        CorePackageMarkerV8,
-        CorePackageMarkerV8,
-        SealOriginalMarkerV8,
-        SealCallableMarkerV8,
-        RuntimeOriginalMarkerV8,
-        RuntimeCallableMarkerV8,
-        OutputOriginalMarkerV8,
-        OutputCallableMarkerV8,
-        PhysicalOriginalMarkerV8,
-        PhysicalCallableMarkerV8,
-        sui::sui::SUI,
-        sui::sui::SUI,
-        std::ascii::String,
-        std::ascii::String,
-    >(
-        &protocol_config,
-        &protocol_admin,
-        package_commitments,
-        binding::new_package_commitments_v8(test_hash(16), test_hash(17), test_hash(18)),
-        binding::new_package_commitments_v8(test_hash(19), test_hash(20), test_hash(21)),
-        binding::new_package_commitments_v8(test_hash(22), test_hash(23), test_hash(24)),
-        binding::new_package_commitments_v8(test_hash(25), test_hash(26), test_hash(27)),
-        binding::new_package_commitments_v8(test_hash(28), test_hash(29), test_hash(30)),
-        binding::new_package_commitments_v8(test_hash(31), test_hash(32), test_hash(33)),
-        ctx,
-    );
-    let release_catalog_witness = binding::release_catalog_witness_for_testing(&catalog);
-    maker::finalize_product_release_binding_v8(
-        &mut root,
-        &maker_admin,
-        &protocol_config,
-        release_catalog_witness,
-        ctx,
-    );
-    let release_call_cap = binding::take_release_call_cap_v8(
-        &protocol_config,
-        &protocol_admin,
-        &mut catalog,
-    );
-    let physical_call_cap = binding::take_physical_call_cap_v8(
-        &protocol_config,
-        &protocol_admin,
-        &mut catalog,
-    );
-    let market_call_cap = binding::take_market_call_cap_v8(
-        &protocol_config,
-        &protocol_admin,
-        &mut catalog,
-    );
-    let physical_config = new_physical_package_config_v8(
-        &catalog,
-        physical_call_cap,
-        ctx,
-    );
-    let material = test_hash(94);
-    let row = derive_base_policy_row_commitment_v8(
-        &root,
-        &base_registry,
-        &physical_config,
-        0,
-        b"part".to_string(),
-        b"item".to_string(),
-        b"style".to_string(),
-        material,
-        base_issuance_kind,
-        base_proof_kind,
-        base_price_atomic,
-        base_max_supply,
-        base_transferable,
-    );
-    let empty = empty_base_policy_commitment_v8(
-        &root,
-        &base_registry,
-        &physical_config,
-    );
-    let final_commitment = advance_base_policy_commitment_v8(&root, 0, empty, row);
-    let mut physical_registry = new_registry_for_testing(
-        &root,
-        &maker_admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
-        1,
-        final_commitment,
-        ctx,
-    );
-    append_base_style_policy_for_testing(
-        &mut physical_registry,
-        &root,
-        &maker_admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
-        0,
-        material,
-        base_issuance_kind,
-        base_proof_kind,
-        base_price_atomic,
-        base_max_supply,
-        base_transferable,
-        row,
-    );
-    seal_for_testing(
-        &mut physical_registry,
-        &root,
-        &maker_admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
-    );
-    let (runtime_definitions, mut pack_registry, admission_authority) =
-        runtime::new_physical_runtime_fixture_for_testing(&root, ctx);
-    let seal_policy_config = PhysicalTestRegistryV8 { id: object::new(ctx) };
-    let seal_registry = PhysicalTestRegistryV8 { id: object::new(ctx) };
-    let output_registry = PhysicalTestRegistryV8 { id: object::new(ctx) };
-    let soul_registry = PhysicalTestRegistryV8 { id: object::new(ctx) };
-    let market_registry = coin::mint_for_testing<sui::sui::SUI>(0, ctx);
-    let market_treasury = coin::mint_for_testing<sui::sui::SUI>(0, ctx);
-    let (seal_ready, runtime_ready, output_ready, physical_ready, market_ready) =
-        activation_v8::readiness_set_for_testing(
-            &root,
-            &catalog,
-            &seal_policy_config,
-            &seal_registry,
-            &runtime_definitions,
-            &pack_registry,
-            &admission_authority,
-            &output_registry,
-            &soul_registry,
-            &physical_registry,
-            &market_registry,
-            &market_treasury,
-        );
-    activation_v8::activate_maker_for_testing(
-        &mut root,
-        &maker_admin,
-        &protocol_config,
-        &catalog,
-        &base_registry,
-        &maker_treasury,
-        &protocol_treasury,
-        &release_call_cap,
-        seal_ready,
-        runtime_ready,
-        output_ready,
-        physical_ready,
-        market_ready,
-        ctx,
-    );
-    let (pack_release, pack_admin, pack_treasury, pack_pass, loadout) =
-        runtime::add_physical_pack_fixture_for_testing(
-            &mut pack_registry,
-            &runtime_definitions,
-            &root,
-            ctx,
-        );
-    ActivePhysicalFixtureV8 {
-        protocol_config,
-        protocol_treasury,
-        protocol_admin,
-        root,
-        base_registry,
-        maker_treasury,
-        maker_admin,
-        catalog,
-        physical_config,
-        release_call_cap,
-        market_call_cap,
-        physical_registry,
-        runtime_definitions,
-        pack_registry,
-        admission_authority,
-        pack_release,
-        pack_admin,
-        pack_treasury,
-        pack_pass,
-        loadout,
-        seal_policy_config,
-        seal_registry,
-        output_registry,
-        soul_registry,
-        market_registry,
-        market_treasury,
-    }
-}
-
-#[test_only]
-fun delete_test_registry(registry: PhysicalTestRegistryV8) {
-    let PhysicalTestRegistryV8 { id } = registry;
-    id.delete();
-}
-
-#[test_only]
-fun finish_active_physical_fixture(
-    fixture: ActivePhysicalFixtureV8,
-    ctx: &mut TxContext,
-) {
-    let ActivePhysicalFixtureV8 {
-        protocol_config,
-        mut protocol_treasury,
-        protocol_admin,
-        mut root,
-        base_registry,
-        maker_treasury,
-        maker_admin,
-        catalog,
-        physical_config,
-        release_call_cap,
-        market_call_cap,
-        physical_registry,
-        runtime_definitions,
-        pack_registry,
-        admission_authority,
-        pack_release,
-        pack_admin,
-        pack_treasury,
-        pack_pass,
-        loadout,
-        seal_policy_config,
-        seal_registry,
-        output_registry,
-        soul_registry,
-        market_registry,
-        market_treasury,
-    } = fixture;
-    let release_id = runtime::pack_release_id_v8(&pack_release);
-    destroy_registry_for_testing(physical_registry);
-    runtime::destroy_physical_pack_fixture_for_testing(
-        pack_release,
-        pack_admin,
-        pack_treasury,
-        pack_pass,
-        loadout,
-    );
-    runtime::destroy_physical_runtime_fixture_for_testing(
-        runtime_definitions,
-        pack_registry,
-        admission_authority,
-        release_id,
-    );
-    delete_test_registry(seal_policy_config);
-    delete_test_registry(seal_registry);
-    delete_test_registry(output_registry);
-    delete_test_registry(soul_registry);
-    assert!(coin::burn_for_testing(market_registry) == 0, EInvalidCount);
-    assert!(coin::burn_for_testing(market_treasury) == 0, EInvalidCount);
-    destroy_config_for_testing(physical_config);
-    binding::destroy_call_cap_for_testing(release_call_cap);
-    binding::destroy_call_cap_for_testing(market_call_cap);
-    binding::destroy_catalog_for_testing(catalog);
-    let protocol_balance = protocol::protocol_treasury_balance_v8(&protocol_treasury);
-    if (protocol_balance > 0) {
-        protocol::withdraw_protocol_revenue_v8(
-            &protocol_config,
-            &protocol_admin,
-            &mut protocol_treasury,
-            protocol_balance,
-            @0xB11,
-            ctx,
-        );
-    };
-    protocol::destroy_protocol_with_treasury_for_testing(
-        protocol_config,
-        protocol_treasury,
-        protocol_admin,
-    );
-    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_draft_v8());
-    core::share_maker_draft_v8(
-        root,
-        base_registry,
-        maker_treasury,
-        maker_admin,
-        ctx,
-    );
-}
-
-#[test_only]
-fun register_test_pack_policy(
-    fixture: &mut ActivePhysicalFixtureV8,
-    expected_revision: u64,
-    issuance_kind: u8,
-    proof_kind: u8,
-    price_atomic: u64,
-    max_supply: u64,
-    transferable: bool,
-    ctx: &TxContext,
-) {
-    register_pack_style_policy_v8(
-        &mut fixture.physical_registry,
-        &fixture.root,
-        &fixture.maker_admin,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.pack_registry,
-        &fixture.pack_release,
-        &fixture.pack_admin,
-        &fixture.pack_treasury,
-        expected_revision,
-        b"part".to_string(),
-        b"pack-item".to_string(),
-        b"pack-style".to_string(),
-        test_hash(95),
-        issuance_kind,
-        proof_kind,
-        price_atomic,
-        max_supply,
-        transferable,
-        ctx,
-    )
-}
-
-#[test_only]
-fun base_selection_witness(
-    fixture: &mut ActivePhysicalFixtureV8,
-    ctx: &TxContext,
-): RuntimePhysicalSelectionWitnessV8 {
-    runtime::set_physical_base_selection_for_testing(
-        &mut fixture.loadout,
-        &fixture.root,
-    );
-    runtime::physical_selection_witness_for_testing(
-        &fixture.loadout,
-        *maker::root_content_commitment_v8(&fixture.root),
-        0,
-        ctx,
-    )
-}
-
-#[test_only]
-fun pack_selection_witness(
-    fixture: &ActivePhysicalFixtureV8,
-    ctx: &TxContext,
-): RuntimePhysicalSelectionWitnessV8 {
-    runtime::physical_selection_witness_for_testing(
-        &fixture.loadout,
-        *runtime::pack_release_content_commitment_v8(&fixture.pack_release),
-        0,
-        ctx,
-    )
-}
-
-#[test_only]
-fun claim_fixture_base_free(
-    fixture: &mut ActivePhysicalFixtureV8,
-    witness: RuntimePhysicalSelectionWitnessV8,
-    expected_issued_count: u64,
-    ctx: &mut TxContext,
-): PhysicalAssetV8 {
-    claim_free_base_style_v8(
-        &mut fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.physical_config,
-        witness,
-        &fixture.loadout,
-        expected_issued_count,
-        ctx,
-    )
-}
-
-#[test_only]
-fun claim_fixture_pack_free(
-    fixture: &mut ActivePhysicalFixtureV8,
-    witness: RuntimePhysicalSelectionWitnessV8,
-    expected_issued_count: u64,
-    ctx: &mut TxContext,
-): PhysicalAssetV8 {
-    claim_free_pack_style_v8(
-        &mut fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.pack_registry,
-        &fixture.pack_release,
-        &fixture.pack_treasury,
-        &fixture.pack_pass,
-        witness,
-        &fixture.loadout,
-        expected_issued_count,
-        ctx,
-    )
-}
-
-#[test_only]
-fun purchase_fixture_base(
-    fixture: &mut ActivePhysicalFixtureV8,
-    payment: Coin<sui::sui::SUI>,
-    witness: RuntimePhysicalSelectionWitnessV8,
-    expected_issued_count: u64,
-    ctx: &mut TxContext,
-): PhysicalAssetV8 {
-    purchase_base_style_v8(
-        &mut fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.protocol_config,
-        &mut fixture.protocol_treasury,
-        &mut fixture.maker_treasury,
-        payment,
-        witness,
-        &fixture.loadout,
-        expected_issued_count,
-        ctx,
-    )
-}
-
-#[test_only]
-fun purchase_fixture_pack(
-    fixture: &mut ActivePhysicalFixtureV8,
-    payment: Coin<sui::sui::SUI>,
-    witness: RuntimePhysicalSelectionWitnessV8,
-    expected_issued_count: u64,
-    ctx: &mut TxContext,
-): PhysicalAssetV8 {
-    purchase_pack_style_v8(
-        &mut fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.pack_registry,
-        &fixture.pack_release,
-        &mut fixture.pack_treasury,
-        &fixture.pack_pass,
-        &fixture.protocol_config,
-        &mut fixture.protocol_treasury,
-        payment,
-        witness,
-        &fixture.loadout,
-        expected_issued_count,
-        ctx,
-    )
-}
-
-#[test_only]
-fun purchase_fixture_base_with_treasury(
-    fixture: &mut ActivePhysicalFixtureV8,
-    maker_treasury: &mut MakerTreasuryV8<sui::sui::SUI>,
-    payment: Coin<sui::sui::SUI>,
-    witness: RuntimePhysicalSelectionWitnessV8,
-    expected_issued_count: u64,
-    ctx: &mut TxContext,
-): PhysicalAssetV8 {
-    purchase_base_style_v8(
-        &mut fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.protocol_config,
-        &mut fixture.protocol_treasury,
-        maker_treasury,
-        payment,
-        witness,
-        &fixture.loadout,
-        expected_issued_count,
-        ctx,
-    )
-}
-
-#[test_only]
-fun purchase_fixture_pack_with_treasury(
-    fixture: &mut ActivePhysicalFixtureV8,
-    pack_treasury: &mut PackTreasuryV8<sui::sui::SUI>,
-    payment: Coin<sui::sui::SUI>,
-    witness: RuntimePhysicalSelectionWitnessV8,
-    expected_issued_count: u64,
-    ctx: &mut TxContext,
-): PhysicalAssetV8 {
-    purchase_pack_style_v8(
-        &mut fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.pack_registry,
-        &fixture.pack_release,
-        pack_treasury,
-        &fixture.pack_pass,
-        &fixture.protocol_config,
-        &mut fixture.protocol_treasury,
-        payment,
-        witness,
-        &fixture.loadout,
-        expected_issued_count,
-        ctx,
-    )
-}
-
-#[test_only]
-fun set_fixture_pack_admission(
-    fixture: &mut ActivePhysicalFixtureV8,
-    admitted: bool,
-) {
-    runtime::set_physical_pack_admission_for_testing(
-        &mut fixture.pack_registry,
-        &fixture.pack_release,
-        admitted,
-    )
-}
-
-#[test_only]
-fun advance_fixture_pack_control(fixture: &mut ActivePhysicalFixtureV8) {
-    runtime::advance_physical_pack_control_for_testing(
-        &mut fixture.pack_release,
-        &mut fixture.pack_admin,
-    )
 }
 
 #[test_only]
@@ -4380,10 +3835,9 @@ public fun destroy_config_for_testing(config: PhysicalPackageConfigV8) {
         catalog_id: _,
         product_binding_commitment: _,
         call_cap_set_commitment: _,
-        physical_call_cap,
+        installation_commitment: _,
     } = config;
-    id.delete();
-    binding::destroy_call_cap_for_testing(physical_call_cap)
+    id.delete()
 }
 
 #[test_only]
@@ -4447,26 +3901,6 @@ fun test_hash(byte: u8): vector<u8> {
         index = index + 1;
     };
     value
-}
-
-#[test_only]
-fun new_config_for_testing(
-    catalog: &ProductReleaseCatalogV8,
-    physical_call_cap: PackageCallCapV8<PhysicalRoleV8>,
-    ctx: &mut TxContext,
-): PhysicalPackageConfigV8 {
-    binding::assert_physical_call_cap_v8(catalog, &physical_call_cap);
-    let product = binding::catalog_binding_v8(catalog);
-    PhysicalPackageConfigV8 {
-        id: object::new(ctx),
-        version: VERSION,
-        catalog_id: binding::catalog_id_v8(catalog),
-        product_binding_commitment: *binding::product_binding_commitment_v8(product),
-        call_cap_set_commitment: *binding::call_cap_set_commitment_v8(
-            binding::catalog_call_cap_set_v8(catalog),
-        ),
-        physical_call_cap,
-    }
 }
 
 #[test_only]
@@ -4555,101 +3989,6 @@ fun assert_local_readiness_for_testing<PaymentCoin>(
     derive_readiness_commitment(registry)
 }
 
-#[test_only]
-fun new_test_fixture(ctx: &mut TxContext): (
-    ProtocolConfigV8,
-    ProtocolAdminCapV8,
-    MakerRootV8<sui::sui::SUI>,
-    BaseDefinitionRegistryV8,
-    MakerTreasuryV8<sui::sui::SUI>,
-    MakerAdminCapV8,
-    ProductReleaseCatalogV8,
-    PhysicalPackageConfigV8,
-) {
-    let (protocol_config, protocol_admin) =
-        protocol::new_protocol_for_testing<sui::sui::SUI>(true, ctx);
-    let root_content = test_hash(10);
-    let counts = base::new_base_definition_counts_v8(1, 1, 1, 1, 0, 0);
-    let commitments = base::minimal_expected_commitments_for_testing(root_content);
-    let economics = maker::new_economics_snapshot_v8<sui::sui::SUI>(
-        &protocol_config,
-        maker::access_free_v8(),
-        0,
-        maker::complete_unlimited_free_v8(),
-        0,
-        0,
-        0,
-    );
-    let rights = maker::new_onchain_native_rights_snapshot_v8(ctx, 250, 250, 500);
-    let clock = sui::clock::create_for_testing(ctx);
-    let (mut root, mut base_registry, maker_treasury, admin) =
-        core::new_initial_maker_draft_v8<sui::sui::SUI>(
-            &protocol_config,
-            b"maker-physical-test".to_string(),
-            test_hash(11),
-            b"walrus-manifest".to_string(),
-            test_hash(12),
-            root_content,
-            counts,
-            commitments,
-            test_hash(13),
-            economics,
-            rights,
-            &clock,
-            ctx,
-        );
-    clock.destroy_for_testing();
-    let mut catalog = binding::product_release_catalog_for_testing(
-        &protocol_config,
-        maker::root_core_original_package_id_v8(&root).to_address(),
-        maker::root_core_callable_package_id_v8(&root).to_address(),
-        ctx,
-    );
-    let release_witness = binding::release_catalog_witness_for_testing(&catalog);
-    maker::finalize_product_release_binding_v8(
-        &mut root,
-        &admin,
-        &protocol_config,
-        release_witness,
-        ctx,
-    );
-    base::populate_and_seal_minimal_for_testing(&mut base_registry, &root, &admin);
-    let physical_call_cap = binding::take_physical_call_cap_v8(
-        &protocol_config,
-        &protocol_admin,
-        &mut catalog,
-    );
-    let physical_config = new_config_for_testing(&catalog, physical_call_cap, ctx);
-    (
-        protocol_config,
-        protocol_admin,
-        root,
-        base_registry,
-        maker_treasury,
-        admin,
-        catalog,
-        physical_config,
-    )
-}
-
-#[test_only]
-fun finish_test_fixture(
-    protocol_config: ProtocolConfigV8,
-    protocol_admin: ProtocolAdminCapV8,
-    root: MakerRootV8<sui::sui::SUI>,
-    base_registry: BaseDefinitionRegistryV8,
-    maker_treasury: MakerTreasuryV8<sui::sui::SUI>,
-    admin: MakerAdminCapV8,
-    catalog: ProductReleaseCatalogV8,
-    physical_config: PhysicalPackageConfigV8,
-    ctx: &TxContext,
-) {
-    destroy_config_for_testing(physical_config);
-    binding::destroy_catalog_for_testing(catalog);
-    protocol::destroy_protocol_for_testing(protocol_config, protocol_admin);
-    core::share_maker_draft_v8(root, base_registry, maker_treasury, admin, ctx);
-}
-
 #[test]
 fun exact_policy_term_matrix_is_fail_closed() {
     assert_policy_terms(ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1);
@@ -4687,98 +4026,96 @@ fun supply_must_be_bounded_and_nonzero() {
     assert_policy_terms(ISSUE_FREE_CLAIM, PROOF_NONE, 0, 0);
 }
 
-#[test]
-fun zero_policy_registry_seals_and_is_ready() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 1, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
-    let empty = empty_base_policy_commitment_v8(&root, &base_registry, &physical_config);
+#[test_only]
+public fun zero_policy_registry_seals_and_is_ready_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
+    let empty = empty_base_policy_commitment_v8(root, base_registry, physical_config);
     let mut registry = new_registry_for_testing(
-        &root,
-        &admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        admin,
+        base_registry,
+        catalog,
+        physical_config,
         0,
         empty,
-        &mut ctx,
+        ctx,
     );
     seal_for_testing(
         &mut registry,
-        &root,
-        &admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        admin,
+        base_registry,
+        catalog,
+        physical_config,
     );
     assert_hash(&assert_local_readiness_for_testing(
         &registry,
-        &root,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        base_registry,
+        catalog,
+        physical_config,
     ));
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test, expected_failure(abort_code = EInvalidCommitment)]
-fun zero_policy_registry_rejects_nonempty_commitment() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 8, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
+#[test_only]
+public fun zero_policy_registry_rejects_nonempty_commitment_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
     let registry = new_registry_for_testing(
-        &root,
-        &admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        admin,
+        base_registry,
+        catalog,
+        physical_config,
         0,
         test_hash(88),
-        &mut ctx,
+        ctx,
     );
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test, expected_failure(abort_code = ERegistryNotSealed)]
-fun readiness_rejects_unsealed_registry() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 9, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
+#[test_only]
+public fun readiness_rejects_unsealed_registry_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
     let empty = empty_base_policy_commitment_v8(
-        &root, &base_registry, &physical_config,
+        root, base_registry, physical_config,
     );
     let registry = new_registry_for_testing(
-        &root,
-        &admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        admin,
+        base_registry,
+        catalog,
+        physical_config,
         0,
         empty,
-        &mut ctx,
+        ctx,
     );
     let _ = assert_local_readiness_for_testing(
-        &registry, &root, &base_registry, &catalog, &physical_config,
+        &registry, root, base_registry, catalog, physical_config,
     );
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test]
-fun base_policy_is_derived_from_exact_live_style() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 2, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
+#[test_only]
+public fun base_policy_is_derived_from_exact_live_style_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
     let material = test_hash(30);
     let row = derive_base_policy_row_commitment_v8(
-        &root,
-        &base_registry,
-        &physical_config,
+        root,
+        base_registry,
+        physical_config,
         0,
         b"part".to_string(),
         b"item".to_string(),
@@ -4790,25 +4127,25 @@ fun base_policy_is_derived_from_exact_live_style() {
         100,
         true,
     );
-    let empty = empty_base_policy_commitment_v8(&root, &base_registry, &physical_config);
-    let final_commitment = advance_base_policy_commitment_v8(&root, 0, empty, row);
+    let empty = empty_base_policy_commitment_v8(root, base_registry, physical_config);
+    let final_commitment = advance_base_policy_commitment_v8(root, 0, empty, row);
     let mut registry = new_registry_for_testing(
-        &root,
-        &admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        admin,
+        base_registry,
+        catalog,
+        physical_config,
         1,
         final_commitment,
-        &mut ctx,
+        ctx,
     );
     append_base_style_policy_for_testing(
         &mut registry,
-        &root,
-        &admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        admin,
+        base_registry,
+        catalog,
+        physical_config,
         0,
         material,
         ISSUE_PROOF_MATERIALIZE,
@@ -4819,17 +4156,17 @@ fun base_policy_is_derived_from_exact_live_style() {
         row,
     );
     let selection = output::physical_base_selection_binding_for_testing_v8(
-        maker::root_id_v8(&root),
+        maker::root_id_v8(root),
         b"part".to_string(), b"item".to_string(), b"style".to_string(),
-        b"track".to_string(), *maker::root_content_commitment_v8(&root),
+        b"track".to_string(), *maker::root_content_commitment_v8(root),
         test_hash(14),
     );
     let policy = borrow_base_policy_v8(&registry, &selection);
     assert!(policy.sequence == 0, EInvalidSequence);
     assert!(
         &policy.style_identity_commitment == &derive_base_style_identity_v8(
-            &root,
-            &base_registry,
+            root,
+            base_registry,
             b"part".to_string(),
             b"item".to_string(),
             b"style".to_string(),
@@ -4838,158 +4175,143 @@ fun base_policy_is_derived_from_exact_live_style() {
     );
     seal_for_testing(
         &mut registry,
-        &root,
-        &admin,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        admin,
+        base_registry,
+        catalog,
+        physical_config,
     );
     assert_hash(&assert_local_readiness_for_testing(
         &registry,
-        &root,
-        &base_registry,
-        &catalog,
-        &physical_config,
+        root,
+        base_registry,
+        catalog,
+        physical_config,
     ));
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test, expected_failure(abort_code = EInvalidCount)]
-fun seal_rejects_missing_expected_row() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 3, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
+#[test_only]
+public fun seal_rejects_missing_expected_row_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
     let mut registry = new_registry_for_testing(
-        &root, &admin, &base_registry, &catalog, &physical_config,
-        1, test_hash(31), &mut ctx);
-    seal_for_testing(&mut registry, &root, &admin, &base_registry,
-        &catalog, &physical_config);
+        root, admin, base_registry, catalog, physical_config,
+        1, test_hash(31), ctx);
+    seal_for_testing(&mut registry, root, admin, base_registry,
+        catalog, physical_config);
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test, expected_failure(abort_code = EInvalidCommitment)]
-fun append_rejects_wrong_row_commitment() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 4, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
+#[test_only]
+public fun append_rejects_wrong_row_commitment_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
     let mut registry = new_registry_for_testing(
-        &root, &admin, &base_registry, &catalog, &physical_config,
-        1, test_hash(32), &mut ctx);
+        root, admin, base_registry, catalog, physical_config,
+        1, test_hash(32), ctx);
     append_base_style_policy_for_testing(
-        &mut registry, &root, &admin, &base_registry, &catalog,
-        &physical_config, 0, test_hash(33), ISSUE_FREE_CLAIM, PROOF_NONE,
+        &mut registry, root, admin, base_registry, catalog,
+        physical_config, 0, test_hash(33), ISSUE_FREE_CLAIM, PROOF_NONE,
         0, 1, false, test_hash(99));
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test, expected_failure(abort_code = EInvalidSequence)]
-fun append_rejects_out_of_order_sequence() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 5, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
+#[test_only]
+public fun append_rejects_out_of_order_sequence_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
     let material = test_hash(34);
     let row = derive_base_policy_row_commitment_v8(
-        &root, &base_registry, &physical_config, 1, b"part".to_string(),
+        root, base_registry, physical_config, 1, b"part".to_string(),
         b"item".to_string(), b"style".to_string(), material,
         ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, false);
     let mut registry = new_registry_for_testing(
-        &root, &admin, &base_registry, &catalog, &physical_config,
-        2, test_hash(35), &mut ctx);
+        root, admin, base_registry, catalog, physical_config,
+        2, test_hash(35), ctx);
     append_base_style_policy_for_testing(
-        &mut registry, &root, &admin, &base_registry, &catalog,
-        &physical_config, 1, material, ISSUE_FREE_CLAIM, PROOF_NONE,
+        &mut registry, root, admin, base_registry, catalog,
+        physical_config, 1, material, ISSUE_FREE_CLAIM, PROOF_NONE,
         0, 1, false, row);
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test, expected_failure(abort_code = EDuplicatePolicy)]
-fun duplicate_base_style_policy_is_rejected() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 6, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
+#[test_only]
+public fun duplicate_base_style_policy_is_rejected_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
     let material = test_hash(36);
-    let empty = empty_base_policy_commitment_v8(&root, &base_registry, &physical_config);
+    let empty = empty_base_policy_commitment_v8(root, base_registry, physical_config);
     let row0 = derive_base_policy_row_commitment_v8(
-        &root, &base_registry, &physical_config, 0, b"part".to_string(),
+        root, base_registry, physical_config, 0, b"part".to_string(),
         b"item".to_string(), b"style".to_string(), material,
         ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, false);
-    let next = advance_base_policy_commitment_v8(&root, 0, empty, row0);
+    let next = advance_base_policy_commitment_v8(root, 0, empty, row0);
     let row1 = derive_base_policy_row_commitment_v8(
-        &root, &base_registry, &physical_config, 1, b"part".to_string(),
+        root, base_registry, physical_config, 1, b"part".to_string(),
         b"item".to_string(), b"style".to_string(), material,
         ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, false);
-    let final_commitment = advance_base_policy_commitment_v8(&root, 1, next, row1);
+    let final_commitment = advance_base_policy_commitment_v8(root, 1, next, row1);
     let mut registry = new_registry_for_testing(
-        &root, &admin, &base_registry, &catalog, &physical_config,
-        2, final_commitment, &mut ctx);
+        root, admin, base_registry, catalog, physical_config,
+        2, final_commitment, ctx);
     append_base_style_policy_for_testing(
-        &mut registry, &root, &admin, &base_registry, &catalog,
-        &physical_config, 0, material, ISSUE_FREE_CLAIM, PROOF_NONE,
+        &mut registry, root, admin, base_registry, catalog,
+        physical_config, 0, material, ISSUE_FREE_CLAIM, PROOF_NONE,
         0, 1, false, row0);
     append_base_style_policy_for_testing(
-        &mut registry, &root, &admin, &base_registry, &catalog,
-        &physical_config, 1, material, ISSUE_FREE_CLAIM, PROOF_NONE,
+        &mut registry, root, admin, base_registry, catalog,
+        physical_config, 1, material, ISSUE_FREE_CLAIM, PROOF_NONE,
         0, 1, false, row1);
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test, expected_failure(abort_code = ERegistryNotReady)]
-fun readiness_rejects_nonzero_future_runtime_lane() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7, 0, 0, 0);
-    let (protocol_config, protocol_admin, root, base_registry, maker_treasury,
-        admin, catalog, physical_config) = new_test_fixture(&mut ctx);
-    let empty = empty_base_policy_commitment_v8(&root, &base_registry, &physical_config);
+#[test_only]
+public fun readiness_rejects_nonzero_future_runtime_lane_for_testing(
+    root: &MakerRootV8<sui::sui::SUI>, admin: &MakerAdminCapV8,
+    base_registry: &BaseDefinitionRegistryV8, catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8, ctx: &mut TxContext,
+) {
+    let empty = empty_base_policy_commitment_v8(root, base_registry, physical_config);
     let mut registry = new_registry_for_testing(
-        &root, &admin, &base_registry, &catalog, &physical_config,
-        0, empty, &mut ctx);
-    seal_for_testing(&mut registry, &root, &admin, &base_registry,
-        &catalog, &physical_config);
+        root, admin, base_registry, catalog, physical_config,
+        0, empty, ctx);
+    seal_for_testing(&mut registry, root, admin, base_registry,
+        catalog, physical_config);
     registry.revision = 1;
     let _ = assert_local_readiness_for_testing(
-        &registry, &root, &base_registry, &catalog, &physical_config);
+        &registry, root, base_registry, catalog, physical_config);
     destroy_registry_for_testing(registry);
-    finish_test_fixture(protocol_config, protocol_admin, root, base_registry,
-        maker_treasury, admin, catalog, physical_config, &ctx);
 }
 
-#[test]
-fun pack_policy_registers_from_live_witness_and_free_issues_exact_asset() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 101, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    assert!(fixture.physical_registry.revision == 1, EStaleRevision);
-    assert!(fixture.physical_registry.pack_policy_count == 1, EInvalidCount);
-    let witness = pack_selection_witness(&fixture, &ctx);
-    let asset = claim_fixture_pack_free(&mut fixture, witness, 0, &mut ctx);
+#[test_only]
+public fun assert_exact_pack_asset_for_testing(
+    asset: &PhysicalAssetV8, release: &PackReleaseV8<sui::sui::SUI>,
+    treasury: &PackTreasuryV8<sui::sui::SUI>, packs: &PackRegistryV8, admin: &PackAdminCapV8,
+) {
     assert!(asset.source.source_kind == SOURCE_PACK_STYLE, EInvalidBinding);
-    assert!(asset.source.source_id == runtime::pack_release_id_v8(&fixture.pack_release),
+    assert!(asset.source.source_id == runtime::pack_release_id_v8(release),
         EInvalidBinding);
     assert!(asset.source.source_treasury_id.is_some(), EInvalidTreasury);
     assert!(*asset.source.source_treasury_id.borrow()
-        == object::id(&fixture.pack_treasury), EInvalidTreasury);
+        == object::id(treasury), EInvalidTreasury);
     assert!(*asset.source.pack_registry_id.borrow()
-        == object::id(&fixture.pack_registry), EInvalidBinding);
+        == object::id(packs), EInvalidBinding);
     assert!(asset.source.pack_registry_revision
-        == runtime::pack_registry_revision_v8(&fixture.pack_registry),
+        == runtime::pack_registry_revision_v8(packs),
         EStaleRevision);
     assert!(*asset.source.registered_pack_owner.borrow() == @0xA11, EWrongHolder);
     assert!(asset.source.registered_pack_control_epoch == 0, EInvalidBinding);
     assert!(*asset.source.registered_pack_admin_cap_id.borrow()
-        == object::id(&fixture.pack_admin), EInvalidBinding);
+        == object::id(admin), EInvalidBinding);
     assert!(asset.style.part_key == b"part".to_string()
         && asset.style.item_key == b"pack-item".to_string()
         && asset.style.style_key == b"pack-style".to_string()
@@ -4999,247 +4321,46 @@ fun pack_policy_registers_from_live_witness_and_free_issues_exact_asset() {
     assert!(asset.style.style_asset_sha256 == test_hash(72), EInvalidCommitment);
     assert!(asset.source_style_commitment == test_hash(74), EInvalidCommitment);
     assert!(asset.serial == 1 && asset.ownership_epoch == 0, EInvalidSequence);
-    consume_physical_asset_v8(
-        &mut fixture.physical_registry,
-        asset,
-        0,
-        &ctx,
-    );
-    assert!(fixture.physical_registry.total_issued == 1, EInvalidCount);
-    assert!(fixture.physical_registry.total_consumed == 1, EInvalidCount);
-    finish_active_physical_fixture(fixture, &mut ctx);
 }
 
-#[test, expected_failure(abort_code = EDuplicatePolicy)]
-fun duplicate_pack_policy_registration_is_rejected() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 102, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 1, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    finish_active_physical_fixture(fixture, &mut ctx)
+#[test_only]
+public fun assert_registered_pack_control_for_testing(
+    registry: &PhysicalRegistryV8, release: &PackReleaseV8<sui::sui::SUI>,
+    admin: &PackAdminCapV8, expected_epoch: u64,
+) {
+    let policy = registry.pack_policies.borrow(PhysicalPolicyKeyV8 {
+        source_kind: SOURCE_PACK_STYLE, source_id: object::id(release),
+        part_key: b"part".to_string(), item_key: b"pack-item".to_string(),
+        style_key: b"pack-style".to_string(),
+    });
+    assert!(policy.source.registered_pack_control_epoch == expected_epoch, EInvalidBinding);
+    assert!(*policy.source.registered_pack_admin_cap_id.borrow() == object::id(admin), EInvalidBinding);
 }
 
-#[test, expected_failure(abort_code = EStaleRevision)]
-fun pack_policy_registration_requires_exact_registry_revision() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 103, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 1, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = 15)]
-fun revoked_pack_admission_blocks_new_issuance() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 104, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    let witness = pack_selection_witness(&fixture, &ctx);
-    set_fixture_pack_admission(&mut fixture, false);
-    let asset = claim_fixture_pack_free(&mut fixture, witness, 0, &mut ctx);
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = 9)]
-fun paused_pack_blocks_new_issuance() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 105, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    let witness = pack_selection_witness(&fixture, &ctx);
-    runtime::set_physical_pack_lifecycle_for_testing(
-        &mut fixture.pack_release,
-        runtime::pack_paused_v8(),
-    );
-    let asset = claim_fixture_pack_free(&mut fixture, witness, 0, &mut ctx);
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = 9)]
-fun archived_pack_blocks_new_issuance() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 106, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    let witness = pack_selection_witness(&fixture, &ctx);
-    runtime::set_physical_pack_lifecycle_for_testing(
-        &mut fixture.pack_release,
-        runtime::pack_archived_v8(),
-    );
-    let asset = claim_fixture_pack_free(&mut fixture, witness, 0, &mut ctx);
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(
-    abort_code = 0,
-    location = animacraft_v8_core::maker_v8,
-)]
-fun paused_root_blocks_new_issuance() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 121, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    maker::set_lifecycle_for_testing(&mut fixture.root, maker::lifecycle_paused_v8());
-    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test]
-fun pack_control_epoch_change_does_not_invalidate_registered_content() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 107, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    advance_fixture_pack_control(&mut fixture);
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    let policy = fixture.physical_registry.pack_policies.borrow(
-        PhysicalPolicyKeyV8 {
-            source_kind: SOURCE_PACK_STYLE,
-            source_id: object::id(&fixture.pack_release),
-            part_key: b"part".to_string(),
-            item_key: b"pack-item".to_string(),
-            style_key: b"pack-style".to_string(),
-        },
-    );
-    assert!(policy.source.registered_pack_control_epoch == 1, EInvalidBinding);
-    assert!(*policy.source.registered_pack_admin_cap_id.borrow()
-        == object::id(&fixture.pack_admin), EInvalidBinding);
-    advance_fixture_pack_control(&mut fixture);
-    let witness = pack_selection_witness(&fixture, &ctx);
-    let asset = claim_fixture_pack_free(&mut fixture, witness, 0, &mut ctx);
-    consume_physical_asset_v8(&mut fixture.physical_registry, asset, 0, &ctx);
-    finish_active_physical_fixture(fixture, &mut ctx);
-}
-
-#[test, expected_failure(abort_code = EReplay)]
-fun free_claim_replay_is_stable_across_loadout_revisions() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 108, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
-    consume_physical_asset_v8(&mut fixture.physical_registry, asset, 0, &ctx);
-    let replay = base_selection_witness(&mut fixture, &ctx);
-    let asset = claim_fixture_base_free(&mut fixture, replay, 1, &mut ctx);
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = 21)]
-fun stale_runtime_selection_witness_is_rejected() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 109, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    runtime::mutate_physical_loadout_for_testing(&mut fixture.loadout);
-    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test]
-fun paid_base_purchase_splits_exact_protocol_and_maker_residual() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 110, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_PAID_PURCHASE, PROOF_NONE, 100, 2, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let payment = coin::from_balance(
-        sui::balance::create_for_testing<sui::sui::SUI>(100),
-        &mut ctx,
-    );
-    let asset = purchase_fixture_base(&mut fixture, payment, witness, 0, &mut ctx);
-    assert!(protocol::protocol_treasury_balance_v8(&fixture.protocol_treasury) == 10,
-        EWrongPayment);
-    assert!(core_treasury::maker_treasury_balance_v8(&fixture.maker_treasury) == 90,
-        EWrongPayment);
-    assert!(fixture.physical_registry.gross_paid_atomic == 100, EWrongPayment);
-    assert!(fixture.physical_registry.protocol_paid_atomic == 10, EWrongPayment);
-    assert!(fixture.physical_registry.maker_paid_atomic == 90, EWrongPayment);
-    assert!(fixture.physical_registry.pack_paid_atomic == 0, EWrongPayment);
-    consume_physical_asset_v8(&mut fixture.physical_registry, asset, 0, &ctx);
-    finish_active_physical_fixture(fixture, &mut ctx);
-}
-
-#[test]
-fun paid_pack_purchase_splits_exact_protocol_and_pack_residual() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 111, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_PAID_PURCHASE, PROOF_NONE, 100, 2, true, &ctx,
-    );
-    let witness = pack_selection_witness(&fixture, &ctx);
-    let payment = coin::from_balance(
-        sui::balance::create_for_testing<sui::sui::SUI>(100),
-        &mut ctx,
-    );
-    let asset = purchase_fixture_pack(&mut fixture, payment, witness, 0, &mut ctx);
-    assert!(protocol::protocol_treasury_balance_v8(&fixture.protocol_treasury) == 10,
-        EWrongPayment);
-    assert!(runtime::pack_treasury_balance_v8(&fixture.pack_treasury) == 90,
-        EWrongPayment);
-    assert!(fixture.physical_registry.maker_paid_atomic == 0, EWrongPayment);
-    assert!(fixture.physical_registry.pack_paid_atomic == 90, EWrongPayment);
-    consume_physical_asset_v8(&mut fixture.physical_registry, asset, 0, &ctx);
-    finish_active_physical_fixture(fixture, &mut ctx);
-}
-
-#[test]
-fun soul_proof_issuance_records_exact_provenance_and_counter() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 120, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_PROOF_MATERIALIZE,
-        PROOF_CANONICAL_SOUL,
-        0,
-        2,
-        true,
-        &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let selection = consume_runtime_selection(witness, &fixture.loadout, &ctx);
-    assert_selection_root(&fixture.physical_registry, &selection, &ctx);
+/// Preserved internal proof-accounting unit. The provenance fields below are
+/// intentionally synthetic data, NOT a native Soul/materialization certificate.
+/// Its selection witness and registry are real upper-fixture objects.
+#[test_only]
+public fun assert_proof_accounting_for_testing(
+    registry: &mut PhysicalRegistryV8, loadout: &MakerLoadoutV8,
+    witness: RuntimePhysicalSelectionWitnessV8, output_registry_id: ID,
+    soul_registry_id: ID, seal_registry_id: ID, seal_policy_id: ID, ctx: &mut TxContext,
+) {
+    let selection = consume_runtime_selection(witness, loadout, ctx);
+    assert_selection_root(registry, &selection, ctx);
     let policy = *borrow_base_policy_by_selection(
-        &fixture.physical_registry,
+        registry,
         &selection,
     );
-    let soul_id = object::id(&fixture.soul_registry);
+    let soul_id = soul_registry_id;
     let soul_commitment = test_hash(121);
     let proof = PhysicalProofProvenanceV8 {
-        output_registry_id: object::id(&fixture.output_registry),
-        soul_registry_id: object::id(&fixture.soul_registry),
+        output_registry_id: output_registry_id,
+        soul_registry_id: soul_registry_id,
         output_key: b"physical-test-output".to_string(),
         output_policy_commitment: test_hash(122),
-        output_id: object::id(&fixture.seal_registry),
-        receipt_id: object::id(&fixture.seal_policy_config),
+        output_id: seal_registry_id,
+        receipt_id: seal_policy_id,
         soul_id,
         soul_ownership_epoch: 0,
         recipe_commitment: test_hash(123),
@@ -5252,156 +4373,29 @@ fun soul_proof_issuance_records_exact_provenance_and_counter() {
     };
     let authorization_key = derive_authorization_key(
         b"animacraft-v8/physical/proof-materialize",
-        &fixture.physical_registry,
+        registry,
         &policy,
         @0x0,
         soul_id,
         soul_commitment,
     );
     let asset = issue_asset(
-        &mut fixture.physical_registry,
+        registry,
         policy,
         @0xA11,
         0,
         authorization_key,
         option::some(proof),
-        &mut ctx,
+        ctx,
     );
     assert!(asset.proof.is_some(), EWrongIssuance);
     assert!(asset.proof_kind == PROOF_CANONICAL_SOUL, EWrongIssuance);
-    assert!(asset.source.source_id == fixture.physical_registry.base_registry_id,
+    assert!(asset.source.source_id == registry.base_registry_id,
         EInvalidBinding);
     assert!(asset.source.source_treasury_id.is_none(), EInvalidTreasury);
-    assert!(fixture.physical_registry.total_proof_materialized == 1,
+    assert!(registry.total_proof_materialized == 1,
         EInvalidCount);
-    consume_physical_asset_v8(&mut fixture.physical_registry, asset, 0, &ctx);
-    finish_active_physical_fixture(fixture, &mut ctx);
-}
-
-#[test, expected_failure(abort_code = EWrongPayment)]
-fun paid_purchase_rejects_wrong_exact_payment() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 112, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_PAID_PURCHASE, PROOF_NONE, 100, 2, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let payment = coin::from_balance(
-        sui::balance::create_for_testing<sui::sui::SUI>(99),
-        &mut ctx,
-    );
-    let asset = purchase_fixture_base(&mut fixture, payment, witness, 0, &mut ctx);
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(
-    abort_code = 25,
-    location = animacraft_v8_core::maker_v8,
-)]
-fun paid_purchase_rejects_another_roots_maker_treasury() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 118, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_PAID_PURCHASE, PROOF_NONE, 100, 2, true, &mut ctx,
-    );
-    let mut other = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let payment = coin::from_balance(
-        sui::balance::create_for_testing<sui::sui::SUI>(100),
-        &mut ctx,
-    );
-    let asset = purchase_fixture_base_with_treasury(
-        &mut fixture,
-        &mut other.maker_treasury,
-        payment,
-        witness,
-        0,
-        &mut ctx,
-    );
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx);
-    finish_active_physical_fixture(other, &mut ctx)
-}
-
-#[test, expected_failure(
-    abort_code = 0,
-    location = animacraft_v8_runtime::runtime_v8,
-)]
-fun paid_pack_purchase_rejects_another_releases_pack_treasury() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 122, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &mut ctx,
-    );
-    let mut other = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture,
-        0,
-        ISSUE_PAID_PURCHASE,
-        PROOF_NONE,
-        100,
-        1,
-        true,
-        &ctx,
-    );
-    let witness = pack_selection_witness(&fixture, &ctx);
-    let payment = coin::from_balance(
-        sui::balance::create_for_testing<sui::sui::SUI>(100),
-        &mut ctx,
-    );
-    let asset = purchase_fixture_pack_with_treasury(
-        &mut fixture,
-        &mut other.pack_treasury,
-        payment,
-        witness,
-        0,
-        &mut ctx,
-    );
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx);
-    finish_active_physical_fixture(other, &mut ctx)
-}
-
-#[test, expected_failure(
-    abort_code = 1,
-    location = animacraft_v8_core::package_binding_v8,
-)]
-fun physical_role_rejects_a_core_package_type_origin() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 119, 0, 0, 0);
-    let fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &mut ctx,
-    );
-    binding::assert_type_origins_v8<ProtocolConfigV8, ProtocolAdminCapV8>(
-        binding::physical_binding_v8(binding::catalog_binding_v8(
-            &fixture.catalog,
-        )),
-    );
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = ESupplyExhausted)]
-fun supply_cas_blocks_after_exact_max_without_reopening_consumed_supply() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 113, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_PAID_PURCHASE, PROOF_NONE, 100, 1, true, &mut ctx,
-    );
-    let first_witness = base_selection_witness(&mut fixture, &ctx);
-    let first_payment = coin::from_balance(
-        sui::balance::create_for_testing<sui::sui::SUI>(100), &mut ctx);
-    let asset = purchase_fixture_base(
-        &mut fixture, first_payment, first_witness, 0, &mut ctx,
-    );
-    consume_physical_asset_v8(&mut fixture.physical_registry, asset, 0, &ctx);
-    let second_witness = base_selection_witness(&mut fixture, &ctx);
-    let second_payment = coin::from_balance(
-        sui::balance::create_for_testing<sui::sui::SUI>(100), &mut ctx);
-    let asset = purchase_fixture_base(
-        &mut fixture, second_payment, second_witness, 1, &mut ctx,
-    );
-    destroy_asset_for_testing(asset);
-    finish_active_physical_fixture(fixture, &mut ctx)
+    consume_physical_asset_v8(registry, asset, 0, ctx);
 }
 
 #[test, expected_failure(abort_code = EWrongPayment)]
@@ -5409,741 +4403,107 @@ fun physical_payment_share_rejects_nonzero_rounding_to_zero() {
     let _ = protocol_share(1, 1);
 }
 
-#[test]
-fun direct_transfer_remains_available_after_root_pause() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 114, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
-    maker::set_lifecycle_for_testing(&mut fixture.root, maker::lifecycle_paused_v8());
-    transfer_physical_asset_v8(asset, @0xB11, 0, &ctx);
-    finish_active_physical_fixture(fixture, &mut ctx);
-}
-
-#[test]
-fun consume_remains_available_after_root_and_pack_archive() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 115, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &ctx,
-    );
-    let witness = pack_selection_witness(&fixture, &ctx);
-    let asset = claim_fixture_pack_free(&mut fixture, witness, 0, &mut ctx);
-    maker::set_lifecycle_for_testing(&mut fixture.root, maker::lifecycle_archived_v8());
-    runtime::set_physical_pack_lifecycle_for_testing(
-        &mut fixture.pack_release,
-        runtime::pack_archived_v8(),
-    );
-    consume_physical_asset_v8(&mut fixture.physical_registry, asset, 0, &ctx);
-    finish_active_physical_fixture(fixture, &mut ctx);
-}
-
-#[test, expected_failure(abort_code = ENotTransferable)]
-fun nontransferable_asset_rejects_direct_transfer() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 116, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, false, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
-    transfer_physical_asset_v8(asset, @0xB11, 0, &ctx);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EWrongHolder)]
-fun wrong_holder_cannot_direct_transfer() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 123, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
-    // `TxContext::new_from_hint` replaces the native test context globally, so
-    // construct the adversarial sender only after the asset has been issued.
-    let wrong_ctx = sui::tx_context::new_from_hint(@0xB0B, 124, 0, 0, 0);
-    transfer_physical_asset_v8(asset, @0xB11, 0, &wrong_ctx);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EStaleRevision)]
-fun direct_transfer_requires_exact_asset_ownership_epoch() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 117, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1, true, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
-    transfer_physical_asset_v8(asset, @0xB11, 1, &ctx);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test]
-fun cross_transaction_base_market_return_preserves_exact_state() {
-    let seller = @0xA11;
-    let recoverer = @0xCAFE;
-    let mut scenario = sui::test_scenario::begin(seller);
-    let (asset_id, provenance_commitment, asset_content_commitment, source_content_commitment) = {
-        let ctx = scenario.ctx();
-        let mut fixture = new_active_physical_fixture(
-            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 3, true, ctx,
-        );
-        let asset = issue_transferable_base_physical_for_market_testing(
-            &mut fixture.physical_registry,
-            ctx,
-        );
-        let asset_id = object::id(&asset);
-        let provenance_commitment = asset.provenance_commitment;
-        let asset_content_commitment = asset.asset_content_commitment;
-        let source_content_commitment = asset.source.source_content_commitment;
-        let mut listing = PhysicalMarketTestListingV8 {
-            id: object::new(ctx),
-            custody: option::none(),
-        };
-        let listing_id = object::id(&listing);
-        let ticket = custody_base_physical_for_market_v8<
-            sui::sui::SUI,
-            sui::sui::SUI,
-            sui::sui::SUI,
-            Coin<sui::sui::SUI>,
-            Coin<sui::sui::SUI>,
-        >(
-            &fixture.physical_registry,
-            &fixture.root,
-            &fixture.protocol_config,
-            &fixture.catalog,
-            &fixture.physical_config,
-            &fixture.market_call_cap,
-            &fixture.market_registry,
-            &fixture.market_treasury,
-            &mut listing.id,
-            &fixture.maker_treasury,
-            asset,
-            ctx,
-        );
-        let custody = consume_physical_market_custody_ticket_v8(ticket);
-        assert!(custody.listing_id == listing_id, EInvalidMarketCustody);
-        assert!(custody.asset_id == asset_id, EInvalidMarketCustody);
-        assert!(custody.source_kind == SOURCE_BASE_STYLE, EInvalidMarketCustody);
-        assert!(
-            custody.source_treasury_id
-                == core_treasury::maker_treasury_id_v8(&fixture.maker_treasury),
-            EInvalidTreasury,
-        );
-        assert!(custody.holder == seller, EWrongHolder);
-        assert!(custody.ownership_epoch == 0, EStaleRevision);
-        assert!(custody.transferable, ENotTransferable);
-        listing.custody = option::some(custody);
-        transfer::share_object(listing);
-        finish_active_physical_fixture(fixture, ctx);
-        (
-            asset_id,
-            provenance_commitment,
-            asset_content_commitment,
-            source_content_commitment,
-        )
-    };
-    scenario.next_tx(recoverer);
-    {
-        let listing = scenario.take_shared<PhysicalMarketTestListingV8>();
-        let receiving = sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(asset_id);
-        return_test_market_asset(listing, receiving);
-    };
-    scenario.next_tx(seller);
-    {
-        let asset = scenario.take_from_sender<PhysicalAssetV8>();
-        assert!(object::id(&asset) == asset_id, EInvalidMarketCustody);
-        assert!(asset.holder == seller, EWrongHolder);
-        assert!(asset.ownership_epoch == 0, EStaleRevision);
-        assert!(asset.provenance_commitment == provenance_commitment, EInvalidCommitment);
-        assert!(asset.asset_content_commitment == asset_content_commitment, EInvalidCommitment);
-        assert!(asset.source.source_content_commitment == source_content_commitment, EInvalidCommitment);
-        destroy_asset_for_testing(asset);
-    };
-    scenario.end();
-}
-
-#[test]
-fun cross_transaction_pack_market_purchase_changes_only_owner_state() {
-    let seller = @0xA11;
-    let buyer = @0xB22;
-    let mut scenario = sui::test_scenario::begin(seller);
-    let (asset_id, provenance_commitment, source_id, source_content_commitment) = {
-        let ctx = scenario.ctx();
-        let mut fixture = new_active_physical_fixture(
-            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, ctx,
-        );
-        register_test_pack_policy(
-            &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, ctx,
-        );
-        let asset = issue_transferable_pack_physical_for_market_testing(
-            &mut fixture.physical_registry,
-            ctx,
-        );
-        let asset_id = object::id(&asset);
-        let provenance_commitment = asset.provenance_commitment;
-        let source_id = asset.source.source_id;
-        let source_content_commitment = asset.source.source_content_commitment;
-        let mut listing = PhysicalMarketTestListingV8 {
-            id: object::new(ctx),
-            custody: option::none(),
-        };
-        let ticket = custody_pack_physical_for_market_v8<
-            sui::sui::SUI,
-            sui::sui::SUI,
-            sui::sui::SUI,
-            Coin<sui::sui::SUI>,
-            Coin<sui::sui::SUI>,
-        >(
-            &fixture.physical_registry,
-            &fixture.root,
-            &fixture.protocol_config,
-            &fixture.catalog,
-            &fixture.physical_config,
-            &fixture.market_call_cap,
-            &fixture.market_registry,
-            &fixture.market_treasury,
-            &mut listing.id,
-            &fixture.pack_treasury,
-            asset,
-            ctx,
-        );
-        let custody = consume_physical_market_custody_ticket_v8(ticket);
-        assert!(custody.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
-        assert!(custody.source_treasury_id == object::id(&fixture.pack_treasury),
-            EInvalidTreasury);
-        listing.custody = option::some(custody);
-        transfer::share_object(listing);
-        finish_active_physical_fixture(fixture, ctx);
-        (asset_id, provenance_commitment, source_id, source_content_commitment)
-    };
-    scenario.next_tx(buyer);
-    {
-        let listing = scenario.take_shared<PhysicalMarketTestListingV8>();
-        let receiving = sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(asset_id);
-        purchase_test_market_asset(listing, receiving, scenario.ctx());
-    };
-    scenario.next_tx(buyer);
-    {
-        let asset = scenario.take_from_sender<PhysicalAssetV8>();
-        assert!(object::id(&asset) == asset_id, EInvalidMarketCustody);
-        assert!(asset.holder == buyer, EWrongHolder);
-        assert!(asset.ownership_epoch == 1, EStaleRevision);
-        assert!(asset.provenance_commitment == provenance_commitment, EInvalidCommitment);
-        assert!(asset.source.source_id == source_id, EInvalidBinding);
-        assert!(asset.source.source_content_commitment == source_content_commitment,
-            EInvalidCommitment);
-        destroy_asset_for_testing(asset);
-    };
-    scenario.end();
-}
-
-#[test, expected_failure(abort_code = 3, location = sui::transfer)]
-fun cross_transaction_wrong_listing_parent_cannot_receive_custodied_asset() {
-    let seller = @0xA11;
-    let mut scenario = sui::test_scenario::begin(seller);
-    let (asset_id, wrong_listing_id) = {
-        let ctx = scenario.ctx();
-        let mut fixture = new_active_physical_fixture(
-            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, ctx,
-        );
-        let asset = issue_transferable_base_physical_for_market_testing(
-            &mut fixture.physical_registry,
-            ctx,
-        );
-        let asset_id = object::id(&asset);
-        let mut correct_listing = PhysicalMarketTestListingV8 {
-            id: object::new(ctx),
-            custody: option::none(),
-        };
-        let mut wrong_listing = PhysicalMarketTestListingV8 {
-            id: object::new(ctx),
-            custody: option::none(),
-        };
-        let wrong_listing_id = object::id(&wrong_listing);
-        let ticket = custody_base_physical_for_market_v8<
-            sui::sui::SUI,
-            sui::sui::SUI,
-            sui::sui::SUI,
-            Coin<sui::sui::SUI>,
-            Coin<sui::sui::SUI>,
-        >(
-            &fixture.physical_registry,
-            &fixture.root,
-            &fixture.protocol_config,
-            &fixture.catalog,
-            &fixture.physical_config,
-            &fixture.market_call_cap,
-            &fixture.market_registry,
-            &fixture.market_treasury,
-            &mut correct_listing.id,
-            &fixture.maker_treasury,
-            asset,
-            ctx,
-        );
-        let mut custody = consume_physical_market_custody_ticket_v8(ticket);
-        // Test-only mutation gets past the early listing readback check; the
-        // Sui receive primitive must still reject the wrong real parent.
-        custody.listing_id = wrong_listing_id;
-        wrong_listing.custody = option::some(custody);
-        transfer::share_object(correct_listing);
-        transfer::share_object(wrong_listing);
-        finish_active_physical_fixture(fixture, ctx);
-        (asset_id, wrong_listing_id)
-    };
-    scenario.next_tx(seller);
-    {
-        let wrong_listing = scenario.take_shared_by_id<PhysicalMarketTestListingV8>(
-            wrong_listing_id,
-        );
-        let receiving = sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(asset_id);
-        return_test_market_asset(wrong_listing, receiving);
-    };
-    scenario.end();
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun cross_transaction_wrong_receiving_asset_is_rejected() {
-    let seller = @0xA11;
-    let mut scenario = sui::test_scenario::begin(seller);
-    let wrong_asset_id = {
-        let ctx = scenario.ctx();
-        let mut fixture = new_active_physical_fixture(
-            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 3, true, ctx,
-        );
-        let asset = issue_transferable_base_physical_for_market_testing(
-            &mut fixture.physical_registry,
-            ctx,
-        );
-        let wrong_asset = issue_transferable_base_physical_for_market_testing(
-            &mut fixture.physical_registry,
-            ctx,
-        );
-        let wrong_asset_id = object::id(&wrong_asset);
-        let mut listing = PhysicalMarketTestListingV8 {
-            id: object::new(ctx),
-            custody: option::none(),
-        };
-        let listing_id = object::id(&listing);
-        let ticket = custody_base_physical_for_market_v8<
-            sui::sui::SUI,
-            sui::sui::SUI,
-            sui::sui::SUI,
-            Coin<sui::sui::SUI>,
-            Coin<sui::sui::SUI>,
-        >(
-            &fixture.physical_registry,
-            &fixture.root,
-            &fixture.protocol_config,
-            &fixture.catalog,
-            &fixture.physical_config,
-            &fixture.market_call_cap,
-            &fixture.market_registry,
-            &fixture.market_treasury,
-            &mut listing.id,
-            &fixture.maker_treasury,
-            asset,
-            ctx,
-        );
-        listing.custody = option::some(
-            consume_physical_market_custody_ticket_v8(ticket),
-        );
-        transfer::transfer(wrong_asset, listing_id.to_address());
-        transfer::share_object(listing);
-        finish_active_physical_fixture(fixture, ctx);
-        wrong_asset_id
-    };
-    scenario.next_tx(seller);
-    {
-        let listing = scenario.take_shared<PhysicalMarketTestListingV8>();
-        let wrong_receiving =
-            sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(wrong_asset_id);
-        return_test_market_asset(listing, wrong_receiving);
-    };
-    scenario.end();
-}
-
-#[test, expected_failure(abort_code = EInvalidRecipient)]
-fun cross_transaction_seller_cannot_purchase_own_custodied_asset() {
-    let seller = @0xA11;
-    let mut scenario = sui::test_scenario::begin(seller);
-    let asset_id = {
-        let ctx = scenario.ctx();
-        let mut fixture = new_active_physical_fixture(
-            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, ctx,
-        );
-        let asset = issue_transferable_base_physical_for_market_testing(
-            &mut fixture.physical_registry,
-            ctx,
-        );
-        let asset_id = object::id(&asset);
-        let mut listing = PhysicalMarketTestListingV8 {
-            id: object::new(ctx),
-            custody: option::none(),
-        };
-        let ticket = custody_base_physical_for_market_v8<
-            sui::sui::SUI,
-            sui::sui::SUI,
-            sui::sui::SUI,
-            Coin<sui::sui::SUI>,
-            Coin<sui::sui::SUI>,
-        >(
-            &fixture.physical_registry,
-            &fixture.root,
-            &fixture.protocol_config,
-            &fixture.catalog,
-            &fixture.physical_config,
-            &fixture.market_call_cap,
-            &fixture.market_registry,
-            &fixture.market_treasury,
-            &mut listing.id,
-            &fixture.maker_treasury,
-            asset,
-            ctx,
-        );
-        listing.custody = option::some(
-            consume_physical_market_custody_ticket_v8(ticket),
-        );
-        transfer::share_object(listing);
-        finish_active_physical_fixture(fixture, ctx);
-        asset_id
-    };
-    scenario.next_tx(seller);
-    {
-        let listing = scenario.take_shared<PhysicalMarketTestListingV8>();
-        let receiving = sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(asset_id);
-        purchase_test_market_asset(listing, receiving, scenario.ctx());
-    };
-    scenario.end();
-}
-
-#[test]
-fun market_return_authority_survives_pause_archive_and_protocol_drift() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 160, 0, 0, 0);
-    let (mut fixture, listing, asset, custody) =
-        new_base_market_binding_fixture(&mut ctx);
-    maker::set_lifecycle_for_testing(&mut fixture.root, maker::lifecycle_paused_v8());
-    let protocol_admin = &fixture.protocol_admin;
-    protocol::set_protocol_enabled_v8(
-        &mut fixture.protocol_config,
-        protocol_admin,
-        false,
-    );
-    assert_market_authority<
-        sui::sui::SUI,
-        sui::sui::SUI,
-        sui::sui::SUI,
-        Coin<sui::sui::SUI>,
-        Coin<sui::sui::SUI>,
-    >(
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
-    );
-    assert_market_custody_live_binding(
-        &fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
+/// Internal custody binding matrix, not a claim of end-to-end listing or
+/// settlement. All authority objects come from the actual upper bootstrap.
+#[test_only]
+public fun market_custody_matrix_for_testing<MarketRegistry: key, MarketTreasury: key>(
+    case: u8, registry: &mut PhysicalRegistryV8, root: &MakerRootV8<sui::sui::SUI>,
+    protocol_config: &ProtocolConfigV8, catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2, config: &PhysicalPackageConfigV8,
+    market_call_cap: &RuntimeCallerCapV1, market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury, maker_treasury: &MakerTreasuryV8<sui::sui::SUI>,
+    ctx: &mut TxContext,
+) {
+    assert_market_authority(root, protocol_config, catalog, replacement,
+        market_call_cap, market_registry, market_treasury);
+    let asset = issue_transferable_base_physical_for_market_testing(registry, ctx);
+    let listing = PhysicalMarketTestListingV8 { id: object::new(ctx), custody: option::none() };
+    let mut custody = new_physical_market_custody_binding(registry, protocol_config,
+        catalog, replacement, config, market_call_cap, market_registry, market_treasury,
+        &listing.id, &asset, object::id(maker_treasury));
+    if (case == 0) {
+        assert_market_custody_live_binding(
+        registry,
+        root,
+        protocol_config,
+        catalog,
+        replacement,
+        market_call_cap,
+        market_registry,
+        market_treasury,
         &listing.id,
         &custody,
-    );
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    maker::set_lifecycle_for_testing(&mut fixture.root, maker::lifecycle_archived_v8());
-    assert_market_authority<
-        sui::sui::SUI,
-        sui::sui::SUI,
-        sui::sui::SUI,
-        Coin<sui::sui::SUI>,
-        Coin<sui::sui::SUI>,
-    >(
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
-    );
-    assert_market_custody_live_binding(
-        &fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
+        );
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 1) {
+        custody.version = 7;
+        assert_market_custody_live_binding(
+        registry,
+        root,
+        protocol_config,
+        catalog,
+        replacement,
+        market_call_cap,
+        market_registry,
+        market_treasury,
         &listing.id,
         &custody,
-    );
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
+        );
+    }
+    else if (case == 2) {
+        custody.asset_id = object::id_from_address(@0xBAD);
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 3) {
+        custody.physical_registry_id = object::id_from_address(@0xBAD);
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 4) {
+        custody.root_id = object::id_from_address(@0xBAD);
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 5) {
+        custody.maker_version = custody.maker_version + 1;
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 6) {
+        custody.root_content_commitment = test_hash(201);
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 7) {
+        custody.source_kind = SOURCE_PACK_STYLE;
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 8) {
+        custody.source_id = object::id_from_address(@0xBAD);
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 9) {
+        custody.source_content_commitment = test_hash(202);
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 10) {
+        custody.source_treasury_id = object::id_from_address(@0xBAD);
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 11) {
+        custody.holder = @0xB22;
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 12) {
+        custody.ownership_epoch = custody.ownership_epoch + 1;
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 13) {
+        custody.transferable = false;
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else if (case == 14) {
+        custody.provenance_commitment = test_hash(203);
+        assert_market_custody_asset(&custody, root, &asset);
+    }
+    else { abort EInvalidPolicy };
     destroy_asset_for_testing(asset);
     destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = ENotTransferable)]
-fun market_custody_rejects_nontransferable_asset() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 161, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, false, &mut ctx,
-    );
-    let witness = base_selection_witness(&mut fixture, &ctx);
-    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
-    let mut listing = PhysicalMarketTestListingV8 {
-        id: object::new(&mut ctx),
-        custody: option::none(),
-    };
-    let ticket = custody_base_physical_for_market_v8<
-        sui::sui::SUI,
-        sui::sui::SUI,
-        sui::sui::SUI,
-        Coin<sui::sui::SUI>,
-        Coin<sui::sui::SUI>,
-    >(
-        &fixture.physical_registry,
-        &fixture.root,
-        &fixture.protocol_config,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
-        &mut listing.id,
-        &fixture.maker_treasury,
-        asset,
-        &ctx,
-    );
-    let _binding = consume_physical_market_custody_ticket_v8(ticket);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun typed_base_custody_rejects_pack_source_substitution() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 162, 0, 0, 0);
-    let mut fixture = new_active_physical_fixture(
-        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
-    );
-    register_test_pack_policy(
-        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
-    );
-    let asset = issue_transferable_pack_physical_for_market_testing(
-        &mut fixture.physical_registry,
-        &mut ctx,
-    );
-    let mut listing = PhysicalMarketTestListingV8 {
-        id: object::new(&mut ctx),
-        custody: option::none(),
-    };
-    let ticket = custody_base_physical_for_market_v8<
-        sui::sui::SUI,
-        sui::sui::SUI,
-        sui::sui::SUI,
-        Coin<sui::sui::SUI>,
-        Coin<sui::sui::SUI>,
-    >(
-        &fixture.physical_registry,
-        &fixture.root,
-        &fixture.protocol_config,
-        &fixture.catalog,
-        &fixture.physical_config,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
-        &mut listing.id,
-        &fixture.maker_treasury,
-        asset,
-        &ctx,
-    );
-    let _binding = consume_physical_market_custody_ticket_v8(ticket);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test]
-fun market_custody_binding_exact_matrix_accepts_live_asset() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 170, 0, 0, 0);
-    let (fixture, listing, asset, custody) = new_base_market_binding_fixture(&mut ctx);
-    assert_market_custody_live_binding(
-        &fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
-        &listing.id,
-        &custody,
-    );
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_binding_version() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 171, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.version = 7;
-    assert_market_custody_live_binding(
-        &fixture.physical_registry,
-        &fixture.root,
-        &fixture.catalog,
-        &fixture.market_call_cap,
-        &fixture.market_registry,
-        &fixture.market_treasury,
-        &listing.id,
-        &custody,
-    );
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_asset_id() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 172, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.asset_id = object::id_from_address(@0xBAD);
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_physical_registry() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 173, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.physical_registry_id = object::id_from_address(@0xBAD);
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_root_id() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 174, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.root_id = object::id_from_address(@0xBAD);
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_maker_version() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 175, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.maker_version = custody.maker_version + 1;
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_root_content() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 176, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.root_content_commitment = test_hash(201);
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_source_kind() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 177, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.source_kind = SOURCE_PACK_STYLE;
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_source_identity() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 178, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.source_id = object::id_from_address(@0xBAD);
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidMarketCustody)]
-fun market_custody_rejects_wrong_source_content() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 179, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.source_content_commitment = test_hash(202);
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidTreasury)]
-fun market_custody_rejects_wrong_source_treasury() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 180, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.source_treasury_id = object::id_from_address(@0xBAD);
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EWrongHolder)]
-fun market_custody_rejects_wrong_stored_holder() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 181, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.holder = @0xB22;
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EStaleRevision)]
-fun market_custody_rejects_wrong_ownership_epoch() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 182, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.ownership_epoch = custody.ownership_epoch + 1;
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = ENotTransferable)]
-fun market_custody_rejects_wrong_transferable_readback() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 183, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.transferable = false;
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
-}
-
-#[test, expected_failure(abort_code = EInvalidCommitment)]
-fun market_custody_rejects_wrong_provenance() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 184, 0, 0, 0);
-    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
-    custody.provenance_commitment = test_hash(203);
-    assert_market_custody_asset(&custody, &fixture.root, &asset);
-    destroy_asset_for_testing(asset);
-    destroy_empty_test_market_listing(listing);
-    finish_active_physical_fixture(fixture, &mut ctx)
 }

@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Controlled formal Player autosave acceptance</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>
+  #fixture-controls { position:relative; z-index:100000; background:#fff4ce; color:#222; padding:12px; }
+  #fixture-controls button { padding:8px; border:1px solid; }
+  #fixture-evidence { white-space:pre-wrap; font:12px monospace; }
+</style>
+<aside id="fixture-controls">
+  <strong>LOCAL CONTROLLED FIXTURE — original Player UI; simulated bridge/render, no wallet/network/transactions.</strong>
+  <button id="hold-render">Hold next recipe preview</button>
+  <button id="release-render">Release preview</button>
+  <label><input id="fail-export" type="checkbox"> Fail final export</label>
+  <output id="fixture-status">Starting</output>
+  <pre id="fixture-evidence"></pre>
+</aside>
+<section id="templates" class="page"></section>
+<section id="make" class="page"><div id="makerV4PlayerMount" class="maker-v4-mount maker-v4-player-mount"></div></section>
+<script type="module">
+import { createOriginalProductApp } from '../../original-product-app.js';
+import { createCharacterMakerV8Starter } from '../../maker-v8-document.js';
+import { makerV8PlayerRecipeCommitmentV8 } from '../../maker-v8-player-controller.js';
+import { makerV8PlayerRecipeLayout } from '../../maker-v8-player-slot-layout.js';
+import { makerV8PlayerColorMap, makerV8PlayerSwatchKey } from '../../maker-v8-player-colors.js';
+import { MAKER_V8_DEFAULT_ASSET_BASE64 } from './maker-v8-minimal-artwork.js';
+
+if (!['127.0.0.1', 'localhost'].includes(location.hostname) || location.port !== '5197') {
+  throw new Error('Serve this isolated fixture on loopback port 5197 only.');
+}
+const scenario = new URLSearchParams(location.search).get('scenario');
+const ownColors = scenario === 'own-colors';
+const ownParts = ownColors || scenario === 'own-parts';
+const rootId = `0x${(ownColors ? '33' : ownParts ? '32' : '31').repeat(32)}`, address = `0x${'89'.repeat(32)}`;
+const doc = structuredClone(createCharacterMakerV8Starter({ makerKey:'autosave-fixture', name:'Autosave fixture', width:1080, height:1920 }));
+doc.outputs.push({ ...structuredClone(doc.outputs[0]), key:'alternate-output', label:'Alternate output' });
+const base = doc.parts[0]; base.capacity = 2;
+const alternate = structuredClone(base.items[0]);
+alternate.key = 'alternate'; alternate.label = 'Alternate'; alternate.displayOrder = 1;
+alternate.defaultStyleKey = 'alternate'; alternate.styles[0].key = 'alternate'; alternate.styles[0].label = 'Alternate';
+base.items.push(alternate);
+const exact = row => ({ source:'BASE', ...row, trackKey:'base-track', colorChannelKey:null,
+  defaultSwatchKey:null, releaseId:null, semanticPackId:null, externalProductId:null, ownedExternalItemId:null });
+const recipe = { schemaVersion:'animacraft.maker-v8-player-recipe.v2', rootId, makerVersion:'1',
+  rootContentCommitment:'bb'.repeat(32), selections:doc.defaultRecipe.selections.map(exact), colors:[], outputKey:'default-png' };
+const player = { schemaVersion:'animacraft.maker-v8-player-view.v1', id:rootId, rootId,
+  makerKey:'autosave-fixture', makerVersion:'1', title:'Autosave fixture', summary:'Controlled persistence regression',
+  creatorAddress:address, ownerAddress:address, lifecycle:'ACTIVE', coverAsset:null, document:doc,
+  certifiedAssets:doc.assets.map(asset => ({ ...asset, assetId:asset.id, blobId:'controlled-fixture-blob', mediaType:'image/png', sha256:'aa'.repeat(32) })),
+  evidence:{ rootId, contentCommitment:'bb'.repeat(32), makerVersion:'1' },
+  contextualChoices:{ schemaVersion:'animacraft.maker-v8-contextual-choices.v1', address, rootId,
+    baseEntitlements:[], packStyles:[], externalStyles:[], certifiedAssets:[], diagnostics:[] } };
+if (ownParts) {
+  doc.metadata.name = player.title = 'Scoped Pack picker — controlled fixture';
+  base.capacity = 1;
+  const packs = ['a-pack', 'b-pack'].map((semanticPackId, index) => {
+    const releaseId = `0x${(index ? '66' : '55').repeat(32)}`;
+    const part = { ...structuredClone(base), required:false, kind:'STANDARD', items:[] };
+    const choices = ['moon', 'star'].map(itemKey => ({
+      ...exact({ partKey:'base', itemKey, styleKey:'default' }), source:'PACK', releaseId, semanticPackId,
+      id:`${semanticPackId}:${itemKey}`, label:`${semanticPackId} ${itemKey}`,
+      assetId:doc.assets[0].id, protected:false,
+      access:{ accessible:true, canEquip:true, reason:'' }, owned:true,
+      definitionCommitment:'ab'.repeat(32),
+      definitionScope:{ part:{ source:'PACK', sourceId:releaseId, key:'base' } },
+    }));
+    player.contextualChoices.packStyles.push(...choices);
+    return { releaseId, semanticPackId, definitionCommitment:'ab'.repeat(32),
+      ownedParts:[part], document:{ parts:[part] }, rules:[],
+      styleReferences:choices.map(choice => ({ part:{ scope:'PACK_SELF', key:'base' },
+        itemKey:choice.itemKey, styleKey:choice.styleKey })) };
+  });
+  player.definitionContext = { rootId, address, packs, currentLoadout:null };
+  if (ownColors) {
+    const channel = label => ({ key:'primary', label, defaultSwatchKey:'red', swatches:[
+      { key:'red', label:'Red', rgba:'#ff0000ff', stops:[] },
+      { key:'blue', label:'Blue', rgba:'#0000ffff', stops:[] },
+    ] });
+    doc.colors = [channel('Root Primary')];
+    for (const item of base.items) for (const style of item.styles) {
+      style.colorChannelKey = 'primary'; style.defaultSwatchKey = 'red';
+    }
+    for (const row of [...recipe.selections, ...player.contextualChoices.packStyles]) {
+      row.colorChannelKey = 'primary'; row.defaultSwatchKey = 'red';
+    }
+    for (const choice of player.contextualChoices.packStyles) {
+      choice.definitionScope.color = { source:'PACK', sourceId:choice.releaseId, key:'primary' };
+    }
+    for (const pack of packs) {
+      pack.document.colors = [channel(`${pack.semanticPackId} Primary`)];
+      for (const ref of pack.styleReferences) ref.color = { scope:'PACK_SELF', key:'primary' };
+    }
+  }
+}
+const session = { schemaVersion:'animacraft.maker-v8-player-session.v1', status:'READY', rootId, player, recipe,
+  loadout:{ schemaVersion:'animacraft.maker-v8-player-loadout.v2', rootId, makerVersion:'1',
+    rootContentCommitment:recipe.rootContentCommitment, outputKey:recipe.outputKey, usedPacks:[] },
+  execution:{ allowWalletSignature:false, allowBroadcast:false, allowProtectedContent:false,
+    writeEnabled:true, disabledReason:null } };
+function syncLoadout() {
+  const layout = makerV8PlayerRecipeLayout(player, session.recipe.selections);
+  session.recipe.selections.sort((a,b) => layout.slot(a).start - layout.slot(b).start);
+  session.loadout.outputKey = session.recipe.outputKey;
+  const offsets = new Map();
+  session.loadout.selections = session.recipe.selections.map(row => {
+    const key = layout.scopeKey(row), offset = offsets.get(key) || 0;
+    offsets.set(key, offset + 1);
+    return { selectionIndex:layout.slot(row).start + offset, ...row,
+      swatchKey:makerV8PlayerSwatchKey(player, makerV8PlayerColorMap(player, session.recipe.colors), row) };
+  });
+  session.loadout.usedPacks = [...new Map(session.recipe.selections.filter(row => row.source === 'PACK')
+    .map(row => [row.releaseId, { releaseId:row.releaseId, semanticPackId:row.semanticPackId }])).values()]
+    .sort((a,b) => a.semanticPackId.localeCompare(b.semanticPackId) || a.releaseId.localeCompare(b.releaseId));
+  session.loadout.recipeCommitment = makerV8PlayerRecipeCommitmentV8(session.recipe);
+}
+syncLoadout();
+const status = document.getElementById('fixture-status');
+let holdNext = false, release = null;
+document.getElementById('hold-render').onclick = () => { holdNext = true; status.textContent = 'Next recipe preview will wait'; };
+document.getElementById('release-render').onclick = () => { release?.(); release = null; status.textContent = 'Preview released'; };
+async function png(options = { sizeMode:'original', transparent:false }) {
+  const canvas = document.createElement('canvas');
+  canvas.width = options.sizeMode === 'standard' ? 576 : 1080;
+  canvas.height = options.sizeMode === 'standard' ? 1024 : 1920;
+  const ctx = canvas.getContext('2d');
+  if (!options.transparent) { ctx.fillStyle = '#253649'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+  ctx.fillStyle = session.recipe.selections.some(row => row.itemKey === 'alternate') ? '#ffb65c' : '#7ddccc';
+  ctx.fillRect(canvas.width / 4, canvas.height / 4, canvas.width / 2, canvas.height / 2);
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return { schemaVersion:'animacraft.maker-v8-player-render.v1', bytesBase64:btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join('')),
+    mediaType:'image/png', byteLength:bytes.length, width:canvas.width, height:canvas.height,
+    sha256:Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2,'0')).join('') };
+}
+const unavailable = async () => { throw new Error('Not available in isolated autosave fixture'); };
+const bridgeState = { runtime:{ status:'READY', transport:'CONTROLLED_FIXTURE', jsonRpc:false, issue:null },
+  capabilities:{ certifiedLivingContent:false } };
+const bridge = {
+  ready:async () => true, subscribe:listener => { listener(bridgeState); return () => {}; },
+  listTemplates:async () => ({ status:'READY', makers:[{ rootId, title:player.title, summary:player.summary,
+    creator:'Controlled fixture', lifecycle:'ACTIVE', certifiedAssets:[], document:doc }], diagnostics:[] }), getTemplate:unavailable,
+  loadCertifiedAsset:async ({ asset }) => ({ ...asset, dataUrl:`data:image/png;base64,${MAKER_V8_DEFAULT_ASSET_BASE64}` }),
+  createDraft:unavailable, listDrafts:async () => [], getDraft:unavailable,
+  dispatchDraftCommand:unavailable, replaceDraftDocument:unavailable,
+  openPlayerSession:async () => structuredClone(session), getPlayerSnapshot:async () => structuredClone(session),
+  updatePlayerRecipe:async patch => { Object.assign(session.recipe, structuredClone(patch)); syncLoadout(); return structuredClone(session.recipe); },
+  renderPlayerPreview:async () => {
+    if (holdNext) { holdNext = false; status.textContent = 'Recipe preview held'; await new Promise(resolve => { release = resolve; }); }
+    return png();
+  },
+  renderPlayerExport:async ({ exportOptions }) => {
+    if (document.getElementById('fail-export').checked) throw new Error('Controlled final export failure');
+    return png(exportOptions);
+  },
+};
+const app = createOriginalProductApp({ bridge, walletUi:{ openWalletSelector:unavailable, disconnect:unavailable,
+  getConnection:() => ({ account:{ address, chains:['sui:mainnet'] } }), setLocale:() => {} } });
+await app.ready; await app.openPlayer(rootId);
+status.textContent = 'Fixture ready';
+function showDurable() {
+  const keys = Object.keys(localStorage).filter(key => key.startsWith('animacraft:maker-v8-player-project:v1:')
+    && key.includes(rootId) && !key.includes(':wal:'));
+  const value = keys.length ? JSON.parse(localStorage.getItem(keys[0])) : null;
+  document.getElementById('fixture-evidence').textContent = JSON.stringify(value ? {
+    revision:value.revision, outputKey:value.session.recipe.outputKey,
+    selections:value.session.recipe.selections.map(row => ownParts
+      ? { source:row.source, partKey:row.partKey, itemKey:row.itemKey, pack:row.semanticPackId } : row.itemKey),
+    imageExport:value.session.imageExport, render:value.session.render, projectHash:value.projectHash,
+    ...(ownColors ? { colors:value.session.recipe.colors, swatches:value.session.loadout.selections.map(row => ({ pack:row.semanticPackId, swatch:row.swatchKey })) } : {}),
+  } : { durable:'not yet saved' }, null, 2);
+}
+showDurable();
+new MutationObserver(showDurable).observe(document.getElementById('makerV4PlayerMount'), { childList:true, subtree:true });
+</script>
+</html>

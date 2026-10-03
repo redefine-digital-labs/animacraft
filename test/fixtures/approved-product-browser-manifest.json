@@ -1,0 +1,151 @@
+{
+  "schemaVersion": "animacraft.approved-product-browser-manifest.v2",
+  "authority": {
+    "kind": "current-product-behavior",
+    "roadmap": "docs/codex/PRODUCT_DELIVERY_MILESTONES.md",
+    "interactionReference": "https://animacraft.soulidity.ai/#creator",
+    "candidateEntry": "index.html",
+    "contract": "actual state transitions, required DOM and ARIA anchors, account handoff, unchanged no-write firewall",
+    "historicalReferencesOnly": ["93d16531e794fe07229e986c25a88511c45b2d4a", "aac90dbc"]
+  },
+  "capture": {
+    "repetitions": 3,
+    "pixelComparison": "decoded-rgba-exact",
+    "differenceRule": "zero differing pixels and zero channel delta between repeated captures of the same current state",
+    "scope": "visible intersection of each state's declared rootSelector"
+  },
+  "fixedSeed": {
+    "name": "approved-browser-seed-2026-08-31",
+    "epochMilliseconds": 1788192000000,
+    "randomSeed": 242554521,
+    "makerKey": "approved-browser-maker",
+    "makerName": "Approved Browser Maker",
+    "creator": "0x8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "viewports": {
+    "desktop": { "width": 1230, "height": 629, "mobile": false },
+    "mobile": { "width": 390, "height": 844, "mobile": true }
+  },
+  "initialMatrix": {
+    "locales": ["en"],
+    "themes": ["animacraft"],
+    "viewports": ["desktop", "mobile"],
+    "expectedComparisons": 36
+  },
+  "reservedFullMatrix": {
+    "locales": ["en", "zh", "ja", "ko", "vi"],
+    "themes": ["animacraft", "soulidity"],
+    "viewports": ["desktop", "mobile"],
+    "policy": "Every state below remains reserved for the complete 5-language x 2-theme x 2-viewport acceptance matrix. The initial controlled gate runs English Animacraft desktop/mobile; it does not certify the remaining locales/themes or deployed wallets."
+  },
+  "states": [
+    {
+      "id": "header",
+      "rootSelector": ".topbar",
+      "captureIdentitySelector": "#templates.page.active",
+      "expectedSelectors": [".brand", ".main-nav", "#walletButton", "#themeButton", "#accountButton"]
+    },
+    {
+      "id": "theme-menu",
+      "rootSelector": ".topbar",
+      "captureIdentitySelector": "#themeMenu[aria-hidden=\"false\"]",
+      "expectedSelectors": ["#themeButton[aria-expanded=\"true\"]", "#themeMenu[aria-hidden=\"false\"]", "#themeMenu [role=\"menuitemradio\"]"]
+    },
+    {
+      "id": "mypage",
+      "rootSelector": "#accountPanel",
+      "captureIdentitySelector": "#accountPanel.active[aria-hidden=\"false\"]",
+      "expectedSelectors": ["#accountPanel.active[aria-hidden=\"false\"]", "#closeAccountPanel", "#accountLanguage", ".soulidity-account-actions"]
+    },
+    {
+      "id": "creator:structure",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"structure\"][aria-selected=\"true\"]",
+      "expectedSelectors": [".v4-studio-shell", "[data-tab=\"structure\"][aria-selected=\"true\"]", "#makerV4CreatorCanvas"]
+    },
+    {
+      "id": "creator:info",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"info\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"info\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:layers",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"layers\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"layers\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:colors",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"colors\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"colors\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:rules",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"rules\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"rules\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:expansions",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"expansions\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"expansions\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:composable",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"composable\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"composable\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:commerce",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"commerce\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"commerce\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:soul",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"soul\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"soul\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:validate",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-tab=\"validate\"][aria-selected=\"true\"]",
+      "expectedSelectors": ["[data-tab=\"validate\"][aria-selected=\"true\"]", "#makerV4ToolDialog[role=\"dialog\"]"]
+    },
+    {
+      "id": "creator:version-history",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount .v4-version-history-dialog[role=\"dialog\"]",
+      "expectedSelectors": [".v4-version-history-dialog[role=\"dialog\"]", "[data-action=\"restore-checkpoint\"]"]
+    },
+    {
+      "id": "creator:manage-status",
+      "rootSelector": "#makerLifecycleManagerModal:not([data-lifecycle-kind=\"pack\"])",
+      "captureIdentitySelector": "#makerLifecycleManagerModal.active[aria-hidden=\"false\"]:not([data-lifecycle-kind=\"pack\"])",
+      "expectedSelectors": ["#makerLifecycleManagerModal.active[aria-hidden=\"false\"]:not([data-lifecycle-kind=\"pack\"])", "#makerLifecycleManagerDialog[role=\"dialog\"]", "[data-lifecycle-action]"]
+    },
+    {
+      "id": "player:intro",
+      "rootSelector": "#makerV4PlayerMount",
+      "captureIdentitySelector": "#makerV4PlayerMount #makerPlayerInfoDialog[role=\"dialog\"]",
+      "expectedSelectors": ["#makerPlayerInfoDialog[role=\"dialog\"]", "[data-action=\"close-player-info\"]"]
+    },
+    {
+      "id": "player:workspace",
+      "rootSelector": "#makerV4PlayerMount",
+      "captureIdentitySelector": "#makerV4PlayerMount .v4-player-shell:not(:has(#makerPlayerInfoDialog))",
+      "expectedSelectors": [".v4-player-shell", "#makerV4PlayerCanvas", "[data-action=\"player-info\"]"]
+    },
+    {
+      "id": "creator:pack-studio",
+      "rootSelector": "#makerV4CreatorMount",
+      "captureIdentitySelector": "#makerV4CreatorMount [data-expansion-pack-workspace]",
+      "expectedSelectors": ["[data-expansion-pack-workspace]", "[data-action=\"save-pack\"]", "[data-action=\"request-back-to-maker\"]", "#expansionPackPreviewCanvas"]
+    }
+  ]
+}

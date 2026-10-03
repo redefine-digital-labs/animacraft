@@ -59,6 +59,19 @@ public struct MakerAccessPassV8 has key {
     issued_at_ms: u64,
 }
 
+public fun maker_treasury_balance_v2<PaymentCoin>(treasury: &MakerTreasuryV8<PaymentCoin>): u64 {
+    treasury.revenue.value()
+}
+
+public fun maker_access_pass_root_id_v2(pass: &MakerAccessPassV8): ID { pass.root_id }
+public fun maker_access_pass_maker_version_v2(pass: &MakerAccessPassV8): u64 { pass.maker_version }
+public fun maker_access_pass_root_content_commitment_v2(pass: &MakerAccessPassV8): &vector<u8> {
+    &pass.root_content_commitment
+}
+public fun maker_access_pass_holder_v2(pass: &MakerAccessPassV8): address { pass.holder }
+public fun maker_access_pass_paid_atomic_v2(pass: &MakerAccessPassV8): u64 { pass.paid_atomic }
+public fun maker_access_pass_issued_at_ms_v2(pass: &MakerAccessPassV8): u64 { pass.issued_at_ms }
+
 public struct MakerAccessKeyV8 has copy, drop, store { holder: address }
 
 public struct MakerAccessRecordV8 has copy, drop, store {
@@ -143,7 +156,7 @@ public fun deposit_maker_revenue_v8<PaymentCoin>(
     payment: Coin<PaymentCoin>,
 ) {
     assert!(
-        maker::root_lifecycle_v8(root) == maker::lifecycle_active_v8(),
+        maker::root_lifecycle_v8(root) == 1,
         EInvalidLifecycle,
     );
     maker::assert_current_protocol_config_v8(root, config);
@@ -163,13 +176,13 @@ public fun claim_free_maker_access_v8<PaymentCoin>(
     ctx: &mut TxContext,
 ) {
     assert!(
-        maker::root_lifecycle_v8(root) == maker::lifecycle_active_v8(),
+        maker::root_lifecycle_v8(root) == 1,
         EInvalidLifecycle,
     );
     assert_maker_treasury_v8(root, treasury);
     let economics = maker::root_economics_v8(root);
     assert!(
-        maker::economics_maker_access_v8(&economics) == maker::access_free_v8(),
+        maker::economics_maker_access_v8(&economics) == 0,
         EAccessPolicyMismatch,
     );
     issue_maker_access_pass(root, treasury, 0, 0, clock, ctx);
@@ -188,14 +201,14 @@ public fun purchase_maker_access_v8<PaymentCoin>(
     ctx: &mut TxContext,
 ) {
     assert!(
-        maker::root_lifecycle_v8(root) == maker::lifecycle_active_v8(),
+        maker::root_lifecycle_v8(root) == 1,
         EInvalidLifecycle,
     );
     maker::assert_current_protocol_config_v8(root, config);
     assert_maker_treasury_v8(root, treasury);
     let economics = maker::root_economics_v8(root);
     assert!(
-        maker::economics_maker_access_v8(&economics) == maker::access_paid_v8(),
+        maker::economics_maker_access_v8(&economics) == 1,
         EAccessPolicyMismatch,
     );
     let gross = maker::economics_maker_price_atomic_v8(&economics);
@@ -237,7 +250,7 @@ public fun assert_maker_access_pass_v8<PaymentCoin>(
     holder: address,
 ) {
     assert!(
-        maker::root_lifecycle_v8(root) == maker::lifecycle_active_v8(),
+        maker::root_lifecycle_v8(root) == 1,
         EInvalidLifecycle,
     );
     assert!(pass.version == VERSION, EAccessPolicyMismatch);
@@ -253,10 +266,10 @@ public fun assert_maker_access_pass_v8<PaymentCoin>(
     assert!(pass.holder == holder, EAccessPolicyMismatch);
     let economics = maker::root_economics_v8(root);
     let access = maker::economics_maker_access_v8(&economics);
-    if (access == maker::access_free_v8()) {
+    if (access == 0) {
         assert!(pass.paid_atomic == 0, EAccessPolicyMismatch);
     } else {
-        assert!(access == maker::access_paid_v8(), EAccessPolicyMismatch);
+        assert!(access == 1, EAccessPolicyMismatch);
         assert!(
             pass.paid_atomic == maker::economics_maker_price_atomic_v8(&economics),
             EAccessPolicyMismatch,
@@ -289,44 +302,6 @@ public fun withdraw_maker_revenue_v8<PaymentCoin>(
         amount,
     });
     transfer::public_transfer(payment, recipient);
-}
-
-public fun maker_treasury_id_v8<PaymentCoin>(
-    treasury: &MakerTreasuryV8<PaymentCoin>,
-): ID { object::id(treasury) }
-public fun maker_treasury_root_id_v8<PaymentCoin>(
-    treasury: &MakerTreasuryV8<PaymentCoin>,
-): ID { treasury.root_id }
-public fun maker_treasury_balance_v8<PaymentCoin>(
-    treasury: &MakerTreasuryV8<PaymentCoin>,
-): u64 { treasury.revenue.value() }
-public fun maker_treasury_total_collected_v8<PaymentCoin>(
-    treasury: &MakerTreasuryV8<PaymentCoin>,
-): u128 { treasury.total_collected }
-public fun maker_treasury_total_withdrawn_v8<PaymentCoin>(
-    treasury: &MakerTreasuryV8<PaymentCoin>,
-): u128 { treasury.total_withdrawn }
-
-public fun maker_access_pass_id_v8(pass: &MakerAccessPassV8): ID {
-    object::id(pass)
-}
-public fun maker_access_pass_root_id_v8(pass: &MakerAccessPassV8): ID {
-    pass.root_id
-}
-public fun maker_access_pass_maker_version_v8(pass: &MakerAccessPassV8): u64 {
-    pass.maker_version
-}
-public fun maker_access_pass_root_content_commitment_v8(
-    pass: &MakerAccessPassV8,
-): &vector<u8> { &pass.root_content_commitment }
-public fun maker_access_pass_holder_v8(pass: &MakerAccessPassV8): address {
-    pass.holder
-}
-public fun maker_access_pass_paid_atomic_v8(pass: &MakerAccessPassV8): u64 {
-    pass.paid_atomic
-}
-public fun maker_access_pass_issued_at_ms_v8(pass: &MakerAccessPassV8): u64 {
-    pass.issued_at_ms
 }
 
 fun issue_maker_access_pass<PaymentCoin>(
@@ -375,6 +350,18 @@ fun issue_maker_access_pass<PaymentCoin>(
 }
 
 #[test_only]
+public fun new_maker_access_for_testing<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>, holder: address, ctx: &mut TxContext,
+): MakerAccessPassV8 {
+    MakerAccessPassV8 {
+        id: object::new(ctx), version: VERSION, root_id: maker::root_id_v8(root),
+        maker_version: maker::root_maker_version_v8(root),
+        root_content_commitment: *maker::root_content_commitment_v8(root),
+        holder, paid_atomic: 0, issued_at_ms: 0,
+    }
+}
+
+#[test_only]
 public fun destroy_maker_treasury_for_testing<PaymentCoin>(
     treasury: MakerTreasuryV8<PaymentCoin>,
 ) {
@@ -405,6 +392,27 @@ fun remove_maker_access_record_for_testing<PaymentCoin>(
     } = df::remove(&mut treasury.id, MakerAccessKeyV8 { holder });
 }
 
+#[test]
+fun access_readers_report_exact_stored_fields() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 83, 0, 0, 0);
+    let root_id = object::id_from_address(@0xB22);
+    let commitment = test_hash(73);
+    let pass = MakerAccessPassV8 {
+        id: object::new(&mut ctx), version: VERSION, root_id,
+        maker_version: 17, root_content_commitment: commitment,
+        holder: @0xC33, paid_atomic: 12345, issued_at_ms: 987654,
+    };
+    assert!(maker_access_pass_root_id_v2(&pass) == root_id, EAccessPolicyMismatch);
+    assert!(maker_access_pass_maker_version_v2(&pass) == 17, EAccessPolicyMismatch);
+    assert!(maker_access_pass_root_content_commitment_v2(&pass) == &commitment, EAccessPolicyMismatch);
+    assert!(maker_access_pass_holder_v2(&pass) == @0xC33, EAccessPolicyMismatch);
+    assert!(maker_access_pass_paid_atomic_v2(&pass) == 12345, EAccessPolicyMismatch);
+    assert!(maker_access_pass_issued_at_ms_v2(&pass) == 987654, EAccessPolicyMismatch);
+    let MakerAccessPassV8 { id, version: _, root_id: _, maker_version: _,
+        root_content_commitment: _, holder: _, paid_atomic: _, issued_at_ms: _ } = pass;
+    id.delete();
+}
+
 #[test_only]
 fun test_hash(byte: u8): vector<u8> {
     let mut value = vector[];
@@ -425,9 +433,9 @@ fun exact_maker_treasury_survives_pause_for_withdrawal() {
         >(true, &mut ctx);
     let economics = maker::new_economics_snapshot_v8<sui::sui::SUI>(
         &config,
-        maker::access_free_v8(),
         0,
-        maker::complete_unlimited_free_v8(),
+        0,
+        0,
         0,
         0,
         0,
@@ -445,6 +453,9 @@ fun exact_maker_treasury_survives_pause_for_withdrawal() {
         test_hash(1),
         test_hash(2),
         b"maker".to_string(),
+        test_hash(6),
+        test_hash(7),
+        test_hash(8),
         test_hash(3),
         b"walrus-blob".to_string(),
         test_hash(4),
@@ -455,14 +466,14 @@ fun exact_maker_treasury_survives_pause_for_withdrawal() {
         &mut ctx,
     );
     let mut treasury = new_maker_treasury_v8(&mut root, &admin, &mut ctx);
-    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    maker::set_lifecycle_for_testing(&mut root, 1);
     let payment = coin::from_balance(
         balance::create_for_testing<sui::sui::SUI>(900),
         &mut ctx,
     );
     deposit_maker_revenue_v8(&root, &mut treasury, &config, payment);
-    assert!(maker_treasury_balance_v8(&treasury) == 900, EInvalidAmount);
-    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_paused_v8());
+    assert!(treasury.revenue.value() == 900, EInvalidAmount);
+    maker::set_lifecycle_for_testing(&mut root, 2);
     withdraw_maker_revenue_v8(
         &root,
         &admin,
@@ -471,9 +482,9 @@ fun exact_maker_treasury_survives_pause_for_withdrawal() {
         @0xB11,
         &mut ctx,
     );
-    assert!(maker_treasury_balance_v8(&treasury) == 0, EInvalidAmount);
-    assert!(maker_treasury_total_collected_v8(&treasury) == 900, EInvalidAmount);
-    assert!(maker_treasury_total_withdrawn_v8(&treasury) == 900, EInvalidAmount);
+    assert!(treasury.revenue.value() == 0, EInvalidAmount);
+    assert!(treasury.total_collected == 900, EInvalidAmount);
+    assert!(treasury.total_withdrawn == 900, EInvalidAmount);
     destroy_maker_treasury_for_testing(treasury);
     maker::destroy_maker_for_testing(root, admin);
     animacraft_v8_core::protocol_config_v8::destroy_protocol_with_treasury_for_testing(
@@ -494,9 +505,9 @@ fun paid_maker_access_settles_exact_treasuries_before_issuing_pass() {
         >(true, &mut ctx);
     let economics = maker::new_economics_snapshot_v8<sui::sui::SUI>(
         &config,
-        maker::access_paid_v8(),
+        1,
         1_000,
-        maker::complete_unlimited_free_v8(),
+        0,
         0,
         0,
         0,
@@ -514,6 +525,9 @@ fun paid_maker_access_settles_exact_treasuries_before_issuing_pass() {
         test_hash(11),
         test_hash(12),
         b"paid-maker".to_string(),
+        test_hash(16),
+        test_hash(17),
+        test_hash(18),
         test_hash(13),
         b"paid-walrus-blob".to_string(),
         test_hash(14),
@@ -524,7 +538,7 @@ fun paid_maker_access_settles_exact_treasuries_before_issuing_pass() {
         &mut ctx,
     );
     let mut maker_treasury = new_maker_treasury_v8(&mut root, &admin, &mut ctx);
-    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    maker::set_lifecycle_for_testing(&mut root, 1);
     let payment = coin::from_balance(
         balance::create_for_testing<sui::sui::SUI>(1_000),
         &mut ctx,
@@ -538,8 +552,9 @@ fun paid_maker_access_settles_exact_treasuries_before_issuing_pass() {
         &clock,
         &mut ctx,
     );
-    assert!(protocol::protocol_treasury_balance_v8(&protocol_treasury) == 100, EWrongPayment);
-    assert!(maker_treasury_balance_v8(&maker_treasury) == 900, EWrongPayment);
+    assert!(protocol::protocol_treasury_balance_for_testing(&protocol_treasury)
+        == 100, EWrongPayment);
+    assert!(maker_treasury_balance_v2(&maker_treasury) == 900, EWrongPayment);
     remove_maker_access_record_for_testing(&mut maker_treasury, holder);
     withdraw_maker_revenue_v8(
         &root,

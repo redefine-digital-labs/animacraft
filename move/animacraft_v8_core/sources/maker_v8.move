@@ -4,16 +4,16 @@ module animacraft_v8_core::maker_v8;
 
 use animacraft_v8_core::package_binding_v8::{
     Self as package_binding,
-    CertifiedProductReleaseBindingV8,
-    MarketRoleV8,
-    PackageCallCapV8,
-    PackageCallCapSetBindingV8,
+    FreshTupleReplacementBindingV2,
     ProductReleaseCatalogV8,
-    ProductReleaseBindingV8,
-    ReleaseCatalogWitnessV8,
-    RuntimePackReadinessV8,
+    RuntimeCallerCapV1,
 };
 use animacraft_v8_core::protocol_config_v8::{Self as protocol, ProtocolConfigV8};
+use animacraft_v8_core::companion_binding_v2::{
+    Self as companion,
+    MakerRuntimeCompanionRegistryIdsV2,
+    MakerRuntimeCompanionBindingBuilderV2,
+};
 use std::bcs;
 use std::hash;
 use std::option::{Self as option, Option};
@@ -23,7 +23,11 @@ use sui::event;
 use sui::transfer::Receiving;
 
 const VERSION: u64 = 8;
+#[test_only]
 const HASH_LENGTH: u64 = 32;
+#[test_only]
+const ACCESS_FREE: u8 = 0;
+const COMPLETE_UNLIMITED_FREE: u8 = 0;
 const MAX_ROYALTY_BPS: u16 = 1_000;
 const ROYALTY_STEP_BPS: u16 = 50;
 const MAX_COMBINED_SOURCE_ROYALTY_BPS: u16 = 1_000;
@@ -39,9 +43,7 @@ const ACTIVE: u8 = 1;
 const PAUSED: u8 = 2;
 const ARCHIVED: u8 = 3;
 
-const ACCESS_FREE: u8 = 0;
 const ACCESS_PAID: u8 = 1;
-const COMPLETE_UNLIMITED_FREE: u8 = 0;
 const COMPLETE_FREE_QUOTA_THEN_PAID: u8 = 1;
 const COMPLETE_PAID_EVERY_TIME: u8 = 2;
 const COMPLETE_FREE_QUOTA_THEN_BLOCK: u8 = 3;
@@ -60,8 +62,6 @@ const EProtocolSnapshotMismatch: u64 = 8;
 const ECorePackageMismatch: u64 = 9;
 const EProductBindingAlreadyFinalized: u64 = 10;
 const EProductBindingMissing: u64 = 11;
-const EPackAdmissionAlreadyFinalized: u64 = 12;
-const EPackAdmissionBindingMissing: u64 = 13;
 const EBindingIdCollision: u64 = 14;
 const EBaseRegistryMismatch: u64 = 15;
 const EBaseRegistryAlreadyFinalized: u64 = 16;
@@ -74,9 +74,10 @@ const EInvalidSuccessorAuthority: u64 = 22;
 const EMakerTreasuryAlreadyFinalized: u64 = 23;
 const EMakerTreasuryMissing: u64 = 24;
 const EMakerTreasuryMismatch: u64 = 25;
-const ECapabilityRegistryAlreadyFinalized: u64 = 26;
-const ECapabilityRegistryMissing: u64 = 27;
-const ECapabilityRegistryMismatch: u64 = 28;
+const ECompanionBindingMissing: u64 = 26;
+const ECompanionBindingAlreadyFinalized: u64 = 27;
+const EBaseRegistryNotSealed: u64 = 28;
+const EBaseRegistrySealAlreadyInstalled: u64 = 29;
 
 public struct EconomicsSnapshotV8 has copy, drop, store {
     protocol_config_id: ID,
@@ -126,43 +127,27 @@ public struct WrappedRightsCertificationV8 {
     terms_commitment: vector<u8>,
 }
 
-/// Immutable identity/policy binding only. Pack membership and Pack registry
-/// revision deliberately do not live in MakerRootV8, so Runtime can admit
-/// independent compatible Pack Releases after activation using revision CAS.
-public struct PackAdmissionBindingV8 has copy, drop, store {
-    pack_registry_id: ID,
-    admission_authority_id: ID,
-    policy_commitment: vector<u8>,
-    commitment: vector<u8>,
+
+/// Non-authoritative Root readback. Every operation that uses these values
+/// must revalidate the live Catalog and immutable replacement binding.
+public struct ProductReleaseCommitmentsV2 has copy, drop, store {
+    product_binding_commitment: vector<u8>,
+    call_cap_set_commitment: vector<u8>,
 }
 
-/// Exact terminal capability graph copied into one Root during Core
-/// activation. The complete call-cap set remains visible for deterministic
-/// readback while every companion object ID is bound to the same Root.
-public struct CapabilityRegistryBindingV8 has copy, drop, store {
-    native_capability_mask: u64,
-    catalog_id: ID,
-    call_cap_set: PackageCallCapSetBindingV8,
-    protocol_config_id: ID,
-    base_registry_id: ID,
-    maker_treasury_id: ID,
-    protocol_treasury_id: ID,
-    seal_policy_config_id: ID,
-    seal_registry_id: ID,
-    runtime_definition_registry_id: ID,
-    pack_registry_id: ID,
-    admission_authority_id: ID,
-    output_registry_id: ID,
-    soul_registry_id: ID,
-    physical_registry_id: ID,
-    market_registry_id: ID,
-    market_treasury_id: ID,
-    seal_readiness_commitment: vector<u8>,
-    runtime_readiness_commitment: vector<u8>,
-    output_readiness_commitment: vector<u8>,
-    physical_readiness_commitment: vector<u8>,
-    market_readiness_commitment: vector<u8>,
-    commitment: vector<u8>,
+/// One publication identity; registry IDs never enter frozen artwork content.
+public struct MakerPublicationStateV2 has copy, drop, store {
+    catalog_id: Option<ID>,
+    release_commitments: Option<ProductReleaseCommitmentsV2>,
+    registry_ids: Option<MakerRuntimeCompanionRegistryIdsV2>,
+    sealed_base_registry_commitment: Option<vector<u8>>,
+}
+
+public struct MakerContentSnapshotV2 has copy, drop, store {
+    renderer_commitment: vector<u8>,
+    manifest_blob_id: String,
+    manifest_sha256: vector<u8>,
+    content_commitment: vector<u8>,
 }
 
 public struct MakerRootV8<phantom PaymentCoin> has key {
@@ -182,10 +167,10 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     previous_version_commitment: Option<vector<u8>>,
     successor_authority_id: Option<ID>,
     successor_root_id: Option<ID>,
-    renderer_commitment: vector<u8>,
-    manifest_blob_id: String,
-    manifest_sha256: vector<u8>,
-    content_commitment: vector<u8>,
+    maker_document_commitment: vector<u8>,
+    creator_defaults_commitment: vector<u8>,
+    living_content_binding_commitment: vector<u8>,
+    content: MakerContentSnapshotV2,
     base_registry_id: Option<ID>,
     maker_treasury_id: Option<ID>,
     expected_base_definition_count: u64,
@@ -193,9 +178,7 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     expected_pack_admission_policy_commitment: vector<u8>,
     economics: EconomicsSnapshotV8,
     rights: RightsSnapshotV8,
-    product_release_binding: Option<CertifiedProductReleaseBindingV8>,
-    pack_admission_binding: Option<PackAdmissionBindingV8>,
-    capability_registry_binding: Option<CapabilityRegistryBindingV8>,
+    publication: MakerPublicationStateV2,
     created_at_ms: u64,
 }
 
@@ -208,9 +191,10 @@ public struct MakerAdminCapV8 has key {
     control_epoch: u64,
 }
 
-/// Persistable but module-controlled, one-use authority for exactly one N+1
-/// fork. Every predecessor CAS field is copied here and checked again when
-/// the predecessor is mutably consumed by successor creation.
+/// Module-controlled, one-use authority for exactly one N+1 fork. It has no
+/// `store` ability or public transfer path, so an external PTB must feed the
+/// returned value directly into the successor constructor. Every predecessor
+/// CAS field is copied here and checked again at consumption.
 public struct SuccessorAuthorityV8<phantom PaymentCoin> has key {
     id: UID,
     version: u64,
@@ -272,6 +256,9 @@ public struct VersionCommitmentInputV8 has drop {
     maker_version: u64,
     previous_root_id: Option<ID>,
     previous_version_commitment: Option<vector<u8>>,
+    maker_document_commitment: vector<u8>,
+    creator_defaults_commitment: vector<u8>,
+    living_content_binding_commitment: vector<u8>,
     renderer_commitment: vector<u8>,
     manifest_blob_id: String,
     manifest_sha256: vector<u8>,
@@ -283,44 +270,6 @@ public struct VersionCommitmentInputV8 has drop {
     rights_commitment: vector<u8>,
 }
 
-public struct PackAdmissionCommitmentInputV8 has drop {
-    domain: vector<u8>,
-    version: u64,
-    root_id: ID,
-    root_version_commitment: vector<u8>,
-    pack_registry_id: ID,
-    admission_authority_id: ID,
-    policy_commitment: vector<u8>,
-}
-
-public struct CapabilityRegistryCommitmentInputV8 has drop {
-    domain: vector<u8>,
-    version: u64,
-    root_id: ID,
-    root_version_commitment: vector<u8>,
-    native_capability_mask: u64,
-    catalog_id: ID,
-    call_cap_set: PackageCallCapSetBindingV8,
-    protocol_config_id: ID,
-    base_registry_id: ID,
-    maker_treasury_id: ID,
-    protocol_treasury_id: ID,
-    seal_policy_config_id: ID,
-    seal_registry_id: ID,
-    runtime_definition_registry_id: ID,
-    pack_registry_id: ID,
-    admission_authority_id: ID,
-    output_registry_id: ID,
-    soul_registry_id: ID,
-    physical_registry_id: ID,
-    market_registry_id: ID,
-    market_treasury_id: ID,
-    seal_readiness_commitment: vector<u8>,
-    runtime_readiness_commitment: vector<u8>,
-    output_readiness_commitment: vector<u8>,
-    physical_readiness_commitment: vector<u8>,
-    market_readiness_commitment: vector<u8>,
-}
 
 public struct ProductReleaseBindingFinalizedV8 has copy, drop {
     root_id: ID,
@@ -337,31 +286,6 @@ public struct MakerControlTransferredV8 has copy, drop {
     new_admin_cap_id: ID,
 }
 
-public struct PackAdmissionBindingFinalizedV8 has copy, drop {
-    root_id: ID,
-    pack_registry_id: ID,
-    admission_authority_id: ID,
-    policy_commitment: vector<u8>,
-    binding_commitment: vector<u8>,
-}
-
-public fun version_v8(): u64 { VERSION }
-public fun lifecycle_draft_v8(): u8 { DRAFT }
-public fun lifecycle_active_v8(): u8 { ACTIVE }
-public fun lifecycle_paused_v8(): u8 { PAUSED }
-public fun lifecycle_archived_v8(): u8 { ARCHIVED }
-public fun access_free_v8(): u8 { ACCESS_FREE }
-public fun access_paid_v8(): u8 { ACCESS_PAID }
-public fun complete_unlimited_free_v8(): u8 { COMPLETE_UNLIMITED_FREE }
-public fun complete_free_quota_then_paid_v8(): u8 {
-    COMPLETE_FREE_QUOTA_THEN_PAID
-}
-public fun complete_paid_every_time_v8(): u8 { COMPLETE_PAID_EVERY_TIME }
-public fun complete_free_quota_then_block_v8(): u8 {
-    COMPLETE_FREE_QUOTA_THEN_BLOCK
-}
-public fun rights_onchain_native_v8(): u8 { RIGHTS_ONCHAIN_NATIVE }
-public fun rights_license_wrapped_v8(): u8 { RIGHTS_LICENSE_WRAPPED }
 
 public fun new_economics_snapshot_v8<PaymentCoin>(
     config: &ProtocolConfigV8,
@@ -449,12 +373,14 @@ public fun new_onchain_native_rights_snapshot_v8(
     )
 }
 
-/// Release/transport certifies exact wrapped evidence for the transaction
-/// signer. No author-controlled confirmation booleans enter this boundary.
-public fun certify_wrapped_rights_v8(
+/// Release certifies exact wrapped evidence through its private rights
+/// witness. The live Catalog and immutable replacement are revalidated here;
+/// no Root summary or detached package-origin marker can authorize this mint.
+public fun certify_wrapped_rights_v8<ReleaseRightsWitness: drop>(
+    witness: ReleaseRightsWitness,
     config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    release_cap: &package_binding::PackageCallCapV8<package_binding::ReleaseRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
     evidence_locator: String,
     evidence_blob_id: String,
     evidence_sha256: vector<u8>,
@@ -462,18 +388,22 @@ public fun certify_wrapped_rights_v8(
     ctx: &TxContext,
 ): WrappedRightsCertificationV8 {
     package_binding::assert_catalog_current_v8(config, catalog);
-    package_binding::assert_release_call_cap_v8(catalog, release_cap);
+    package_binding::assert_replacement_current_v2(replacement, catalog);
+    let release = package_binding::binding_at_v2(
+        package_binding::catalog_binding_v8(catalog), 6);
+    package_binding::assert_exact_witness_type_v2<ReleaseRightsWitness>(
+        release, &b"release_v8", &b"ReleaseRightsWitnessV2");
     assert_non_empty_bounded(&evidence_locator, MAX_EVIDENCE_LOCATOR_BYTES);
     assert_non_empty_bounded(&evidence_blob_id, MAX_BLOB_ID_BYTES);
     assert_hash(&evidence_sha256);
     assert_hash(&terms_commitment);
+    let _ = witness;
     WrappedRightsCertificationV8 {
         creator: ctx.sender(),
         catalog_id: package_binding::catalog_id_v8(catalog),
         product_binding_commitment:
             *package_binding::product_binding_commitment_v8(
-                package_binding::catalog_binding_v8(catalog),
-            ),
+                package_binding::catalog_binding_v8(catalog)),
         evidence_locator,
         evidence_blob_id,
         evidence_sha256,
@@ -584,6 +514,9 @@ public(package) fun new_initial_maker_draft_v8<PaymentCoin>(
     expected_base_registry_commitment: vector<u8>,
     expected_pack_admission_policy_commitment: vector<u8>,
     maker_key: String,
+    maker_document_commitment: vector<u8>,
+    creator_defaults_commitment: vector<u8>,
+    living_content_binding_commitment: vector<u8>,
     renderer_commitment: vector<u8>,
     manifest_blob_id: String,
     manifest_sha256: vector<u8>,
@@ -602,6 +535,9 @@ public(package) fun new_initial_maker_draft_v8<PaymentCoin>(
         1,
         option::none(),
         option::none(),
+        maker_document_commitment,
+        creator_defaults_commitment,
+        living_content_binding_commitment,
         renderer_commitment,
         manifest_blob_id,
         manifest_sha256,
@@ -624,6 +560,9 @@ public(package) fun new_successor_maker_draft_v8<PaymentCoin>(
     expected_base_definition_count: u64,
     expected_base_registry_commitment: vector<u8>,
     expected_pack_admission_policy_commitment: vector<u8>,
+    maker_document_commitment: vector<u8>,
+    creator_defaults_commitment: vector<u8>,
+    living_content_binding_commitment: vector<u8>,
     renderer_commitment: vector<u8>,
     manifest_blob_id: String,
     manifest_sha256: vector<u8>,
@@ -652,6 +591,9 @@ public(package) fun new_successor_maker_draft_v8<PaymentCoin>(
         previous.maker_version + 1,
         option::some(object::id(previous)),
         option::some(previous.version_commitment),
+        maker_document_commitment,
+        creator_defaults_commitment,
+        living_content_binding_commitment,
         renderer_commitment,
         manifest_blob_id,
         manifest_sha256,
@@ -679,22 +621,21 @@ public(package) fun new_successor_maker_draft_v8<PaymentCoin>(
     (successor, successor_admin)
 }
 
-/// Issues exactly one persistable successor authority for an archived Root.
-/// Core performs the transfer so this non-store capability cannot be routed
-/// through an arbitrary public transfer path.
+/// Issues exactly one transaction-local successor authority for an archived
+/// Root. The non-store result must be consumed by the successor constructor in
+/// the same PTB, so an interrupted UI can never strand a one-shot authority.
 public fun issue_successor_authority_v8<PaymentCoin>(
     previous: &mut MakerRootV8<PaymentCoin>,
     previous_admin: &MakerAdminCapV8,
     expected_previous_control_epoch: u64,
     ctx: &mut TxContext,
-) {
-    let authority = new_successor_authority(
+): SuccessorAuthorityV8<PaymentCoin> {
+    new_successor_authority(
         previous,
         previous_admin,
         expected_previous_control_epoch,
         ctx,
-    );
-    transfer::transfer(authority, ctx.sender());
+    )
 }
 
 fun new_successor_authority<PaymentCoin>(
@@ -752,6 +693,9 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
     maker_version: u64,
     previous_root_id: Option<ID>,
     previous_version_commitment: Option<vector<u8>>,
+    maker_document_commitment: vector<u8>,
+    creator_defaults_commitment: vector<u8>,
+    living_content_binding_commitment: vector<u8>,
     renderer_commitment: vector<u8>,
     manifest_blob_id: String,
     manifest_sha256: vector<u8>,
@@ -767,6 +711,9 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
     assert_non_empty_bounded(&manifest_blob_id, MAX_BLOB_ID_BYTES);
     assert_hash(&expected_base_registry_commitment);
     assert_hash(&expected_pack_admission_policy_commitment);
+    assert_hash(&maker_document_commitment);
+    assert_hash(&creator_defaults_commitment);
+    assert_hash(&living_content_binding_commitment);
     assert_hash(&renderer_commitment);
     assert_hash(&manifest_sha256);
     assert_hash(&content_commitment);
@@ -803,6 +750,9 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
             maker_version,
             previous_root_id,
             previous_version_commitment,
+            maker_document_commitment,
+            creator_defaults_commitment,
+            living_content_binding_commitment,
             renderer_commitment,
             manifest_blob_id,
             manifest_sha256,
@@ -831,10 +781,15 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
         previous_version_commitment,
         successor_authority_id: option::none(),
         successor_root_id: option::none(),
-        renderer_commitment,
-        manifest_blob_id,
-        manifest_sha256,
-        content_commitment,
+        maker_document_commitment,
+        creator_defaults_commitment,
+        living_content_binding_commitment,
+        content: MakerContentSnapshotV2 {
+            renderer_commitment,
+            manifest_blob_id,
+            manifest_sha256,
+            content_commitment,
+        },
         base_registry_id: option::none(),
         maker_treasury_id: option::none(),
         expected_base_definition_count,
@@ -842,9 +797,11 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
         expected_pack_admission_policy_commitment,
         economics,
         rights,
-        product_release_binding: option::none(),
-        pack_admission_binding: option::none(),
-        capability_registry_binding: option::none(),
+        publication: MakerPublicationStateV2 {
+            catalog_id: option::none(), release_commitments: option::none(),
+            registry_ids: option::none(),
+            sealed_base_registry_commitment: option::none(),
+        },
         created_at_ms: clock.timestamp_ms(),
     };
     (root, admin)
@@ -862,6 +819,27 @@ public(package) fun finalize_base_registry_binding_v8<PaymentCoin>(
     assert!(base_registry_id != object::id(root), EBindingIdCollision);
     assert!(base_registry_id != root.admin_cap_id, EBindingIdCollision);
     root.base_registry_id = option::some(base_registry_id);
+}
+
+/// Only the real Base seal installs its object-bound commitment, after checking
+/// every exact author row against the immutable precomputed Version intent.
+public(package) fun install_sealed_base_registry_commitment_v2<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>, admin: &MakerAdminCapV8,
+    registry_id: ID, commitment: vector<u8>,
+) {
+    assert_draft_admin_v8(root, admin);
+    assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
+    assert!(*root.base_registry_id.borrow() == registry_id, EBaseRegistryMismatch);
+    assert!(root.publication.sealed_base_registry_commitment.is_none(), EBaseRegistrySealAlreadyInstalled);
+    assert_hash(&commitment);
+    root.publication.sealed_base_registry_commitment.fill(commitment);
+}
+
+public fun root_sealed_base_registry_commitment_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &vector<u8> {
+    assert!(root.publication.sealed_base_registry_commitment.is_some(), EBaseRegistryNotSealed);
+    root.publication.sealed_base_registry_commitment.borrow()
 }
 
 /// Resolves the same-transaction Root/MakerTreasury ID cycle. The Treasury
@@ -898,53 +876,42 @@ public fun assert_maker_treasury_identity_v8<PaymentCoin>(
     );
 }
 
-/// One-time DRAFT finalization. The proof is non-store/non-copy and can only
-/// carry the exact protocol-admin-certified catalog tuple.
+/// One-time DRAFT binding to the live catalog. The Root stores only identity
+/// and commitments; every later authorization must borrow and revalidate the
+/// catalog instead of trusting an offline tuple snapshot.
 public fun finalize_product_release_binding_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
     config: &ProtocolConfigV8,
-    witness: ReleaseCatalogWitnessV8,
+    catalog: &ProductReleaseCatalogV8,
     ctx: &TxContext,
 ) {
     assert_draft_admin_v8(root, admin);
     assert!(root.owner == ctx.sender(), ENotCurrentOwner);
     assert!(
-        root.product_release_binding.is_none(),
+        root.publication.catalog_id.is_none(),
         EProductBindingAlreadyFinalized,
     );
+    assert!(root.publication.release_commitments.is_none(),
+        EProductBindingAlreadyFinalized);
     assert_current_protocol_config_v8(root, config);
-    let certified = package_binding::consume_release_catalog_witness_v8(witness);
-    package_binding::assert_certified_binding_v8(&certified);
-    assert!(
-        package_binding::certified_protocol_config_id_v8(&certified)
-            == root.economics.protocol_config_id,
-        ECatalogMismatch,
-    );
-    assert!(
-        package_binding::certified_protocol_config_revision_v8(&certified)
-            == root.economics.protocol_config_revision,
-        ECatalogMismatch,
-    );
-    assert!(
-        package_binding::certified_protocol_config_commitment_v8(&certified)
-            == &root.economics.protocol_config_commitment,
-        ECatalogMismatch,
-    );
-    let binding = package_binding::certified_binding_v8(&certified);
-    let core = package_binding::core_binding_v8(binding);
-    assert!(
-        package_binding::original_package_id_v8(core)
-            == root.core_original_package_id,
-        ECorePackageMismatch,
-    );
-    assert!(
-        package_binding::callable_package_id_v8(core)
-            == root.core_callable_package_id,
-        ECorePackageMismatch,
-    );
+    package_binding::assert_catalog_current_v8(config, catalog);
+    package_binding::assert_catalog_setup_complete_v2(catalog);
+    let (catalog_config_id, catalog_config_revision, catalog_config_commitment,
+        binding, call_cap_set_commitment, _) =
+        package_binding::catalog_terms_v2(catalog);
+    assert!(catalog_config_id == root.economics.protocol_config_id
+        && catalog_config_revision == root.economics.protocol_config_revision
+        && catalog_config_commitment == &root.economics.protocol_config_commitment,
+        ECatalogMismatch);
+    let core = package_binding::binding_at_v2(binding, 0);
+    let (core_original, core_callable, _, _, _, _) =
+        package_binding::exact_binding_terms_v2(core);
+    assert!(core_original == root.core_original_package_id
+        && core_callable == root.core_callable_package_id,
+        ECorePackageMismatch);
     let binding_commitment = *package_binding::product_binding_commitment_v8(binding);
-    let catalog_id = package_binding::certified_catalog_id_v8(&certified);
+    let catalog_id = package_binding::catalog_id_v8(catalog);
     if (root.rights.origin == RIGHTS_LICENSE_WRAPPED) {
         assert!(root.rights.certification_catalog_id.is_some(), ECatalogMismatch);
         assert!(root.rights.certification_binding_commitment.is_some(), ECatalogMismatch);
@@ -958,7 +925,12 @@ public fun finalize_product_release_binding_v8<PaymentCoin>(
             ECatalogMismatch,
         );
     };
-    root.product_release_binding = option::some(certified);
+    root.publication.catalog_id = option::some(catalog_id);
+    root.publication.release_commitments = option::some(
+        ProductReleaseCommitmentsV2 {
+            product_binding_commitment: binding_commitment,
+            call_cap_set_commitment: *call_cap_set_commitment,
+        });
     event::emit(ProductReleaseBindingFinalizedV8 {
         root_id: object::id(root),
         catalog_id,
@@ -966,218 +938,124 @@ public fun finalize_product_release_binding_v8<PaymentCoin>(
     });
 }
 
-/// Binds only the stable Pack registry/admission authority and immutable
-/// policy. It intentionally records no Pack count, release set, or registry
-/// revision; those remain Runtime-owned CAS state after activation.
-public(package) fun finalize_pack_admission_binding_v8<PaymentCoin>(
+public(package) fun begin_companion_binding_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    ctx: &TxContext,
+): MakerRuntimeCompanionBindingBuilderV2<PaymentCoin> {
+    assert_draft_admin_v8(root, admin);
+    assert!(root.owner == ctx.sender(), ENotCurrentOwner);
+    assert_product_release_catalog_v8(root, catalog);
+    assert!(root.publication.registry_ids.is_none(), ECompanionBindingAlreadyFinalized);
+    assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
+    assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
+    companion::new_builder_v2(
+        protocol_config, catalog, replacement, object::id(root), root.maker_version,
+        root.control_epoch, root.content.content_commitment, root.admin_cap_id,
+        *root.base_registry_id.borrow(), *root_sealed_base_registry_commitment_v2(root),
+        *root.maker_treasury_id.borrow(), ctx,
+    )
+}
+
+public(package) fun finish_companion_binding_v2<PaymentCoin>(
+    builder: MakerRuntimeCompanionBindingBuilderV2<PaymentCoin>,
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
-    config: &ProtocolConfigV8,
-    readiness: RuntimePackReadinessV8,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     ctx: &TxContext,
 ) {
     assert_draft_admin_v8(root, admin);
     assert!(root.owner == ctx.sender(), ENotCurrentOwner);
-    assert_current_protocol_config_v8(root, config);
-    assert!(
-        root.pack_admission_binding.is_none(),
-        EPackAdmissionAlreadyFinalized,
+    assert_product_release_catalog_v8(root, catalog);
+    assert!(root.publication.registry_ids.is_none(), ECompanionBindingAlreadyFinalized);
+    assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
+    assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
+    let (facts, ids) = companion::finish_v2(builder, protocol_config, catalog, replacement, ctx);
+    companion::assert_facts_v2(
+        &facts, object::id(root), root.maker_version, root.control_epoch,
+        &root.content.content_commitment, root.admin_cap_id,
+        *root.base_registry_id.borrow(), root_sealed_base_registry_commitment_v2(root),
+        *root.maker_treasury_id.borrow(), ctx,
     );
-    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
-    let certified = root.product_release_binding.borrow();
-    let product = package_binding::certified_binding_v8(certified);
-    let (
-        catalog_id,
-        product_binding_commitment,
-        readiness_root_id,
-        readiness_root_version,
-        readiness_root_content_commitment,
-        pack_registry_id,
-        admission_authority_id,
-        policy_commitment,
-    ) = package_binding::consume_runtime_pack_readiness_v8(readiness);
-    assert!(
-        catalog_id == package_binding::certified_catalog_id_v8(certified),
-        ECatalogMismatch,
-    );
-    assert!(
-        &product_binding_commitment
-            == package_binding::product_binding_commitment_v8(product),
-        ECatalogMismatch,
-    );
-    assert_root_identity_v8(
-        root,
-        readiness_root_id,
-        readiness_root_version,
-        &readiness_root_content_commitment,
-    );
-    assert!(
-        &policy_commitment == &root.expected_pack_admission_policy_commitment,
-        EInvalidCommitment,
-    );
-    finalize_pack_admission_binding_from_core_v8(
-        root,
-        admin,
-        pack_registry_id,
-        admission_authority_id,
-        policy_commitment,
-    );
+    install_companion_ids(root, ids);
 }
 
-/// Core terminal activation uses IDs extracted from RuntimeActivationReadinessV8.
-/// This remains package-only so no external caller can substitute raw IDs.
-public(package) fun finalize_pack_admission_binding_from_core_v8<PaymentCoin>(
-    root: &mut MakerRootV8<PaymentCoin>,
-    admin: &MakerAdminCapV8,
-    pack_registry_id: ID,
-    admission_authority_id: ID,
-    policy_commitment: vector<u8>,
+fun install_companion_ids<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>, ids: MakerRuntimeCompanionRegistryIdsV2,
+) {
+    assert!(root.publication.registry_ids.is_none(), ECompanionBindingAlreadyFinalized);
+    root.publication.registry_ids.fill(ids);
+}
+
+public fun root_companion_registry_ids_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &MakerRuntimeCompanionRegistryIdsV2 {
+    assert!(root.publication.registry_ids.is_some(), ECompanionBindingMissing);
+    root.publication.registry_ids.borrow()
+}
+
+/// A companion package must match its real Root to the in-flight builder
+/// before its private witness can append registry IDs.
+public fun assert_companion_builder_root_v2<PaymentCoin>(
+    builder: &MakerRuntimeCompanionBindingBuilderV2<PaymentCoin>,
+    root: &MakerRootV8<PaymentCoin>, admin: &MakerAdminCapV8, ctx: &TxContext,
 ) {
     assert_draft_admin_v8(root, admin);
-    assert!(
-        root.pack_admission_binding.is_none(),
-        EPackAdmissionAlreadyFinalized,
-    );
-    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
-    assert!(
-        &policy_commitment == &root.expected_pack_admission_policy_commitment,
-        EInvalidCommitment,
-    );
-    assert!(pack_registry_id != admission_authority_id, EBindingIdCollision);
-    assert!(pack_registry_id != object::id(root), EBindingIdCollision);
-    if (root.base_registry_id.is_some()) {
-        assert!(
-            pack_registry_id != *root.base_registry_id.borrow(),
-            EBindingIdCollision,
-        );
-    };
-    assert!(pack_registry_id != root.admin_cap_id, EBindingIdCollision);
-    assert!(admission_authority_id != object::id(root), EBindingIdCollision);
-    if (root.base_registry_id.is_some()) {
-        assert!(
-            admission_authority_id != *root.base_registry_id.borrow(),
-            EBindingIdCollision,
-        );
-    };
-    assert!(admission_authority_id != root.admin_cap_id, EBindingIdCollision);
-    let commitment = hash::sha2_256(bcs::to_bytes(
-        &PackAdmissionCommitmentInputV8 {
-            domain: b"animacraft-v8/pack-admission-binding",
-            version: VERSION,
-            root_id: object::id(root),
-            root_version_commitment: root.version_commitment,
-            pack_registry_id,
-            admission_authority_id,
-            policy_commitment,
-        },
-    ));
-    let binding = PackAdmissionBindingV8 {
-        pack_registry_id,
-        admission_authority_id,
-        policy_commitment,
-        commitment,
-    };
-    root.pack_admission_binding = option::some(binding);
-    event::emit(PackAdmissionBindingFinalizedV8 {
-        root_id: object::id(root),
-        pack_registry_id,
-        admission_authority_id,
-        policy_commitment,
-        binding_commitment: commitment,
-    });
+    assert!(root.owner == ctx.sender(), ENotCurrentOwner);
+    assert!(root.publication.registry_ids.is_none(), ECompanionBindingAlreadyFinalized);
+    assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
+    assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
+    companion::assert_facts_v2(companion::builder_facts_v2(builder),
+        object::id(root), root.maker_version, root.control_epoch,
+        &root.content.content_commitment, root.admin_cap_id,
+        *root.base_registry_id.borrow(), root_sealed_base_registry_commitment_v2(root),
+        *root.maker_treasury_id.borrow(), ctx);
 }
 
-/// Copies the complete Core-verified capability graph into the DRAFT Root.
-/// All raw IDs originate in live references consumed by activation_v8; this
-/// package-only boundary additionally rejects zero and pairwise collisions.
-public(package) fun finalize_capability_registry_binding_v8<PaymentCoin>(
-    root: &mut MakerRootV8<PaymentCoin>,
-    admin: &MakerAdminCapV8,
-    native_capability_mask: u64,
-    catalog_id: ID,
-    call_cap_set: PackageCallCapSetBindingV8,
-    protocol_config_id: ID,
-    base_registry_id: ID,
-    maker_treasury_id: ID,
-    protocol_treasury_id: ID,
-    seal_policy_config_id: ID,
-    seal_registry_id: ID,
-    runtime_definition_registry_id: ID,
-    pack_registry_id: ID,
-    admission_authority_id: ID,
-    output_registry_id: ID,
-    soul_registry_id: ID,
-    physical_registry_id: ID,
-    market_registry_id: ID,
-    market_treasury_id: ID,
-    seal_readiness_commitment: vector<u8>,
-    runtime_readiness_commitment: vector<u8>,
-    output_readiness_commitment: vector<u8>,
-    physical_readiness_commitment: vector<u8>,
-    market_readiness_commitment: vector<u8>,
-) {
-    assert_draft_admin_v8(root, admin);
-    assert!(
-        root.capability_registry_binding.is_none(),
-        ECapabilityRegistryAlreadyFinalized,
-    );
-    let mut capability = CapabilityRegistryBindingV8 {
-        native_capability_mask,
-        catalog_id,
-        call_cap_set,
-        protocol_config_id,
-        base_registry_id,
-        maker_treasury_id,
-        protocol_treasury_id,
-        seal_policy_config_id,
-        seal_registry_id,
-        runtime_definition_registry_id,
-        pack_registry_id,
-        admission_authority_id,
-        output_registry_id,
-        soul_registry_id,
-        physical_registry_id,
-        market_registry_id,
-        market_treasury_id,
-        seal_readiness_commitment,
-        runtime_readiness_commitment,
-        output_readiness_commitment,
-        physical_readiness_commitment,
-        market_readiness_commitment,
-        commitment: vector[],
-    };
-    capability.commitment = capability_registry_commitment(root, &capability);
-    assert_capability_registry_binding(root, &capability);
-    root.capability_registry_binding = option::some(capability);
-}
 
-/// The only production DRAFT -> ACTIVE transition. It is callable solely by
-/// another Core module after every exact binding has been finalized.
+/// Sole Core-package DRAFT -> ACTIVE mutation. The package-only boundary
+/// still revalidates the live Catalog and immutable replacement rather than
+/// trusting the Root's compact readback.
 public(package) fun activate_from_core_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
 ) {
     assert_draft_admin_v8(root, admin);
     assert_activation_scaffold_ready_v8(root);
-    assert!(
-        root.capability_registry_binding.is_some(),
-        ECapabilityRegistryMissing,
-    );
-    assert_capability_registry_binding(root, root.capability_registry_binding.borrow());
+    package_binding::assert_catalog_current_v8(protocol_config, catalog);
+    package_binding::assert_replacement_current_v2(replacement, catalog);
+    assert_product_release_catalog_v8(root, catalog);
     root.lifecycle = ACTIVE;
 }
 
-/// Core owns the exact transition matrix while Release owns public
-/// orchestration and events. Keeping this mutation package-only makes a
-/// borrowed MakerAdminCap insufficient to bypass Release's catalog gate.
+/// Package-only lifecycle mutation used after activation_v8 has consumed the
+/// exact Release witness/certificate gate.
 public(package) fun transition_lifecycle_from_core_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     next: u8,
     ctx: &TxContext,
 ): (u8, u8) {
     assert_admin_v8(root, admin);
     assert!(root.owner == ctx.sender(), ENotCurrentOwner);
+    if (next == PAUSED || next == ARCHIVED) {
+        package_binding::assert_catalog_for_stop_v8(protocol_config, catalog);
+    } else {
+        package_binding::assert_catalog_current_v8(protocol_config, catalog);
+    };
+    package_binding::assert_replacement_current_v2(replacement, catalog);
+    assert_product_release_catalog_v8(root, catalog);
     let previous = root.lifecycle;
     assert!(
         (previous == ACTIVE && (next == PAUSED || next == ARCHIVED))
@@ -1188,40 +1066,53 @@ public(package) fun transition_lifecycle_from_core_v8<PaymentCoin>(
     (previous, next)
 }
 
-/// Read-only scaffold check used by terminal activation after the Release
-/// package has supplied all five concrete companion readiness proofs.
+public fun assert_active_live_authority_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+) {
+    assert!(root.lifecycle == ACTIVE, EInvalidLifecycle);
+    package_binding::assert_catalog_current_v8(protocol_config, catalog);
+    package_binding::assert_replacement_current_v2(replacement, catalog);
+    assert_product_release_catalog_v8(root, catalog);
+}
+
+public fun assert_release_type_origins_v8<
+    PaymentCoin,
+    ReleaseBootstrapWitness,
+>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+) {
+    assert_activation_scaffold_ready_v8(root);
+    package_binding::assert_catalog_current_v8(protocol_config, catalog);
+    package_binding::assert_replacement_current_v2(replacement, catalog);
+    assert_product_release_catalog_v8(root, catalog);
+    package_binding::assert_exact_witness_type_v2<ReleaseBootstrapWitness>(
+        package_binding::binding_at_v2(
+            package_binding::catalog_binding_v8(catalog), 6),
+        &b"release_v8",
+        &b"ReleaseBootstrapFinalizeWitnessV2",
+    );
+}
+
+/// Read-only scaffold check. It does not authorize activation; Fresh tuple
+/// certificate gates must additionally borrow the live catalog.
 public fun assert_activation_scaffold_ready_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ) {
     assert_draft_v8(root);
-    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
+    assert!(root.publication.catalog_id.is_some(), EProductBindingMissing);
+    assert!(root.publication.release_commitments.is_some(), EProductBindingMissing);
     assert!(
-        root.pack_admission_binding.is_some(),
-        EPackAdmissionBindingMissing,
+        root.publication.registry_ids.is_some(),
+        ECompanionBindingMissing,
     );
     assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
     assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
-    package_binding::assert_product_release_binding_well_formed_v8(
-        package_binding::certified_binding_v8(root.product_release_binding.borrow()),
-    );
-    assert_pack_admission_binding(root, root.pack_admission_binding.borrow());
-}
-
-/// Lets Release check that its marker types match the exact
-/// original/callable IDs frozen into this Root. This alone is not activation.
-public fun assert_release_type_origins_v8<
-    PaymentCoin,
-    ReleaseOriginalMarker,
-    ReleaseCallableMarker,
->(root: &MakerRootV8<PaymentCoin>) {
-    assert_activation_scaffold_ready_v8(root);
-    let product = package_binding::certified_binding_v8(
-        root.product_release_binding.borrow(),
-    );
-    package_binding::assert_type_origins_v8<
-        ReleaseOriginalMarker,
-        ReleaseCallableMarker,
-    >(package_binding::release_binding_v8(product));
 }
 
 public fun assert_draft_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>) {
@@ -1306,45 +1197,80 @@ public fun transfer_maker_control_v8<PaymentCoin>(
     transfer::transfer(next, new_owner);
 }
 
-/// Moves the real key-only AdminCap under a listing UID held by the exact
-/// Market package. Market shares that listing in the same atomic call.
+/// Market may custody the real key-only admin only through its private,
+/// bootstrap-installed V1 caller cap and the exact live replacement tuple.
 public fun custody_maker_admin_for_market_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     admin: MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_caller_cap: &RuntimeCallerCapV1,
     listing_parent: &mut UID,
-){
-    assert_market_executor(root, catalog, market_call_cap);
+) {
+    assert_market_executor_v2(
+        root, protocol_config, catalog, replacement, market_caller_cap);
     assert!(root.lifecycle == PAUSED, EInvalidLifecycle);
     assert_admin_v8(root, &admin);
-    transfer::transfer(admin, object::uid_to_address(listing_parent))
+    transfer::transfer(admin, object::uid_to_address(listing_parent));
 }
 
-/// Resolves one listing-owned AdminCap. Returning it to the current owner is
-/// cancellation/recovery and preserves the cap; a buyer resolution rotates
-/// the canonical control epoch. The private Market call cap is the authority.
+/// Cancellation preserves the cap; settlement rotates the canonical owner
+/// and control epoch. A summary-only Root or caller-supplied package ID never
+/// substitutes for the live Catalog/replacement/private Market cap.
 public fun resolve_maker_admin_from_market_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_caller_cap: &RuntimeCallerCapV1,
     listing_parent: &mut UID,
     receiving: Receiving<MakerAdminCapV8>,
     recipient: address,
     ctx: &mut TxContext,
 ) {
-    assert_market_executor(root, catalog, market_call_cap);
+    assert_market_return_executor_v2(root, catalog, replacement, market_caller_cap);
     let admin = transfer::receive(listing_parent, receiving);
     assert_admin_v8(root, &admin);
     if (recipient == root.owner) {
         transfer::transfer(admin, recipient)
     } else {
+        // A purchase changes ownership, unlike escrow return; keep its live
+        // protocol gate even when invoked through the shared resolver.
+        package_binding::assert_catalog_current_v8(protocol_config, catalog);
         assert!(root.lifecycle == PAUSED, EInvalidLifecycle);
         assert!(recipient == ctx.sender(), ENotCurrentOwner);
         let epoch = root.control_epoch;
         let next = rotate_maker_control_v8(root, admin, epoch, recipient, ctx);
-        transfer::transfer(next, recipient)
+        transfer::transfer(next, recipient);
     }
+}
+
+fun assert_market_executor_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_caller_cap: &RuntimeCallerCapV1,
+) {
+    package_binding::assert_catalog_current_v8(protocol_config, catalog);
+    assert_market_return_executor_v2(root, catalog, replacement, market_caller_cap);
+}
+
+fun assert_market_return_executor_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_caller_cap: &RuntimeCallerCapV1,
+) {
+    package_binding::assert_replacement_current_v2(replacement, catalog);
+    assert_product_release_catalog_v8(root, catalog);
+    package_binding::assert_runtime_caller_cap_v1(
+        market_caller_cap,
+        1,
+        replacement,
+        catalog,
+    );
 }
 
 fun rotate_maker_control_v8<PaymentCoin>(
@@ -1391,16 +1317,6 @@ fun rotate_maker_control_v8<PaymentCoin>(
     next
 }
 
-fun assert_market_executor<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-    catalog: &ProductReleaseCatalogV8,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
-) {
-    assert!(root_product_release_catalog_id_v8(root)
-        == package_binding::catalog_id_v8(catalog), ECatalogMismatch);
-    package_binding::assert_market_call_cap_v8(catalog, market_call_cap);
-}
-
 public fun assert_base_registry_identity_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     registry_id: ID,
@@ -1416,7 +1332,7 @@ public fun assert_base_registry_identity_v8<PaymentCoin>(
     assert!(root_id == object::id(root), EBaseRegistryMismatch);
     assert!(maker_version == root.maker_version, EBaseRegistryMismatch);
     assert!(
-        root_content_commitment == &root.content_commitment,
+        root_content_commitment == &root.content.content_commitment,
         EBaseRegistryMismatch,
     );
 }
@@ -1430,7 +1346,7 @@ public fun assert_root_identity_v8<PaymentCoin>(
     assert!(root_id == object::id(root), EBaseRegistryMismatch);
     assert!(maker_version == root.maker_version, EBaseRegistryMismatch);
     assert!(
-        root_content_commitment == &root.content_commitment,
+        root_content_commitment == &root.content.content_commitment,
         EBaseRegistryMismatch,
     );
 }
@@ -1446,250 +1362,38 @@ public(package) fun share_maker_root_and_admin_v8<PaymentCoin>(
     transfer::transfer(admin, ctx.sender());
 }
 
-fun assert_pack_admission_binding<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-    binding: &PackAdmissionBindingV8,
-) {
-    assert!(
-        binding.policy_commitment
-            == root.expected_pack_admission_policy_commitment,
-        EInvalidCommitment,
-    );
-    let expected = hash::sha2_256(bcs::to_bytes(
-        &PackAdmissionCommitmentInputV8 {
-            domain: b"animacraft-v8/pack-admission-binding",
-            version: VERSION,
-            root_id: object::id(root),
-            root_version_commitment: root.version_commitment,
-            pack_registry_id: binding.pack_registry_id,
-            admission_authority_id: binding.admission_authority_id,
-            policy_commitment: binding.policy_commitment,
-        },
-    ));
-    assert!(&expected == &binding.commitment, EInvalidCommitment);
-}
-
-fun assert_capability_registry_binding<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-    binding: &CapabilityRegistryBindingV8,
-) {
-    assert!(
-        binding.native_capability_mask == package_binding::native_capability_mask_v8(),
-        ECapabilityRegistryMismatch,
-    );
-    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
-    let certified = root.product_release_binding.borrow();
-    assert!(binding.catalog_id == package_binding::certified_catalog_id_v8(certified), ECatalogMismatch);
-    package_binding::assert_same_call_cap_set_v8(
-        &binding.call_cap_set,
-        package_binding::certified_call_cap_set_v8(certified),
-    );
-    assert!(
-        binding.protocol_config_id == root.economics.protocol_config_id,
-        EProtocolSnapshotMismatch,
-    );
-    assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
-    assert!(binding.base_registry_id == *root.base_registry_id.borrow(), EBaseRegistryMismatch);
-    assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
-    assert!(binding.maker_treasury_id == *root.maker_treasury_id.borrow(), EMakerTreasuryMismatch);
-    assert!(binding.protocol_treasury_id == root.economics.protocol_treasury_id, EProtocolSnapshotMismatch);
-    assert_hash(&binding.seal_readiness_commitment);
-    assert_hash(&binding.runtime_readiness_commitment);
-    assert_hash(&binding.output_readiness_commitment);
-    assert_hash(&binding.physical_readiness_commitment);
-    assert_hash(&binding.market_readiness_commitment);
-    assert_distinct_nonzero_ids(vector[
-        object::id(root),
-        root.admin_cap_id,
-        binding.catalog_id,
-        binding.protocol_config_id,
-        binding.base_registry_id,
-        binding.maker_treasury_id,
-        binding.protocol_treasury_id,
-        binding.seal_policy_config_id,
-        binding.seal_registry_id,
-        binding.runtime_definition_registry_id,
-        binding.pack_registry_id,
-        binding.admission_authority_id,
-        binding.output_registry_id,
-        binding.soul_registry_id,
-        binding.physical_registry_id,
-        binding.market_registry_id,
-        binding.market_treasury_id,
-        package_binding::seal_authority_id_v8(&binding.call_cap_set),
-        package_binding::runtime_authority_id_v8(&binding.call_cap_set),
-        package_binding::output_authority_id_v8(&binding.call_cap_set),
-        package_binding::physical_authority_id_v8(&binding.call_cap_set),
-        package_binding::market_authority_id_v8(&binding.call_cap_set),
-        package_binding::release_authority_id_v8(&binding.call_cap_set),
-    ]);
-    let expected = capability_registry_commitment(root, binding);
-    assert!(&expected == &binding.commitment, ECapabilityRegistryMismatch);
-}
-
-fun capability_registry_commitment<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-    binding: &CapabilityRegistryBindingV8,
-): vector<u8> {
-    hash::sha2_256(bcs::to_bytes(
-        &CapabilityRegistryCommitmentInputV8 {
-            domain: b"animacraft-v8/capability-registry-binding",
-            version: VERSION,
-            root_id: object::id(root),
-            root_version_commitment: root.version_commitment,
-            native_capability_mask: binding.native_capability_mask,
-            catalog_id: binding.catalog_id,
-            call_cap_set: binding.call_cap_set,
-            protocol_config_id: binding.protocol_config_id,
-            base_registry_id: binding.base_registry_id,
-            maker_treasury_id: binding.maker_treasury_id,
-            protocol_treasury_id: binding.protocol_treasury_id,
-            seal_policy_config_id: binding.seal_policy_config_id,
-            seal_registry_id: binding.seal_registry_id,
-            runtime_definition_registry_id: binding.runtime_definition_registry_id,
-            pack_registry_id: binding.pack_registry_id,
-            admission_authority_id: binding.admission_authority_id,
-            output_registry_id: binding.output_registry_id,
-            soul_registry_id: binding.soul_registry_id,
-            physical_registry_id: binding.physical_registry_id,
-            market_registry_id: binding.market_registry_id,
-            market_treasury_id: binding.market_treasury_id,
-            seal_readiness_commitment: binding.seal_readiness_commitment,
-            runtime_readiness_commitment: binding.runtime_readiness_commitment,
-            output_readiness_commitment: binding.output_readiness_commitment,
-            physical_readiness_commitment: binding.physical_readiness_commitment,
-            market_readiness_commitment: binding.market_readiness_commitment,
-        },
-    ))
-}
-
-fun assert_distinct_nonzero_ids(ids: vector<ID>) {
-    let zero = object::id_from_address(@0x0);
-    let mut left = 0;
-    while (left < ids.length()) {
-        assert!(ids[left] != zero, EBindingIdCollision);
-        let mut right = left + 1;
-        while (right < ids.length()) {
-            assert!(ids[left] != ids[right], EBindingIdCollision);
-            right = right + 1;
-        };
-        left = left + 1;
-    };
-}
 
 public fun assert_economics_snapshot_v8<PaymentCoin>(
     config: &ProtocolConfigV8,
     economics: &EconomicsSnapshotV8,
 ) {
-    protocol::assert_exact_snapshot_v8<PaymentCoin>(
+    let expected = new_economics_snapshot_v8<PaymentCoin>(
         config,
-        economics.protocol_config_id,
-        economics.protocol_config_revision,
-        &economics.protocol_config_commitment,
-    );
-    assert!(
-        economics.payment_coin_type == protocol::payment_coin_type_name_v8<PaymentCoin>(),
-        EProtocolSnapshotMismatch,
-    );
-    assert!(protocol::config_treasury_id_v8(config).is_some(), EProtocolSnapshotMismatch);
-    assert!(
-        *protocol::config_treasury_id_v8(config).borrow()
-            == economics.protocol_treasury_id,
-        EProtocolSnapshotMismatch,
-    );
-    assert!(
-        economics.primary_content_fee_bps
-            == protocol::config_primary_content_fee_bps_v8(config),
-        EProtocolSnapshotMismatch,
-    );
-    assert!(
-        economics.fixed_complete_fee_atomic
-            == protocol::config_fixed_complete_fee_atomic_v8(config),
-        EProtocolSnapshotMismatch,
-    );
-    assert!(
-        economics.maker_market_fee_bps
-            == protocol::config_maker_market_fee_bps_v8(config),
-        EProtocolSnapshotMismatch,
-    );
-    assert!(
-        economics.soul_market_fee_bps
-            == protocol::config_soul_market_fee_bps_v8(config),
-        EProtocolSnapshotMismatch,
-    );
-    assert_valid_access(economics.maker_access, economics.maker_price_atomic);
-    assert_valid_complete_policy(
+        economics.maker_access,
+        economics.maker_price_atomic,
         economics.complete_mode,
         economics.complete_price_atomic,
         economics.complete_per_wallet_quota,
         economics.complete_total_cap,
     );
-    let expected = hash::sha2_256(bcs::to_bytes(&EconomicsCommitmentInputV8 {
-        domain: b"animacraft-v8/economics-snapshot",
-        version: VERSION,
-        protocol_config_id: economics.protocol_config_id,
-        protocol_config_revision: economics.protocol_config_revision,
-        protocol_config_commitment: economics.protocol_config_commitment,
-        protocol_treasury_id: economics.protocol_treasury_id,
-        payment_coin_type: economics.payment_coin_type,
-        maker_access: economics.maker_access,
-        maker_price_atomic: economics.maker_price_atomic,
-        complete_mode: economics.complete_mode,
-        complete_price_atomic: economics.complete_price_atomic,
-        complete_per_wallet_quota: economics.complete_per_wallet_quota,
-        complete_total_cap: economics.complete_total_cap,
-        primary_content_fee_bps: economics.primary_content_fee_bps,
-        fixed_complete_fee_atomic: economics.fixed_complete_fee_atomic,
-        maker_market_fee_bps: economics.maker_market_fee_bps,
-        soul_market_fee_bps: economics.soul_market_fee_bps,
-    }));
-    assert!(&expected == &economics.commitment, EProtocolSnapshotMismatch);
+    assert!(&expected == economics, EProtocolSnapshotMismatch);
 }
 
 public fun assert_rights_snapshot_v8(rights: &RightsSnapshotV8) {
-    assert!(
-        rights.origin == RIGHTS_ONCHAIN_NATIVE
-            || rights.origin == RIGHTS_LICENSE_WRAPPED,
-        EInvalidRights,
-    );
-    assert!(rights.creator != @0x0, EInvalidRights);
-    assert!(rights.creator_confirmed, EInvalidRights);
-    assert!(rights.evidence_certified == (rights.origin == RIGHTS_LICENSE_WRAPPED), EInvalidRights);
-    assert_rights_evidence(
+    let expected = new_rights_snapshot_internal_v8(
         rights.origin,
-        &rights.certification_catalog_id,
-        &rights.certification_binding_commitment,
-        &rights.evidence_locator,
-        &rights.evidence_blob_id,
-        &rights.evidence_sha256,
-        &rights.terms_commitment,
+        rights.creator,
+        rights.certification_catalog_id,
+        rights.certification_binding_commitment,
+        rights.evidence_locator,
+        rights.evidence_blob_id,
+        rights.evidence_sha256,
+        rights.terms_commitment,
+        rights.soul_creator_royalty_bps,
+        rights.maker_source_royalty_bps,
+        rights.maker_resale_royalty_bps,
     );
-    assert_valid_royalty(rights.soul_creator_royalty_bps);
-    assert_valid_royalty(rights.maker_source_royalty_bps);
-    assert_valid_royalty(rights.maker_resale_royalty_bps);
-    assert!(
-        rights.soul_creator_royalty_bps + rights.maker_source_royalty_bps
-            <= MAX_COMBINED_SOURCE_ROYALTY_BPS,
-        EInvalidRights,
-    );
-    let expected = hash::sha2_256(bcs::to_bytes(&RightsCommitmentInputV8 {
-        domain: b"animacraft-v8/rights-snapshot",
-        version: VERSION,
-        origin: rights.origin,
-        creator: rights.creator,
-        creator_confirmed: rights.creator_confirmed,
-        evidence_certified: rights.evidence_certified,
-        certification_catalog_id: rights.certification_catalog_id,
-        certification_binding_commitment: rights.certification_binding_commitment,
-        evidence_locator: rights.evidence_locator,
-        evidence_blob_id: rights.evidence_blob_id,
-        evidence_sha256: rights.evidence_sha256,
-        terms_commitment: rights.terms_commitment,
-        soul_creator_royalty_bps: rights.soul_creator_royalty_bps,
-        maker_source_royalty_bps: rights.maker_source_royalty_bps,
-        maker_resale_royalty_bps: rights.maker_resale_royalty_bps,
-    }));
-    assert!(&expected == &rights.commitment, EInvalidRights);
+    assert!(&expected == rights, EInvalidRights);
 }
 
 fun assert_rights_evidence(
@@ -1702,16 +1406,16 @@ fun assert_rights_evidence(
     terms_commitment: &vector<u8>,
 ) {
     if (origin == RIGHTS_ONCHAIN_NATIVE) {
-        assert!(certification_catalog_id.is_none(), EInvalidRights);
-        assert!(certification_binding_commitment.is_none(), EInvalidRights);
-        assert!(string::as_bytes(evidence_locator).is_empty(), EInvalidRights);
-        assert!(string::as_bytes(evidence_blob_id).is_empty(), EInvalidRights);
-        assert!(evidence_sha256.is_empty(), EInvalidRights);
-        assert!(terms_commitment.is_empty(), EInvalidRights);
+        assert!(certification_catalog_id.is_none()
+            && certification_binding_commitment.is_none()
+            && string::as_bytes(evidence_locator).is_empty()
+            && string::as_bytes(evidence_blob_id).is_empty()
+            && evidence_sha256.is_empty()
+            && terms_commitment.is_empty(), EInvalidRights);
     } else {
-        assert!(origin == RIGHTS_LICENSE_WRAPPED, EInvalidRights);
-        assert!(certification_catalog_id.is_some(), EInvalidRights);
-        assert!(certification_binding_commitment.is_some(), EInvalidRights);
+        assert!(origin == RIGHTS_LICENSE_WRAPPED
+            && certification_catalog_id.is_some()
+            && certification_binding_commitment.is_some(), EInvalidRights);
         assert_hash(certification_binding_commitment.borrow());
         assert_non_empty_bounded(evidence_locator, MAX_EVIDENCE_LOCATOR_BYTES);
         assert_non_empty_bounded(evidence_blob_id, MAX_BLOB_ID_BYTES);
@@ -1721,32 +1425,20 @@ fun assert_rights_evidence(
 }
 
 fun assert_valid_access(access: u8, price: u64) {
-    assert!(
-        (access == ACCESS_FREE && price == 0)
-            || (access == ACCESS_PAID && price > 0 && price <= MAX_PRICE_ATOMIC),
-        EInvalidEconomics,
-    );
+    assert!(access <= ACCESS_PAID && price <= MAX_PRICE_ATOMIC
+        && (price > 0) == (access == ACCESS_PAID), EInvalidEconomics);
 }
 
 fun assert_valid_complete_policy(mode: u8, price: u64, quota: u64, total_cap: u64) {
-    assert!(price <= MAX_PRICE_ATOMIC, EInvalidEconomics);
-    assert!(quota <= MAX_QUOTA && total_cap <= MAX_QUOTA, EInvalidEconomics);
-    assert!(total_cap == 0 || quota <= total_cap, EInvalidEconomics);
-    assert!(
-        (mode == COMPLETE_UNLIMITED_FREE && price == 0 && quota == 0)
-            || (
-                mode == COMPLETE_FREE_QUOTA_THEN_PAID
-                    && price > 0
-                    && quota > 0
-            )
-            || (mode == COMPLETE_PAID_EVERY_TIME && price > 0 && quota == 0)
-            || (
-                mode == COMPLETE_FREE_QUOTA_THEN_BLOCK
-                    && price == 0
-                    && quota > 0
-            ),
-        EInvalidEconomics,
-    );
+    assert!(mode <= COMPLETE_FREE_QUOTA_THEN_BLOCK
+        && price <= MAX_PRICE_ATOMIC
+        && quota <= MAX_QUOTA
+        && total_cap <= MAX_QUOTA
+        && (total_cap == 0 || quota <= total_cap)
+        && (price > 0) == (mode == COMPLETE_FREE_QUOTA_THEN_PAID
+            || mode == COMPLETE_PAID_EVERY_TIME)
+        && (quota > 0) == (mode == COMPLETE_FREE_QUOTA_THEN_PAID
+            || mode == COMPLETE_FREE_QUOTA_THEN_BLOCK), EInvalidEconomics);
 }
 
 fun assert_valid_royalty(value: u16) {
@@ -1768,14 +1460,7 @@ fun assert_lineage(
 }
 
 fun assert_hash(value: &vector<u8>) {
-    assert!(value.length() == HASH_LENGTH, EInvalidCommitment);
-    let mut any_nonzero = false;
-    let mut index = 0;
-    while (index < HASH_LENGTH) {
-        if (value[index] != 0) any_nonzero = true;
-        index = index + 1;
-    };
-    assert!(any_nonzero, EInvalidCommitment);
+    assert!(protocol::is_nonzero_hash_v2(value), EInvalidCommitment);
 }
 
 fun assert_non_empty_bounded(value: &String, max: u64) {
@@ -1786,9 +1471,6 @@ fun assert_non_empty_bounded(value: &String, max: u64) {
 public fun root_id_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): ID {
     object::id(root)
 }
-public fun root_version_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64 {
-    root.version
-}
 public fun root_core_original_package_id_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): ID { root.core_original_package_id }
@@ -1798,213 +1480,166 @@ public fun root_core_callable_package_id_v8<PaymentCoin>(
 public fun root_owner_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): address {
     root.owner
 }
-public fun root_creator_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): address {
-    root.creator
-}
-public fun root_maker_key_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): &String {
-    &root.maker_key
-}
 public fun root_maker_version_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64 {
     root.maker_version
-}
-public fun root_control_epoch_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64 {
-    root.control_epoch
 }
 public fun root_lifecycle_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u8 {
     root.lifecycle
 }
-public fun root_protocol_config_id_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): ID { root.economics.protocol_config_id }
-public fun root_protocol_config_revision_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): u64 { root.economics.protocol_config_revision }
-public fun root_protocol_config_commitment_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &vector<u8> { &root.economics.protocol_config_commitment }
-public fun root_protocol_treasury_id_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): ID { root.economics.protocol_treasury_id }
-public fun root_version_commitment_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &vector<u8> { &root.version_commitment }
-public fun root_renderer_commitment_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &vector<u8> { &root.renderer_commitment }
-public fun root_content_commitment_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &vector<u8> { &root.content_commitment }
-public fun root_base_registry_id_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): ID {
+/// Exact installed Base registry identity; an unbound draft has no fallback.
+public fun root_base_registry_id_v2<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): ID {
     assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
     *root.base_registry_id.borrow()
 }
-public fun root_maker_treasury_id_v8<PaymentCoin>(
+
+public fun root_maker_key_v2<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): &String {
+    &root.maker_key
+}
+
+public fun root_version_commitment_v2<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
-): ID {
+): &vector<u8> { &root.version_commitment }
+
+public fun root_maker_treasury_id_v2<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): ID {
     assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
     *root.maker_treasury_id.borrow()
 }
+
+public fun economics_protocol_treasury_id_v2(economics: &EconomicsSnapshotV8): ID {
+    economics.protocol_treasury_id
+}
+
+public fun root_content_commitment_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &vector<u8> { &root.content.content_commitment }
+public fun root_creator_defaults_commitment_v1<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &vector<u8> { &root.creator_defaults_commitment }
+public fun root_living_content_binding_commitment_v1<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &vector<u8> { &root.living_content_binding_commitment }
 public fun root_expected_base_definition_count_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): u64 { root.expected_base_definition_count }
 public fun root_expected_base_registry_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): &vector<u8> { &root.expected_base_registry_commitment }
-public fun root_expected_pack_admission_policy_commitment_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &vector<u8> { &root.expected_pack_admission_policy_commitment }
 public fun root_economics_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): EconomicsSnapshotV8 { root.economics }
-public fun root_rights_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): RightsSnapshotV8 { root.rights }
-public fun root_product_release_binding_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &ProductReleaseBindingV8 {
-    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
-    package_binding::certified_binding_v8(root.product_release_binding.borrow())
-}
 public fun root_product_release_catalog_id_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): ID {
-    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
-    package_binding::certified_catalog_id_v8(root.product_release_binding.borrow())
+    assert!(root.publication.catalog_id.is_some(), EProductBindingMissing);
+    *root.publication.catalog_id.borrow()
 }
-public fun root_product_release_call_cap_set_v8<PaymentCoin>(
+public fun root_product_release_binding_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
-): &PackageCallCapSetBindingV8 {
-    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
-    package_binding::certified_call_cap_set_v8(root.product_release_binding.borrow())
+): &vector<u8> {
+    assert!(root.publication.release_commitments.is_some(), EProductBindingMissing);
+    &root.publication.release_commitments.borrow().product_binding_commitment
 }
-public fun root_native_capability_mask_v8<PaymentCoin>(
+public fun root_product_release_call_cap_set_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
-): u64 {
-    let binding = root_product_release_binding_v8(root);
-    let mask = package_binding::binding_native_capability_mask_v8(binding);
-    assert!(mask == package_binding::native_capability_mask_v8(), ECatalogMismatch);
-    mask
+): &vector<u8> {
+    assert!(root.publication.release_commitments.is_some(), EProductBindingMissing);
+    &root.publication.release_commitments.borrow().call_cap_set_commitment
 }
-public fun assert_native_capability_mask_v8<PaymentCoin>(
+public fun assert_product_release_catalog_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
 ) {
-    let binding = root_product_release_binding_v8(root);
-    package_binding::assert_native_capability_mask_v8(binding);
+    assert!(root_product_release_catalog_id_v8(root)
+        == package_binding::catalog_id_v8(catalog), ECatalogMismatch);
+    assert!(root_product_release_binding_commitment_v8(root)
+        == package_binding::product_binding_commitment_v8(
+            package_binding::catalog_binding_v8(catalog)), ECatalogMismatch);
+    let (_, _, _, _, call_cap_set_commitment, _) =
+        package_binding::catalog_terms_v2(catalog);
+    assert!(root_product_release_call_cap_set_commitment_v8(root)
+        == call_cap_set_commitment, ECatalogMismatch);
 }
-public fun root_pack_admission_binding_v8<PaymentCoin>(
+public fun root_renderer_commitment_v2<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
-): &PackAdmissionBindingV8 {
-    assert!(root.pack_admission_binding.is_some(), EPackAdmissionBindingMissing);
-    root.pack_admission_binding.borrow()
+): &vector<u8> { &root.content.renderer_commitment }
+public fun root_expected_pack_admission_policy_commitment_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &vector<u8> { &root.expected_pack_admission_policy_commitment }
+public fun root_rights_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): RightsSnapshotV8 { root.rights }
+public fun root_creator_v2<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): address {
+    root.creator
 }
-public fun root_capability_registry_binding_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &CapabilityRegistryBindingV8 {
-    assert!(
-        root.capability_registry_binding.is_some(),
-        ECapabilityRegistryMissing,
-    );
-    let binding = root.capability_registry_binding.borrow();
-    assert_capability_registry_binding(root, binding);
-    binding
+public fun root_control_epoch_v2<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64 {
+    root.control_epoch
+}
+public fun economics_protocol_config_id_v2(economics: &EconomicsSnapshotV8): ID {
+    economics.protocol_config_id
+}
+public fun economics_protocol_config_revision_v2(economics: &EconomicsSnapshotV8): u64 {
+    economics.protocol_config_revision
+}
+public fun economics_protocol_config_commitment_v2(
+    economics: &EconomicsSnapshotV8,
+): &vector<u8> { &economics.protocol_config_commitment }
+public fun economics_maker_market_fee_bps_v2(economics: &EconomicsSnapshotV8): u16 {
+    economics.maker_market_fee_bps
+}
+public fun economics_soul_market_fee_bps_v2(economics: &EconomicsSnapshotV8): u16 {
+    economics.soul_market_fee_bps
+}
+public fun rights_commitment_v2(rights: &RightsSnapshotV8): &vector<u8> {
+    &rights.commitment
 }
 
-public fun assert_active_capability_registry_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
+/// Cross-package VM assertion for the actual private rights snapshot. Does not
+/// construct or mutate certification and is absent from production bytecode.
+#[test_only]
+public fun assert_wrapped_rights_for_testing(
+    rights: &RightsSnapshotV8, creator: address, catalog_id: ID,
 ) {
-    assert!(root.lifecycle == ACTIVE, EInvalidLifecycle);
-    let _ = root_capability_registry_binding_v8(root);
+    assert!(rights.origin == RIGHTS_LICENSE_WRAPPED, 99);
+    assert!(rights.creator == creator && rights.creator_confirmed, 99);
+    assert!(rights.evidence_certified, 99);
+    assert!(rights.certification_catalog_id == option::some(catalog_id), 99);
 }
-
-public fun capability_catalog_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.catalog_id
+public fun rights_maker_resale_royalty_bps_v2(rights: &RightsSnapshotV8): u16 {
+    rights.maker_resale_royalty_bps
 }
-public fun capability_native_capability_mask_v8(
-    binding: &CapabilityRegistryBindingV8,
-): u64 { binding.native_capability_mask }
-public fun capability_call_cap_set_v8(
-    binding: &CapabilityRegistryBindingV8,
-): &PackageCallCapSetBindingV8 { &binding.call_cap_set }
-public fun capability_protocol_config_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.protocol_config_id
+public fun economics_commitment_v2(economics: &EconomicsSnapshotV8): &vector<u8> {
+    &economics.commitment
 }
-public fun capability_base_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.base_registry_id
+public fun economics_complete_mode_v2(economics: &EconomicsSnapshotV8): u8 {
+    economics.complete_mode
 }
-public fun capability_maker_treasury_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.maker_treasury_id
+public fun economics_complete_price_atomic_v2(economics: &EconomicsSnapshotV8): u64 {
+    economics.complete_price_atomic
 }
-public fun capability_protocol_treasury_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.protocol_treasury_id
+/// The configured quota is free completions before either paid or blocked mode.
+public fun economics_complete_per_wallet_quota_v2(economics: &EconomicsSnapshotV8): u64 {
+    economics.complete_per_wallet_quota
 }
-public fun capability_seal_policy_config_id_v8(
-    binding: &CapabilityRegistryBindingV8,
-): ID { binding.seal_policy_config_id }
-public fun capability_seal_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.seal_registry_id
+public fun economics_complete_total_cap_v2(economics: &EconomicsSnapshotV8): u64 {
+    economics.complete_total_cap
 }
-public fun capability_runtime_definition_registry_id_v8(
-    binding: &CapabilityRegistryBindingV8,
-): ID { binding.runtime_definition_registry_id }
-public fun capability_pack_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.pack_registry_id
+public fun economics_fixed_complete_fee_atomic_v2(economics: &EconomicsSnapshotV8): u64 {
+    economics.fixed_complete_fee_atomic
 }
-public fun capability_admission_authority_id_v8(
-    binding: &CapabilityRegistryBindingV8,
-): ID { binding.admission_authority_id }
-public fun capability_output_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.output_registry_id
+public fun rights_soul_creator_royalty_bps_v2(rights: &RightsSnapshotV8): u16 {
+    rights.soul_creator_royalty_bps
 }
-public fun capability_soul_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.soul_registry_id
+public fun rights_maker_source_royalty_bps_v2(rights: &RightsSnapshotV8): u16 {
+    rights.maker_source_royalty_bps
 }
-public fun capability_physical_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.physical_registry_id
-}
-public fun capability_market_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.market_registry_id
-}
-public fun capability_market_treasury_id_v8(binding: &CapabilityRegistryBindingV8): ID {
-    binding.market_treasury_id
-}
-public fun capability_seal_readiness_commitment_v8(
-    binding: &CapabilityRegistryBindingV8,
-): &vector<u8> { &binding.seal_readiness_commitment }
-public fun capability_runtime_readiness_commitment_v8(
-    binding: &CapabilityRegistryBindingV8,
-): &vector<u8> { &binding.runtime_readiness_commitment }
-public fun capability_output_readiness_commitment_v8(
-    binding: &CapabilityRegistryBindingV8,
-): &vector<u8> { &binding.output_readiness_commitment }
-public fun capability_physical_readiness_commitment_v8(
-    binding: &CapabilityRegistryBindingV8,
-): &vector<u8> { &binding.physical_readiness_commitment }
-public fun capability_market_readiness_commitment_v8(
-    binding: &CapabilityRegistryBindingV8,
-): &vector<u8> { &binding.market_readiness_commitment }
-public fun capability_binding_commitment_v8(
-    binding: &CapabilityRegistryBindingV8,
-): &vector<u8> { &binding.commitment }
-public fun pack_registry_id_v8(binding: &PackAdmissionBindingV8): ID {
-    binding.pack_registry_id
-}
-public fun pack_admission_authority_id_v8(binding: &PackAdmissionBindingV8): ID {
-    binding.admission_authority_id
-}
-public fun pack_admission_policy_commitment_v8(
-    binding: &PackAdmissionBindingV8,
-): &vector<u8> { &binding.policy_commitment }
-public fun pack_admission_binding_commitment_v8(
-    binding: &PackAdmissionBindingV8,
-): &vector<u8> { &binding.commitment }
-public fun admin_root_id_v8(admin: &MakerAdminCapV8): ID { admin.root_id }
-public fun admin_id_v8(admin: &MakerAdminCapV8): ID { object::id(admin) }
-public fun admin_owner_v8(admin: &MakerAdminCapV8): address { admin.owner }
-public fun admin_control_epoch_v8(admin: &MakerAdminCapV8): u64 {
-    admin.control_epoch
-}
+public fun lifecycle_draft_v8(): u8 { DRAFT }
+public fun lifecycle_active_v8(): u8 { ACTIVE }
+public fun lifecycle_paused_v8(): u8 { PAUSED }
+public fun lifecycle_archived_v8(): u8 { ARCHIVED }
+public fun complete_unlimited_free_v8(): u8 { COMPLETE_UNLIMITED_FREE }
+public fun complete_free_quota_then_paid_v8(): u8 { COMPLETE_FREE_QUOTA_THEN_PAID }
+public fun complete_paid_every_time_v8(): u8 { COMPLETE_PAID_EVERY_TIME }
+public fun complete_free_quota_then_block_v8(): u8 { COMPLETE_FREE_QUOTA_THEN_BLOCK }
 
 public fun economics_maker_access_v8(economics: &EconomicsSnapshotV8): u8 {
     economics.maker_access
@@ -2012,90 +1647,34 @@ public fun economics_maker_access_v8(economics: &EconomicsSnapshotV8): u8 {
 public fun economics_maker_price_atomic_v8(economics: &EconomicsSnapshotV8): u64 {
     economics.maker_price_atomic
 }
-public fun economics_complete_mode_v8(economics: &EconomicsSnapshotV8): u8 {
-    economics.complete_mode
-}
-public fun economics_complete_price_atomic_v8(
-    economics: &EconomicsSnapshotV8,
-): u64 { economics.complete_price_atomic }
-public fun economics_complete_free_quota_per_wallet_v8(
-    economics: &EconomicsSnapshotV8,
-): u64 { economics.complete_per_wallet_quota }
-public fun economics_complete_total_cap_v8(
-    economics: &EconomicsSnapshotV8,
-): u64 { economics.complete_total_cap }
-public fun economics_payment_coin_type_v8(
-    economics: &EconomicsSnapshotV8,
-): &String { &economics.payment_coin_type }
-public fun economics_protocol_config_id_v8(economics: &EconomicsSnapshotV8): ID {
-    economics.protocol_config_id
-}
-public fun economics_protocol_config_revision_v8(
-    economics: &EconomicsSnapshotV8,
-): u64 { economics.protocol_config_revision }
-public fun economics_protocol_config_commitment_v8(
-    economics: &EconomicsSnapshotV8,
-): &vector<u8> { &economics.protocol_config_commitment }
 public fun economics_primary_content_fee_bps_v8(
     economics: &EconomicsSnapshotV8,
 ): u16 { economics.primary_content_fee_bps }
-public fun economics_fixed_complete_fee_atomic_v8(
-    economics: &EconomicsSnapshotV8,
-): u64 { economics.fixed_complete_fee_atomic }
-public fun economics_maker_market_fee_bps_v8(
-    economics: &EconomicsSnapshotV8,
-): u16 { economics.maker_market_fee_bps }
-public fun economics_soul_market_fee_bps_v8(
-    economics: &EconomicsSnapshotV8,
-): u16 { economics.soul_market_fee_bps }
-public fun economics_commitment_v8(
-    economics: &EconomicsSnapshotV8,
-): &vector<u8> { &economics.commitment }
-public fun rights_commitment_v8(rights: &RightsSnapshotV8): &vector<u8> {
-    &rights.commitment
-}
-public fun rights_origin_v8(rights: &RightsSnapshotV8): u8 { rights.origin }
-public fun rights_creator_v8(rights: &RightsSnapshotV8): address { rights.creator }
-public fun rights_creator_confirmed_v8(rights: &RightsSnapshotV8): bool {
-    rights.creator_confirmed
-}
-public fun rights_evidence_certified_v8(rights: &RightsSnapshotV8): bool {
-    rights.evidence_certified
-}
-public fun rights_certification_catalog_id_v8(
-    rights: &RightsSnapshotV8,
-): &Option<ID> { &rights.certification_catalog_id }
-public fun rights_certification_binding_commitment_v8(
-    rights: &RightsSnapshotV8,
-): &Option<vector<u8>> { &rights.certification_binding_commitment }
-public fun rights_evidence_locator_v8(rights: &RightsSnapshotV8): &String {
-    &rights.evidence_locator
-}
-public fun rights_evidence_blob_id_v8(rights: &RightsSnapshotV8): &String {
-    &rights.evidence_blob_id
-}
-public fun rights_evidence_sha256_v8(rights: &RightsSnapshotV8): &vector<u8> {
-    &rights.evidence_sha256
-}
-public fun rights_terms_commitment_v8(rights: &RightsSnapshotV8): &vector<u8> {
-    &rights.terms_commitment
-}
-public fun rights_soul_creator_royalty_bps_v8(rights: &RightsSnapshotV8): u16 {
-    rights.soul_creator_royalty_bps
-}
-public fun rights_maker_source_royalty_bps_v8(rights: &RightsSnapshotV8): u16 {
-    rights.maker_source_royalty_bps
-}
-public fun rights_maker_resale_royalty_bps_v8(rights: &RightsSnapshotV8): u16 {
-    rights.maker_resale_royalty_bps
-}
-
 #[test_only]
 public fun set_lifecycle_for_testing<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     lifecycle: u8,
 ) {
     root.lifecycle = lifecycle;
+}
+
+#[test_only]
+public fun begin_companion_binding_for_testing<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>, admin: &MakerAdminCapV8,
+    config: &ProtocolConfigV8, catalog: &ProductReleaseCatalogV8,
+    replacement: &package_binding::FreshTupleReplacementBindingV2, ctx: &TxContext,
+): MakerRuntimeCompanionBindingBuilderV2<PaymentCoin> {
+    begin_companion_binding_v2(root, admin, config, catalog, replacement, ctx)
+}
+
+#[test_only]
+public fun finish_companion_binding_for_testing<PaymentCoin>(
+    builder: MakerRuntimeCompanionBindingBuilderV2<PaymentCoin>,
+    root: &mut MakerRootV8<PaymentCoin>, admin: &MakerAdminCapV8,
+    config: &ProtocolConfigV8, catalog: &ProductReleaseCatalogV8,
+    replacement: &package_binding::FreshTupleReplacementBindingV2, ctx: &TxContext,
+) {
+    finish_companion_binding_v2(builder, root, admin, config, catalog, replacement, ctx)
 }
 
 #[test_only]
@@ -2149,10 +1728,10 @@ public fun destroy_maker_for_testing<PaymentCoin>(
         previous_version_commitment: _,
         successor_authority_id: _,
         successor_root_id: _,
-        renderer_commitment: _,
-        manifest_blob_id: _,
-        manifest_sha256: _,
-        content_commitment: _,
+        maker_document_commitment: _,
+        creator_defaults_commitment: _,
+        living_content_binding_commitment: _,
+        content: _,
         base_registry_id: _,
         maker_treasury_id: _,
         expected_base_definition_count: _,
@@ -2160,9 +1739,7 @@ public fun destroy_maker_for_testing<PaymentCoin>(
         expected_pack_admission_policy_commitment: _,
         economics: _,
         rights: _,
-        product_release_binding: _,
-        pack_admission_binding: _,
-        capability_registry_binding: _,
+        publication: _,
         created_at_ms: _,
     } = root;
     let MakerAdminCapV8 {
@@ -2220,6 +1797,9 @@ fun new_test_maker(
         test_hash(1),
         test_hash(2),
         b"maker".to_string(),
+        test_hash(30),
+        test_hash(31),
+        test_hash(32),
         test_hash(3),
         b"walrus-blob".to_string(),
         test_hash(4),
@@ -2258,30 +1838,21 @@ fun wrapped_rights_certification_for_testing(
 }
 
 #[test_only]
-fun new_test_catalog_for_config(
-    config: &ProtocolConfigV8,
-    ctx: &mut TxContext,
-): ProductReleaseCatalogV8 {
-    package_binding::product_release_catalog_for_testing(
-        config,
-        @0x10,
-        @0x20,
-        ctx,
-    )
-}
-
-#[test_only]
 fun new_test_catalog(
     config: &ProtocolConfigV8,
     root: &MakerRootV8<sui::sui::SUI>,
     ctx: &mut TxContext,
 ): ProductReleaseCatalogV8 {
-    package_binding::product_release_catalog_for_testing(
+    let mut catalog = package_binding::product_release_catalog_for_testing(
         config,
         root.core_original_package_id.to_address(),
         root.core_callable_package_id.to_address(),
+        @0x11,
+        @0x21,
         ctx,
-    )
+    );
+    package_binding::complete_catalog_setup_for_testing(&mut catalog, ctx);
+    catalog
 }
 
 #[test_only]
@@ -2292,26 +1863,23 @@ fun finalize_test_product(
     catalog: &ProductReleaseCatalogV8,
     ctx: &TxContext,
 ) {
-    let witness = package_binding::release_catalog_witness_for_testing(catalog);
-    finalize_product_release_binding_v8(root, admin, config, witness, ctx);
+    finalize_product_release_binding_v8(root, admin, config, catalog, ctx);
 }
 
 #[test_only]
-fun test_pack_readiness(
-    root: &MakerRootV8<sui::sui::SUI>,
-    catalog: &ProductReleaseCatalogV8,
+fun finalize_test_pack(
+    root: &mut MakerRootV8<sui::sui::SUI>,
+    admin: &MakerAdminCapV8,
     registry: address,
     authority: address,
-): RuntimePackReadinessV8 {
-    package_binding::runtime_pack_readiness_for_testing(
-        catalog,
-        object::id(root),
-        root.maker_version,
-        root.content_commitment,
-        object::id_from_address(registry),
-        object::id_from_address(authority),
-        root.expected_pack_admission_policy_commitment,
-    )
+){
+    assert_draft_admin_v8(root, admin);
+    install_companion_ids(root, companion::new_registry_ids_for_testing(vector[
+        object::id_from_address(@0xD0), object::id_from_address(registry),
+        object::id_from_address(authority), object::id_from_address(@0xD1),
+        object::id_from_address(@0xD2), object::id_from_address(@0xD3),
+        object::id_from_address(@0xD4), object::id_from_address(@0xD5),
+    ]))
 }
 
 #[test_only]
@@ -2330,12 +1898,127 @@ fun new_root_is_draft_and_snapshots_native_policy() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 10, 0, 0, 0);
     let (config, protocol_cap, root, admin) = new_test_maker(&mut ctx);
     assert!(root.lifecycle == DRAFT, EInvalidLifecycle);
-    assert!(root.product_release_binding.is_none(), EProductBindingAlreadyFinalized);
-    assert!(root.pack_admission_binding.is_none(), EPackAdmissionAlreadyFinalized);
-    assert!(root.capability_registry_binding.is_none(), ECapabilityRegistryAlreadyFinalized);
+    assert!(root.publication.catalog_id.is_none(), EProductBindingAlreadyFinalized);
+    assert!(root.publication.release_commitments.is_none(), EProductBindingAlreadyFinalized);
+    assert!(root.publication.registry_ids.is_none(), ECompanionBindingAlreadyFinalized);
     assert!(root.expected_base_definition_count == 4, EBaseRegistryMismatch);
-    assert!(root_renderer_commitment_v8(&root) == &test_hash(3), EInvalidCommitment);
+    assert!(root_maker_key_v2(&root) == &b"maker".to_string(), EInvalidString);
+    assert!(root_version_commitment_v2(&root) == &root.version_commitment
+        && root_version_commitment_v2(&root) != &root.maker_document_commitment,
+        EInvalidCommitment);
+    assert!(root_maker_treasury_id_v2(&root) == object::id_from_address(@0xB1),
+        EMakerTreasuryMissing);
+    assert!(&root.content.renderer_commitment == &test_hash(3), EInvalidCommitment);
+    assert!(root_renderer_commitment_v2(&root) == &root.content.renderer_commitment,
+        EInvalidCommitment);
+    assert!(root_expected_pack_admission_policy_commitment_v2(&root)
+        == &root.expected_pack_admission_policy_commitment, EInvalidCommitment);
+    let rights = root_rights_v2(&root);
+    assert!(rights == root.rights, EInvalidRights);
+    assert!(rights_soul_creator_royalty_bps_v2(&rights) == rights.soul_creator_royalty_bps
+        && rights_maker_source_royalty_bps_v2(&rights) == rights.maker_source_royalty_bps,
+        EInvalidRights);
     destroy_test_maker(config, protocol_cap, root, admin);
+}
+
+#[test_only]
+fun test_companion_ids(): MakerRuntimeCompanionRegistryIdsV2 {
+    companion::new_registry_ids_for_testing(vector[
+        object::id_from_address(@0xC0), object::id_from_address(@0xC1),
+        object::id_from_address(@0xC2), object::id_from_address(@0xC3),
+        object::id_from_address(@0xC4), object::id_from_address(@0xC5),
+        object::id_from_address(@0xC6), object::id_from_address(@0xC7),
+    ])
+}
+
+#[test]
+fun base_registry_reader_returns_exact_bound_identity() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 83, 0, 0, 0);
+    let (config, protocol_cap, mut root, admin) = new_test_maker(&mut ctx);
+    let registry_id = object::id_from_address(@0xB2);
+    finalize_base_registry_binding_v8(&mut root, &admin, registry_id);
+    assert!(root_base_registry_id_v2(&root) == registry_id, EBaseRegistryMismatch);
+    destroy_test_maker(config, protocol_cap, root, admin);
+}
+
+#[test, expected_failure(abort_code = EBaseRegistryMissing)]
+fun base_registry_reader_rejects_unbound_root() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 83, 0, 0, 0);
+    let (config, protocol_cap, root, admin) = new_test_maker(&mut ctx);
+    root_base_registry_id_v2(&root);
+    destroy_test_maker(config, protocol_cap, root, admin);
+}
+
+#[test]
+fun companion_binding_keeps_artwork_content_unchanged() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 83, 0, 0, 0);
+    let (config, protocol_cap, mut root, admin) = new_test_maker(&mut ctx);
+    let content = root.content;
+    install_companion_ids(&mut root, test_companion_ids());
+    assert!(root.content == content, EInvalidCommitment);
+    let ids = root_companion_registry_ids_v2(&root);
+    assert!(companion::output_registry_id_v2(ids) == object::id_from_address(@0xC4)
+        && companion::soul_registry_id_v2(ids) == object::id_from_address(@0xC5),
+        EBindingIdCollision);
+    destroy_test_maker(config, protocol_cap, root, admin);
+}
+
+#[test, expected_failure(abort_code = ECompanionBindingAlreadyFinalized)]
+fun companion_binding_cannot_be_replaced() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 84, 0, 0, 0);
+    let (config, protocol_cap, mut root, admin) = new_test_maker(&mut ctx);
+    install_companion_ids(&mut root, test_companion_ids());
+    install_companion_ids(&mut root, test_companion_ids());
+    destroy_test_maker(config, protocol_cap, root, admin);
+}
+
+#[test, expected_failure(abort_code = ECompanionBindingMissing)]
+fun companion_binding_read_rejects_unbound_root() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 85, 0, 0, 0);
+    let (config, protocol_cap, root, admin) = new_test_maker(&mut ctx);
+    root_companion_registry_ids_v2(&root);
+    destroy_test_maker(config, protocol_cap, root, admin);
+}
+
+#[test]
+fun completion_snapshot_readers_preserve_each_configured_mode() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 82, 0, 0, 0);
+    let (config, cap) = protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let modes = vector[complete_unlimited_free_v8(), complete_free_quota_then_paid_v8(),
+        complete_paid_every_time_v8(), complete_free_quota_then_block_v8()];
+    let mut i = 0u64;
+    while (i < modes.length()) {
+        let mode = modes[i];
+        let price = if (mode == 1 || mode == 2) 25 else 0;
+        let quota = if (mode == 1 || mode == 3) 2 else 0;
+        let snapshot = new_economics_snapshot_v8<sui::sui::SUI>(
+            &config, ACCESS_PAID, 7, mode, price, quota, 9);
+        assert!(economics_maker_price_atomic_v8(&snapshot) == 7, EInvalidEconomics);
+        assert!(economics_complete_mode_v2(&snapshot) == mode, EInvalidEconomics);
+        assert!(economics_complete_price_atomic_v2(&snapshot) == price, EInvalidEconomics);
+        assert!(economics_complete_per_wallet_quota_v2(&snapshot) == quota, EInvalidEconomics);
+        assert!(economics_complete_total_cap_v2(&snapshot) == 9, EInvalidEconomics);
+        assert!(economics_fixed_complete_fee_atomic_v2(&snapshot)
+            == snapshot.fixed_complete_fee_atomic, EInvalidEconomics);
+        assert!(economics_commitment_v2(&snapshot) == &snapshot.commitment, EInvalidCommitment);
+        assert!(economics_protocol_config_id_v2(&snapshot) == protocol::config_id_v8(&config),
+            EInvalidEconomics);
+        assert!(economics_protocol_treasury_id_v2(&snapshot)
+            == *protocol::config_treasury_id_v8(&config).borrow(), EInvalidEconomics);
+        assert!(economics_protocol_config_revision_v2(&snapshot)
+            == protocol::config_revision_v8(&config), EInvalidEconomics);
+        assert!(economics_protocol_config_commitment_v2(&snapshot)
+            == protocol::config_commitment_v8(&config), EInvalidEconomics);
+        assert!(economics_maker_market_fee_bps_v2(&snapshot)
+            == protocol::config_maker_market_fee_bps_v8(&config), EInvalidEconomics);
+        assert!(economics_soul_market_fee_bps_v2(&snapshot)
+            == protocol::config_soul_market_fee_bps_v8(&config), EInvalidEconomics);
+        i = i + 1;
+    };
+    assert!(lifecycle_draft_v8() == DRAFT && lifecycle_active_v8() == ACTIVE
+        && lifecycle_paused_v8() == PAUSED && lifecycle_archived_v8() == ARCHIVED,
+        EInvalidLifecycle);
+    protocol::destroy_protocol_for_testing(config, cap);
 }
 
 #[test, expected_failure(abort_code = EProductBindingMissing)]
@@ -2346,8 +2029,8 @@ fun activation_scaffold_rejects_absent_product_binding() {
     destroy_test_maker(config, protocol_cap, root, admin);
 }
 
-#[test, expected_failure(abort_code = EPackAdmissionBindingMissing)]
-fun activation_scaffold_rejects_absent_pack_admission_binding() {
+#[test, expected_failure(abort_code = ECompanionBindingMissing)]
+fun activation_scaffold_rejects_absent_companion_binding() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 12, 0, 0, 0);
     let (config, protocol_cap, mut root, admin) = new_test_maker(&mut ctx);
     let catalog = new_test_catalog(&config, &root, &mut ctx);
@@ -2372,39 +2055,28 @@ fun product_binding_cannot_be_replaced() {
 fun wrong_core_type_origin_binding_is_rejected() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 14, 0, 0, 0);
     let (config, protocol_cap, mut root, admin) = new_test_maker(&mut ctx);
-    let catalog = package_binding::product_release_catalog_for_testing(
+    let mut catalog = package_binding::product_release_catalog_for_testing(
         &config,
         @0x77,
         @0x78,
+        @0x11,
+        @0x21,
         &mut ctx,
     );
+    package_binding::complete_catalog_setup_for_testing(&mut catalog, &mut ctx);
     finalize_test_product(&mut root, &admin, &config, &catalog, &ctx);
     package_binding::destroy_catalog_for_testing(catalog);
     destroy_test_maker(config, protocol_cap, root, admin);
 }
 
-#[test, expected_failure(abort_code = EPackAdmissionAlreadyFinalized)]
-fun pack_admission_binding_cannot_be_replaced() {
+#[test, expected_failure(abort_code = ECompanionBindingAlreadyFinalized)]
+fun pack_companion_ids_cannot_be_replaced() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 15, 0, 0, 0);
     let (config, protocol_cap, mut root, admin) = new_test_maker(&mut ctx);
     let catalog = new_test_catalog(&config, &root, &mut ctx);
     finalize_test_product(&mut root, &admin, &config, &catalog, &ctx);
-    let readiness = test_pack_readiness(&root, &catalog, @0xC0, @0xC1);
-    finalize_pack_admission_binding_v8(
-        &mut root,
-        &admin,
-        &config,
-        readiness,
-        &ctx,
-    );
-    let replacement = test_pack_readiness(&root, &catalog, @0xC2, @0xC3);
-    finalize_pack_admission_binding_v8(
-        &mut root,
-        &admin,
-        &config,
-        replacement,
-        &ctx,
-    );
+    finalize_test_pack(&mut root, &admin, @0xC0, @0xC1);
+    finalize_test_pack(&mut root, &admin, @0xC2, @0xC3);
     package_binding::destroy_catalog_for_testing(catalog);
     destroy_test_maker(config, protocol_cap, root, admin);
 }
@@ -2420,26 +2092,19 @@ fun exact_pack_admission_scaffold_has_no_frozen_pack_count() {
     );
     let catalog = new_test_catalog(&config, &root, &mut ctx);
     finalize_test_product(&mut root, &admin, &config, &catalog, &ctx);
-    let readiness = test_pack_readiness(&root, &catalog, @0xC0, @0xC1);
-    finalize_pack_admission_binding_v8(
-        &mut root,
-        &admin,
-        &config,
-        readiness,
-        &ctx,
-    );
+    finalize_test_pack(&mut root, &admin, @0xC0, @0xC1);
     assert_activation_scaffold_ready_v8(&root);
-    let binding = root_pack_admission_binding_v8(&root);
-    assert!(binding.pack_registry_id == object::id_from_address(@0xC0), EBaseRegistryMismatch);
+    let binding = root_companion_registry_ids_v2(&root);
+    assert!(companion::pack_registry_id_v2(binding) == object::id_from_address(@0xC0), EBaseRegistryMismatch);
     assert!(
-        binding.admission_authority_id == object::id_from_address(@0xC1),
+        companion::admission_authority_id_v2(binding) == object::id_from_address(@0xC1),
         EBaseRegistryMismatch,
     );
-    assert!(root_native_capability_mask_v8(&root) == 127, ECatalogMismatch);
+    package_binding::assert_catalog_current_v8(&config, &catalog);
     package_binding::destroy_catalog_for_testing(catalog);
     assert!(
-        &binding.policy_commitment
-            == root_expected_pack_admission_policy_commitment_v8(&root),
+        root_expected_pack_admission_policy_commitment_v2(&root)
+            == &root.expected_pack_admission_policy_commitment,
         EBaseRegistryMismatch,
     );
     destroy_test_maker(config, protocol_cap, root, admin);
@@ -2485,7 +2150,7 @@ fun complete_total_cap_boundaries_are_exact() {
         10,
         0,
     );
-    assert!(economics_complete_total_cap_v8(&unbounded) == 0, EInvalidEconomics);
+    assert!(unbounded.complete_total_cap == 0, EInvalidEconomics);
     let exact = new_economics_snapshot_v8<sui::sui::SUI>(
         &config,
         ACCESS_FREE,
@@ -2496,8 +2161,7 @@ fun complete_total_cap_boundaries_are_exact() {
         10,
     );
     assert!(
-        economics_complete_free_quota_per_wallet_v8(&exact)
-            == economics_complete_total_cap_v8(&exact),
+        exact.complete_per_wallet_quota == exact.complete_total_cap,
         EInvalidEconomics,
     );
     protocol::destroy_protocol_for_testing(config, cap);
@@ -2535,110 +2199,9 @@ fun wrapped_rights_commit_exact_certified_evidence() {
         500,
     );
     assert_rights_snapshot_v8(&rights);
-    assert!(rights_evidence_certified_v8(&rights), EInvalidRights);
-    assert!(rights_evidence_sha256_v8(&rights) == &test_hash(20), EInvalidRights);
-    assert!(rights_terms_commitment_v8(&rights) == &test_hash(21), EInvalidRights);
-}
-
-#[test]
-fun wrapped_rights_require_exact_catalog_release_authority() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 192, 0, 0, 0);
-    let (config, protocol_cap) =
-        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
-    let mut catalog = new_test_catalog_for_config(&config, &mut ctx);
-    let release_cap = package_binding::take_release_call_cap_v8(
-        &config,
-        &protocol_cap,
-        &mut catalog,
-    );
-    let certification = certify_wrapped_rights_v8(
-        &config,
-        &catalog,
-        &release_cap,
-        b"https://license.example/exact".to_string(),
-        b"license-blob".to_string(),
-        test_hash(40),
-        test_hash(41),
-        &ctx,
-    );
-    let rights = new_license_wrapped_rights_snapshot_v8(
-        certification,
-        250,
-        250,
-        500,
-    );
-    assert!(rights.creator == @0xA11, EInvalidRights);
-    assert!(*rights.certification_catalog_id.borrow() == object::id(&catalog), EInvalidRights);
-    assert!(
-        rights.certification_binding_commitment.borrow()
-            == package_binding::product_binding_commitment_v8(
-                package_binding::catalog_binding_v8(&catalog),
-            ),
-        EInvalidRights,
-    );
-    package_binding::destroy_call_cap_for_testing(release_cap);
-    package_binding::destroy_catalog_for_testing(catalog);
-    protocol::destroy_protocol_for_testing(config, protocol_cap);
-}
-
-#[test, expected_failure(abort_code = 9)]
-fun wrapped_rights_reject_wrong_catalog_cap() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 193, 0, 0, 0);
-    let (config, protocol_cap) =
-        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
-    let mut catalog_a = new_test_catalog_for_config(&config, &mut ctx);
-    let catalog_b = new_test_catalog_for_config(&config, &mut ctx);
-    let release_cap = package_binding::take_release_call_cap_v8(
-        &config,
-        &protocol_cap,
-        &mut catalog_a,
-    );
-    let certification = certify_wrapped_rights_v8(
-        &config,
-        &catalog_b,
-        &release_cap,
-        b"https://license.example/forged".to_string(),
-        b"license-blob".to_string(),
-        test_hash(40),
-        test_hash(41),
-        &ctx,
-    );
-    let rights = new_license_wrapped_rights_snapshot_v8(certification, 250, 250, 500);
-    let _ = rights;
-    package_binding::destroy_call_cap_for_testing(release_cap);
-    package_binding::destroy_catalog_for_testing(catalog_a);
-    package_binding::destroy_catalog_for_testing(catalog_b);
-    protocol::destroy_protocol_for_testing(config, protocol_cap);
-}
-
-#[test, expected_failure(abort_code = 9)]
-fun runtime_tuple_rejects_wrong_catalog_cap() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 194, 0, 0, 0);
-    let (config, protocol_cap) =
-        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
-    let mut catalog_a = new_test_catalog_for_config(&config, &mut ctx);
-    let catalog_b = new_test_catalog_for_config(&config, &mut ctx);
-    let runtime_cap = package_binding::take_runtime_call_cap_v8(
-        &config,
-        &protocol_cap,
-        &mut catalog_a,
-    );
-    let readiness = package_binding::certify_runtime_pack_readiness_v8(
-        &catalog_b,
-        &runtime_cap,
-        object::id_from_address(@0xAA),
-        1,
-        test_hash(50),
-        object::id_from_address(@0xBB),
-        object::id_from_address(@0xCC),
-        test_hash(51),
-    );
-    let (_, _, _, _, _, _, _, _) =
-        package_binding::consume_runtime_pack_readiness_v8(readiness);
-    package_binding::destroy_call_cap_for_testing(runtime_cap);
-    package_binding::destroy_catalog_for_testing(catalog_a);
-    package_binding::destroy_catalog_for_testing(catalog_b);
-    protocol::destroy_protocol_for_testing(config, protocol_cap);
+    assert!(rights.evidence_certified, EInvalidRights);
+    assert!(&rights.evidence_sha256 == &test_hash(20), EInvalidRights);
+    assert!(&rights.terms_commitment == &test_hash(21), EInvalidRights);
 }
 
 #[test, expected_failure(abort_code = EInvalidRights)]
@@ -2696,6 +2259,8 @@ fun wrapped_rights_reject_empty_certified_evidence() {
 fun native_rights_derive_creator_and_exact_empty_evidence() {
     let ctx = sui::tx_context::new_from_hint(@0xA11, 191, 0, 0, 0);
     let rights = new_onchain_native_rights_snapshot_v8(&ctx, 250, 250, 500);
+    assert!(rights_maker_resale_royalty_bps_v2(&rights) == 500, EInvalidRights);
+    assert!(rights_commitment_v2(&rights) == &rights.commitment, EInvalidCommitment);
     assert!(rights.creator == @0xA11, EInvalidRights);
     assert!(rights.creator_confirmed, EInvalidRights);
     assert!(!rights.evidence_certified, EInvalidRights);
@@ -2707,22 +2272,15 @@ fun native_rights_derive_creator_and_exact_empty_evidence() {
     assert!(rights.terms_commitment.is_empty(), EInvalidRights);
 }
 
-#[test, expected_failure(abort_code = EBaseRegistryMismatch)]
-fun typed_pack_proof_rejects_wrong_immutable_root_tuple() {
+#[test, expected_failure(abort_code = ECatalogMismatch)]
+fun root_rejects_wrong_live_catalog() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 20, 0, 0, 0);
     let (config, protocol_cap, mut root, admin) = new_test_maker(&mut ctx);
     let catalog = new_test_catalog(&config, &root, &mut ctx);
     finalize_test_product(&mut root, &admin, &config, &catalog, &ctx);
-    let readiness = package_binding::runtime_pack_readiness_for_testing(
-        &catalog,
-        object::id_from_address(@0xDEAD),
-        root.maker_version,
-        root.content_commitment,
-        object::id_from_address(@0xC0),
-        object::id_from_address(@0xC1),
-        root.expected_pack_admission_policy_commitment,
-    );
-    finalize_pack_admission_binding_v8(&mut root, &admin, &config, readiness, &ctx);
+    let other = new_test_catalog(&config, &root, &mut ctx);
+    assert_product_release_catalog_v8(&root, &other);
+    package_binding::destroy_catalog_for_testing(other);
     package_binding::destroy_catalog_for_testing(catalog);
     destroy_test_maker(config, protocol_cap, root, admin);
 }
@@ -2757,6 +2315,9 @@ fun typed_successor_derives_exact_predecessor_and_version() {
         4,
         test_hash(31),
         test_hash(32),
+        test_hash(36),
+        test_hash(37),
+        test_hash(38),
         test_hash(33),
         b"successor-blob".to_string(),
         test_hash(34),
@@ -2805,6 +2366,9 @@ fun same_transaction_cannot_issue_second_successor_after_consumption() {
         4,
         test_hash(31),
         test_hash(32),
+        test_hash(36),
+        test_hash(37),
+        test_hash(38),
         test_hash(33),
         b"successor-blob".to_string(),
         test_hash(34),
@@ -2844,12 +2408,13 @@ fun cross_transaction_successor_replay_is_rejected_by_predecessor_cas() {
     {
         let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
         let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
-        issue_successor_authority_v8(
+        let authority = issue_successor_authority_v8(
             &mut previous,
             &previous_admin,
             0,
             scenario.ctx(),
         );
+        transfer::transfer(authority, sender);
         sui::test_scenario::return_shared(previous);
         scenario.return_to_sender(previous_admin);
     };
@@ -2871,6 +2436,9 @@ fun cross_transaction_successor_replay_is_rejected_by_predecessor_cas() {
             4,
             test_hash(31),
             test_hash(32),
+            test_hash(36),
+            test_hash(37),
+            test_hash(38),
             test_hash(33),
             b"successor-blob".to_string(),
             test_hash(34),
@@ -2890,12 +2458,13 @@ fun cross_transaction_successor_replay_is_rejected_by_predecessor_cas() {
     {
         let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
         let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
-        issue_successor_authority_v8(
+        let authority = issue_successor_authority_v8(
             &mut previous,
             &previous_admin,
             0,
             scenario.ctx(),
         );
+        destroy_successor_authority_for_testing(authority);
         sui::test_scenario::return_shared(previous);
         scenario.return_to_sender(previous_admin);
     };
@@ -2941,6 +2510,9 @@ fun successor_control_epoch_is_cas_guarded() {
         4,
         test_hash(31),
         test_hash(32),
+        test_hash(36),
+        test_hash(37),
+        test_hash(38),
         test_hash(33),
         b"successor-blob".to_string(),
         test_hash(34),
@@ -2989,8 +2561,8 @@ fun archived_predecessor_without_successor_authority_can_transfer_control() {
     {
         let previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
         let next_admin = scenario.take_from_sender<MakerAdminCapV8>();
-        assert!(admin_owner_v8(&next_admin) == new_owner, EInvalidAdminCap);
-        assert!(admin_control_epoch_v8(&next_admin) == 1, EInvalidAdminCap);
+        assert!(next_admin.owner == new_owner, EInvalidAdminCap);
+        assert!(next_admin.control_epoch == 1, EInvalidAdminCap);
         sui::test_scenario::return_shared(previous);
         scenario.return_to_sender(next_admin);
     };
@@ -3014,12 +2586,13 @@ fun archived_predecessor_with_outstanding_successor_authority_cannot_transfer_co
     {
         let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
         let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
-        issue_successor_authority_v8(
+        let authority = issue_successor_authority_v8(
             &mut previous,
             &previous_admin,
             0,
             scenario.ctx(),
         );
+        transfer::transfer(authority, sender);
         sui::test_scenario::return_shared(previous);
         scenario.return_to_sender(previous_admin);
     };
@@ -3050,8 +2623,7 @@ fun control_transfer_preserves_immutable_pack_and_catalog_binding() {
     );
     let catalog = new_test_catalog(&config, &root, &mut ctx);
     finalize_test_product(&mut root, &admin, &config, &catalog, &ctx);
-    let readiness = test_pack_readiness(&root, &catalog, @0xC0, @0xC1);
-    finalize_pack_admission_binding_v8(&mut root, &admin, &config, readiness, &ctx);
+    finalize_test_pack(&mut root, &admin, @0xC0, @0xC1);
     let next_admin = rotate_maker_control_for_testing(
         &mut root,
         admin,
@@ -3060,11 +2632,13 @@ fun control_transfer_preserves_immutable_pack_and_catalog_binding() {
         &mut ctx,
     );
     assert!(root.owner == @0xBEEF, ENotCurrentOwner);
+    assert!(root_creator_v2(&root) == @0xA11, EInvalidRights);
+    assert!(root_control_epoch_v2(&root) == 1, EControlEpochMismatch);
     assert!(root.control_epoch == 1, EControlEpochMismatch);
-    assert!(admin_owner_v8(&next_admin) == @0xBEEF, EInvalidAdminCap);
-    assert!(admin_control_epoch_v8(&next_admin) == 1, EInvalidAdminCap);
+    assert!(next_admin.owner == @0xBEEF, EInvalidAdminCap);
+    assert!(next_admin.control_epoch == 1, EInvalidAdminCap);
     assert_activation_scaffold_ready_v8(&root);
-    assert!(root_native_capability_mask_v8(&root) == 127, ECatalogMismatch);
+    package_binding::assert_catalog_current_v8(&config, &catalog);
     package_binding::destroy_catalog_for_testing(catalog);
     destroy_test_maker(config, protocol_cap, root, next_admin);
 }

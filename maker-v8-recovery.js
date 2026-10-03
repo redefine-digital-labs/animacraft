@@ -1,7 +1,7 @@
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { consumeMarketV8RecoveryEvidenceV8 } from './maker-v8-market.js';
+import { MARKET_V8_ACTION_ABI, consumeMarketV8RecoveryEvidenceV8 } from './maker-v8-market.js';
 import {
   MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
   makerV8ActionV8,
@@ -423,20 +423,20 @@ function canonicalPackageTuple(value) {
 }
 
 const MARKET_ACTIONS = Object.freeze({
-  listMakerControl: Object.freeze({ lane: 'MAKER', laneCode: 0, kind: 'LIST', function: 'list_maker_control_v8', primary: 'admin', arguments: ['registry', 'treasury', 'root', 'admin', 'makerTreasury', 'protocolConfig', 'catalog', 'config', 'grossAtomic'] }),
-  purchaseMakerControl: Object.freeze({ lane: 'MAKER', laneCode: 0, kind: 'PURCHASE', function: 'purchase_maker_control_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'root', 'protocolConfig', 'protocolTreasury', 'catalog', 'config', 'adminReceiving', 'payment'] }),
-  cancelMakerControl: Object.freeze({ lane: 'MAKER', laneCode: 0, kind: 'CANCEL', function: 'cancel_maker_control_listing_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'root', 'catalog', 'config', 'adminReceiving'] }),
-  recoverMakerControl: Object.freeze({ lane: 'MAKER', laneCode: 0, kind: 'RECOVER', function: 'recover_maker_control_listing_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'root', 'protocolConfig', 'catalog', 'config', 'adminReceiving'] }),
-  listSoulBundle: Object.freeze({ lane: 'SOUL', laneCode: 1, kind: 'LIST', function: 'list_soul_bundle_v8', primary: 'outputAsset', arguments: ['registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'protocolConfig', 'catalog', 'config', 'outputAsset', 'receipt', 'soul', 'grossAtomic'] }),
-  purchaseSoulBundle: Object.freeze({ lane: 'SOUL', laneCode: 1, kind: 'PURCHASE', function: 'purchase_soul_bundle_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'makerTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving', 'payment'] }),
-  cancelSoulListing: Object.freeze({ lane: 'SOUL', laneCode: 1, kind: 'CANCEL', function: 'cancel_soul_listing_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'catalog', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving'] }),
-  recoverSoulListing: Object.freeze({ lane: 'SOUL', laneCode: 1, kind: 'RECOVER', function: 'recover_soul_listing_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'protocolConfig', 'catalog', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving'] }),
-  listBasePhysical: Object.freeze({ lane: 'PHYSICAL_BASE', laneCode: 2, kind: 'LIST', function: 'list_base_physical_v8', primary: 'asset', arguments: ['registry', 'treasury', 'physicalRegistry', 'root', 'makerTreasury', 'protocolConfig', 'catalog', 'physicalConfig', 'config', 'asset', 'grossAtomic'] }),
-  listPackPhysical: Object.freeze({ lane: 'PHYSICAL_PACK', laneCode: 3, kind: 'LIST', function: 'list_pack_physical_v8', primary: 'asset', arguments: ['registry', 'treasury', 'physicalRegistry', 'root', 'packTreasury', 'protocolConfig', 'catalog', 'physicalConfig', 'config', 'asset', 'grossAtomic'] }),
-  purchaseBasePhysical: Object.freeze({ lane: 'PHYSICAL_BASE', laneCode: 2, kind: 'PURCHASE', function: 'purchase_base_physical_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'makerTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'physicalConfig', 'config', 'receiving', 'payment'] }),
-  purchasePackPhysical: Object.freeze({ lane: 'PHYSICAL_PACK', laneCode: 3, kind: 'PURCHASE', function: 'purchase_pack_physical_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'packRelease', 'packTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'physicalConfig', 'config', 'receiving', 'payment'] }),
-  cancelPhysicalListing: Object.freeze({ lanes: Object.freeze(['PHYSICAL_BASE', 'PHYSICAL_PACK']), laneCodes: Object.freeze([2, 3]), kind: 'CANCEL', function: 'cancel_physical_listing_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'catalog', 'config', 'receiving'] }),
-  recoverPhysicalListing: Object.freeze({ lanes: Object.freeze(['PHYSICAL_BASE', 'PHYSICAL_PACK']), laneCodes: Object.freeze([2, 3]), kind: 'RECOVER', function: 'recover_physical_listing_v8', primary: 'listing', arguments: ['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'protocolConfig', 'catalog', 'config', 'receiving'] }),
+  listMakerControl: Object.freeze({ lane: 'MAKER', laneCode: 0, kind: 'LIST', primary: 'admin', ...MARKET_V8_ACTION_ABI.listMakerControl }),
+  purchaseMakerControl: Object.freeze({ lane: 'MAKER', laneCode: 0, kind: 'PURCHASE', primary: 'listing', ...MARKET_V8_ACTION_ABI.purchaseMakerControl }),
+  cancelMakerControl: Object.freeze({ lane: 'MAKER', laneCode: 0, kind: 'CANCEL', primary: 'listing', ...MARKET_V8_ACTION_ABI.cancelMakerControl }),
+  recoverMakerControl: Object.freeze({ lane: 'MAKER', laneCode: 0, kind: 'RECOVER', primary: 'listing', ...MARKET_V8_ACTION_ABI.recoverMakerControl }),
+  listSoulBundle: Object.freeze({ lane: 'SOUL', laneCode: 1, kind: 'LIST', primary: 'outputAsset', ...MARKET_V8_ACTION_ABI.listSoulBundle }),
+  purchaseSoulBundle: Object.freeze({ lane: 'SOUL', laneCode: 1, kind: 'PURCHASE', primary: 'listing', ...MARKET_V8_ACTION_ABI.purchaseSoulBundle }),
+  cancelSoulListing: Object.freeze({ lane: 'SOUL', laneCode: 1, kind: 'CANCEL', primary: 'listing', ...MARKET_V8_ACTION_ABI.cancelSoulListing }),
+  recoverSoulListing: Object.freeze({ lane: 'SOUL', laneCode: 1, kind: 'RECOVER', primary: 'listing', ...MARKET_V8_ACTION_ABI.recoverSoulListing }),
+  listBasePhysical: Object.freeze({ lane: 'PHYSICAL_BASE', laneCode: 2, kind: 'LIST', primary: 'asset', ...MARKET_V8_ACTION_ABI.listBasePhysical }),
+  listPackPhysical: Object.freeze({ lane: 'PHYSICAL_PACK', laneCode: 3, kind: 'LIST', primary: 'asset', ...MARKET_V8_ACTION_ABI.listPackPhysical }),
+  purchaseBasePhysical: Object.freeze({ lane: 'PHYSICAL_BASE', laneCode: 2, kind: 'PURCHASE', primary: 'listing', ...MARKET_V8_ACTION_ABI.purchaseBasePhysical }),
+  purchasePackPhysical: Object.freeze({ lane: 'PHYSICAL_PACK', laneCode: 3, kind: 'PURCHASE', primary: 'listing', ...MARKET_V8_ACTION_ABI.purchasePackPhysical }),
+  cancelPhysicalListing: Object.freeze({ lanes: Object.freeze(['PHYSICAL_BASE', 'PHYSICAL_PACK']), laneCodes: Object.freeze([2, 3]), kind: 'CANCEL', primary: 'listing', ...MARKET_V8_ACTION_ABI.cancelPhysicalListing }),
+  recoverPhysicalListing: Object.freeze({ lanes: Object.freeze(['PHYSICAL_BASE', 'PHYSICAL_PACK']), laneCodes: Object.freeze([2, 3]), kind: 'RECOVER', primary: 'listing', ...MARKET_V8_ACTION_ABI.recoverPhysicalListing }),
 });
 
 const MARKET_V8_ACTION_SCHEMA = 'animacraft.market-action.v8';
@@ -785,7 +785,7 @@ function canonicalDescriptorArgument(value, name, index) {
   const expectedKind = descriptorArgumentKind(name);
   const label = `Market descriptor argument[${index}]`;
   const fields = expectedKind === 'object'
-    ? ['kind', 'name', 'objectId', 'type']
+    ? ['kind', 'name', 'objectId', 'type', ...(name === 'replacement' ? ['version', 'digest'] : [])]
     : expectedKind === 'receiving'
       ? ['kind', 'name', 'objectId', 'type', 'version', 'digest']
       : expectedKind === 'payment'
@@ -815,7 +815,7 @@ function canonicalDescriptorArgument(value, name, index) {
     objectId: canonicalSuiId(value.objectId, `${label} object id`),
     type: canonicalSuiType(value.type, `${label} type`),
   };
-  if (expectedKind === 'receiving') {
+  if (expectedKind === 'receiving' || name === 'replacement') {
     object.version = canonicalU64(value.version, `${label} version`, { positive: true });
     object.digest = opaque(value.digest, `${label} digest`);
   }
@@ -1138,6 +1138,9 @@ function assertDecodedArgument(snapshot, call, descriptorArgument, index) {
   if (observed.objectId !== descriptorArgument.objectId
     || (descriptorArgument.kind === 'receiving'
       && (observed.kind !== 'Receiving' || observed.version !== descriptorArgument.version
+        || observed.digest !== descriptorArgument.digest))
+    || (descriptorArgument.name === 'replacement'
+      && (observed.kind !== 'ImmOrOwnedObject' || observed.version !== descriptorArgument.version
         || observed.digest !== descriptorArgument.digest))
     || (descriptorArgument.kind === 'object' && observed.kind === 'Receiving')) fail(
     MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_MISMATCH,
@@ -2215,8 +2218,9 @@ function canonicalTransactionAbsence(value, digest, chainIdentifier) {
     exactKeys(absence, [
       'schemaVersion',
       'kind',
-      'rpcCode',
-      'rpcType',
+      'grpcCode',
+      'grpcService',
+      'grpcMethod',
       'requestedDigest',
       'chainIdentifier',
       'watermarkEpoch',
@@ -2235,9 +2239,10 @@ function canonicalTransactionAbsence(value, digest, chainIdentifier) {
     );
   }
   if (absence.schemaVersion !== MAKER_V8_TRANSACTION_ABSENCE_SCHEMA
-    || absence.kind !== 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND'
-    || absence.rpcCode !== -32602
-    || absence.rpcType !== 'InvalidParams'
+    || absence.kind !== 'SUI_GRPC_TRANSACTION_NOT_FOUND'
+    || absence.grpcCode !== 'NOT_FOUND'
+    || absence.grpcService !== 'sui.rpc.v2.LedgerService'
+    || absence.grpcMethod !== 'GetTransaction'
     || normalizeDigest(
       absence.requestedDigest,
       'Absent transaction digest',

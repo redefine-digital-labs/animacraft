@@ -2,11 +2,11 @@ module physical_adversarial_market_source_substitution::attack;
 
 use animacraft_v8_core::maker_v8::MakerRootV8;
 use animacraft_v8_core::package_binding_v8::{
-    MarketRoleV8,
-    PackageCallCapV8,
+    FreshTupleReplacementBindingV2,
     ProductReleaseCatalogV8,
 };
 use animacraft_v8_core::protocol_config_v8::ProtocolConfigV8;
+use animacraft_v8_core::package_binding_v8::RuntimeCallerCapV1;
 use animacraft_v8_physical::physical_v8::{
     Self as physical,
     PhysicalAssetV8,
@@ -16,7 +16,6 @@ use animacraft_v8_physical::physical_v8::{
 };
 use animacraft_v8_runtime::runtime_v8::PackTreasuryV8;
 
-public struct MarketMarker has drop {}
 public struct MarketRegistry has key { id: UID }
 public struct MarketTreasury has key { id: UID }
 public struct Listing has key { id: UID }
@@ -28,8 +27,9 @@ public fun substitute_pack_treasury_into_base<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     config: &PhysicalPackageConfigV8,
-    market_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_cap: &RuntimeCallerCapV1,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
     listing: &mut Listing,
@@ -39,8 +39,6 @@ public fun substitute_pack_treasury_into_base<PaymentCoin>(
 ): PhysicalMarketCustodyTicketV8 {
     physical::custody_base_physical_for_market_v8<
         PaymentCoin,
-        MarketMarker,
-        MarketMarker,
         MarketRegistry,
         MarketTreasury,
     >(
@@ -48,6 +46,7 @@ public fun substitute_pack_treasury_into_base<PaymentCoin>(
         root,
         protocol_config,
         catalog,
+        replacement,
         config,
         market_cap,
         market_registry,

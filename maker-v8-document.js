@@ -1,3 +1,9 @@
+import { validateMakerV8Rule, MAKER_V8_RULE_FIELDS, MAKER_V8_RULE_SELECTOR_FIELDS } from './maker-v8-rules.js';
+import { isMakerV8SourceAssetHash, isMakerV8SourceAssetField } from './maker-v8-source-asset.js';
+import { validateMakerV8Visibility, evaluateMakerV8Visibility } from './maker-v8-visibility.js';
+import { MAKER_V8_BLEND_MODES } from './maker-v8-render-core.js';
+import { createDefaultMakerV8LivingContentV8, assertMakerV8LivingContentShapeV8 } from './maker-v8-living-content.js';
+export { MAKER_V8_LIVING_CONTENT_SCHEMA, MAKER_V8_LIVING_CONTENT_KEYS } from './maker-v8-living-content.js';
 import {
   collectMakerV8CommerceIssues,
   createMakerV8Commerce,
@@ -68,9 +74,11 @@ export function compareMakerV8ProtocolText(left, right) {
 const LIMITS = Object.freeze({
   tracks: 256,
   parts: 750,
+  totalPartCapacity: 500,
   items: 5_000,
-  // Sui 1.76.1 object-runtime metering proves seal is bounded by
-  // 2 * style rows + distinct referenced color pairs <= 1000.
+  // Schema2 seal visits Part, Style and Item index/row children, referenced Color
+  // channels, and referenced Assets. Its current metered module is pinned by
+  // runtime attestation; private author-only rows do not enter this transaction.
   styles: 500,
   authorStyles: 25_000,
   styleSealObjectRuntimeUnits: 1_000,
@@ -83,8 +91,10 @@ const LIMITS = Object.freeze({
 });
 
 const FIELDS = Object.freeze({
-  document: ['schemaVersion', 'protocolVersion', 'lineage', 'metadata', 'canvas', 'composition', 'tracks', 'colors', 'parts', 'rules', 'defaultRecipe', 'outputs', 'commerce', 'assets'],
-  lineage: ['makerKey', 'version', 'changelog'],
+  document: ['schemaVersion', 'protocolVersion', 'lineage', 'metadata', 'canvas', 'composition', 'tracks', 'colors', 'parts', 'rules', 'defaultRecipe', 'outputs', 'commerce', 'assets', 'livingContent'],
+  lineage: [
+    'makerKey', 'version', 'previousRootId', 'previousVersionCommitment', 'changelog',
+  ],
   metadata: ['name', 'summary', 'license', 'coverAssetId'],
   license: ['kind', 'note'],
   canvas: ['width', 'height', 'pixelMode'],
@@ -98,8 +108,8 @@ const FIELDS = Object.freeze({
   style: ['key', 'label', 'displayOrder', 'trackKey', 'colorChannelKey', 'defaultSwatchKey', 'assetId', 'protected', 'transform', 'opacity', 'blendMode', 'physical', 'payload'],
   transform: ['x', 'y', 'scale', 'rotation'],
   physical: ['material', 'issuance', 'proof', 'priceAtomic', 'maxSupply', 'transferable'],
-  rule: ['key', 'kind', 'left', 'right', 'payload'],
-  ruleRef: ['partKey', 'itemKey'],
+  rule: MAKER_V8_RULE_FIELDS,
+  ruleRef: MAKER_V8_RULE_SELECTOR_FIELDS,
   recipe: ['selections', 'colors'],
   selection: ['partKey', 'itemKey', 'styleKey'],
   recipeColor: ['channelKey', 'swatchKey'],
@@ -209,7 +219,15 @@ function inspectJsonTree(root, issues) {
         issue(issues, path, 'MAKER_V8_JSON_PROPERTY_INVALID', 'Document accepts enumerable data properties only.');
         continue;
       }
-      if (!array && isCompilerOwnedKey(key)) {
+      const certifiedLineageField = path === 'lineage.previousRootId'
+        || path === 'lineage.previousVersionCommitment';
+      // Maker Info's bounded display name never supplies a signing identity.
+      const displayCreatorField = path === 'metadata.creator';
+      if (key === 'animacraftSourceAsset' && !isMakerV8SourceAssetField(path, descriptor.value)) {
+        issue(issues, path, 'MAKER_V8_SOURCE_ASSET_MISMATCH', 'Reserved source metadata requires the exact Style payload schema.');
+      }
+      if (!array && isCompilerOwnedKey(key) && !certifiedLineageField && !displayCreatorField
+        && !isMakerV8SourceAssetHash(path, value)) {
         issue(issues, path, 'MAKER_V8_COMPILER_FIELD_FORBIDDEN', `${path} is compiler-owned and cannot be authored.`);
       }
       stack.push({ value: descriptor.value, path, depth: current.depth + 1 });
@@ -229,12 +247,12 @@ function isRecord(value) {
     && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
-function exactRecord(value, fields, path, issues) {
+function exactRecord(value, fields, path, issues, optionalFields = []) {
   if (!isRecord(value)) {
     issue(issues, path, 'MAKER_V8_RECORD_INVALID', `${path || 'document'} must be a plain object.`);
     return false;
   }
-  const expected = new Set(fields);
+  const expected = new Set([...fields, ...optionalFields]);
   Object.keys(value).forEach((key) => {
     if (!expected.has(key)) issue(issues, path ? `${path}.${key}` : key, 'MAKER_V8_FIELD_UNKNOWN', `${key} is not part of the exact v8 schema.`);
   });
@@ -300,6 +318,19 @@ function defaultOutput() {
   };
 }
 
+/** Explicit author-storage/import boundary only; never called by validation. */
+export function upgradeAuthorMakerV8LivingContentV8(value) {
+  const issues = [];
+  inspectJsonTree(value, issues);
+  if (issues.length) throw new MakerV8DocumentError(issues);
+  const next = structuredClone(value);
+  if (isRecord(next) && !Object.hasOwn(next, 'livingContent')) {
+    next.livingContent = createDefaultMakerV8LivingContentV8(next.metadata);
+  }
+  assertMakerV8Document(next, { mode: 'draft' });
+  return deepFreeze(next);
+}
+
 export function createMakerV8Document(options = {}) {
   if (!isRecord(options)) options = {};
   const makerKey = SAFE_KEY.test(String(options.makerKey || 'untitled-maker'))
@@ -307,7 +338,13 @@ export function createMakerV8Document(options = {}) {
   return deepFreeze({
     schemaVersion: MAKER_V8_DOCUMENT_SCHEMA,
     protocolVersion: MAKER_V8_DOCUMENT_VERSION,
-    lineage: { makerKey, version: 1, changelog: '' },
+    lineage: {
+      makerKey,
+      version: 1,
+      previousRootId: null,
+      previousVersionCommitment: null,
+      changelog: '',
+    },
     metadata: {
       name: String(options.name || 'Untitled Maker'),
       summary: '',
@@ -332,9 +369,13 @@ export function createMakerV8Document(options = {}) {
     outputs: [defaultOutput()],
     commerce: structuredClone(createMakerV8Commerce({ rightsOriginConfirmed: true })),
     assets: [],
+    livingContent: Object.hasOwn(options, 'livingContent')
+      ? structuredClone(assertMakerV8LivingContentShapeV8(options.livingContent))
+      : createDefaultMakerV8LivingContentV8({ name: String(options.name || 'Untitled Maker'), summary: '' }),
   });
 }
 
+/** Minimal complete schema sample for compiler/render fixtures, not New Maker's authoring template. */
 export function createCharacterMakerV8Starter(options = {}) {
   const document = structuredClone(createMakerV8Document(options));
   document.tracks.push({ key: 'base-track', label: 'Base', renderOrder: 0, locked: true });
@@ -362,8 +403,11 @@ export function createCharacterMakerV8Starter(options = {}) {
 
 function validateShape(document, issues) {
   if (!exactRecord(document, FIELDS.document, '', issues)) return;
+  try { assertMakerV8LivingContentShapeV8(document.livingContent); } catch {
+    issue(issues, 'livingContent', 'MAKER_V8_LIVING_CONTENT_INVALID', 'Living Content requires its exact schema, three Markdown strings and three boolean customized flags.');
+  }
   exactRecord(document.lineage, FIELDS.lineage, 'lineage', issues);
-  exactRecord(document.metadata, FIELDS.metadata, 'metadata', issues);
+  exactRecord(document.metadata, FIELDS.metadata, 'metadata', issues, ['creator', 'style']);
   exactRecord(document.metadata?.license, FIELDS.license, 'metadata.license', issues);
   exactRecord(document.canvas, FIELDS.canvas, 'canvas', issues);
   exactRecord(document.composition, FIELDS.composition, 'composition', issues);
@@ -376,12 +420,15 @@ function validateShape(document, issues) {
     });
   });
   document.parts?.forEach((part, partIndex) => {
-    exactRecord(part, FIELDS.part, `parts[${partIndex}]`, issues);
+    exactRecord(part, FIELDS.part, `parts[${partIndex}]`, issues, ['exportBackground']);
+    if (part && Object.hasOwn(part, 'exportBackground') && typeof part.exportBackground !== 'boolean') {
+      issue(issues, `parts[${partIndex}].exportBackground`, 'MAKER_V8_EXPORT_BACKGROUND_INVALID', 'Export background must be boolean.');
+    }
     part?.items?.forEach((item, itemIndex) => {
       exactRecord(item, FIELDS.item, `parts[${partIndex}].items[${itemIndex}]`, issues);
       item?.styles?.forEach((style, styleIndex) => {
         const path = `parts[${partIndex}].items[${itemIndex}].styles[${styleIndex}]`;
-        exactRecord(style, FIELDS.style, path, issues);
+        exactRecord(style, FIELDS.style, path, issues, ['visibleWhen']);
         exactRecord(style?.transform, FIELDS.transform, `${path}.transform`, issues);
         if (style?.physical !== null) exactRecord(style?.physical, FIELDS.physical, `${path}.physical`, issues);
       });
@@ -389,8 +436,8 @@ function validateShape(document, issues) {
   });
   document.rules?.forEach((row, index) => {
     exactRecord(row, FIELDS.rule, `rules[${index}]`, issues);
-    exactRecord(row?.left, FIELDS.ruleRef, `rules[${index}].left`, issues);
-    exactRecord(row?.right, FIELDS.ruleRef, `rules[${index}].right`, issues);
+    exactRecord(row?.trigger, FIELDS.ruleRef, `rules[${index}].trigger`, issues);
+    if (Array.isArray(row?.targets)) row.targets.forEach((target, targetIndex) => exactRecord(target, FIELDS.ruleRef, `rules[${index}].targets[${targetIndex}]`, issues));
   });
   exactRecord(document.defaultRecipe, FIELDS.recipe, 'defaultRecipe', issues);
   document.defaultRecipe?.selections?.forEach((row, index) => exactRecord(row, FIELDS.selection, `defaultRecipe.selections[${index}]`, issues));
@@ -412,8 +459,26 @@ function collectSemanticIssues(document, issues, { mode }) {
   }
   validateKey(document.lineage?.makerKey, 'lineage.makerKey', issues);
   if (!Number.isSafeInteger(document.lineage?.version) || document.lineage.version < 1) issue(issues, 'lineage.version', 'MAKER_V8_VERSION_INVALID', 'Maker version must be a positive safe integer.');
+  const previousRootId = document.lineage?.previousRootId;
+  const previousVersionCommitment = document.lineage?.previousVersionCommitment;
+  const exactPreviousId = typeof previousRootId === 'string'
+    && /^0x[0-9a-f]{64}$/.test(previousRootId);
+  const exactPreviousCommitment = typeof previousVersionCommitment === 'string'
+    && /^[0-9a-f]{64}$/.test(previousVersionCommitment);
+  if (document.lineage?.version === 1) {
+    if (previousRootId !== null || previousVersionCommitment !== null) {
+      issue(issues, 'lineage', 'MAKER_V8_INITIAL_LINEAGE_INVALID', 'Maker version 1 cannot name a predecessor.');
+    }
+  } else if (!exactPreviousId || !exactPreviousCommitment) {
+    issue(issues, 'lineage', 'MAKER_V8_SUCCESSOR_LINEAGE_INVALID', 'Maker version N+1 requires one exact predecessor Root and version commitment.');
+  }
   validateText(document.metadata?.name, 'metadata.name', issues, { maximum: 256 });
   validateText(document.metadata?.summary, 'metadata.summary', issues, { required: false, maximum: 4096 });
+  for (const field of ['creator', 'style']) {
+    if (Object.hasOwn(document.metadata ?? {}, field)) {
+      validateText(document.metadata[field], `metadata.${field}`, issues, { required: false, maximum: 128 });
+    }
+  }
   validateText(document.metadata?.license?.kind, 'metadata.license.kind', issues, { maximum: 128 });
   validateText(document.metadata?.license?.note, 'metadata.license.note', issues, { required: false, maximum: 2048 });
   if (!Number.isSafeInteger(document.canvas?.width) || !Number.isSafeInteger(document.canvas?.height)
@@ -426,6 +491,10 @@ function collectSemanticIssues(document, issues, { mode }) {
     || !Object.values(MAKER_V8_THIRD_PARTY_ADMISSION_MODES).includes(document.composition?.thirdPartyAdmission)
     || typeof document.composition?.itemAssetization !== 'boolean') {
     issue(issues, 'composition', 'MAKER_V8_COMPOSITION_INVALID', 'Composition must use the exact fresh-v8 policy vocabulary.');
+  }
+  if (document.composition?.itemAssetization === true
+    && document.composition?.mode !== MAKER_V8_COMPOSITION_MODES.COMPOSABLE) {
+    issue(issues, 'composition.itemAssetization', 'MAKER_V8_ITEM_ASSETIZATION_REQUIRES_COMPOSABLE', 'Owned Base Items require a COMPOSABLE Maker.');
   }
 
   const tracks = uniqueKeys(document.tracks, 'tracks', issues);
@@ -453,7 +522,9 @@ function collectSemanticIssues(document, issues, { mode }) {
   let styleCount = 0;
   let publishedStyleCount = 0;
   let colorRowCount = 0;
-  const referencedStyleColorPairs = new Set();
+  let totalPartCapacity = 0;
+  const referencedStyleColorChannels = new Set();
+  const referencedStyleAssets = new Set();
   const publicItems = new Set();
   const publicStyles = new Set();
   document.tracks?.forEach((track, index) => {
@@ -492,6 +563,12 @@ function collectSemanticIssues(document, issues, { mode }) {
       issue(issues, partPath, 'MAKER_V8_PART_INVALID', 'Part policy is invalid.');
     }
     if (part.wardrobeMode === 'SLOT' && document.composition?.mode !== 'COMPOSABLE') issue(issues, `${partPath}.wardrobeMode`, 'MAKER_V8_SLOT_REQUIRES_COMPOSABLE', 'SLOT requires COMPOSABLE mode.');
+    if (part.kind === MAKER_V8_PART_KINDS.LAST_BASTION && part.required !== true) {
+      issue(issues, `${partPath}.required`, 'MAKER_V8_LAST_BASTION_REQUIRED', 'LAST_BASTION Parts must remain required.');
+    }
+    if (Number.isSafeInteger(part.capacity) && part.capacity > 0) {
+      totalPartCapacity += part.capacity;
+    }
     const itemKeys = uniqueKeys(part.items, `${partPath}.items`, issues);
     itemCount += part.items?.length || 0;
     part.items?.forEach((item, itemIndex) => {
@@ -501,12 +578,16 @@ function collectSemanticIssues(document, issues, { mode }) {
       const styleKeys = uniqueKeys(item.styles, `${itemPath}.styles`, issues);
       styleCount += item.styles?.length || 0;
       if (item.status === 'PUBLIC') publishedStyleCount += item.styles?.length || 0;
-      if (!styleKeys.has(item.defaultStyleKey)) issue(issues, `${itemPath}.defaultStyleKey`, 'MAKER_V8_DEFAULT_STYLE_UNKNOWN', 'Default Style does not exist.');
+      const emptyDraftItem = mode === 'draft' && item.styles.length === 0 && item.defaultStyleKey === null;
+      if (!emptyDraftItem && !styleKeys.has(item.defaultStyleKey)) issue(issues, `${itemPath}.defaultStyleKey`, 'MAKER_V8_DEFAULT_STYLE_UNKNOWN', 'Default Style does not exist.');
       if (item.status === 'PUBLIC') publicItems.add(`${part.key}/${item.key}`);
       item.styles?.forEach((style, styleIndex) => {
         const stylePath = `${itemPath}.styles[${styleIndex}]`;
+        for (const entry of validateMakerV8Visibility(style.visibleWhen, {
+          parts: document.parts, subject: { partKey: part.key, itemKey: item.key, styleKey: style.key },
+        })) issue(issues, `${stylePath}.visibleWhen${entry.path ? `.${entry.path}` : ''}`, entry.code, entry.message);
         validateText(style.label, `${stylePath}.label`, issues, { maximum: 256 });
-        if (!tracks.has(style.trackKey)) issue(issues, `${stylePath}.trackKey`, 'MAKER_V8_TRACK_UNKNOWN', 'Style Track does not exist.');
+        if (!(mode === 'draft' && style.trackKey === null) && !tracks.has(style.trackKey)) issue(issues, `${stylePath}.trackKey`, 'MAKER_V8_TRACK_UNKNOWN', 'Style Track does not exist.');
         if (style.colorChannelKey === null) {
           if (style.defaultSwatchKey !== null) issue(issues, `${stylePath}.defaultSwatchKey`, 'MAKER_V8_COLOR_PAIR_INVALID', 'Color channel and default swatch are an exact pair.');
         } else if (!colors.has(style.colorChannelKey)) {
@@ -516,13 +597,25 @@ function collectSemanticIssues(document, issues, { mode }) {
           if (!channel?.swatches?.some((entry) => entry.key === style.defaultSwatchKey)) {
             issue(issues, `${stylePath}.defaultSwatchKey`, 'MAKER_V8_SWATCH_UNKNOWN', 'Style default swatch must exist in its exact Color channel.');
           } else if (item.status === 'PUBLIC') {
-            referencedStyleColorPairs.add(`${style.colorChannelKey}\u0000${style.defaultSwatchKey}`);
+            referencedStyleColorChannels.add(style.colorChannelKey);
           }
         }
-        if (!assets.has(style.assetId)) issue(issues, `${stylePath}.assetId`, 'MAKER_V8_STYLE_ASSET_UNKNOWN', 'Style asset does not exist.');
+        // A newly authored Style can await its first PNG in a saved draft only.
+        if (!(mode === 'draft' && style.assetId === null) && !assets.has(style.assetId)) issue(issues, `${stylePath}.assetId`, 'MAKER_V8_STYLE_ASSET_UNKNOWN', 'Style asset does not exist.');
+        else if (style.assetId !== null && item.status === 'PUBLIC') referencedStyleAssets.add(style.assetId);
+        if (style.protected === true && style.assetId !== null && style.assetId === document.metadata.coverAssetId) {
+          issue(issues, 'metadata.coverAssetId', 'MAKER_V8_COVER_ASSET_PROTECTED', 'A public Maker cover cannot reference protected Style artwork.');
+        }
+        const transform = style.transform;
+        if (!transform || !Number.isFinite(transform.x) || !Number.isFinite(transform.y)
+          || Math.abs(transform.x) > 8192 || Math.abs(transform.y) > 8192
+          || !Number.isFinite(transform.scale) || transform.scale <= 0 || transform.scale > 100
+          || !Number.isFinite(transform.rotation) || Math.abs(transform.rotation) > 360) {
+          issue(issues, `${stylePath}.transform`, 'MAKER_V8_STYLE_TRANSFORM_INVALID', 'Style transform exceeds the deterministic renderer bounds.');
+        }
         if (typeof style.protected !== 'boolean' || !Number.isSafeInteger(style.displayOrder)
           || typeof style.opacity !== 'number' || style.opacity < 0 || style.opacity > 1
-          || !['normal', 'multiply', 'screen', 'overlay'].includes(style.blendMode)) issue(issues, stylePath, 'MAKER_V8_STYLE_INVALID', 'Style render policy is invalid.');
+          || !MAKER_V8_BLEND_MODES.includes(style.blendMode)) issue(issues, stylePath, 'MAKER_V8_STYLE_INVALID', 'Style render policy is invalid.');
         if (item.status === 'PUBLIC') publicStyles.add(`${part.key}/${item.key}/${style.key}`);
         if (style.physical !== null) {
           const policy = style.physical;
@@ -538,17 +631,27 @@ function collectSemanticIssues(document, issues, { mode }) {
         }
       });
     });
-    if (!itemKeys.size) issue(issues, `${partPath}.items`, 'MAKER_V8_PART_EMPTY', 'Every Part needs at least one Item.');
+    if (mode === 'compile' && part.required && !itemKeys.size) issue(issues, `${partPath}.items`, 'MAKER_V8_PART_EMPTY', 'A required Part needs at least one Item.');
   });
+  if (totalPartCapacity > LIMITS.totalPartCapacity) {
+    issue(issues, 'parts', 'MAKER_V8_TOTAL_CAPACITY_LIMIT', 'Combined Part slot capacity exceeds the bounded Runtime loadout limit.', {
+      observedCapacity: totalPartCapacity,
+      maximumCapacity: LIMITS.totalPartCapacity,
+    });
+  }
   if (mode === 'compile' && !parts.size) issue(issues, 'parts', 'MAKER_V8_PART_REQUIRED', 'Publication requires at least one Part.');
   if (document.tracks?.length > LIMITS.tracks || document.parts?.length > LIMITS.parts
     || itemCount > LIMITS.items) issue(issues, 'parts', 'MAKER_V8_DEFINITION_LIMIT', 'Base definition limit exceeded.');
   if (styleCount > LIMITS.authorStyles) issue(issues, 'parts', 'MAKER_V8_AUTHOR_STYLE_LIMIT', 'Author Style arrays exceed the bounded document budget.', { observedStyles: styleCount, maximumStyles: LIMITS.authorStyles });
-  const measuredStyleUnits = (2 * publishedStyleCount) + referencedStyleColorPairs.size;
+  const measuredStyleUnits = (2 * parts.size) + (2 * publishedStyleCount) + (2 * publicItems.size)
+    + referencedStyleColorChannels.size + referencedStyleAssets.size;
   if (publishedStyleCount > LIMITS.styles || measuredStyleUnits > LIMITS.styleSealObjectRuntimeUnits) {
-    issue(issues, 'parts', 'MAKER_V8_STYLE_SEAL_LIMIT', 'Published Style rows exceed the measured client publication seal cap.', {
+    issue(issues, 'parts', 'MAKER_V8_STYLE_SEAL_LIMIT', 'Published definitions exceed the current Core seal object-runtime budget.', {
       observedPublishedStyles: publishedStyleCount,
-      observedDistinctColorPairs: referencedStyleColorPairs.size,
+      observedPublishedItems: publicItems.size,
+      observedParts: parts.size,
+      observedDistinctColorChannels: referencedStyleColorChannels.size,
+      observedDistinctReferencedAssets: referencedStyleAssets.size,
       observedUnits: measuredStyleUnits,
       maximumPublishedStyles: LIMITS.styles,
       maximumUnits: LIMITS.styleSealObjectRuntimeUnits,
@@ -558,25 +661,36 @@ function collectSemanticIssues(document, issues, { mode }) {
   const ruleKeys = uniqueKeys(document.rules, 'rules', issues);
   document.rules?.forEach((rule, index) => {
     const path = `rules[${index}]`;
-    if (!Object.values(MAKER_V8_RULE_KINDS).includes(rule.kind)) issue(issues, `${path}.kind`, 'MAKER_V8_RULE_KIND_INVALID', 'Rule kind is invalid.');
-    for (const side of ['left', 'right']) {
-      if (!publicItems.has(`${rule[side]?.partKey}/${rule[side]?.itemKey}`)) issue(issues, `${path}.${side}`, 'MAKER_V8_RULE_TARGET_UNKNOWN', 'Rule target must be a public Item.');
-    }
+    for (const entry of validateMakerV8Rule(rule, { parts: document.parts })) issue(issues, entry.path ? `${path}.${entry.path}` : path, entry.code, entry.message);
   });
   if (ruleKeys.size > LIMITS.rules) issue(issues, 'rules', 'MAKER_V8_RULE_LIMIT', 'Rule limit exceeded.');
 
   if (!Array.isArray(document.defaultRecipe?.selections) || !Array.isArray(document.defaultRecipe?.colors)) issue(issues, 'defaultRecipe', 'MAKER_V8_RECIPE_INVALID', 'Default Recipe arrays are required.');
-  const selectedParts = new Set();
+  const selectedPartCounts = new Map();
+  const selectedOwnedBaseItems = new Set();
   document.defaultRecipe?.selections?.forEach((selection, index) => {
     const path = `defaultRecipe.selections[${index}]`;
     const itemKey = `${selection.partKey}/${selection.itemKey}`;
     const styleKey = `${itemKey}/${selection.styleKey}`;
     if (!publicItems.has(itemKey) || !publicStyles.has(styleKey)) issue(issues, path, 'MAKER_V8_RECIPE_TARGET_UNKNOWN', 'Default Recipe must select public exact definitions.');
-    if (selectedParts.has(selection.partKey)) issue(issues, `${path}.partKey`, 'MAKER_V8_RECIPE_PART_DUPLICATE', 'Default Recipe selects each Part at most once.');
-    selectedParts.add(selection.partKey);
+    if (document.composition.itemAssetization === true
+      && selectedOwnedBaseItems.has(itemKey)) {
+      issue(issues, path, 'MAKER_V8_RECIPE_OWNED_ITEM_REUSED', 'One owned Base Item instance can occupy only one default loadout slot.');
+    }
+    selectedOwnedBaseItems.add(itemKey);
+    const part = document.parts?.find((entry) => entry.key === selection.partKey);
+    const selectedStyle = part?.items?.find(item => item.key === selection.itemKey)?.styles?.find(style => style.key === selection.styleKey);
+    if (mode !== 'draft' && selectedStyle && !validateMakerV8Visibility(selectedStyle.visibleWhen).length
+      && !evaluateMakerV8Visibility(selectedStyle.visibleWhen, document.defaultRecipe.selections)) {
+      issue(issues, path, 'MAKER_V8_RECIPE_STYLE_NOT_VISIBLE', 'Default Recipe selects a Style whose visibility condition is false.');
+    }
+    const nextCount = (selectedPartCounts.get(selection.partKey) || 0) + 1;
+    selectedPartCounts.set(selection.partKey, nextCount);
+    if (part && nextCount > part.capacity) issue(issues, `${path}.partKey`, 'MAKER_V8_RECIPE_PART_CAPACITY_EXCEEDED', 'Default Recipe selections exceed this Part capacity.');
   });
   document.parts?.filter((part) => part.required).forEach((part) => {
-    if (!selectedParts.has(part.key)) issue(issues, 'defaultRecipe.selections', 'MAKER_V8_REQUIRED_PART_MISSING', `Required Part ${part.key} is not selected.`);
+    const emptyDraftPart = mode === 'draft' && !part.items.some(item => item.status === 'PUBLIC' && item.styles.length > 0);
+    if (!emptyDraftPart && !selectedPartCounts.has(part.key)) issue(issues, 'defaultRecipe.selections', 'MAKER_V8_REQUIRED_PART_MISSING', `Required Part ${part.key} is not selected.`);
   });
   const selectedChannels = new Set();
   document.defaultRecipe?.colors?.forEach((selection, index) => {
@@ -593,8 +707,8 @@ function collectSemanticIssues(document, issues, { mode }) {
 
   if (mode === 'compile') {
     document.parts?.forEach((part, index) => {
-      if (!part.items?.some((item) => item.status === 'PUBLIC')) {
-        issue(issues, `parts[${index}].items`, 'MAKER_V8_PUBLIC_PART_EMPTY', 'Every published Part needs at least one public Item.');
+      if (part.required && !part.items?.some((item) => item.status === 'PUBLIC')) {
+        issue(issues, `parts[${index}].items`, 'MAKER_V8_PUBLIC_PART_EMPTY', 'A required published Part needs at least one public Item.');
       }
     });
   }
@@ -668,6 +782,16 @@ export function projectPublicMakerV8Document(value) {
     ...part,
     items: part.items.filter((item) => item.status === 'PUBLIC'),
   }));
+  const publicAssetIds = new Set();
+  if (projected.metadata.coverAssetId !== null) publicAssetIds.add(projected.metadata.coverAssetId);
+  for (const part of projected.parts) for (const item of part.items) {
+    for (const style of item.styles) publicAssetIds.add(style.assetId);
+  }
+  if (projected.commerce.rightsOrigin === 'LICENSE_WRAPPED'
+    && projected.commerce.rightsEvidence?.evidenceAssetId) {
+    publicAssetIds.add(projected.commerce.rightsEvidence.evidenceAssetId);
+  }
+  projected.assets = projected.assets.filter((asset) => publicAssetIds.has(asset.id));
   assertMakerV8Document(projected, { mode: 'compile' });
   return deepFreeze(projected);
 }

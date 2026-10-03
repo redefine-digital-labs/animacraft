@@ -1,0 +1,278 @@
+{
+  "schema": "animacraft-v8-seal-cap-evidence.v2",
+  "approvedProtocolProfile": {
+    "file": "approved-protocol-profile.json",
+    "canonicalSha256": "6b0d55d197ac97dfee94edaefab8ab8100d80414df553b20eb96dba9fc078cc5"
+  },
+  "production": {
+    "moveRootCount": 7,
+    "coreModuleCount": 9,
+    "corePackageObjectBytes": 90077,
+    "corePackageMaxBytes": 102400,
+    "corePackageHeadroomBytes": 12323,
+    "baseRegistrySourceBytes": 99316,
+    "baseRegistrySourceSha256": "4d776102402a717c734fc69d81721925351adf18ef61539272bc8e25c16e5085",
+    "baseRegistryBytecodeBytes": 21093,
+    "baseRegistryBytecodeSha256": "db37a611d71cec246e6ff70813642db6ce2015b5835474d0280900133dc1d62a"
+  },
+  "fixtureMetadata": {
+    "Move.lock": "47bfb100ddbe0cdb9ac344d7962a126cb9ea158e7e29c10fc74ee1765aa9bbe2",
+    "Move.toml": "e898f248bb2b5a88e9c8e08528526b48c94a94594516f81ca63e55328fdcd5cb"
+  },
+  "fixtureSources": {
+    "activation_v8.move": "4ce066e54962a05a8ed9eba6171725ce6ce2ec7e286682b5e796f4c570d7173c",
+    "base_registry_v8.move": "4d776102402a717c734fc69d81721925351adf18ef61539272bc8e25c16e5085",
+    "core_v8.move": "544aaab547c21aa775cd4e21ae57e31300a26147e93159c4670882196db7c1ea",
+    "maker_v8.move": "fb1296b1f20ea479bcc8b83949ab9daaa520c4615197e32947a811947e8ecb29",
+    "package_binding_v8.move": "479a174aeaf8ec8d8b2b78b4efaa830d3744f640f5bec34a25880e8b6329f416",
+    "protocol_config_v8.move": "b6646085d6fd42abe23943322a87c3a8c02b113920a0214f133ccf84e817afc4",
+    "treasury_v8.move": "9765253787bda09302b6de049c13fe89abcf71cb3978edb36eab6e132573a712"
+  },
+  "artifacts": {
+    "protocol-config-v135.rpc.json": {
+      "bytes": 59929,
+      "sha256": "3afb7b4219acd1c09245ff9b8c2f32495c012928d2c5633a74992c5804baef4b"
+    },
+    "seal-200-distinct.rpc.json": {
+      "bytes": 19488,
+      "sha256": "10e9febcae0c3f4b8c3f6ced15ae588d1ad03d892f003281903b731e93f5cf98"
+    },
+    "seal-201-distinct.rpc.json": {
+      "bytes": 18558,
+      "sha256": "1ff990abfd2f3957e6373748c86df233de9ead228f5116deb79723ced3712992"
+    },
+    "seal-332-colored.rpc.json": {
+      "bytes": 19468,
+      "sha256": "f68ad0ca97fa8342330b61499e7fae88ef7eb7bedd5a5309e897194107985eb3"
+    },
+    "seal-333-colored.rpc.json": {
+      "bytes": 18604,
+      "sha256": "3e2bb28012bc4e77ab30639fc8084fe7de18f4119a377783043b1ab3f2b8893e"
+    },
+    "seal-498-colorless.rpc.json": {
+      "bytes": 19465,
+      "sha256": "4d7e27243dfaee1508ad91c94228cc00a792ec641b8329599f7b4710c9741567"
+    },
+    "seal-499-colorless.rpc.json": {
+      "bytes": 18553,
+      "sha256": "6fc22625a345d93048702a8b7c574f22e2b2ac5d506065e6552d5538aebee992"
+    }
+  },
+  "scenarios": {
+    "332-colored": {
+      "artifact": "seal-332-colored.rpc.json",
+      "styles": 332,
+      "colors": 332,
+      "referencedColorChannels": 332,
+      "items": 1,
+      "referencedAssets": 1,
+      "cacheDemand": 999,
+      "status": "success",
+      "originalDigest": "Gbcb1maL3u4VExuxSy4Xet7X6sKwBAta9Abc3g6xitXY",
+      "gasUsed": {
+        "computationCost": "91900000",
+        "storageCost": "15982800",
+        "storageRebate": "13588344",
+        "nonRefundableStorageFee": "137256"
+      },
+      "rawEffectsLength": 829,
+      "eventCount": 1,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 4,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 1,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
+    },
+    "333-colored": {
+      "artifact": "seal-333-colored.rpc.json",
+      "styles": 333,
+      "colors": 333,
+      "referencedColorChannels": 333,
+      "items": 1,
+      "referencedAssets": 1,
+      "cacheDemand": 1002,
+      "status": "failure",
+      "originalDigest": "6qdZn33MtFaP64hWH1qMhv6K2pqmCjbMY1JAVNJnDS6M",
+      "gasUsed": {
+        "computationCost": "53000000",
+        "storageCost": "13725600",
+        "storageRebate": "13588344",
+        "nonRefundableStorageFee": "137256"
+      },
+      "rawEffectsLength": 878,
+      "eventCount": 0,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 4,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 0,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      },
+      "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 14, instruction: 0, function_name: Some(\"borrow_child_object\") }))) in command 0"
+    },
+    "498-colorless": {
+      "artifact": "seal-498-colorless.rpc.json",
+      "styles": 498,
+      "colors": 0,
+      "referencedColorChannels": 0,
+      "items": 1,
+      "referencedAssets": 1,
+      "cacheDemand": 999,
+      "status": "success",
+      "originalDigest": "EH6qMyTcecpny9xqjSqzc8twKs3euvChTwBshf19rnjm",
+      "gasUsed": {
+        "computationCost": "97300000",
+        "storageCost": "15982800",
+        "storageRebate": "13588344",
+        "nonRefundableStorageFee": "137256"
+      },
+      "rawEffectsLength": 829,
+      "eventCount": 1,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 4,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 1,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
+    },
+    "499-colorless": {
+      "artifact": "seal-499-colorless.rpc.json",
+      "styles": 499,
+      "colors": 0,
+      "referencedColorChannels": 0,
+      "items": 1,
+      "referencedAssets": 1,
+      "cacheDemand": 1001,
+      "status": "failure",
+      "originalDigest": "Eurto7epZvNryXZodDZQLuZHdw64ynFsR1oB22jXhNdQ",
+      "gasUsed": {
+        "computationCost": "40100000",
+        "storageCost": "13725600",
+        "storageRebate": "13588344",
+        "nonRefundableStorageFee": "137256"
+      },
+      "rawEffectsLength": 875,
+      "eventCount": 0,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 4,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 0,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      },
+      "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 17, instruction: 0, function_name: Some(\"has_child_object\") }))) in command 0"
+    },
+    "200-distinct": {
+      "artifact": "seal-200-distinct.rpc.json",
+      "styles": 200,
+      "colors": 0,
+      "referencedColorChannels": 0,
+      "items": 200,
+      "referencedAssets": 200,
+      "cacheDemand": 1000,
+      "status": "success",
+      "originalDigest": "CsxtjKxkXsmWyagmSZ7LLfwYyfHVjeXqGLv9xuq4XKPd",
+      "gasUsed": {
+        "computationCost": "50600000",
+        "storageCost": "15982800",
+        "storageRebate": "13588344",
+        "nonRefundableStorageFee": "137256"
+      },
+      "rawEffectsLength": 829,
+      "eventCount": 1,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 4,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 1,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
+    },
+    "201-distinct": {
+      "artifact": "seal-201-distinct.rpc.json",
+      "styles": 201,
+      "colors": 0,
+      "referencedColorChannels": 0,
+      "items": 201,
+      "referencedAssets": 201,
+      "cacheDemand": 1005,
+      "status": "failure",
+      "originalDigest": "G8CKcQMd3UUjZ1GqpsuxbG7KgdzPKhNJsbSeRnAMKktL",
+      "gasUsed": {
+        "computationCost": "48800000",
+        "storageCost": "13725600",
+        "storageRebate": "13588344",
+        "nonRefundableStorageFee": "137256"
+      },
+      "rawEffectsLength": 875,
+      "eventCount": 0,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 4,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 0,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      },
+      "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 17, instruction: 0, function_name: Some(\"has_child_object\") }))) in command 0"
+    }
+  },
+  "replayProvenance": {
+    "binaryTag": "mainnet-v1.78.1",
+    "commit": "722ac4fcf4841346c91775f596c4ce23fb7fbd0f",
+    "asset": "sui-mainnet-v1.78.1-macos-arm64.tgz",
+    "assetSha256": "722a4310022dfe5e71b6405daf6f862c7a0ca2ab40926b83e06d4984a2bbe6d6",
+    "cliVersion": "sui 1.78.1-722ac4fcf484",
+    "protocolVersion": "135"
+  }
+}

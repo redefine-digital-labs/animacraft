@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deriveMakerV8PackProfiles } from '../maker-v8-profile-wire.js';
+import { MAKER_V8_PACK_DEFINITIONS_BCS, packDefinitionCommitmentV8 } from '../maker-v8-pack-definition-wire.js';
 
-import { fromBase64, fromHex, toBase64 } from '@mysten/sui/utils';
+import { bcs } from '@mysten/sui/bcs';
+import { ObjectError } from '@mysten/sui/client';
+import { fromBase64, fromHex, toBase64, toBase58, normalizeStructTag, deriveDynamicFieldID } from '@mysten/sui/utils';
+import { assertMakerV8Runtime } from '../maker-v8-runtime.js';
 
 import {
   MAKER_V8_CLOCK_OBJECT_ID,
@@ -19,6 +24,7 @@ import {
   listOwnedMakerV8Inventory,
   loadReceivingRefV8,
   loadMakerV8OperationalState,
+  loadMakerV8PackAuthoringContext,
   makerV8ChainTypes,
   parseMakerRootV8,
   parseMakerTreasuryV8,
@@ -30,8 +36,17 @@ import {
   isMakerV8RuntimeAttested,
   makerV8AttestedCoreArtifact,
   makerV8AttestedPackageTuple,
+  readMakerV8NativeSoulBinding,
+  isMakerV8NativeSoulBinding,
+  attestMakerV8NativeSoulIntegration,
+  isMakerV8NativeSoulIntegrationAttested,
+  attestMakerV8NativeSoulCompletionRecovery,
+  isMakerV8NativeSoulCompletionRecoveryAttested,
+  readMakerV8NativePersonalKiosk,
 } from '../maker-v8-chain.js';
+import { currentRuntimeAuthorityFixture } from './fixtures/maker-v8-current-runtime-authority.js';
 import { CORE_BASE_REGISTRY_MODULE_BASE64 } from './fixtures/maker-v8-runtime-attestation.js';
+import { nativeBindingFixture as createNativeBindingFixture, nativeIntegrationFixture as createNativeIntegrationFixture } from './fixtures/maker-v8-native-integration.js';
 
 const sid = (number) => `0x${number.toString(16).padStart(64, '0')}`;
 const txDigest = (character = '4') => character.repeat(44);
@@ -41,6 +56,270 @@ const wallet = sid(900);
 const mainnetRpc = (methods = {}) => ({
   async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
   ...methods,
+});
+
+const nativeBindingFixture = () => createNativeBindingFixture(runtime());
+const nativeIntegrationFixture = () => createNativeIntegrationFixture(runtime());
+test('optional native integration validates exact package introduction tables, dependencies and shared configs', async () => {
+  const f = nativeIntegrationFixture(); const { runtime: normalized } = await attestMakerV8Runtime(f.rpc, f.config);
+  assert.equal(normalized.nativeSoulIntegration.walrusPackageId, sid(82));
+  const evidence = await attestMakerV8NativeSoulIntegration(f.rpc, normalized);
+  assert.equal(evidence.packageEvidence.objectId, sid(80));
+  assert.equal(evidence.packageEvidence.walrusBlobType, `${sid(75)}::blob::Blob`);
+  assert.equal(evidence.kioskEvidence.personalKioskCapType, `${sid(74)}::personal_kiosk::PersonalKioskCap`);
+  assert.equal(evidence.objects.marketConfig.type, `${sid(73)}::market::MarketConfigV2`);
+  assert.equal(isMakerV8NativeSoulIntegrationAttested(evidence, normalized), true);
+  assert.equal(isMakerV8NativeSoulIntegrationAttested({ ...evidence }, normalized), false);
+  await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, f.config), { code: 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED' });
+  const changed = structuredClone(f.config);
+  changed.roles.output = { typeOriginPackageId: sid(998), callablePackageId: sid(998) };
+  const other = createNativeIntegrationFixture(changed);
+  const otherRuntime = (await attestMakerV8Runtime(other.rpc, other.config)).runtime;
+  assert.equal(isMakerV8NativeSoulIntegrationAttested(evidence, otherRuntime), false);
+  await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, otherRuntime));
+  assert.equal(isMakerV8NativeSoulIntegrationAttested(evidence, { ...f.config, nativeSoulIntegration: { ...f.pin, marketConfigV2Id: sid(999) } }), false);
+});
+
+test('native integration refuses missing pins, metadata substitution, package drift and malformed live configs', async t => {
+  await assert.rejects(attestMakerV8NativeSoulIntegration(mainnetRpc(), runtime()), { code: 'MAKER_V8_NATIVE_INTEGRATION_REQUIRED' });
+  for (const [label, mutate] of Object.entries({
+    unknown: f => { f.pin.extra = true; }, missing: f => { delete f.pin.walrusPackageId; },
+    digestFormat: f => { f.pin.soulidityCallableDigest = 'not-a-digest'; },
+    alias: f => { f.pin.kindRegistryId = f.pin.marketConfigV2Id; },
+    genericType: f => { f.pin.expectedNativeBinding.soulOriginalType += '<u8>'; },
+  })) await t.test(label, () => { const f = nativeIntegrationFixture(); mutate(f); assert.throws(() => assertMakerV8Runtime(f.config)); });
+  for (const [label, mutate] of Object.entries({
+    packageDigest: f => { f.objects.get(sid(80)).data.digest = toBase58(Uint8Array.from({ length: 32 }, () => 9)); },
+    packageLineage: f => { f.objects.get(sid(80)).data.bcs.originalId = sid(99); },
+    missingOrigins: f => { delete f.objects.get(sid(80)).data.bcs.typeOriginTable; },
+    wrongIntroduction: f => { f.objects.get(sid(80)).data.bcs.typeOriginTable[0].packageId = sid(80); },
+    missingModule: f => { delete f.objects.get(sid(80)).data.bcs.moduleMap.animacraft_v8_binding; },
+    duplicateType: f => { f.objects.get(sid(80)).data.bcs.typeOriginTable.push(f.objects.get(sid(80)).data.bcs.typeOriginTable[0]); },
+    wrongLink: f => { f.objects.get(sid(80)).data.bcs.linkageTable[0].upgradedId = sid(99); },
+    walrusVersion: f => { f.objects.get(sid(80)).data.bcs.linkageTable[1].upgradedVersion = '9'; },
+    outputTuple: f => { f.objects.get(sid(80)).data.bcs.linkageTable.find(row => row.originalId === f.config.roles.output.typeOriginPackageId).upgradedId = sid(999); },
+    runtimeVersion: f => { f.objects.get(sid(80)).data.bcs.linkageTable.find(row => row.originalId === f.config.roles.runtime.typeOriginPackageId).upgradedVersion = '9'; },
+    configOwner: f => { f.objects.get(sid(90)).data.owner = { Immutable: true }; },
+    wrongConfigType: f => { f.objects.get(sid(90)).data.type = `${sid(71)}::market::MarketConfigV2`; },
+    configJson: f => { f.objects.get(sid(90)).data.content.fields.primary_enabled = false; },
+    configTrailing: f => { const b = f.objects.get(sid(90)).data.bcs; b.bcsBytes = toBase64(Uint8Array.from([...fromBase64(b.bcsBytes), 0])); },
+  })) await t.test(label, async () => { const f = nativeIntegrationFixture(); const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config); mutate(f); await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, attested)); });
+});
+
+test('completed Soul recovery checks immutable authority without depending on fresh issuance or Kiosk/Walrus availability', async () => {
+  const f = nativeIntegrationFixture();
+  const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+  const config = f.objects.get(sid(90)).data;
+  config.content.fields.primary_enabled = false;
+  config.bcs.bcsBytes = toBase64(bcs.struct('MarketConfigV2', {
+    id: bcs.Address, version: bcs.u64(), legacy_config_id: bcs.Address, fee_recipient: bcs.Address,
+    platform_fee_bps: bcs.u16(), primary_enabled: bcs.bool(), secondary_enabled: bcs.bool(),
+  }).serialize(config.content.fields).toBytes());
+  await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, attested), { code: 'MAKER_V8_RUNTIME_AUTHORITY_MISMATCH' });
+  const getObject = f.rpc.getObject;
+  f.rpc.getObject = input => {
+    assert.ok(![81, 82, 90, 91, 92, 93].map(sid).includes(input.id), 'Recovery must not read issuance-only dependencies');
+    return getObject(input);
+  };
+  const recovery = await attestMakerV8NativeSoulCompletionRecovery(f.rpc, attested);
+  assert.equal(isMakerV8NativeSoulCompletionRecoveryAttested(recovery, attested), true);
+  assert.equal(isMakerV8NativeSoulCompletionRecoveryAttested({ ...recovery }, attested), false);
+  assert.equal(isMakerV8NativeSoulIntegrationAttested(recovery, attested), false);
+  assert.equal(isMakerV8NativeSoulCompletionRecoveryAttested(recovery, f.config), false);
+  assert.equal(Object.hasOwn(recovery, 'objects'), false);
+  await assert.rejects(readMakerV8NativePersonalKiosk(f.rpc, attested, recovery, wallet));
+});
+
+test('completed Soul recovery still refuses callable/type/binding/dependency drift and cross-runtime evidence', async t => {
+  for (const [label, mutate] of Object.entries({
+    digest: f => { f.objects.get(sid(80)).data.digest = toBase58(new Uint8Array(32).fill(9)); },
+    typeOrigin: f => { f.objects.get(sid(80)).data.bcs.typeOriginTable[0].packageId = sid(80); },
+    binding: f => { f.field.fieldId = sid(999); },
+    outputLink: f => { f.objects.get(sid(80)).data.bcs.linkageTable.find(row => row.originalId === f.config.roles.output.typeOriginPackageId).upgradedVersion = '9'; },
+  })) await t.test(label, async () => {
+    const f = nativeIntegrationFixture(); const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+    mutate(f); await assert.rejects(attestMakerV8NativeSoulCompletionRecovery(f.rpc, attested));
+  });
+  const f = nativeIntegrationFixture(); const attested = (await attestMakerV8Runtime(f.rpc, f.config)).runtime;
+  const proof = await attestMakerV8NativeSoulCompletionRecovery(f.rpc, attested);
+  const config = structuredClone(f.config); config.roles.output = { typeOriginPackageId: sid(998), callablePackageId: sid(998) };
+  const other = createNativeIntegrationFixture(config);
+  const otherRuntime = (await attestMakerV8Runtime(other.rpc, other.config)).runtime;
+  assert.equal(isMakerV8NativeSoulCompletionRecoveryAttested(proof, otherRuntime), false);
+  const mint = await attestMakerV8NativeSoulIntegration(f.rpc, attested);
+  assert.equal(isMakerV8NativeSoulCompletionRecoveryAttested(mint, attested), false);
+});
+
+async function personalKioskFixture() {
+  const f = nativeIntegrationFixture();
+  const attested = (await attestMakerV8Runtime(f.rpc, f.config)).runtime;
+  const integration = await attestMakerV8NativeSoulIntegration(f.rpc, attested);
+  const keyType = `${sid(73)}::market::PersonalKioskOwnerKey`;
+  const valueType = `${sid(73)}::market::PersonalKioskRegistration`;
+  const name = { type: keyType, bcsBase64: toBase64(bcs.Address.serialize(wallet).toBytes()) };
+  const schema = bcs.struct('PersonalKioskRegistration', { version: bcs.u64(), kiosk_id: bcs.Address, kiosk_cap_id: bcs.Address });
+  const registration = { version: '1', kiosk_id: sid(700), kiosk_cap_id: sid(701) };
+  const field = { kind: 'DynamicField', childId: null,
+    fieldId: deriveDynamicFieldID(sid(92), keyType, fromBase64(name.bcsBase64)), name,
+    value: { type: valueType, bcsBase64: toBase64(schema.serialize(registration).toBytes()) },
+    type: normalizeStructTag(`0x2::dynamic_field::Field<${keyType},${valueType}>`) };
+  const shapes = [
+    { id: bcs.Address, profits: bcs.struct('Balance', { value: bcs.u64() }), owner: bcs.Address, item_count: bcs.u32(), allow_extensions: bcs.bool() },
+    { id: bcs.Address, cap: bcs.option(bcs.struct('KioskOwnerCap', { id: bcs.Address, for: bcs.Address })) },
+  ];
+  const values = [
+    { id: sid(700), profits: { value: '0' }, owner: wallet, item_count: 1, allow_extensions: false },
+    { id: sid(701), cap: { id: sid(702), for: sid(700) } },
+  ];
+  const types = [normalizeStructTag('0x2::kiosk::Kiosk'), integration.kioskEvidence.personalKioskCapType];
+  const encode = index => {
+    const data = f.objects.get(values[index].id).data;
+    data.content.fields = structuredClone(values[index]);
+    data.bcs.bcsBytes = toBase64(bcs.struct('PersonalKioskFixture', shapes[index]).serialize(values[index]).toBytes());
+  };
+  values.forEach((value, index) => {
+    f.objects.set(value.id, { data: { objectId: value.id, version: '3', digest: f.pin.soulidityCallableDigest,
+      owner: index === 0 ? { Shared: { initial_shared_version: '1' } } : { AddressOwner: wallet }, type: types[index],
+      content: { dataType: 'moveObject', type: types[index] }, bcs: { dataType: 'moveObject', type: types[index] } } });
+    encode(index);
+  });
+  const calls = [];
+  f.rpc.getDynamicField = async input => { calls.push(input); return field; };
+  return { ...f, attested, integration, keyType, valueType, schema, registration, field, values, encode, calls };
+}
+
+test('native personal Kiosk reader uses exact introduced registry key and verifies real cap custody', async () => {
+  const f = await personalKioskFixture();
+  const result = await readMakerV8NativePersonalKiosk(f.rpc, f.attested, f.integration, wallet);
+  assert.deepEqual(result, { currentKioskId: sid(700), currentKioskCapOnChainId: sid(701) });
+  assert.deepEqual(f.calls, [{ parentId: sid(92), name: f.field.name }]);
+  assert.ok(Object.isFrozen(result));
+  await assert.rejects(readMakerV8NativePersonalKiosk(f.rpc, f.attested, { ...f.integration }, wallet));
+  await assert.rejects(readMakerV8NativePersonalKiosk(f.rpc, f.config, f.integration, wallet));
+});
+
+test('native personal Kiosk treats only exact official notFound as a new wallet', async () => {
+  const f = await personalKioskFixture();
+  const missing = objectId => new ObjectError('NOT_FOUND', 'absent', { reason: 'notFound', objectId });
+  f.rpc.getDynamicField = async () => { throw missing(f.field.fieldId); };
+  assert.deepEqual(await readMakerV8NativePersonalKiosk(f.rpc, f.attested, f.integration, wallet), {
+    currentKioskId: null, currentKioskCapOnChainId: null,
+  });
+  for (const error of [missing(sid(999)), new Error('not found'), { reason: 'notFound', objectId: f.field.fieldId }]) {
+    f.rpc.getDynamicField = async () => { throw error; };
+    await assert.rejects(readMakerV8NativePersonalKiosk(f.rpc, f.attested, f.integration, wallet), value => value === error);
+  }
+});
+
+test('native personal Kiosk rejects field substitution, stale registration and noncanonical custody', async t => {
+  for (const [label, mutate] of Object.entries({
+    wrongField: f => { f.field.fieldId = sid(999); },
+    wrongKey: f => { f.field.name.type = `${sid(71)}::market::PersonalKioskOwnerKey`; },
+    wrongSigner: f => { f.field.name.bcsBase64 = toBase64(bcs.Address.serialize(sid(999)).toBytes()); },
+    wrongValue: f => { f.field.value.type = `${sid(71)}::market::PersonalKioskRegistration`; },
+    wrongFieldType: f => { f.field.type = '0x2::dynamic_field::Field<u8,u8>'; },
+    child: f => { f.field.childId = sid(700); },
+    trailingBCS: f => { f.field.value.bcsBase64 = toBase64(new Uint8Array([...fromBase64(f.field.value.bcsBase64), 0])); },
+    wrongVersion: f => { f.field.value.bcsBase64 = toBase64(f.schema.serialize({ ...f.registration, version: '2' }).toBytes()); },
+    wrongKioskOwner: f => { f.objects.get(sid(700)).data.owner = { AddressOwner: wallet }; },
+    wrongStoredOwner: f => { f.values[0].owner = sid(999); f.encode(0); },
+    wrongCapOwner: f => { f.objects.get(sid(701)).data.owner = { AddressOwner: sid(999) }; },
+    wrongCapTarget: f => { f.values[1].cap.for = sid(999); f.encode(1); },
+    emptyCap: f => { f.values[1].cap = null; f.encode(1); },
+    wrongCapType: f => { f.objects.get(sid(701)).data.type = `${sid(81)}::personal_kiosk::PersonalKioskCap`; },
+    jsonDrift: f => { f.objects.get(sid(700)).data.content.fields.item_count = 2; },
+    objectId: f => { f.objects.get(sid(700)).data.objectId = sid(999); },
+  })) await t.test(label, async () => {
+    const f = await personalKioskFixture(); mutate(f);
+    await assert.rejects(readMakerV8NativePersonalKiosk(f.rpc, f.attested, f.integration, wallet));
+  });
+});
+
+test('native Soul reader proves exact protocol slot and permits witnesses introduced after native Soul', async () => {
+  const fixture = nativeBindingFixture(); const calls = [];
+  const rpc = mainnetRpc({ async getDynamicField(input) { calls.push(input); return fixture.field; } });
+  const evidence = await readMakerV8NativeSoulBinding(rpc, fixture.config);
+  assert.deepEqual(calls, [{ parentId: fixture.config.protocolConfigId, name: { type: fixture.keyType, bcsBase64: 'AA==' } }]);
+  assert.deepEqual([...fromBase64(fixture.field.name.bcsBase64)], [0]);
+  assert.notEqual(evidence.fieldId, deriveDynamicFieldID(fixture.config.protocolConfigId, fixture.keyType, new Uint8Array()));
+  assert.equal(evidence.soulOriginalType, `${sid(71)}::soul::Soul`);
+  assert.equal(evidence.soulDefiningType, `${sid(71)}::soul::Soul`);
+  assert.equal(evidence.mintWitnessDefiningType, `${sid(72)}::animacraft_v8_binding::MintBindingWitnessV8`);
+  assert.equal(evidence.ownerWitnessOriginalType, `${sid(71)}::animacraft_v8_binding::SoulOwnerWitnessV8`);
+  assert.equal(Object.isFrozen(evidence), true);
+  assert.equal(isMakerV8NativeSoulBinding(evidence, fixture.config), true);
+  assert.equal(isMakerV8NativeSoulBinding({ ...evidence }, fixture.config), false);
+  assert.equal(isMakerV8NativeSoulBinding(evidence, { ...fixture.config, protocolConfigId: sid(999) }), false);
+});
+
+test('native Soul binding rejects altered dynamic fields, noncanonical BCS and unrelated type lineage', async t => {
+  const mutations = {
+    protocol: f => { f.fields.config_id = sid(999); },
+    fieldId: f => { f.field.fieldId = sid(999); },
+    keyType: f => { f.field.name.type = `${sid(99)}::protocol_config_v8::SoulidityBindingSlotKeyV8`; },
+    emptyKeyBytes: f => { f.field.name.bcsBase64 = ''; },
+    trueKeyBytes: f => { f.field.name.bcsBase64 = 'AQ=='; },
+    emptyDerivedId: f => { f.field.fieldId = deriveDynamicFieldID(f.config.protocolConfigId, f.keyType, new Uint8Array()); },
+    trueDerivedId: f => { f.field.fieldId = deriveDynamicFieldID(f.config.protocolConfigId, f.keyType, new Uint8Array([1])); },
+    valueType: f => { f.field.value.type = `${sid(99)}::protocol_config_v8::SoulidityBindingV8`; },
+    fieldType: f => { f.field.type = '0x2::dynamic_field::Field<u8,u8>'; },
+    child: f => { f.field.childId = sid(9); },
+    missingChild: f => { delete f.field.childId; },
+    lineage: f => { f.fields.soul_original.name = `${sid(99).slice(2)}::soul::Soul`; },
+    proofIntroduction: f => { f.fields.owner_defining.name = `${sid(99).slice(2)}::animacraft_v8_binding::SoulOwnerWitnessV8`; },
+    generic: f => { f.fields.soul_defining.name += '<u8>'; },
+    prefixedStoredType: f => { f.fields.soul_original.name = `0x${f.fields.soul_original.name}`; },
+    wrongProof: f => { f.fields.mint_original.name = f.fields.owner_original.name; },
+  };
+  for (const [label, mutate] of Object.entries(mutations)) await t.test(label, async () => {
+    const fixture = nativeBindingFixture(); mutate(fixture);
+    fixture.field.value.bcsBase64 = toBase64(fixture.schema.serialize(fixture.fields).toBytes());
+    await assert.rejects(readMakerV8NativeSoulBinding(mainnetRpc({ async getDynamicField() { return fixture.field; } }), fixture.config), { code: 'MAKER_V8_RUNTIME_AUTHORITY_MISMATCH' });
+  });
+  const fixture = nativeBindingFixture(); fixture.field.value.bcsBase64 = toBase64(Uint8Array.from([...fromBase64(fixture.field.value.bcsBase64), 0]));
+  await assert.rejects(readMakerV8NativeSoulBinding(mainnetRpc({ async getDynamicField() { return fixture.field; } }), fixture.config), { code: 'MAKER_V8_RUNTIME_AUTHORITY_BCS_INVALID' });
+});
+
+test('native Soul binding has no missing-slot or wrong-network success fallback', async () => {
+  const fixture = nativeBindingFixture(); let reads = 0;
+  await assert.rejects(readMakerV8NativeSoulBinding(mainnetRpc({ async getDynamicField() { throw new Error('not found'); } }), fixture.config), { code: 'MAKER_V8_NATIVE_SOUL_BINDING_READ_FAILED' });
+  await assert.rejects(readMakerV8NativeSoulBinding({ async getChainIdentifier() { return 'testnet'; }, async getDynamicField() { reads++; } }, fixture.config), { code: 'MAKER_V8_RPC_CHAIN_ID_MISMATCH' });
+  assert.equal(reads, 0);
+});
+
+test('compiled native empty-key layout preserves its false byte inside the full Field BCS', () => {
+  const f = nativeBindingFixture();
+  // Independent layout: UID address, the compiler-inserted false byte, then value.
+  const raw = new Uint8Array([...bcs.Address.serialize(f.field.fieldId).toBytes(), 0, ...f.schema.serialize(f.fields).toBytes()]);
+  const parsed = f.fieldSchema.parse(raw);
+  assert.equal(parsed.name.dummy_field, false);
+  assert.deepEqual(parsed.value, f.fields);
+  assert.deepEqual([...f.fieldSchema.serialize(parsed).toBytes()], [...raw]);
+  const emptyKeySchema = bcs.struct('WrongField', { id: bcs.Address, name: bcs.struct('WrongEmptyKey', {}), value: f.schema });
+  const emptyRaw = emptyKeySchema.serialize({ id: f.field.fieldId, name: {}, value: f.fields }).toBytes();
+  assert.notDeepEqual([...emptyRaw], [...raw]);
+  // The generic SDK parser can consume shifted fields; exact value binding and
+  // canonical roundtrip, rather than parse success alone, reject that encoding.
+  const shifted = f.fieldSchema.parse(emptyRaw);
+  assert.notEqual(shifted.value.config_id, f.config.protocolConfigId);
+  assert.notEqual(toBase64(f.fieldSchema.serialize(shifted).toBytes()), toBase64(emptyRaw));
+});
+
+test('bootstrap authority uses compiled false-key bytes and rejects empty or true keys and derived IDs', async () => {
+  const f = currentRuntimeAuthorityFixture(); const original = f.rpc.getDynamicField;
+  let observed;
+  f.rpc.getDynamicField = async input => { observed = input; return original(input); };
+  await attestMakerV8Runtime(f.rpc, f.config);
+  assert.equal(observed.name.bcsBase64, 'AA==');
+  assert.equal(f.field.fieldId, deriveDynamicFieldID(f.config.catalogId, observed.name.type, new Uint8Array([0])));
+  for (const [bytes, wrongId] of [[new Uint8Array(), false], [new Uint8Array([1]), false],
+    [new Uint8Array(), true], [new Uint8Array([1]), true]]) {
+    const fresh = currentRuntimeAuthorityFixture();
+    if (wrongId) fresh.field.fieldId = deriveDynamicFieldID(fresh.config.catalogId, fresh.field.name.type, bytes);
+    else fresh.field.name.bcsBase64 = toBase64(bytes);
+    fresh.rpc.getDynamicField = async () => fresh.field;
+    await assert.rejects(attestMakerV8Runtime(fresh.rpc, fresh.config), { code: 'MAKER_V8_RUNTIME_AUTHORITY_MISMATCH' });
+  }
 });
 
 function runtime() {
@@ -112,19 +391,10 @@ function activationEvent(overrides = {}) {
       catalog_id: rt.catalogId,
       product_binding_commitment: hash(5),
       call_cap_set_commitment: hash(6),
-      native_capability_mask: '127',
-      capability_binding_commitment: hash(7),
       base_registry_id: b.baseRegistryId,
-      seal_policy_config_id: rt.roleConfigIds.seal,
-      seal_registry_id: b.sealRegistryId,
-      runtime_definition_registry_id: b.runtimeDefinitionRegistryId,
-      pack_registry_id: b.packRegistryId,
-      admission_authority_id: b.packAdmissionAuthorityId,
-      output_registry_id: b.outputRegistryId,
-      soul_registry_id: b.soulRegistryId,
-      physical_registry_id: b.physicalRegistryId,
-      market_registry_id: b.marketRegistryId,
-      market_treasury_id: b.marketTreasuryId,
+      registry_ids: companionFields(b),
+      replacement_id: sid(120),
+      bootstrap_certificate_id: sid(121),
       ...overrides,
     },
   };
@@ -143,16 +413,8 @@ function moveObject(type, objectId, fields, owner = { AddressOwner: wallet }, ve
   };
 }
 
-function capabilityFields(rt, b) {
+function companionFields(b) {
   return {
-    native_capability_mask: '127',
-    catalog_id: rt.catalogId,
-    call_cap_set: {},
-    protocol_config_id: rt.protocolConfigId,
-    base_registry_id: b.baseRegistryId,
-    maker_treasury_id: b.makerTreasuryId,
-    protocol_treasury_id: rt.protocolTreasuryId,
-    seal_policy_config_id: rt.roleConfigIds.seal,
     seal_registry_id: b.sealRegistryId,
     runtime_definition_registry_id: b.runtimeDefinitionRegistryId,
     pack_registry_id: b.packRegistryId,
@@ -161,13 +423,6 @@ function capabilityFields(rt, b) {
     soul_registry_id: b.soulRegistryId,
     physical_registry_id: b.physicalRegistryId,
     market_registry_id: b.marketRegistryId,
-    market_treasury_id: b.marketTreasuryId,
-    seal_readiness_commitment: hash(8),
-    runtime_readiness_commitment: hash(9),
-    output_readiness_commitment: hash(10),
-    physical_readiness_commitment: hash(11),
-    market_readiness_commitment: hash(12),
-    commitment: hash(7),
   };
 }
 
@@ -189,16 +444,21 @@ function rootResponse(overrides = {}) {
       maker_key: 'fresh-maker',
       maker_version: '1',
       version_commitment: hash(1),
-      previous_root_id: [],
-      previous_version_commitment: [],
-      successor_authority_id: [],
-      successor_root_id: [],
-      renderer_commitment: hash(3),
-      manifest_blob_id: 'manifest-blob',
-      manifest_sha256: hash(13),
-      content_commitment: hash(2),
-      base_registry_id: [b.baseRegistryId],
-      maker_treasury_id: [b.makerTreasuryId],
+      previous_root_id: null,
+      previous_version_commitment: null,
+      successor_authority_id: null,
+      successor_root_id: null,
+      maker_document_commitment: hash(10),
+      creator_defaults_commitment: hash(11),
+      living_content_binding_commitment: hash(12),
+      content: {
+        renderer_commitment: hash(3),
+        manifest_blob_id: 'manifest-blob',
+        manifest_sha256: hash(13),
+        content_commitment: hash(2),
+      },
+      base_registry_id: b.baseRegistryId,
+      maker_treasury_id: b.makerTreasuryId,
       expected_base_definition_count: '4',
       expected_base_registry_commitment: hash(14),
       expected_pack_admission_policy_commitment: hash(15),
@@ -206,11 +466,16 @@ function rootResponse(overrides = {}) {
         protocol_config_id: rt.protocolConfigId,
         protocol_config_revision: '7',
         protocol_config_commitment: hash(4),
+        protocol_treasury_id: rt.protocolTreasuryId,
+        commitment: hash(16),
       },
-      rights: {},
-      product_release_binding: [{}],
-      pack_admission_binding: [{}],
-      capability_registry_binding: { fields: capabilityFields(rt, b) },
+      rights: { commitment: hash(17) },
+      publication: {
+        catalog_id: rt.catalogId,
+        sealed_base_registry_commitment: '12'.repeat(32),
+        release_commitments: { product_binding_commitment: hash(5), call_cap_set_commitment: hash(6) },
+        registry_ids: companionFields(b),
+      },
       created_at_ms: '1',
       ...overrides,
     },
@@ -222,71 +487,12 @@ function parsedRoot() {
   return parseMakerRootV8(rootResponse(), runtime(), activationEvent());
 }
 
-function catalogAndConfigResponses(rt, overrides = {}) {
-  const roleCommitment = Object.fromEntries(Object.keys(rt.roles).map((role, index) => [role, hash(40 + index)]));
-  const roleBindings = Object.fromEntries(Object.entries(rt.roles).map(([role, identity], index) => [role, {
-    fields: {
-      original_package_id: identity.typeOriginPackageId,
-      callable_package_id: identity.callablePackageId,
-      source_commitment: hash(10 + index),
-      package_commitment: hash(20 + index),
-      abi_commitment: hash(30 + index),
-      commitment: roleCommitment[role],
-    },
-  }]));
-  const companionRoles = ['seal', 'runtime', 'output', 'physical', 'market', 'release'];
-  const authority = Object.fromEntries(companionRoles.map((role, index) => [role, sid(300 + index)]));
-  const productBindingCommitment = hash(60);
-  const callCapSetCommitment = hash(61);
-  const catalogType = `${rt.roles.core.typeOriginPackageId}::package_binding_v8::ProductReleaseCatalogV8`;
-  const catalog = moveObject(catalogType, rt.catalogId, {
-    version: '8',
-    protocol_config_id: rt.protocolConfigId,
-    protocol_config_revision: '7',
-    protocol_config_commitment: hash(4),
-    binding: { fields: {
-      version: '8',
-      native_capability_mask: '127',
-      ...roleBindings,
-      commitment: productBindingCommitment,
-    } },
-    call_cap_set: { fields: {
-      version: '8',
-      catalog_id: rt.catalogId,
-      product_binding_commitment: productBindingCommitment,
-      ...Object.fromEntries(companionRoles.map((role) => [`${role}_authority_id`, authority[role]])),
-      commitment: callCapSetCommitment,
-    } },
-    ...Object.fromEntries(companionRoles.map((role) => [`${role}_call_cap`, null])),
-    ...overrides,
-  }, { Shared: { initial_shared_version: '1' } });
-  const typeNames = {
-    seal: ['seal_v8', 'SealPolicyConfigV8'],
-    runtime: ['runtime_binding_v8', 'RuntimePackageConfigV8'],
-    output: ['output_v8', 'OutputPackageConfigV8'],
-    physical: ['physical_v8', 'PhysicalPackageConfigV8'],
-    market: ['market_v8', 'MarketPackageConfigV8'],
-    release: ['release_v8', 'ReleasePackageConfigV8'],
-  };
-  const configs = Object.fromEntries(companionRoles.map((role) => {
-    const [moduleName, typeName] = typeNames[role];
-    const type = `${rt.roles[role].typeOriginPackageId}::${moduleName}::${typeName}`;
-    const callCap = { fields: {
-      version: '8',
-      authority_id: authority[role],
-      catalog_id: rt.catalogId,
-      product_binding_commitment: productBindingCommitment,
-      role_binding_commitment: roleCommitment[role],
-      call_cap_set_commitment: callCapSetCommitment,
-    } };
-    return [role, moveObject(type, rt.roleConfigIds[role], {
-      version: '8',
-      catalog_id: rt.catalogId,
-      product_binding_commitment: productBindingCommitment,
-      call_cap_set_commitment: callCapSetCommitment,
-      [`${role}_call_cap`]: callCap,
-    }, { Shared: { initial_shared_version: '1' } })];
-  }));
+function catalogAndConfigResponses(rt) {
+  const current = currentRuntimeAuthorityFixture();
+  assert.deepEqual(current.config, rt);
+  const catalog = current.objects.get(rt.catalogId);
+  const configs = Object.fromEntries(Object.entries(rt.roleConfigIds)
+    .map(([role, objectId]) => [role, current.objects.get(objectId)]));
   const packages = Object.fromEntries(Object.keys(rt.roles).map((role, index) => [role, {
     data: {
       objectId: rt.roles[role].callablePackageId,
@@ -299,23 +505,25 @@ function catalogAndConfigResponses(rt, overrides = {}) {
       },
     },
   }]));
-  return { catalog, configs, packages };
+  return { catalog, configs, packages, current };
 }
 
-test('Mainnet ProductReleaseCatalog and all six installed call caps attest the only signing runtime', async () => {
-  const rt = runtime();
-  const evidence = catalogAndConfigResponses(rt);
-  const rpc = mainnetRpc({
+function attestationRpc(evidence, rt) {
+  return mainnetRpc({
+    getDynamicField: evidence.current.rpc.getDynamicField,
     async getObject({ id: objectId }) {
-      if (objectId === rt.catalogId) return evidence.catalog;
-      const packageRole = Object.keys(rt.roles).find((candidate) => rt.roles[candidate].callablePackageId === objectId);
-      if (packageRole) return evidence.packages[packageRole];
-      const role = Object.keys(rt.roleConfigIds).find((candidate) => rt.roleConfigIds[candidate] === objectId);
-      return evidence.configs[role];
+      const role = Object.keys(rt.roles).find((r) => rt.roles[r].callablePackageId === objectId);
+      return role ? evidence.packages[role] : evidence.current.objects.get(objectId);
     },
   });
+}
+
+test('Mainnet current Catalog, six consumed setup installations and certified replacement attest the only signing runtime', async () => {
+  const rt = runtime();
+  const evidence = catalogAndConfigResponses(rt);
+  const rpc = attestationRpc(evidence, rt);
   const attested = await attestMakerV8Runtime(rpc, rt);
-  assert.equal(attested.catalog.productBindingCommitment, '3c'.repeat(32));
+  assert.equal(attested.catalog.productBindingCommitment, Buffer.from(evidence.catalog.data.content.fields.binding.commitment).toString('hex'));
   assert.deepEqual(Object.keys(attested.configs), ['seal', 'runtime', 'output', 'physical', 'market', 'release']);
   assert.equal(isMakerV8RuntimeAttested(attested.runtime), true);
   assert.equal(isMakerV8RuntimeAttested(rt), false, 'caller config is not the normalized attested capability');
@@ -351,34 +559,17 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
   };
   projectBytes(grpcProjected.catalog.data.content.fields);
   Object.values(grpcProjected.configs).forEach((response) => projectBytes(response.data.content.fields));
-  const grpcAttested = await attestMakerV8Runtime(mainnetRpc({
-    async getObject({ id: objectId }) {
-      if (objectId === rt.catalogId) return grpcProjected.catalog;
-      const packageRole = Object.keys(rt.roles)
-        .find((candidate) => rt.roles[candidate].callablePackageId === objectId);
-      if (packageRole) return grpcProjected.packages[packageRole];
-      const role = Object.keys(rt.roleConfigIds)
-        .find((candidate) => rt.roleConfigIds[candidate] === objectId);
-      return grpcProjected.configs[role];
-    },
-  }), rt);
-  assert.equal(grpcAttested.catalog.productBindingCommitment, '3c'.repeat(32));
+  const grpcAttested = await attestMakerV8Runtime(attestationRpc(grpcProjected, rt), rt);
+  assert.equal(grpcAttested.catalog.productBindingCommitment, Buffer.from(evidence.catalog.data.content.fields.binding.commitment).toString('hex'));
 
   const publishedCore = catalogAndConfigResponses(rt);
   const publishedCoreBytes = Uint8Array.from(fromBase64(CORE_BASE_REGISTRY_MODULE_BASE64));
-  publishedCoreBytes.set(fromHex(rt.roles.core.callablePackageId), 4646);
+  // Current metered module's self-address slot, decoded from its Move address
+  // table. This models publication substitution; it is not a live receipt.
+  assert.deepEqual(publishedCoreBytes.slice(10408, 10440), new Uint8Array(32));
+  publishedCoreBytes.set(fromHex(rt.roles.core.callablePackageId), 10408);
   publishedCore.packages.core.data.bcs.moduleMap.base_registry_v8 = toBase64(publishedCoreBytes);
-  const publishedAttested = await attestMakerV8Runtime(mainnetRpc({
-    async getObject({ id: objectId }) {
-      if (objectId === rt.catalogId) return publishedCore.catalog;
-      const packageRole = Object.keys(rt.roles)
-        .find((candidate) => rt.roles[candidate].callablePackageId === objectId);
-      if (packageRole) return publishedCore.packages[packageRole];
-      const role = Object.keys(rt.roleConfigIds)
-        .find((candidate) => rt.roleConfigIds[candidate] === objectId);
-      return publishedCore.configs[role];
-    },
-  }), rt);
+  const publishedAttested = await attestMakerV8Runtime(attestationRpc(publishedCore, rt), rt);
   assert.equal(
     publishedAttested.coreArtifact.baseRegistryModuleSha256,
     MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
@@ -389,16 +580,14 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
   );
 
   const stale = catalogAndConfigResponses(rt);
-  stale.configs.market.data.content.fields.market_call_cap.fields.authority_id = sid(999);
-  await assert.rejects(() => attestMakerV8Runtime(mainnetRpc({
-    async getObject({ id: objectId }) {
-      if (objectId === rt.catalogId) return stale.catalog;
-      const packageRole = Object.keys(rt.roles).find((candidate) => rt.roles[candidate].callablePackageId === objectId);
-      if (packageRole) return stale.packages[packageRole];
-      const role = Object.keys(rt.roleConfigIds).find((candidate) => rt.roleConfigIds[candidate] === objectId);
-      return stale.configs[role];
-    },
-  }), rt), (error) => error.code === 'MAKER_V8_COMPANION_CALL_CAP_MISMATCH');
+  stale.configs.market.data.content.fields.runtime_caller_cap.caller_callable_package_id = sid(999);
+  stale.current.sync(rt.roleConfigIds.market);
+  await assert.rejects(() => attestMakerV8Runtime(attestationRpc(stale, rt), rt), (error) => error.code === 'MAKER_V8_RUNTIME_AUTHORITY_MISMATCH');
+
+  const wrongTypeOrigin = catalogAndConfigResponses(rt);
+  wrongTypeOrigin.configs.market.data.type = `${sid(999)}::market_v8::MarketPackageConfigV8`;
+  await assert.rejects(() => attestMakerV8Runtime(attestationRpc(wrongTypeOrigin, rt), rt),
+    { code: 'UNSUPPORTED_LEGACY_PRODUCT' });
 
   for (const [name, expectedCode, mutate] of [
     ['digest', 'MAKER_V8_CHAIN_DIGEST_INVALID', (response) => { response.data.digest = 'caller-hash'; }],
@@ -408,17 +597,7 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
   ]) {
     const corrupt = catalogAndConfigResponses(rt);
     mutate(corrupt.packages.market);
-    await assert.rejects(() => attestMakerV8Runtime(mainnetRpc({
-      async getObject({ id: objectId }) {
-        if (objectId === rt.catalogId) return corrupt.catalog;
-        const packageRole = Object.keys(rt.roles)
-          .find((candidate) => rt.roles[candidate].callablePackageId === objectId);
-        if (packageRole) return corrupt.packages[packageRole];
-        const role = Object.keys(rt.roleConfigIds)
-          .find((candidate) => rt.roleConfigIds[candidate] === objectId);
-        return corrupt.configs[role];
-      },
-    }), rt), (error) => error.code === expectedCode, name);
+    await assert.rejects(() => attestMakerV8Runtime(attestationRpc(corrupt, rt), rt), (error) => error.code === expectedCode, name);
   }
 
   for (const [name, mutate] of [
@@ -429,15 +608,7 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
   ]) {
     const corrupt = catalogAndConfigResponses(rt);
     mutate(corrupt.packages.core);
-    await assert.rejects(() => attestMakerV8Runtime(mainnetRpc({
-      async getObject({ id: objectId }) {
-        if (objectId === rt.catalogId) return corrupt.catalog;
-        const packageRole = Object.keys(rt.roles).find((candidate) => rt.roles[candidate].callablePackageId === objectId);
-        if (packageRole) return corrupt.packages[packageRole];
-        const role = Object.keys(rt.roleConfigIds).find((candidate) => rt.roleConfigIds[candidate] === objectId);
-        return corrupt.configs[role];
-      },
-    }), rt), (error) => error.code === 'MAKER_V8_CORE_ARTIFACT_UNMEASURED', name);
+    await assert.rejects(() => attestMakerV8Runtime(attestationRpc(corrupt, rt), rt), (error) => error.code === 'MAKER_V8_CORE_ARTIFACT_UNMEASURED', name);
   }
 });
 
@@ -451,7 +622,8 @@ test('stable chain types use TypeOrigin identities and exact native payment gene
 
 test('MakerV8Activated parses the complete seven-role tuple and rejects old discovery', () => {
   const activation = parseMakerV8ActivatedEvent(activationEvent(), runtime());
-  assert.deepEqual(activation.binding, binding());
+  const { marketTreasuryId: _, ...eventBinding } = binding();
+  assert.deepEqual(activation.binding, eventBinding);
   assert.equal(activation.owner, wallet);
   assert.equal(activation.productBindingCommitment, '05'.repeat(32));
 
@@ -465,10 +637,10 @@ test('MakerV8Activated parses the complete seven-role tuple and rejects old disc
 
 test('activation rejects missing fields, object collisions, and runtime identity drift', () => {
   const missing = activationEvent();
-  delete missing.parsedJson.market_treasury_id;
+  delete missing.parsedJson.registry_ids;
   assert.throws(() => parseMakerV8ActivatedEvent(missing, runtime()), /required/);
   assert.throws(
-    () => parseMakerV8ActivatedEvent(activationEvent({ market_treasury_id: binding().marketRegistryId }), runtime()),
+    () => parseMakerV8ActivatedEvent(activationEvent({ registry_ids: { ...companionFields(binding()), pack_registry_id: binding().marketRegistryId } }), runtime()),
     (error) => error.code === 'MAKER_V8_BINDING_ID_COLLISION',
   );
   assert.throws(
@@ -477,17 +649,18 @@ test('activation rejects missing fields, object collisions, and runtime identity
   );
 });
 
-test('Root readback verifies lifecycle, immutable snapshot, and every capability binding', () => {
+test('Root readback verifies lifecycle, immutable snapshot, and every companion binding', () => {
   const root = parsedRoot();
   assert.equal(root.lifecycle, 'ACTIVE');
   assert.equal(root.owner.kind, 'shared');
   assert.equal(root.creatorAddress, wallet);
-  assert.equal(root.capabilityBindingCommitment, '07'.repeat(32));
+  assert.equal(root.productBindingCommitment, '05'.repeat(32));
+  assert.equal(root.callCapSetCommitment, '06'.repeat(32));
   const corrupted = rootResponse();
-  corrupted.data.content.fields.capability_registry_binding.fields.market_registry_id = sid(999);
+  corrupted.data.content.fields.publication.registry_ids.market_registry_id = sid(999);
   assert.throws(
     () => parseMakerRootV8(corrupted, runtime(), activationEvent()),
-    (error) => error.code === 'MAKER_V8_CAPABILITY_BINDING_MISMATCH',
+    (error) => error.code === 'MAKER_V8_COMPANION_BINDING_MISMATCH',
   );
 
   const transferred = parseMakerRootV8(rootResponse({
@@ -534,6 +707,9 @@ test('ProtocolConfig and MakerTreasury readback provide live eligibility facts',
     { Shared: { initial_shared_version: '1' } },
   );
   const protocol = parseProtocolConfigV8(protocolResponse, rt, root);
+  const wrappedRoot = structuredClone(root);
+  wrappedRoot.fields.economics = { fields: wrappedRoot.fields.economics };
+  assert.equal(parseProtocolConfigV8(protocolResponse, rt, wrappedRoot).objectId, rt.protocolConfigId);
   const treasury = parseMakerTreasuryV8(treasuryResponse, rt, root);
   assert.equal(protocol.enabled, true);
   assert.equal(protocol.revision, 7n);
@@ -694,7 +870,7 @@ test('owned inventory queries only stable v8 types and requires complete Soul bu
   const rpc = mainnetRpc({
     async getOwnedObjects(input) {
       calls.push(input);
-      return { data: byType.get(input.filter.StructType), hasNextPage: false, nextCursor: null };
+      return { data: byType.get(input.filter.StructType) ?? [], hasNextPage: false, nextCursor: null };
     },
   });
   const inventory = await listOwnedMakerV8Inventory(rpc, runtime(), wallet, root);
@@ -703,11 +879,261 @@ test('owned inventory queries only stable v8 types and requires complete Soul bu
   assert.equal(inventory.adminCaps.length, 0);
   assert.deepEqual(new Set(calls.map((call) => call.filter.StructType)), new Set([
     types.adminCap,
+    types.makerAccess,
+    types.packAdminCap,
+    types.packPass,
+    types.externalItemAdminCap,
+    types.ownedExternalItem,
+    types.ownedBaseItem,
+    types.makerLoadout,
     types.completeOutput,
     types.completeReceipt,
     types.canonicalSoul,
     types.physicalAsset,
   ]));
+});
+
+test('contextual inventory certifies access, owned Base/external Items, active Pack passes, and loadout slots', async () => {
+  const rt = runtime();
+  const root = parsedRoot();
+  const types = makerV8ChainTypes(rt);
+  const productId = sid(730);
+  const rows = new Map([
+    [types.makerAccess, [moveObject(types.makerAccess, sid(701), {
+      version: '8', root_id: root.objectId, maker_version: '1',
+      root_content_commitment: hash(2), holder: wallet,
+      paid_atomic: '0', issued_at_ms: '10',
+    })]],
+    [types.packPass, [moveObject(types.packPass, sid(702), {
+      version: '8', release_id: sid(731), root_id: root.objectId,
+      root_version: '1', root_content_commitment: hash(2),
+      release_content_commitment: hash(20), holder: wallet,
+      paid_atomic: '0', issued_at_ms: '11', commitment: hash(21),
+    })]],
+    [types.ownedBaseItem, [moveObject(types.ownedBaseItem, sid(703), {
+      version: '8', root_id: root.objectId, root_version: '1',
+      root_content_commitment: hash(2),
+      definition_registry_id: root.binding.runtimeDefinitionRegistryId,
+      pack_registry_id: root.binding.packRegistryId,
+      base_registry_id: root.binding.baseRegistryId,
+      part_key: 'body', item_key: 'base-hair', item_payload_commitment: hash(22),
+      holder: wallet, ownership_epoch: '3', transferable: true,
+      equip_lock: { fields: { loadout_id: sid(705), equip_revision: '8', selection_index: '1' } },
+    })]],
+    [types.ownedExternalItem, [moveObject(types.ownedExternalItem, sid(704), {
+      version: '8', product_id: productId,
+      product_content_commitment: hash(23), asset_content_commitment: hash(24),
+      holder: wallet, ownership_epoch: '2', transferable: true, equip_lock: null,
+    })]],
+    [types.makerLoadout, [moveObject(types.makerLoadout, sid(705), {
+      version: '8', root_id: root.objectId, root_version: '1',
+      root_content_commitment: hash(2),
+      definition_registry_id: root.binding.runtimeDefinitionRegistryId,
+      pack_registry_id: root.binding.packRegistryId,
+      maker_access_pass_id: sid(701), maker_access_commitment: hash(25),
+      holder: wallet, revision: '8', attached_pack_definitions: [], definition_slots: [{ source_definition_id: root.objectId,
+        part_key: 'body', profile_commitment: hash(27), start: '0', capacity: '1' }],
+      selections: [null], selection_count: '0', commitment: hash(26),
+    })]],
+  ]);
+  const product = moveObject(types.externalItemProduct, productId, {
+    version: '8', root_id: root.objectId, root_version: '1',
+    root_content_commitment: hash(2), part_key: 'body', item_key: 'external-hat',
+    style_key: 'violet', lifecycle: '0', content_commitment: hash(23),
+    layer_track_key: 'body-track', color_channel_key: null, default_swatch_key: null,
+    asset_blob_id: 'external-asset', asset_sha256: hash(24),
+    asset_media_type: 'image/png', asset_byte_length: '1024',
+    asset_content_commitment: hash(24), transferable: true,
+    compatibility_commitment: hash(25),
+  }, { Shared: { initial_shared_version: '1' } });
+  const releaseId = sid(731);
+  const admissionTableId = sid(732);
+  const release = moveObject(types.packRelease, releaseId, {
+    version: '8', root_id: root.objectId, root_version: '1',
+    root_content_commitment: hash(2), semantic_pack_id: 'pack-one',
+    manifest_blob_id: 'pack-manifest', manifest_sha256: hash(30),
+    content_commitment: hash(20), lifecycle: '2', expected_style_count: '1',
+    access_kind: '0', access_price_atomic: '0',
+  }, { Shared: { initial_shared_version: '1' } });
+  const packRegistry = moveObject(types.packRegistry, root.binding.packRegistryId, {
+    version: '8', root_id: root.objectId, root_version: '1',
+    root_content_commitment: hash(2), releases: { id: admissionTableId, size: '1' }, external_admissions: { id: sid(733), size: '1' },
+  }, { Shared: { initial_shared_version: '1' } });
+  const admissionLayout = bcs.struct('PackAdmissionRecordV8Fixture', {
+    release_id: bcs.Address,
+    semantic_pack_id: bcs.string(),
+    release_content_commitment: bcs.vector(bcs.u8()),
+    admitted_revision: bcs.u64(),
+    admission_state: bcs.u8(),
+  });
+  const admissionBcs = admissionLayout.serialize({
+    release_id: releaseId,
+    semantic_pack_id: 'pack-one',
+    release_content_commitment: hash(20),
+    admitted_revision: 4n,
+    admission_state: 0,
+  }).toBytes();
+  let servedRelease = release;
+  let servedPackRegistry = packRegistry;
+  const ownedRows = { semantic_pack_id: 'pack-one', tracks: [], colors: [], rules: [], visibility: [],
+    parts: [{ sequence: '0', key: 'plume', label: 'Plume', kind: 0, render_order: '0', menu_order: '0',
+      visible: true, required: false, slot_mode: 1, capacity: '2', track_keys: [],
+      visibility_tokens: [], visibility_commitment: hash(31), payload_commitment: hash(32) }] };
+  let definitionHash = [...packDefinitionCommitmentV8(releaseId, hash(20), ownedRows)];
+  const definitionRegistry = moveObject(types.runtimeDefinitions, root.binding.runtimeDefinitionRegistryId, {
+    version: '8', root_id: root.objectId, root_version: '1', root_content_commitment: hash(2),
+    base_registry_id: root.binding.baseRegistryId, sealed: true, admission_ceiling: '1',
+  }, { Shared: { initial_shared_version: '1' } });
+  let externalMode = 'active';
+  const rpc = mainnetRpc({
+    async getOwnedObjects(input) {
+      return { data: rows.get(input.filter.StructType) ?? [], hasNextPage: false, nextCursor: null };
+    },
+    async getObject(input) {
+      if (input.id === productId) return product;
+      if (input.id === releaseId) return servedRelease;
+      if (input.id === root.binding.packRegistryId) return servedPackRegistry;
+      if (input.id === root.binding.runtimeDefinitionRegistryId) return definitionRegistry;
+      assert.fail(`unexpected object read ${input.id}`);
+    },
+    async getDynamicField(input) {
+      if (input.parentId === releaseId) {
+        const valueType = `${rt.roles.runtime.typeOriginPackageId}::runtime_v8::PackDefinitionsV8`;
+        return { kind: 'DynamicField', name: input.name,
+          fieldId: deriveDynamicFieldID(releaseId, input.name.type, fromBase64(input.name.bcsBase64)),
+          type: `0x2::dynamic_field::Field<${input.name.type},${valueType}>`, value: {
+            type: valueType, bcsBase64: toBase64(MAKER_V8_PACK_DEFINITIONS_BCS.serialize({ version: 8,
+              release_id: releaseId, release_content_commitment: hash(20), rows: ownedRows, commitment: definitionHash }).toBytes()),
+          } };
+      }
+      if (input.parentId === sid(733) && externalMode === 'missing') throw new ObjectError('NOT_FOUND', 'absent', {
+        reason: 'notFound', objectId: deriveDynamicFieldID(input.parentId, input.name.type, fromBase64(input.name.bcsBase64)),
+      });
+      if (input.parentId === sid(733) && externalMode === 'network') throw new Error('network unavailable');
+      if (input.parentId === sid(733)) return { kind: 'DynamicField', name: input.name,
+        value: { type: `${rt.roles.runtime.typeOriginPackageId}::runtime_v8::ExternalAdmissionRecordV8`,
+          bcsBase64: toBase64(bcs.struct('ExternalAdmissionFixture', { product_id: bcs.Address,
+            compatibility_commitment: bcs.vector(bcs.u8()), product_content_commitment: bcs.vector(bcs.u8()),
+            attestation_commitment: bcs.option(bcs.vector(bcs.u8())), admitted_revision: bcs.u64(), admission_state: bcs.u8() }).serialize({
+              product_id: productId, compatibility_commitment: hash(externalMode === 'drift' ? 26 : 25), product_content_commitment: hash(23), attestation_commitment: null, admitted_revision: 1, admission_state: externalMode === 'revoked' ? 1 : 0,
+            }).toBytes()) } };
+      assert.equal(input.parentId, admissionTableId);
+      return {
+        kind: 'DynamicField',
+        name: input.name,
+        value: {
+          type: `${rt.roles.runtime.typeOriginPackageId}::runtime_v8::PackAdmissionRecordV8`,
+          bcsBase64: toBase64(admissionBcs),
+        },
+      };
+    },
+  });
+  const inventory = await listOwnedMakerV8Inventory(rpc, rt, wallet, root);
+  assert.equal(inventory.makerAccessPasses.length, 1);
+  assert.equal(inventory.packPasses.length, 1);
+  assert.equal(inventory.packPasses[0].release.semanticPackId, 'pack-one');
+  assert.equal(inventory.packPasses[0].admission.admittedRevision, '4');
+  assert.equal(inventory.ownedBaseItems[0].equipLock.selectionIndex, '1');
+  assert.equal(inventory.ownedExternalItems[0].product.styleKey, 'violet');
+  assert.equal(inventory.ownedExternalItems[0].product.trackKey, 'body-track');
+  assert.equal(inventory.ownedExternalItems[0].product.assetBlobId, 'external-asset');
+  assert.equal(inventory.ownedExternalItems[0].product.assetMediaType, 'image/png');
+  assert.equal(inventory.ownedExternalItems[0].product.assetByteLength, 1024);
+  assert.equal(inventory.makerLoadouts[0].revision, 8n);
+  assert.deepEqual(inventory.makerLoadouts[0].attachedPackDefinitions, []);
+  assert.equal(inventory.makerLoadouts[0].definitionSlots[0].part_key, 'body');
+  const originalLoadout = rows.get(types.makerLoadout)[0];
+  const originalSlots = structuredClone(originalLoadout.data.content.fields.definition_slots);
+  for (const mutation of ['missing', 'null', 'object', 'attached-with-base-only-slots']) {
+    const altered = structuredClone(originalLoadout);
+    const fields = altered.data.content.fields;
+    if (mutation === 'missing') delete fields.attached_pack_definitions;
+    if (mutation === 'null') fields.attached_pack_definitions = null;
+    if (mutation === 'object') fields.attached_pack_definitions = {};
+    if (mutation === 'attached-with-base-only-slots') fields.attached_pack_definitions = [{
+      release_id: sid(731), definition_commitment: hash(28),
+    }];
+    rows.set(types.makerLoadout, [altered]);
+    await assert.rejects(listOwnedMakerV8Inventory(rpc, rt, wallet, root), { code: 'MAKER_V8_LOADOUT_LAYOUT_INVALID' });
+  }
+  const attachedLoadout = structuredClone(originalLoadout);
+  const attachedFields = attachedLoadout.data.content.fields;
+  attachedFields.attached_pack_definitions = [{ release_id: releaseId, definition_commitment: definitionHash }];
+  const profile = deriveMakerV8PackProfiles({ contentCommitment: Buffer.from(hash(20)).toString('hex'), rows: ownedRows }, 1)[0];
+  attachedFields.definition_slots.push({ source_definition_id: releaseId, part_key: 'plume',
+    profile_commitment: [...fromHex(profile.profileCommitment)], start: '1', capacity: '2' });
+  attachedFields.selections.push(null, null);
+  rows.set(types.makerLoadout, [attachedLoadout]);
+  const withAttachment = await listOwnedMakerV8Inventory(rpc, rt, wallet, root);
+  assert.equal(withAttachment.makerLoadouts[0].definitionSlots[1].part_key, 'plume');
+  assert.deepEqual(withAttachment.makerLoadouts[0].packDefinitionLayout, {
+    bindings: [{ releaseId, definitionCommitment: Buffer.from(definitionHash).toString('hex') }],
+    profiles: [{ ...profile, releaseId }],
+  });
+  assert.ok(Object.isFrozen(withAttachment.makerLoadouts[0].packDefinitionLayout.profiles));
+  const originalPasses = rows.get(types.packPass);
+  rows.set(types.packPass, []);
+  assert.equal((await listOwnedMakerV8Inventory(rpc, rt, wallet, root)).makerLoadouts.length, 1);
+  rows.set(types.packPass, originalPasses);
+  // A zero-Part bundle still has a mandatory exact binding but no extra slots.
+  const savedParts = ownedRows.parts;
+  const savedHash = definitionHash;
+  ownedRows.parts = [];
+  definitionHash = [...packDefinitionCommitmentV8(releaseId, hash(20), ownedRows)];
+  const zeroPartLoadout = structuredClone(originalLoadout);
+  zeroPartLoadout.data.content.fields.attached_pack_definitions = [{ release_id: releaseId, definition_commitment: definitionHash }];
+  rows.set(types.makerLoadout, [zeroPartLoadout]);
+  assert.equal((await listOwnedMakerV8Inventory(rpc, rt, wallet, root)).makerLoadouts[0].definitionSlots.length, 1);
+  ownedRows.parts = savedParts; definitionHash = savedHash;
+  for (const mutate of [
+    fields => { fields.definition_slots[1].profile_commitment = hash(99); },
+    fields => { fields.definition_slots[1].capacity = '1'; },
+    fields => { fields.definition_slots[1].source_definition_id = sid(999); },
+    fields => { fields.definition_slots.reverse(); },
+    fields => { fields.definition_slots.pop(); },
+    fields => { fields.attached_pack_definitions[0].definition_commitment = hash(99); },
+    fields => { fields.attached_pack_definitions.push(structuredClone(fields.attached_pack_definitions[0])); },
+  ]) {
+    const changed = structuredClone(attachedLoadout); mutate(changed.data.content.fields);
+    rows.set(types.makerLoadout, [changed]);
+    await assert.rejects(listOwnedMakerV8Inventory(rpc, rt, wallet, root), { code: 'MAKER_V8_LOADOUT_LAYOUT_INVALID' });
+  }
+  for (const mutation of ['missing', 'foreign', 'gap', 'capacity', 'profile', 'duplicate']) {
+    const altered = structuredClone(originalLoadout);
+    const loadoutFields = altered.data.content.fields;
+    rows.set(types.makerLoadout, [altered]);
+    if (mutation === 'missing') delete loadoutFields.definition_slots;
+    if (mutation === 'foreign') loadoutFields.definition_slots[0].source_definition_id = sid(999);
+    if (mutation === 'gap') loadoutFields.definition_slots[0].start = '1';
+    if (mutation === 'capacity') loadoutFields.definition_slots[0].capacity = '2';
+    if (mutation === 'profile') loadoutFields.definition_slots[0].profile_commitment = [];
+    if (mutation === 'duplicate') loadoutFields.definition_slots.push({ ...originalSlots[0] });
+    await assert.rejects(listOwnedMakerV8Inventory(rpc, rt, wallet, root));
+  }
+  rows.set(types.makerLoadout, [originalLoadout]);
+  assert.equal(inventory.ownedExternalItems[0].product.admission.admissionState, 0);
+  externalMode = 'revoked';
+  assert.equal((await listOwnedMakerV8Inventory(rpc, rt, wallet, root)).ownedExternalItems[0].product.admission.admissionState, 1);
+  externalMode = 'missing';
+  assert.equal((await listOwnedMakerV8Inventory(rpc, rt, wallet, root)).ownedExternalItems[0].product.admission, null);
+  externalMode = 'network';
+  await assert.rejects(listOwnedMakerV8Inventory(rpc, rt, wallet, root), /network unavailable/);
+  externalMode = 'drift';
+  await assert.rejects(listOwnedMakerV8Inventory(rpc, rt, wallet, root), { code: 'MAKER_V8_EXTERNAL_ADMISSION_DRIFT' });
+  externalMode = 'active';
+  servedPackRegistry = structuredClone(packRegistry);
+  servedPackRegistry.data.objectId = sid(999);
+  servedPackRegistry.data.content.fields.id = sid(999);
+  await assert.rejects(listOwnedMakerV8Inventory(rpc, rt, wallet, root), { code: 'MAKER_V8_EXTERNAL_ADMISSION_DRIFT' });
+  servedPackRegistry = packRegistry;
+
+  servedRelease = structuredClone(release);
+  servedRelease.data.content.fields.lifecycle = '1';
+  await assert.rejects(
+    () => listOwnedMakerV8Inventory(rpc, rt, wallet, root),
+    (error) => error.code === 'MAKER_V8_PACK_RELEASE_INACTIVE',
+    'a SEALED Pack must never be exposed as an ACTIVE Player choice',
+  );
 });
 
 test('Receiving uses exact child object ID/version/digest and rejects tx.object substitution context', async () => {
@@ -791,5 +1217,98 @@ test('client accepts only an RPC attested to the exact Mainnet chain identifier'
       rpc: { async getChainIdentifier() { return 'testnet-chain'; } }, network: 'mainnet',
     }).ready(),
     (error) => error.code === 'MAKER_V8_RPC_CHAIN_ID_MISMATCH',
+  );
+});
+
+test('Pack authoring context derives every registry and MakerAdmin ref from the activated Root', async () => {
+  const rt = runtime();
+  const b = binding();
+  const root = parsedRoot();
+  const types = makerV8ChainTypes(rt);
+  const objects = new Map([
+    [b.runtimeDefinitionRegistryId, moveObject(types.runtimeDefinitions, b.runtimeDefinitionRegistryId, {
+      version: '8', root_id: b.rootId, root_version: '1', root_content_commitment: hash(2),
+      base_registry_id: b.baseRegistryId, admission_ceiling: '2', sealed: true,
+    }, { Shared: { initial_shared_version: '2' } })],
+    [b.baseRegistryId, moveObject(types.baseRegistry, b.baseRegistryId, {
+      version: '8', root_id: b.rootId, maker_version: '1', root_content_commitment: hash(2), sealed: true,
+    }, { Shared: { initial_shared_version: '3' } })],
+    [b.packRegistryId, moveObject(types.packRegistry, b.packRegistryId, {
+      version: '8', root_id: b.rootId, root_version: '1', root_content_commitment: hash(2),
+      definition_registry_id: b.runtimeDefinitionRegistryId,
+      admission_authority_id: b.packAdmissionAuthorityId,
+      admission_policy_commitment: hash(15), revision: '7',
+    }, { Shared: { initial_shared_version: '4' } })],
+    [b.packAdmissionAuthorityId, moveObject(types.packAdmissionAuthority, b.packAdmissionAuthorityId, {
+      version: '8', root_id: b.rootId, root_version: '1', root_content_commitment: hash(2),
+    })],
+    [b.physicalRegistryId, moveObject(types.physicalRegistry, b.physicalRegistryId, {
+      version: '8', catalog_id: rt.catalogId, product_binding_commitment: hash(5),
+      call_cap_set_commitment: hash(6), root_id: b.rootId, maker_version: '1',
+      root_content_commitment: hash(2), base_registry_id: b.baseRegistryId, revision: '0',
+    }, { Shared: { initial_shared_version: '5' } })],
+    [b.marketRegistryId, moveObject(types.marketRegistry, b.marketRegistryId, {
+      catalog_id: rt.catalogId, product_binding_commitment: hash(5), call_cap_set_commitment: hash(6),
+      root_id: b.rootId, maker_version: '1', root_content_commitment: hash(2),
+      treasury_id: b.marketTreasuryId, sealed: true, revision: '0',
+    }, { Shared: { initial_shared_version: '6' } })],
+    [rt.roleConfigIds.release, moveObject(types.releaseConfig, rt.roleConfigIds.release, {
+      version: '8', catalog_id: rt.catalogId, product_binding_commitment: hash(5),
+      call_cap_set_commitment: hash(6), release_call_cap: {},
+    }, { Shared: { initial_shared_version: '7' } })],
+  ]);
+  const admin = moveObject(types.adminCap, root.adminCapId, {
+    version: '8', root_id: b.rootId, owner: wallet, control_epoch: '0',
+  });
+  const rpc = mainnetRpc({
+    async getOwnedObjects({ filter }) {
+      return {
+        data: filter.StructType === types.adminCap ? [admin] : [],
+        hasNextPage: false,
+        nextCursor: null,
+      };
+    },
+    async getObject({ id: objectId }) {
+      return objects.get(objectId);
+    },
+  });
+  const context = await loadMakerV8PackAuthoringContext(rpc, rt, root, wallet);
+  assert.equal(context.root.objectRef.objectId, b.rootId);
+  assert.equal(context.makerAdmin.objectRef.objectId, root.adminCapId);
+  assert.equal(context.definitionRegistry.admissionCeiling, 'OPEN');
+  assert.equal(context.packRegistry.revision, '7');
+  assert.equal(context.packRegistry.admissionAuthorityId, b.packAdmissionAuthorityId);
+  assert.equal(context.physicalRegistry.productBindingCommitment, hash(5).map((byte) => byte.toString(16).padStart(2, '0')).join(''));
+  assert.equal(context.releaseConfig.objectRef.objectId, rt.roleConfigIds.release);
+
+  // All companion objects agreeing with one another is insufficient: they
+  // must agree with the independently certified Root publication.
+  for (const key of ['product_binding_commitment', 'call_cap_set_commitment', 'catalog_id']) {
+    const originals = new Map();
+    for (const objectId of [b.physicalRegistryId, b.marketRegistryId, rt.roleConfigIds.release]) {
+      originals.set(objectId, objects.get(objectId));
+      const changed = structuredClone(objects.get(objectId));
+      changed.data.content.fields[key] = key === 'catalog_id' ? sid(999) : hash(99);
+      objects.set(objectId, changed);
+    }
+    await assert.rejects(loadMakerV8PackAuthoringContext(rpc, rt, root, wallet),
+      { code: 'MAKER_V8_PACK_PRODUCT_BINDING_MISMATCH' });
+    for (const [objectId, original] of originals) objects.set(objectId, original);
+  }
+  const originalPhysical = objects.get(b.physicalRegistryId);
+  const wrongPhysical = structuredClone(originalPhysical);
+  wrongPhysical.data.objectId = sid(999);
+  wrongPhysical.data.content.fields.id = { id: sid(999) };
+  objects.set(b.physicalRegistryId, wrongPhysical);
+  await assert.rejects(loadMakerV8PackAuthoringContext(rpc, rt, root, wallet),
+    { code: 'MAKER_V8_PACK_REGISTRY_BINDING_MISMATCH' });
+  objects.set(b.physicalRegistryId, originalPhysical);
+
+  const driftedPackRegistry = structuredClone(objects.get(b.packRegistryId));
+  driftedPackRegistry.data.content.fields.definition_registry_id = sid(999);
+  objects.set(b.packRegistryId, driftedPackRegistry);
+  await assert.rejects(
+    loadMakerV8PackAuthoringContext(rpc, rt, root, wallet),
+    (error) => error.code === 'MAKER_V8_PACK_REGISTRY_BINDING_MISMATCH',
   );
 });

@@ -56,11 +56,11 @@ async function main() {
 
   const protocol = await transport.getProtocolConfig();
   requireValue(
-    protocol.protocolVersion === '133'
+    protocol.protocolVersion === '137'
       && protocol.attributes.object_runtime_max_num_cached_objects === '1000'
       && protocol.attributes.object_runtime_max_num_store_entries === '1000'
       && protocol.attributes.bridge_should_try_to_finalize_committee === 'true',
-    'Mainnet protocol 133 string attributes drifted.',
+    'Mainnet protocol 137 string attributes drifted.',
     { protocolVersion: protocol.protocolVersion },
   );
   const gaslessTokens = protocol.attributes.gasless_allowed_token_types;
@@ -142,7 +142,7 @@ async function main() {
       digest: framework.data.digest,
       moduleCount: frameworkModules.length,
     },
-    protocol133: {
+    protocol137: {
       protocolVersion: protocol.protocolVersion,
       objectRuntimeMaxNumCachedObjects:
         protocol.attributes.object_runtime_max_num_cached_objects,

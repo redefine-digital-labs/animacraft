@@ -1,0 +1,188 @@
+{
+  "schema": "animacraft-v8-seal-cap-evidence.v1",
+  "approvedProtocolProfile": {
+    "file": "approved-protocol-profile.json",
+    "canonicalSha256": "6b0d55d197ac97dfee94edaefab8ab8100d80414df553b20eb96dba9fc078cc5"
+  },
+  "production": {
+    "moveRootCount": 7,
+    "coreModuleCount": 7,
+    "corePackageObjectBytes": 63989,
+    "coreTargetHeadroomBytes": 11,
+    "baseRegistrySourceBytes": 43272,
+    "baseRegistrySourceSha256": "21c54ec908b8583ccbf5a690323593b9ba13c627ee4180d8c838a56efc162a57",
+    "baseRegistryBytecodeBytes": 9389,
+    "baseRegistryBytecodeSha256": "99cda13589fb49e973a3d35479bf3aa59d44cbf9c92d9d9daf2ce4b276b8099d"
+  },
+  "fixtureMetadata": {
+    "Move.lock": "fbe6f74da98e85c3d23c8177a84a56bf38211552daae4d87664de49c77bd7b5d",
+    "Move.toml": "e898f248bb2b5a88e9c8e08528526b48c94a94594516f81ca63e55328fdcd5cb"
+  },
+  "fixtureSources": {
+    "activation_v8.move": "4ce066e54962a05a8ed9eba6171725ce6ce2ec7e286682b5e796f4c570d7173c",
+    "base_registry_v8.move": "21c54ec908b8583ccbf5a690323593b9ba13c627ee4180d8c838a56efc162a57",
+    "core_v8.move": "d0f2485f659df3efc26d07d389291d39774922c4b0226d95409426cf0628bcf8",
+    "maker_v8.move": "345b68ace2f280406e4328b6870b12860835b1e6b7fb7067860a06432b94b098",
+    "package_binding_v8.move": "479a174aeaf8ec8d8b2b78b4efaa830d3744f640f5bec34a25880e8b6329f416",
+    "protocol_config_v8.move": "44341b3d18fef5c10965d30b791bbb397b191e52de82c25588b786e914fcd971",
+    "treasury_v8.move": "9765253787bda09302b6de049c13fe89abcf71cb3978edb36eab6e132573a712"
+  },
+  "artifacts": {
+    "seal-333-colored.rpc.json": {
+      "bytes": 17840,
+      "sha256": "fa9ed1d8711ed21b34cfd84e17e5a26aed7255f0a9e7c36c84e1afef32835af1"
+    },
+    "seal-334-colored.rpc.json": {
+      "bytes": 16960,
+      "sha256": "e2607f6a41d35ebef1d2ab0972acf6a510dd136599da48434272c24fb77805ed"
+    },
+    "seal-500-colorless.rpc.json": {
+      "bytes": 17844,
+      "sha256": "7970ff8fefde4f2126a1361bb7b7b68c571309aa42fa6fb2dc12782c1d6d17b2"
+    },
+    "seal-501-colorless.rpc.json": {
+      "bytes": 16970,
+      "sha256": "9ead8f8442db36f3466be97bae89e6933e54760a63e5a692f03837b42cb08860"
+    },
+    "protocol-config-v135.rpc.json": {
+      "bytes": 59929,
+      "sha256": "3afb7b4219acd1c09245ff9b8c2f32495c012928d2c5633a74992c5804baef4b"
+    }
+  },
+  "scenarios": {
+    "333-colored": {
+      "artifact": "seal-333-colored.rpc.json",
+      "styles": 333,
+      "colors": 333,
+      "referencedColorPairs": 333,
+      "cacheDemand": 999,
+      "status": "success",
+      "originalDigest": "Ddds8zkar39AuhffDrCvKXni5eKUQBxnkRDAPBQfnNph",
+      "gasUsed": {
+        "computationCost": "27800000",
+        "storageCost": "9507600",
+        "storageRebate": "9412524",
+        "nonRefundableStorageFee": "95076"
+      },
+      "rawEffectsLength": 776,
+      "eventCount": 1,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 3,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 1,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
+    },
+    "334-colored": {
+      "artifact": "seal-334-colored.rpc.json",
+      "styles": 334,
+      "colors": 334,
+      "referencedColorPairs": 334,
+      "cacheDemand": 1002,
+      "status": "failure",
+      "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 14, instruction: 0, function_name: Some(\"borrow_child_object\") }))) in command 0",
+      "originalDigest": "Bvd9vfeqJZaAXQx3Pj9cFxayuhKgjmnmaGXA92Cz9Fhr",
+      "gasUsed": {
+        "computationCost": "27600000",
+        "storageCost": "9507600",
+        "storageRebate": "9412524",
+        "nonRefundableStorageFee": "95076"
+      },
+      "rawEffectsLength": 825,
+      "eventCount": 0,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 3,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 0,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
+    },
+    "500-colorless": {
+      "artifact": "seal-500-colorless.rpc.json",
+      "styles": 500,
+      "colors": 0,
+      "referencedColorPairs": 0,
+      "cacheDemand": 1000,
+      "status": "success",
+      "originalDigest": "2wbmQi1zJgRL3HHyhHPfRd6hbD1XTJ33cK9b7o7B14zB",
+      "gasUsed": {
+        "computationCost": "30100000",
+        "storageCost": "9507600",
+        "storageRebate": "9412524",
+        "nonRefundableStorageFee": "95076"
+      },
+      "rawEffectsLength": 776,
+      "eventCount": 1,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 3,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 1,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
+    },
+    "501-colorless": {
+      "artifact": "seal-501-colorless.rpc.json",
+      "styles": 501,
+      "colors": 0,
+      "referencedColorPairs": 0,
+      "cacheDemand": 1002,
+      "status": "failure",
+      "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 14, instruction: 0, function_name: Some(\"borrow_child_object\") }))) in command 0",
+      "originalDigest": "5QHYHpNFRAbDBoY34AYJqMr2UJDLbpyeQa7dtqVS37q7",
+      "gasUsed": {
+        "computationCost": "29800000",
+        "storageCost": "9507600",
+        "storageRebate": "9412524",
+        "nonRefundableStorageFee": "95076"
+      },
+      "rawEffectsLength": 825,
+      "eventCount": 0,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 3,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 0,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
+    }
+  },
+  "replayProvenance": {
+    "binaryTag": "mainnet-v1.78.1",
+    "commit": "722ac4fcf4841346c91775f596c4ce23fb7fbd0f",
+    "asset": "sui-mainnet-v1.78.1-macos-arm64.tgz",
+    "assetSha256": "722a4310022dfe5e71b6405daf6f862c7a0ca2ab40926b83e06d4984a2bbe6d6",
+    "cliVersion": "sui 1.78.1-722ac4fcf484",
+    "protocolVersion": "135"
+  }
+}

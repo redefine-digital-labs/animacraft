@@ -194,8 +194,12 @@ git diff --check
 The adversarial runner requires the external ability/API attack packages to
 fail compilation for the expected reasons and the cross-catalog call-cap runtime
 attack to abort as expected. The size script implements Sui's exact
-`MovePackage::size` formula and fails above the Core target of 64,000 bytes.
-That target includes native Treasury custody, Maker access enforcement,
-terminal typed activation, and the Output-to-Runtime request boundary while
-still preserving more than 38 KB beneath Mainnet's 102,400-byte hard maximum;
-the hard limit is never treated as the working budget.
+`MovePackage::size` formula, excluding this package's own module imports from
+external linkage. The Core ceiling is the already certified Protocol137 baseline
+of 97,740 bytes: no growth is allowed, including a one-byte increase. This explicit
+S11 reconciliation replaces the old, unfrozen candidate's64,000-byte target.
+The102,400-byte protocol maximum leaves4,660 bytes of headroom; that headroom is
+not an automatic growth allowance. The seal-cap quick gate additionally requires
+exact equality with its existing source/bytecode/size evidence. A future size
+increase requires explicit re-certification and review; do not change the ceiling
+to match a failed build. See `docs/codex/PROTOCOL_137_SPEC.md` at repository root.

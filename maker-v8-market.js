@@ -15,6 +15,7 @@ import {
   assertMakerV8MainnetRpc,
   isMakerV8RuntimeAttested,
   makerV8AttestedPackageTuple,
+  makerV8AttestedReplacement,
 } from './maker-v8-chain.js';
 
 export const MARKET_V8_VERSION = 8n;
@@ -253,6 +254,7 @@ export function marketV8Types(runtimeInput) {
     protocolConfig: originType(origin.corePackageId, 'protocol_config_v8', 'ProtocolConfigV8'),
     protocolTreasury: originType(origin.corePackageId, 'protocol_config_v8', 'ProtocolTreasuryV8', [coin]),
     catalog: originType(origin.corePackageId, 'package_binding_v8', 'ProductReleaseCatalogV8'),
+    replacement: originType(origin.corePackageId, 'package_binding_v8', 'FreshTupleReplacementBindingV2'),
     outputRegistry: originType(origin.outputPackageId, 'output_v8', 'OutputRegistryV8'),
     soulRegistry: originType(origin.outputPackageId, 'output_v8', 'SoulRegistryV8'),
     completeOutput: originType(origin.outputPackageId, 'output_v8', 'CompleteOutputV8'),
@@ -1241,20 +1243,20 @@ export function inspectMarketRecoveryEligibilityV8(input) {
 }
 
 export const MARKET_V8_ACTION_ABI = Object.freeze({
-  listMakerControl: Object.freeze({ function: 'list_maker_control_v8', arguments: Object.freeze(['registry', 'treasury', 'root', 'admin', 'makerTreasury', 'protocolConfig', 'catalog', 'config', 'grossAtomic']) }),
-  purchaseMakerControl: Object.freeze({ function: 'purchase_maker_control_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'root', 'protocolConfig', 'protocolTreasury', 'catalog', 'config', 'adminReceiving', 'payment']) }),
-  cancelMakerControl: Object.freeze({ function: 'cancel_maker_control_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'root', 'catalog', 'config', 'adminReceiving']) }),
-  recoverMakerControl: Object.freeze({ function: 'recover_maker_control_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'root', 'protocolConfig', 'catalog', 'config', 'adminReceiving']) }),
-  listSoulBundle: Object.freeze({ function: 'list_soul_bundle_v8', arguments: Object.freeze(['registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'protocolConfig', 'catalog', 'config', 'outputAsset', 'receipt', 'soul', 'grossAtomic']) }),
-  purchaseSoulBundle: Object.freeze({ function: 'purchase_soul_bundle_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'makerTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving', 'payment']) }),
-  cancelSoulListing: Object.freeze({ function: 'cancel_soul_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'catalog', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving']) }),
-  recoverSoulListing: Object.freeze({ function: 'recover_soul_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'protocolConfig', 'catalog', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving']) }),
-  listBasePhysical: Object.freeze({ function: 'list_base_physical_v8', arguments: Object.freeze(['registry', 'treasury', 'physicalRegistry', 'root', 'makerTreasury', 'protocolConfig', 'catalog', 'physicalConfig', 'config', 'asset', 'grossAtomic']) }),
-  listPackPhysical: Object.freeze({ function: 'list_pack_physical_v8', arguments: Object.freeze(['registry', 'treasury', 'physicalRegistry', 'root', 'packTreasury', 'protocolConfig', 'catalog', 'physicalConfig', 'config', 'asset', 'grossAtomic']) }),
-  purchaseBasePhysical: Object.freeze({ function: 'purchase_base_physical_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'makerTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'physicalConfig', 'config', 'receiving', 'payment']) }),
-  purchasePackPhysical: Object.freeze({ function: 'purchase_pack_physical_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'packRelease', 'packTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'physicalConfig', 'config', 'receiving', 'payment']) }),
-  cancelPhysicalListing: Object.freeze({ function: 'cancel_physical_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'catalog', 'config', 'receiving']) }),
-  recoverPhysicalListing: Object.freeze({ function: 'recover_physical_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'protocolConfig', 'catalog', 'config', 'receiving']) }),
+  listMakerControl: Object.freeze({ function: 'list_maker_control_v8', arguments: Object.freeze(['registry', 'treasury', 'root', 'admin', 'makerTreasury', 'protocolConfig', 'catalog', 'replacement', 'config', 'grossAtomic']) }),
+  purchaseMakerControl: Object.freeze({ function: 'purchase_maker_control_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'root', 'protocolConfig', 'protocolTreasury', 'catalog', 'replacement', 'config', 'adminReceiving', 'payment']) }),
+  cancelMakerControl: Object.freeze({ function: 'cancel_maker_control_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'root', 'protocolConfig', 'catalog', 'replacement', 'config', 'adminReceiving']) }),
+  recoverMakerControl: Object.freeze({ function: 'recover_maker_control_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'root', 'protocolConfig', 'catalog', 'replacement', 'config', 'adminReceiving']) }),
+  listSoulBundle: Object.freeze({ function: 'list_soul_bundle_v8', arguments: Object.freeze(['registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'protocolConfig', 'catalog', 'replacement', 'config', 'outputAsset', 'receipt', 'soul', 'grossAtomic']) }),
+  purchaseSoulBundle: Object.freeze({ function: 'purchase_soul_bundle_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'makerTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'replacement', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving', 'payment']) }),
+  cancelSoulListing: Object.freeze({ function: 'cancel_soul_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'protocolConfig', 'catalog', 'replacement', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving']) }),
+  recoverSoulListing: Object.freeze({ function: 'recover_soul_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'outputRegistry', 'soulRegistry', 'root', 'protocolConfig', 'catalog', 'replacement', 'config', 'outputReceiving', 'receiptReceiving', 'soulReceiving']) }),
+  listBasePhysical: Object.freeze({ function: 'list_base_physical_v8', arguments: Object.freeze(['registry', 'treasury', 'physicalRegistry', 'root', 'makerTreasury', 'protocolConfig', 'catalog', 'replacement', 'physicalConfig', 'config', 'asset', 'grossAtomic']) }),
+  listPackPhysical: Object.freeze({ function: 'list_pack_physical_v8', arguments: Object.freeze(['registry', 'treasury', 'physicalRegistry', 'root', 'packTreasury', 'protocolConfig', 'catalog', 'replacement', 'physicalConfig', 'config', 'asset', 'grossAtomic']) }),
+  purchaseBasePhysical: Object.freeze({ function: 'purchase_base_physical_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'makerTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'replacement', 'physicalConfig', 'config', 'receiving', 'payment']) }),
+  purchasePackPhysical: Object.freeze({ function: 'purchase_pack_physical_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'packRelease', 'packTreasury', 'protocolConfig', 'protocolTreasury', 'catalog', 'replacement', 'physicalConfig', 'config', 'receiving', 'payment']) }),
+  cancelPhysicalListing: Object.freeze({ function: 'cancel_physical_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'protocolConfig', 'catalog', 'replacement', 'config', 'receiving']) }),
+  recoverPhysicalListing: Object.freeze({ function: 'recover_physical_listing_v8', arguments: Object.freeze(['listing', 'registry', 'treasury', 'physicalRegistry', 'root', 'protocolConfig', 'catalog', 'replacement', 'config', 'receiving']) }),
 });
 
 function buildId(value, field) {
@@ -1616,6 +1618,7 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
       return transaction.receivingRef({ objectId: arg.objectId, version: arg.version.toString(), digest: arg.digest });
     }
     if (arg.kind === 'payment') return transaction.coin({ type: arg.type, balance: arg.balanceAtomic });
+    if (arg.version !== undefined) return transaction.objectRef({ objectId: arg.objectId, version: arg.version.toString(), digest: arg.digest });
     return transaction.object(arg.objectId);
   });
   const target = `${runtime.callablePackageId}::market_v8::${abi.function}`;
@@ -1696,6 +1699,7 @@ function canonicalTransactionFromDescriptor(builtAction) {
     if (argument.kind === 'payment') {
       return transaction.coin({ type: argument.type, balance: BigInt(argument.balanceAtomic) });
     }
+    if (argument.version !== undefined) return transaction.objectRef({ objectId: argument.objectId, version: argument.version, digest: argument.digest });
     return transaction.object(argument.objectId);
   });
   transaction.moveCall({
@@ -1772,6 +1776,11 @@ function assertEncodedMarketArgument(snapshot, command, descriptor, index) {
       || observed.version !== expected.version
       || observed.digest !== expected.digest) {
       fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_RECEIVING_MISMATCH', field, 'Encoded Receiving reference differs from the verified child object ref.');
+    }
+  } else if (expected.version !== undefined) {
+    if (observed.kind !== 'ImmOrOwnedObject'
+      || observed.version !== expected.version || observed.digest !== expected.digest) {
+      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_IMMUTABLE_REF_MISMATCH', field, 'Encoded immutable replacement differs from its attested exact object ref.');
     }
   } else if (observed.kind === 'Receiving') {
     fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_OBJECT_KIND_MISMATCH', field, 'A normal object argument was replaced with Receiving.');
@@ -2089,6 +2098,7 @@ function commonBoundObjects(runtime, types, registry, input) {
   const root = typedObject(input.root, types.makerRoot, 'root', { expectedId: registry.fields.rootId });
   const pinned = runtime.sourceRuntime;
   const registryId = verifiedBindingId(input.root, 'marketRegistryId');
+  const replacement = makerV8AttestedReplacement(pinned);
   const treasuryId = verifiedBindingId(input.root, 'marketTreasuryId');
   if (registryId !== registry.objectId || treasuryId !== registry.fields.treasuryId) {
     fail(
@@ -2101,6 +2111,7 @@ function commonBoundObjects(runtime, types, registry, input) {
   return {
     root,
     catalog: typedObject(input.catalog, types.catalog, 'catalog', { expectedId: pinned.catalogId }),
+    replacement: exactRef({ ...replacement, network: MARKET_V8_NETWORK }, types.replacement, 'replacement', replacement.objectId),
     config: typedObject(input.config, types.marketConfig, 'config', { expectedId: pinned.roleConfigIds.market }),
   };
 }
@@ -2440,6 +2451,7 @@ export function buildListMakerControlV8(runtimeInput, input) {
     argObject('makerTreasury', makerTreasury),
     argObject('protocolConfig', protocolConfig),
     argObject('catalog', common.catalog),
+    argObject('replacement', common.replacement),
     argObject('config', common.config),
     argU64('grossAtomic', eligible.quote.grossAtomic),
   ], listExpectation(eligible));
@@ -2460,6 +2472,7 @@ export function buildPurchaseMakerControlV8(runtimeInput, input) {
     argObject('protocolConfig', protocolConfig),
     argObject('protocolTreasury', protocolTreasury),
     argObject('catalog', setup.common.catalog),
+    argObject('replacement', setup.common.replacement),
     argObject('config', setup.common.config),
     argReceiving('adminReceiving', receiving),
     argPayment('payment', setup.runtime.paymentCoinType, setup.wallet.network, setup.eligible.quote.grossAtomic),
@@ -2474,7 +2487,9 @@ export function buildCancelMakerControlV8(runtimeInput, input) {
     argObject('registry', setup.market.registry),
     argObject('treasury', setup.market.treasury),
     argObject('root', setup.common.root),
+    argObject('protocolConfig', protocolObject(setup.types, setup.eligible.registry, input.protocolConfig)),
     argObject('catalog', setup.common.catalog),
+    argObject('replacement', setup.common.replacement),
     argObject('config', setup.common.config),
     argReceiving('adminReceiving', receiving),
   ], input.expectation);
@@ -2491,6 +2506,7 @@ export function buildRecoverMakerControlV8(runtimeInput, input) {
     argObject('root', setup.common.root),
     argObject('protocolConfig', protocolConfig),
     argObject('catalog', setup.common.catalog),
+    argObject('replacement', setup.common.replacement),
     argObject('config', setup.common.config),
     argReceiving('adminReceiving', receiving),
   ], input.expectation);
@@ -2531,6 +2547,7 @@ export function buildListSoulBundleV8(runtimeInput, input) {
     argObject('root', common.root),
     argObject('protocolConfig', protocolConfig),
     argObject('catalog', common.catalog),
+    argObject('replacement', common.replacement),
     argObject('config', common.config),
     argObject('outputAsset', typedObject(input.outputAsset, types.completeOutput, 'outputAsset')),
     argObject('receipt', typedObject(input.receipt, types.completeReceipt, 'receipt')),
@@ -2578,6 +2595,7 @@ export function buildPurchaseSoulBundleV8(runtimeInput, input) {
       expectedId: setup.runtime.sourceRuntime.protocolTreasuryId,
     })),
     argObject('catalog', setup.common.catalog),
+    argObject('replacement', setup.common.replacement),
     argObject('config', setup.common.config),
     argReceiving('outputReceiving', soul.outputReceiving),
     argReceiving('receiptReceiving', soul.receiptReceiving),
@@ -2596,7 +2614,9 @@ export function buildCancelSoulListingV8(runtimeInput, input) {
     argObject('outputRegistry', soul.outputRegistry),
     argObject('soulRegistry', soul.soulRegistry),
     argObject('root', setup.common.root),
+    argObject('protocolConfig', protocolObject(setup.types, setup.eligible.registry, input.protocolConfig)),
     argObject('catalog', setup.common.catalog),
+    argObject('replacement', setup.common.replacement),
     argObject('config', setup.common.config),
     argReceiving('outputReceiving', soul.outputReceiving),
     argReceiving('receiptReceiving', soul.receiptReceiving),
@@ -2617,6 +2637,7 @@ export function buildRecoverSoulListingV8(runtimeInput, input) {
     argObject('root', setup.common.root),
     argObject('protocolConfig', protocolConfig),
     argObject('catalog', setup.common.catalog),
+    argObject('replacement', setup.common.replacement),
     argObject('config', setup.common.config),
     argReceiving('outputReceiving', soul.outputReceiving),
     argReceiving('receiptReceiving', soul.receiptReceiving),
@@ -2662,6 +2683,7 @@ function listPhysical(runtimeInput, input, lane) {
     argObject(sourceTreasuryName, sourceTreasury),
     argObject('protocolConfig', protocolObject(types, eligible.registry, input.protocolConfig)),
     argObject('catalog', common.catalog),
+    argObject('replacement', common.replacement),
     argObject('physicalConfig', typedObject(input.physicalConfig, types.physicalConfig, 'physicalConfig', {
       expectedId: runtime.sourceRuntime.roleConfigIds.physical,
     })),
@@ -2727,6 +2749,7 @@ function purchasePhysical(runtimeInput, input, lane) {
         expectedId: setup.runtime.sourceRuntime.protocolTreasuryId,
       })),
       argObject('catalog', setup.common.catalog),
+      argObject('replacement', setup.common.replacement),
       argObject('physicalConfig', physical.physicalConfig),
       argObject('config', setup.common.config),
       argReceiving('receiving', physical.receiving),
@@ -2744,6 +2767,7 @@ function purchasePhysical(runtimeInput, input, lane) {
         expectedId: setup.runtime.sourceRuntime.protocolTreasuryId,
       })),
       argObject('catalog', setup.common.catalog),
+      argObject('replacement', setup.common.replacement),
       argObject('physicalConfig', physical.physicalConfig),
       argObject('config', setup.common.config),
       argReceiving('receiving', physical.receiving),
@@ -2774,7 +2798,9 @@ export function buildCancelPhysicalListingV8(runtimeInput, input) {
     argObject('treasury', setup.market.treasury),
     argObject('physicalRegistry', physical.physicalRegistry),
     argObject('root', setup.common.root),
+    argObject('protocolConfig', protocolObject(setup.types, setup.eligible.registry, input.protocolConfig)),
     argObject('catalog', setup.common.catalog),
+    argObject('replacement', setup.common.replacement),
     argObject('config', setup.common.config),
     argReceiving('receiving', physical.receiving),
   ], input.expectation);
@@ -2795,6 +2821,7 @@ export function buildRecoverPhysicalListingV8(runtimeInput, input) {
     argObject('root', setup.common.root),
     argObject('protocolConfig', protocolObject(setup.types, setup.eligible.registry, input.protocolConfig)),
     argObject('catalog', setup.common.catalog),
+    argObject('replacement', setup.common.replacement),
     argObject('config', setup.common.config),
     argReceiving('receiving', physical.receiving),
   ], input.expectation);

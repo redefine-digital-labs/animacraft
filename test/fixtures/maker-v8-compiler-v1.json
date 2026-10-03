@@ -4,7 +4,7 @@
   "document": {
     "schemaVersion": "animacraft.maker.v8",
     "protocolVersion": 8,
-    "lineage": { "makerKey": "small-native-v8", "version": 1, "changelog": [] },
+    "lineage": { "makerKey": "small-native-v8", "version": 1, "previousRootId": null, "previousVersionCommitment": null, "changelog": [] },
     "metadata": { "name": "Small Native V8", "summary": "One exact Base style through all seven production packages.", "license": { "kind": "personal-use", "note": "Fixture terms" }, "coverAssetId": null },
     "canvas": { "width": 64, "height": 64, "pixelMode": "pixelated" },
     "composition": { "mode": "FIXED", "thirdPartyAdmission": "DISABLED", "itemAssetization": false },
@@ -46,9 +46,9 @@
     "core": ["0x401", "0x402"], "seal": ["0x411", "0x412"], "runtime": ["0x421", "0x422"], "output": ["0x431", "0x432"], "physical": ["0x441", "0x442"], "market": ["0x451", "0x452"], "release": ["0x461", "0x462"]
   },
   "expected": {
-    "manifestSha256": "b084791277d949ae369955784013fbc38bfa9565a0fd70b3abe09d427601f18c",
-    "contentCommitment": "b084791277d949ae369955784013fbc38bfa9565a0fd70b3abe09d427601f18c",
-    "baseAggregateCommitment": "f93483bdcbbc07739475972272734086fda6831b3062aeb9af949ae9ded02bf3",
-    "runtimePolicyCommitment": "9efe72e1d6e79a17b87b590d0ad319152f7d357503739295159ec954e779c6d6"
+    "manifestSha256": "cd5ea910fcb22f3d0241fb54071c2e7605fd1e875e376b648889e0f68e046b76",
+    "contentCommitment": "e094cb5c00f42003b3786cc007aa0a37cb9a452e87be9f0dd54dc97249c973cd",
+    "baseAggregateCommitment": "1557925fa098e7ba2bb207614b41829c774aab840c8b62531a6b7e3423ed226e",
+    "runtimePolicyCommitment": "18a2e5e5bb2fcdb2d9f17188e02123eb12ae8fb879832cfe9d298e316a1f7e6d"
   }
 }

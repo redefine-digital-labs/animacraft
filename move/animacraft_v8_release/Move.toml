@@ -3,12 +3,14 @@ name = "animacraft_v8_release"
 edition = "2024.beta"
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f", override = true }
+MoveStdlib = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f", override = true }
 animacraft_v8_core = { local = "../animacraft_v8_core" }
 animacraft_v8_seal = { local = "../animacraft_v8_seal" }
 animacraft_v8_runtime = { local = "../animacraft_v8_runtime" }
 animacraft_v8_output = { local = "../animacraft_v8_output" }
 animacraft_v8_physical = { local = "../animacraft_v8_physical" }
+soulidity = { local = "/Users/naoer/.codex/worktrees/f722/soulidity/move/soulidity" }
 
 [addresses]
 animacraft_v8_release = "0x0"

@@ -1,0 +1,36 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { advanceMakerV8SealRuntimeV2, deriveMakerV8SealRuntimeRegistryCommitmentV2 } from '../maker-v8-seal-runtime-compiler.js';
+const id = n => `0x${n.toString(16).padStart(64, '0')}`;
+const state = () => ({ registryId: id(1), rootId: id(2), makerVersion: '3', rootContentCommitment: '04'.repeat(32), policyId: id(5), baseCount: '7', packCount: '2', completeCount: '1', baseCommitment: '06'.repeat(32), packCommitment: '07'.repeat(32), completeCommitment: '08'.repeat(32), revision: '4', runtimeRevision: '4', sealed: true });
+const row = () => ({ scope_kind: 1, scope_key: 'pack/test', scope_commitment: Array(32).fill(9), asset_key: 'part/item/style', asset_content_commitment: Array(32).fill(10), ciphertext_blob_id: 'actual-blob', ciphertext_sha256: Array(32).fill(11), ciphertext_blob_commitment: Array(32).fill(12), certification_commitment: Array(32).fill(13), seal_id: Array(32).fill(14) });
+const concat = (...xs) => Buffer.concat(xs.map(x => Buffer.from(x)));
+const u64 = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
+const uleb = n => { const b = []; do { b.push((n & 127) | (n > 127 ? 128 : 0)); n >>>= 7; } while (n); return b; };
+const vec = b => concat(uleb(b.length), b);
+const str = s => vec(Buffer.from(s));
+const hex = s => Buffer.from(s.replace(/^0x/, ''), 'hex');
+const sha = b => createHash('sha256').update(b).digest();
+test('runtime Seal follows independent Core row/advance BCS and full registry hash after nonempty scopes', () => {
+  const s = state(); const r = row(); const before = structuredClone({ s, r });
+  const rowBytes = concat([1], str(r.scope_key), vec(r.scope_commitment), str(r.asset_key), vec(r.asset_content_commitment), str(r.ciphertext_blob_id), vec(r.ciphertext_sha256), vec(r.ciphertext_blob_commitment), vec(r.certification_commitment), vec(r.seal_id));
+  const rowHash = sha(concat(str('animacraft-fresh-v8/compiler/registry-row/v2'), u64(2), hex(s.registryId), hex(s.rootId), u64(3), [1], u64(10), vec(rowBytes)));
+  const lane = sha(concat(str('animacraft-fresh-v8/compiler/registry-advance/v2'), u64(2), hex(s.registryId), [1], u64(10), vec(hex(s.packCommitment)), vec(rowHash)));
+  const expected = sha(concat(str('animacraft-fresh-v8/seal/registry/v2'), u64(2), hex(s.registryId), hex(s.rootId), u64(3), vec(hex(s.rootContentCommitment)), hex(s.policyId), u64(7), u64(3), u64(1), vec(hex(s.baseCommitment)), vec(lane), vec(hex(s.completeCommitment)), u64(5), [1])).toString('hex');
+  const result = advanceMakerV8SealRuntimeV2(s, r);
+  assert.equal(result.commitment, expected);
+  assert.equal(result.state.packCommitment, lane.toString('hex'));
+  assert.equal(result.state.packCount, '3');
+  assert.equal(result.state.runtimeRevision, '5');
+  assert.equal(result.state.baseCommitment, s.baseCommitment);
+  assert.equal(result.state.completeCommitment, s.completeCommitment);
+  assert.deepEqual({ s, r }, before);
+  assert.ok(Object.isFrozen(result.state));
+  assert.notEqual(advanceMakerV8SealRuntimeV2(result.state, { ...r, asset_key: 'part/item/second' }).commitment, expected);
+});
+test('runtime Seal rejects malformed scope, counter, state, identity and unsealed inputs', () => {
+  for (const patch of [{ sealed: false }, { runtimeRevision: '5' }, { baseCount: '01' }, { makerVersion: '0' }, { registryId: id(0) }, { packCommitment: '00'.repeat(32) }, { extra: true }]) assert.throws(() => deriveMakerV8SealRuntimeRegistryCommitmentV2({ ...state(), ...patch }));
+  assert.throws(() => advanceMakerV8SealRuntimeV2(state(), { ...row(), scope_kind: 3 }));
+  assert.throws(() => advanceMakerV8SealRuntimeV2({ ...state(), runtimeRevision: '18446744073709551615', revision: '18446744073709551615' }, row()));
+});

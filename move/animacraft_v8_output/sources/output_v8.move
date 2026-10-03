@@ -1,15 +1,16 @@
 /// Fresh unified Maker v8 Complete, protected-output, and Canonical Soul flow.
 module animacraft_v8_output::output_v8;
 
-use animacraft_v8_core::activation_v8::{Self as activation, OutputReadinessV8};
 use animacraft_v8_core::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
+use animacraft_v8_core::companion_binding_v2::{Self as companion, MakerRuntimeCompanionBindingBuilderV2};
 use animacraft_v8_core::package_binding_v8::{
     Self as binding,
-    MarketRoleV8,
     OutputRoleV8,
-    PhysicalRoleV8,
     PackageCallCapV8,
     ProductReleaseCatalogV8,
+    FreshTupleReplacementBindingV2,
+    FreshTupleBootstrapAdminV2,
+    RuntimeCallerCapV1,
 };
 use animacraft_v8_core::protocol_config_v8::{
     Self as protocol,
@@ -20,12 +21,14 @@ use animacraft_v8_core::treasury_v8::{
     Self as core_treasury,
     MakerTreasuryV8,
 };
+use animacraft_v8_core::soulidity_binding_v8 as soulidity_binding;
 use animacraft_v8_runtime::runtime_binding_v8::{
     Self as runtime_binding,
     RuntimePackageConfigV8,
 };
 use animacraft_v8_runtime::runtime_v8::{
     Self as runtime,
+    LoadoutSelectionV8,
     MakerLoadoutV8,
     PackPassV8,
     PackRegistryV8,
@@ -46,6 +49,7 @@ use std::hash;
 use std::option::{Self as option, Option};
 use std::string::{Self as string, String};
 use sui::coin::{Self as coin, Coin};
+use sui::dynamic_field;
 use sui::event;
 use sui::table::{Self as table, Table};
 use sui::transfer::{Self as transfer, Receiving};
@@ -57,7 +61,7 @@ use animacraft_v8_core::base_registry_v8::{
 #[test_only]
 use animacraft_v8_core::core_v8 as core;
 #[test_only]
-use std::type_name;
+use 0x15::market_v8::{MarketRegistryV8 as TestMarketRegistryV8, MarketTreasuryV8 as TestMarketTreasuryV8};
 #[test_only]
 use sui::sui::SUI;
 #[test_only]
@@ -96,13 +100,22 @@ const EOwnershipEpochMismatch: u64 = 17;
 public struct OutputOriginalMarkerV8 has drop {}
 public struct OutputCallableMarkerV8 has drop {}
 
-/// Shared config privately nests Core's unique Output call capability.
+public struct OutputSetupInstallWitnessV2 has drop {}
+public struct OutputRuntimeCallerCapInstallWitnessV2 has drop {}
+public struct MakerCompanionBindingWitnessV2 has drop {}
+
+public struct OutputReadinessV8 has drop {
+    companion_commitment: vector<u8>,
+}
+
+/// Setup consumes its cap; the post-setup Runtime caller cap remains private.
 public struct OutputPackageConfigV8 has key {
     id: UID,
     version: u64,
     catalog_id: ID,
     product_binding_commitment: vector<u8>,
-    output_call_cap: PackageCallCapV8<OutputRoleV8>,
+    installation_commitment: vector<u8>,
+    runtime_caller_cap: Option<RuntimeCallerCapV1>,
 }
 
 public struct WalletKeyV8 has copy, drop, store { holder: address }
@@ -265,6 +278,29 @@ public struct CompleteOutputV8 has key {
     protection_binding_commitment: vector<u8>,
 }
 
+/// Attached only during successful completion; immutable with the native Output.
+/// Root, revision and the canonical selection commitment belong to the parent.
+public struct CompleteRecipeKeyV8 has copy, drop, store {}
+public struct CompleteRecipeSnapshotV8 has copy, drop, store {
+    version: u64,
+    attached_pack_definitions: vector<runtime::AttachedPackDefinitionV8>,
+    definition_slots: vector<runtime::DefinitionSlotV8>,
+    selections: vector<Option<LoadoutSelectionV8>>,
+}
+
+#[test]
+fun complete_recipe_key_bcs_matches_client() {
+    assert!(bcs::to_bytes(&CompleteRecipeKeyV8 {}) == vector[0], 100);
+}
+
+#[test_only]
+fun remove_recipe_for_testing(output: &mut CompleteOutputV8) {
+    if (dynamic_field::exists_with_type<CompleteRecipeKeyV8, CompleteRecipeSnapshotV8>(
+        &output.id, CompleteRecipeKeyV8 {})) {
+        let _: CompleteRecipeSnapshotV8 = dynamic_field::remove(&mut output.id, CompleteRecipeKeyV8 {});
+    };
+}
+
 public struct CompleteReceiptV8 has key {
     id: UID,
     version: u64,
@@ -302,6 +338,81 @@ public struct ProtectedCompletePendingV8 {
 public struct SoulMintAuthorizationV8 {
     output: CompleteOutputV8,
     receipt: CompleteReceiptV8,
+    authorization_commitment: vector<u8>,
+}
+
+/// Immutable completion provenance, not a second ownable Soul. Current owner,
+/// listing and permissions belong to the exact native Soul/SoulState pair.
+public struct NativeSoulBindingV8 has key {
+    id: UID,
+    version: u64,
+    protocol_config_id: ID,
+    soul_registry_id: ID,
+    soul_id: ID,
+    soul_state_id: ID,
+    root_id: ID,
+    maker_version: u64,
+    root_content_commitment: vector<u8>,
+    maker_creator: address,
+    maker_treasury_id: ID,
+    original_holder: address,
+    output_id: ID,
+    receipt_id: ID,
+    output_key: String,
+    output_policy_commitment: vector<u8>,
+    recipe_commitment: vector<u8>,
+    render_commitment: vector<u8>,
+    output_commitment: vector<u8>,
+    receipt_commitment: vector<u8>,
+    rights: maker::RightsSnapshotV8,
+    authorization_commitment: vector<u8>,
+}
+
+/// Exact BCS layout of Soulidity's private mint witness. Type identity and
+/// authenticated fields are both required; an empty marker cannot bind an ID.
+public struct NativeSoulMintClaimV8 has drop {
+    soul_id: ID,
+    soul_state_id: ID,
+    holder: address,
+    ownership_epoch: u64,
+    authorization_commitment: vector<u8>,
+}
+
+/// Attached before native Output freeze. The exact provenance ID prevents the
+/// immutable issuance holder from remaining an independent read authority.
+public struct NativeCompleteBindingKeyV8 has copy, drop, store {}
+
+/// Exact layout of the deployment-pinned, private native owner witness.
+public struct NativeSoulOwnerClaimV8 has drop {
+    soul_id: ID,
+    soul_state_id: ID,
+    holder: address,
+    ownership_epoch: u64,
+}
+
+/// No abilities: authenticated only inside the Release Seal approval call,
+/// never stored, copied, or supplied as a proof from a previous transaction.
+public struct NativeCompleteDecryptProofV8 {
+    holder: address,
+    receipt_id: ID,
+    output_id: ID,
+    recipe_commitment: vector<u8>,
+    render_commitment: vector<u8>,
+    output_commitment: vector<u8>,
+    receipt_commitment: vector<u8>,
+    scope_key: String,
+    asset_key: String,
+    seal_id: vector<u8>,
+}
+
+public struct NativeSoulBoundV8 has copy, drop {
+    binding_id: ID,
+    soul_id: ID,
+    soul_state_id: ID,
+    root_id: ID,
+    output_id: ID,
+    receipt_id: ID,
+    original_holder: address,
     authorization_commitment: vector<u8>,
 }
 
@@ -483,6 +594,7 @@ public struct PhysicalWitnessCommitmentInputV8 has drop {
     materialization_key: String,
 }
 
+#[test_only]
 public struct CanonicalSoulCreatedV8 has copy, drop {
     soul_id: ID, root_id: ID, output_id: ID, receipt_id: ID,
     holder: address, soul_commitment: vector<u8>,
@@ -493,20 +605,40 @@ public fun allowed_all_admitted_v8(): u8 { POLICY_ALL_ADMITTED }
 public fun allowed_allowlist_v8(): u8 { POLICY_ALLOWLIST }
 
 public fun new_output_package_config_v8(
-    catalog: &ProductReleaseCatalogV8,
+    catalog: &mut ProductReleaseCatalogV8,
     output_call_cap: PackageCallCapV8<OutputRoleV8>,
     ctx: &mut TxContext,
 ): OutputPackageConfigV8 {
-    binding::assert_output_call_cap_v8(catalog, &output_call_cap);
-    binding::assert_type_origins_v8<OutputOriginalMarkerV8, OutputCallableMarkerV8>(
-        binding::output_binding_v8(binding::catalog_binding_v8(catalog)));
+    let id = object::new(ctx);
+    let installation_commitment = binding::consume_output_call_cap_v8(
+        catalog, output_call_cap, OutputSetupInstallWitnessV2 {}, id.to_inner());
     OutputPackageConfigV8 {
-        id: object::new(ctx), version: VERSION,
+        id, version: VERSION,
         catalog_id: binding::catalog_id_v8(catalog),
         product_binding_commitment:
             *binding::product_binding_commitment_v8(binding::catalog_binding_v8(catalog)),
-        output_call_cap,
+        installation_commitment,
+        runtime_caller_cap: option::none(),
     }
+}
+
+public fun install_output_runtime_caller_cap_v2(
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    admin: &mut FreshTupleBootstrapAdminV2,
+    config: &mut OutputPackageConfigV8,
+    cap: RuntimeCallerCapV1,
+) {
+    assert_config(catalog, config);
+    assert!(config.runtime_caller_cap.is_none(), EInvalidConfig);
+    binding::assert_runtime_caller_cap_v1(&cap, 0, replacement, catalog);
+    let commitment = *binding::runtime_caller_cap_commitment_v2(&cap);
+    config.runtime_caller_cap.fill(cap);
+    binding::mark_fresh_tuple_install_v2(
+        protocol_config, admin, replacement, catalog,
+        OutputRuntimeCallerCapInstallWitnessV2 {}, 4, object::id(config),
+        option::none(), commitment);
 }
 
 public fun share_output_package_config_v8(config: OutputPackageConfigV8) {
@@ -526,7 +658,7 @@ public fun new_output_registries_v8<PaymentCoin>(
     let root_id = maker::root_id_v8(root);
     let maker_version = maker::root_maker_version_v8(root);
     let root_content_commitment = *maker::root_content_commitment_v8(root);
-    let renderer_commitment = *maker::root_renderer_commitment_v8(root);
+    let renderer_commitment = *maker::root_renderer_commitment_v2(root);
     let rolling_policy_commitment = empty_output_registry_commitment_v8(root);
     if (expected_output_count == 0) {
         assert!(expected_policy_commitment == rolling_policy_commitment,
@@ -564,7 +696,7 @@ public fun empty_output_registry_commitment_v8<PaymentCoin>(
         root_id: maker::root_id_v8(root),
         maker_version: maker::root_maker_version_v8(root),
         root_content_commitment: *maker::root_content_commitment_v8(root),
-        renderer_commitment: *maker::root_renderer_commitment_v8(root),
+        renderer_commitment: *maker::root_renderer_commitment_v2(root),
     }))
 }
 
@@ -588,8 +720,8 @@ public fun derive_output_policy_row_commitment_v8<PaymentCoin>(
         root_id: maker::root_id_v8(root),
         maker_version: maker::root_maker_version_v8(root),
         root_content_commitment: *maker::root_content_commitment_v8(root),
-        renderer_commitment: *maker::root_renderer_commitment_v8(root),
-        economics_commitment: *maker::economics_commitment_v8(&economics),
+        renderer_commitment: *maker::root_renderer_commitment_v2(root),
+        economics_commitment: *maker::economics_commitment_v2(&economics),
         sequence, output_key, protected_output, complete_scope_key,
         allowed_pack_policy, allowed_semantic_pack_ids,
         renderer_schema_commitment,
@@ -681,13 +813,42 @@ public fun certify_output_activation_readiness_v8<PaymentCoin>(
             observed_output_count: output.observed_output_count,
             output_policy_commitment: output.rolling_policy_commitment,
         }));
-    activation::certify_output_readiness_v8<
-        PaymentCoin,
-        OutputOriginalMarkerV8,
-        OutputCallableMarkerV8,
-        OutputRegistryV8,
-        SoulRegistryV8,
-    >(root, catalog, &config.output_call_cap, output, souls, companion_commitment)
+    OutputReadinessV8 { companion_commitment }
+}
+
+public fun bind_output_companion_v2<PaymentCoin>(
+    builder: MakerRuntimeCompanionBindingBuilderV2<PaymentCoin>,
+    root: &MakerRootV8<PaymentCoin>, admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8, catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    config: &OutputPackageConfigV8, output: &OutputRegistryV8,
+    souls: &SoulRegistryV8, ctx: &TxContext,
+): MakerRuntimeCompanionBindingBuilderV2<PaymentCoin> {
+    maker::assert_companion_builder_root_v2(&builder, root, admin, ctx);
+    maker::assert_product_release_catalog_v8(root, catalog);
+    let receipt = certify_output_activation_readiness_v8(root, catalog, config, output, souls);
+    validate_output_activation_readiness_v2(root, protocol_config, catalog, replacement,
+        config, output, souls, receipt);
+    companion::append_output_v2(builder, MakerCompanionBindingWitnessV2 {},
+        protocol_config, catalog, replacement, object::id(output), object::id(souls), ctx)
+}
+
+public fun validate_output_activation_readiness_v2<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    config: &OutputPackageConfigV8,
+    output: &OutputRegistryV8,
+    souls: &SoulRegistryV8,
+    receipt: OutputReadinessV8,
+) {
+    binding::assert_catalog_current_v8(protocol_config, catalog);
+    binding::assert_replacement_current_v2(replacement, catalog);
+    binding::assert_runtime_caller_cap_v1(
+        config.runtime_caller_cap.borrow(), 0, replacement, catalog);
+    let fresh = certify_output_activation_readiness_v8(root, catalog, config, output, souls);
+    assert!(receipt.companion_commitment == fresh.companion_commitment, EInvalidBinding);
 }
 
 public fun quote_base_complete_v8<PaymentCoin>(
@@ -706,11 +867,11 @@ public fun quote_base_complete_v8<PaymentCoin>(
         *output.complete_by_wallet.borrow(key)
     } else { 0 };
     assert_total_cap(output.total_complete_count,
-        maker::economics_complete_total_cap_v8(&economics));
+        maker::economics_complete_total_cap_v2(&economics));
     let base_gross_atomic = complete_price_for_ordinal(
-        maker::economics_complete_mode_v8(&economics),
-        maker::economics_complete_price_atomic_v8(&economics),
-        maker::economics_complete_free_quota_per_wallet_v8(&economics),
+        maker::economics_complete_mode_v2(&economics),
+        maker::economics_complete_price_atomic_v2(&economics),
+        maker::economics_complete_per_wallet_quota_v2(&economics),
         ordinal,
     );
     let base_protocol_atomic = protocol_share(
@@ -718,7 +879,7 @@ public fun quote_base_complete_v8<PaymentCoin>(
         maker::economics_primary_content_fee_bps_v8(&economics),
     );
     let maker_atomic = base_gross_atomic - base_protocol_atomic;
-    let fixed_protocol_atomic = maker::economics_fixed_complete_fee_atomic_v8(&economics);
+    let fixed_protocol_atomic = maker::economics_fixed_complete_fee_atomic_v2(&economics);
     BaseCompleteLineV8 {
         ordinal, base_gross_atomic, base_protocol_atomic, maker_atomic,
         fixed_protocol_atomic,
@@ -764,14 +925,14 @@ public fun begin_complete_v8<PaymentCoin>(
     }
 }
 
-/// Fresh Core request is created and consumed before Runtime mutates the Pack
-/// Complete counter. Runtime then atomically settles the exact paid line.
+/// The installed Output caller cap authorizes Runtime before the same-PTB settlement.
 public fun append_paid_pack_complete_v8<PaymentCoin>(
     session: &mut CompleteSessionV8,
     output_config: &OutputPackageConfigV8,
     output: &OutputRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     runtime_config: &RuntimePackageConfigV8,
     release: &mut PackReleaseV8<PaymentCoin>,
     packs: &PackRegistryV8,
@@ -787,12 +948,9 @@ public fun append_paid_pack_complete_v8<PaymentCoin>(
     assert_config(catalog, output_config);
     let gross_atomic = coin::value(&payment);
     assert!(gross_atomic > 0, EWrongPayment);
-    let request = activation::new_output_runtime_request_v8<
-        PaymentCoin, OutputOriginalMarkerV8, OutputCallableMarkerV8,
-        OutputRegistryV8,
-    >(root, catalog, &output_config.output_call_cap, output, ctx);
     let line = runtime_binding::authorize_pack_complete_from_output_v8(
-        request, root, catalog, runtime_config, output, release, packs, pass,
+        output_config.runtime_caller_cap.borrow(), root, protocol_config,
+        catalog, replacement, runtime_config, output, release, packs, pass,
         &session.authorization, loadout, ctx);
     let (release_id, ordinal) = runtime::settle_paid_pack_complete_line_v8(
         line, release, pack_treasury, root, protocol_config,
@@ -806,6 +964,8 @@ public fun append_free_pack_complete_v8<PaymentCoin>(
     output: &OutputRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
+    protocol_config: &ProtocolConfigV8,
+    replacement: &FreshTupleReplacementBindingV2,
     runtime_config: &RuntimePackageConfigV8,
     release: &mut PackReleaseV8<PaymentCoin>,
     packs: &PackRegistryV8,
@@ -815,12 +975,9 @@ public fun append_free_pack_complete_v8<PaymentCoin>(
 ) {
     assert_session_live(session, output, root, loadout, ctx);
     assert_config(catalog, output_config);
-    let request = activation::new_output_runtime_request_v8<
-        PaymentCoin, OutputOriginalMarkerV8, OutputCallableMarkerV8,
-        OutputRegistryV8,
-    >(root, catalog, &output_config.output_call_cap, output, ctx);
     let line = runtime_binding::authorize_pack_complete_from_output_v8(
-        request, root, catalog, runtime_config, output, release, packs, pass,
+        output_config.runtime_caller_cap.borrow(), root, protocol_config,
+        catalog, replacement, runtime_config, output, release, packs, pass,
         &session.authorization, loadout, ctx);
     let (release_id, ordinal) = runtime::consume_free_pack_complete_line_v8(
         line, release, root, ctx);
@@ -831,24 +988,28 @@ public fun append_free_pack_complete_v8<PaymentCoin>(
 /// Output returns it unchanged so only Release can consume its private value.
 public fun finish_unprotected_complete_v8<
     PaymentCoin,
-    ReleaseOriginalMarker,
     ReleaseRenderWitness,
 >(
     witness: ReleaseRenderWitness,
     session: CompleteSessionV8,
     output: &OutputRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     loadout: &MakerLoadoutV8,
     render_blob_id: String,
     render_sha256: vector<u8>,
     render_blob_commitment: vector<u8>,
     ctx: &mut TxContext,
 ): (ReleaseRenderWitness, SoulMintAuthorizationV8) {
-    binding::assert_type_origins_v8<ReleaseOriginalMarker, ReleaseRenderWitness>(
-        binding::release_binding_v8(binding::catalog_binding_v8(catalog)));
-    assert!(binding::catalog_id_v8(catalog)
-        == maker::root_product_release_catalog_id_v8(root), EInvalidBinding);
+    binding::assert_catalog_current_v8(protocol_config, catalog);
+    binding::assert_replacement_current_v2(replacement, catalog);
+    maker::assert_current_protocol_config_v8(root, protocol_config);
+    maker::assert_product_release_catalog_v8(root, catalog);
+    binding::assert_exact_witness_type_v2<ReleaseRenderWitness>(
+        binding::binding_at_v2(binding::catalog_binding_v8(catalog), 6),
+        &b"release_v8", &b"ReleaseRenderWitnessV8");
     assert!(!borrow_policy(output, session.output_key).protected_output,
         EInvalidPolicy);
     let (mut complete_output, receipt) = finish_complete(
@@ -923,8 +1084,9 @@ public fun finalize_protected_complete_v8<PaymentCoin>(
     SoulMintAuthorizationV8 { output, receipt, authorization_commitment }
 }
 
-/// Sole consumer of SoulMintAuthorizationV8. It creates and internally
-/// transfers key-only artifacts to the exact transaction holder.
+/// Historical scenario helper only. Production completion must bind the real
+/// native Soul through bind_native_soul_v8, never mint a parallel wallet asset.
+#[test_only]
 public fun mint_canonical_soul_v8<PaymentCoin>(
     authorization: SoulMintAuthorizationV8,
     output_registry: &mut OutputRegistryV8,
@@ -958,11 +1120,11 @@ public fun mint_canonical_soul_v8<PaymentCoin>(
         assert!(output.seal_id.is_none() && receipt.seal_id.is_none(), EInvalidProof);
         assert!(output.protection_binding_commitment.is_empty(), EInvalidProof);
     };
-    let rights = maker::root_rights_v8(root);
+    let rights = maker::root_rights_v2(root);
     let soul_uid = object::new(ctx);
     let soul_id = soul_uid.to_inner();
-    let soul_creator_royalty_bps = maker::rights_soul_creator_royalty_bps_v8(&rights);
-    let maker_source_royalty_bps = maker::rights_maker_source_royalty_bps_v8(&rights);
+    let soul_creator_royalty_bps = maker::rights_soul_creator_royalty_bps_v2(&rights);
+    let maker_source_royalty_bps = maker::rights_maker_source_royalty_bps_v2(&rights);
     let soul_commitment = hash::sha2_256(bcs::to_bytes(&SoulCommitmentInputV8 {
         domain: b"animacraft-v8/output/canonical-soul", version: VERSION,
         soul_registry_id: object::id(soul_registry), root_id: output.root_id,
@@ -1005,13 +1167,213 @@ public fun mint_canonical_soul_v8<PaymentCoin>(
     transfer::transfer(soul, holder);
 }
 
+/// The sole production consumer of Complete's one-use mint authorization.
+/// Soulidity calls this immediately after creating its real Soul/SoulState.
+/// The private, deployment-pinned witness proves the exact IDs and holder;
+/// binding is atomic with completion, native mint and provenance registration.
+public fun bind_native_soul_v8<PaymentCoin, MintWitness: drop>(
+    authorization: SoulMintAuthorizationV8,
+    output_registry: &mut OutputRegistryV8,
+    soul_registry: &mut SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    soul_id: ID,
+    soul_state_id: ID,
+    witness: MintWitness,
+    ctx: &mut TxContext,
+): NativeSoulBindingV8 {
+    maker::assert_current_protocol_config_v8(root, protocol_config);
+    soulidity_binding::assert_mint_witness_v8<MintWitness>(protocol_config);
+    assert_active_registry_pair(output_registry, soul_registry, root);
+    assert_native_mint_claim(
+        &witness, soul_id, soul_state_id, ctx.sender(),
+        &authorization.authorization_commitment);
+    let _ = witness;
+    assert_native_authorization(&authorization, output_registry, root, ctx);
+    let SoulMintAuthorizationV8 { mut output, receipt, authorization_commitment } =
+        authorization;
+    assert!(soul_id != object::id(&output) && soul_id != object::id(&receipt)
+        && soul_state_id != object::id(&output)
+        && soul_state_id != object::id(&receipt), EInvalidBinding);
+    assert!(!soul_registry.souls.contains(soul_id), EDuplicate);
+    let binding = NativeSoulBindingV8 {
+        id: object::new(ctx), version: VERSION,
+        protocol_config_id: object::id(protocol_config),
+        soul_registry_id: object::id(soul_registry), soul_id, soul_state_id,
+        root_id: output.root_id, maker_version: output.maker_version,
+        root_content_commitment: output.root_content_commitment,
+        maker_creator: maker::root_creator_v2(root),
+        maker_treasury_id: maker::root_maker_treasury_id_v2(root),
+        original_holder: output.original_holder,
+        output_id: object::id(&output), receipt_id: object::id(&receipt),
+        output_key: output.output_key,
+        output_policy_commitment: output.output_policy_commitment,
+        recipe_commitment: output.recipe_commitment,
+        render_commitment: output.render_commitment,
+        output_commitment: output.output_commitment,
+        receipt_commitment: receipt.receipt_commitment,
+        rights: maker::root_rights_v2(root), authorization_commitment,
+    };
+    record_finished_output(output_registry, &output, &receipt, soul_id);
+    // This record is issuance evidence only for native Souls. Live owner/epoch
+    // must come from Soulidity's exact SoulState, not this initial snapshot.
+    soul_registry.souls.add(soul_id, SoulRecordV8 {
+        soul_id, output_id: object::id(&output), receipt_id: object::id(&receipt),
+        holder: output.original_holder, ownership_epoch: 0,
+        soul_commitment: authorization_commitment,
+    });
+    soul_registry.soul_keys.push_back(soul_id);
+    soul_registry.soul_count = soul_registry.soul_count + 1;
+    event::emit(NativeSoulBoundV8 {
+        binding_id: object::id(&binding), soul_id, soul_state_id,
+        root_id: output.root_id, output_id: object::id(&output),
+        receipt_id: object::id(&receipt), original_holder: output.original_holder,
+        authorization_commitment,
+    });
+    // Receipts and render proofs are immutable evidence. They cannot trade
+    // independently or preserve a second current-holder authority after sale.
+    dynamic_field::add(&mut output.id, NativeCompleteBindingKeyV8 {}, object::id(&binding));
+    transfer::freeze_object(output);
+    transfer::freeze_object(receipt);
+    binding
+}
+
+fun assert_native_mint_claim<MintWitness: drop>(
+    witness: &MintWitness,
+    soul_id: ID,
+    soul_state_id: ID,
+    holder: address,
+    authorization_commitment: &vector<u8>,
+) {
+    let zero = object::id_from_address(@0x0);
+    assert!(soul_id != zero && soul_state_id != zero && soul_id != soul_state_id,
+        EInvalidBinding);
+    assert_hash(authorization_commitment);
+    assert_exact_holder(holder, holder);
+    assert!(bcs::to_bytes(witness) == bcs::to_bytes(&NativeSoulMintClaimV8 {
+        soul_id, soul_state_id, holder, ownership_epoch: 0,
+        authorization_commitment: *authorization_commitment,
+    }), EInvalidProof);
+}
+
+fun assert_native_authorization<PaymentCoin>(
+    authorization: &SoulMintAuthorizationV8,
+    registry: &OutputRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    ctx: &TxContext,
+) {
+    let output = &authorization.output;
+    let receipt = &authorization.receipt;
+    assert_exact_holder(output.holder, ctx.sender());
+    assert_exact_holder(receipt.holder, ctx.sender());
+    assert!(output.original_holder == ctx.sender()
+        && receipt.original_holder == ctx.sender(), EWrongHolder);
+    assert_complete_root(output, root);
+    assert!(output.output_registry_id == object::id(registry), EInvalidBinding);
+    assert!(output.version == VERSION && receipt.version == VERSION
+        && receipt.output_id == object::id(output)
+        && receipt.root_id == output.root_id
+        && receipt.maker_version == output.maker_version
+        && receipt.root_content_commitment == output.root_content_commitment
+        && receipt.output_key == output.output_key
+        && receipt.loadout_id == output.loadout_id
+        && receipt.loadout_revision == output.loadout_revision
+        && receipt.loadout_commitment == output.loadout_commitment
+        && receipt.output_policy_commitment == output.output_policy_commitment
+        && receipt.renderer_schema_commitment == output.renderer_schema_commitment
+        && receipt.recipe_commitment == output.recipe_commitment
+        && receipt.render_commitment == output.render_commitment
+        && receipt.output_commitment == output.output_commitment, EInvalidBinding);
+    let policy = borrow_policy(registry, output.output_key);
+    assert!(policy.row_commitment == output.output_policy_commitment
+        && policy.renderer_schema_commitment == output.renderer_schema_commitment
+        && policy.protected_output == output.protected, EInvalidPolicy);
+    assert_protection_binding(output, receipt);
+    assert!(output.output_commitment == derive_current_output_commitment(output)
+        && receipt.receipt_commitment == derive_current_receipt_commitment(receipt)
+        && authorization.authorization_commitment
+            == derive_soul_authorization_commitment(output, receipt), EInvalidProof);
+}
+
+public fun freeze_native_soul_binding_v8(binding: NativeSoulBindingV8) {
+    transfer::freeze_object(binding)
+}
+
+public fun native_soul_binding_id_v8(binding: &NativeSoulBindingV8): ID {
+    object::id(binding)
+}
+public fun native_soul_binding_soul_id_v8(binding: &NativeSoulBindingV8): ID {
+    binding.soul_id
+}
+public fun native_soul_binding_state_id_v8(binding: &NativeSoulBindingV8): ID {
+    binding.soul_state_id
+}
+public fun native_soul_binding_root_id_v8(binding: &NativeSoulBindingV8): ID {
+    binding.root_id
+}
+public fun native_soul_binding_output_id_v8(binding: &NativeSoulBindingV8): ID {
+    binding.output_id
+}
+public fun native_soul_binding_receipt_id_v8(binding: &NativeSoulBindingV8): ID {
+    binding.receipt_id
+}
+public fun native_soul_binding_protocol_id_v8(binding: &NativeSoulBindingV8): ID {
+    binding.protocol_config_id
+}
+public fun native_soul_binding_maker_creator_v8(binding: &NativeSoulBindingV8): address {
+    binding.maker_creator
+}
+/// Immutable creator of the completed Soul, not its current resale owner.
+public fun native_soul_binding_original_holder_v8(binding: &NativeSoulBindingV8): address {
+    binding.original_holder
+}
+public fun native_soul_binding_rights_v8(
+    binding: &NativeSoulBindingV8,
+): &maker::RightsSnapshotV8 { &binding.rights }
+
+/// Settlement/identity fixture only. This does NOT exercise Complete authorization
+/// or native mint; production provenance can only come from bind_native_soul_v8.
+#[test_only]
+public fun native_soul_binding_for_testing_v8(
+    soul_id: ID, soul_state_id: ID, original_holder: address, maker_creator: address,
+    soul_creator_bps: u16, maker_source_bps: u16, ctx: &mut TxContext,
+): NativeSoulBindingV8 {
+    assert!(ctx.sender() == maker_creator, EWrongHolder);
+    let rights = maker::new_onchain_native_rights_snapshot_v8(
+        ctx, soul_creator_bps, maker_source_bps, 0);
+    let hash = b"12345678901234567890123456789012";
+    NativeSoulBindingV8 {
+        id: object::new(ctx), version: VERSION,
+        protocol_config_id: object::id_from_address(@0xD01),
+        soul_registry_id: object::id_from_address(@0xD02), soul_id, soul_state_id,
+        root_id: object::id_from_address(@0xD03), maker_version: 1,
+        root_content_commitment: hash, maker_creator,
+        maker_treasury_id: object::id_from_address(@0xD04), original_holder,
+        output_id: object::id_from_address(@0xD05), receipt_id: object::id_from_address(@0xD06),
+        output_key: b"main".to_string(), output_policy_commitment: hash,
+        recipe_commitment: hash, render_commitment: hash,
+        output_commitment: hash, receipt_commitment: hash,
+        rights, authorization_commitment: hash,
+    }
+}
+public fun soul_mint_authorization_holder_v8(authorization: &SoulMintAuthorizationV8): address {
+    authorization.output.holder
+}
+public fun soul_mint_authorization_commitment_v8(
+    authorization: &SoulMintAuthorizationV8,
+): &vector<u8> { &authorization.authorization_commitment }
+public fun soul_mint_authorization_render_blob_id_v8(
+    authorization: &SoulMintAuthorizationV8,
+): &String { &authorization.output.render_blob_id }
+public fun soul_mint_authorization_protected_v8(authorization: &SoulMintAuthorizationV8): bool {
+    authorization.output.protected
+}
+
 /// Atomically moves the exact Complete Output/Receipt/Canonical Soul bundle
 /// under one Market Listing UID. Logical holder, Soul epoch, and every
 /// commitment remain unchanged while the objects are in custody.
 public fun custody_soul_bundle_for_market_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -1024,19 +1386,18 @@ public fun custody_soul_bundle_for_market_v8<
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     ctx: &TxContext,
 ): SoulMarketCustodyTicketV8 {
     assert_active_soul_market_boundary<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
-        output_registry, soul_registry, root, protocol_config, catalog,
+        output_registry, soul_registry, root, protocol_config, catalog, replacement,
         market_registry, market_treasury, market_call_cap,
     );
     let seller = ctx.sender();
@@ -1073,8 +1434,6 @@ public fun custody_soul_bundle_for_market_v8<
 /// returned binding is not authority and is safe to retain as a tombstone.
 public fun consume_soul_market_custody_ticket_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -1083,19 +1442,19 @@ public fun consume_soul_market_custody_ticket_v8<
     output_registry: &OutputRegistryV8,
     soul_registry: &SoulRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
 ): SoulMarketCustodyBindingV8 {
     assert_soul_market_boundary<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
-        output_registry, soul_registry, root, catalog, market_registry,
+        output_registry, soul_registry, root, protocol_config, catalog, replacement, market_registry,
         market_treasury, market_call_cap,
     );
     assert_soul_market_custody_header(
@@ -1112,8 +1471,6 @@ public fun consume_soul_market_custody_ticket_v8<
 /// custody data and must still equal all three logical holders.
 public fun return_soul_bundle_from_market_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -1125,19 +1482,19 @@ public fun return_soul_bundle_from_market_v8<
     output_registry: &OutputRegistryV8,
     soul_registry: &SoulRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
 ) {
     assert_soul_market_boundary<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
-        output_registry, soul_registry, root, catalog, market_registry,
+        output_registry, soul_registry, root, protocol_config, catalog, replacement, market_registry,
         market_treasury, market_call_cap,
     );
     assert_soul_market_custody_header(
@@ -1163,8 +1520,6 @@ public fun return_soul_bundle_from_market_v8<
 /// only Soul's ownership commitment changes at epoch N+1.
 public fun purchase_soul_bundle_from_market_v8<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -1178,19 +1533,18 @@ public fun purchase_soul_bundle_from_market_v8<
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
     buyer: address,
 ) {
     assert_active_soul_market_boundary<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
-        output_registry, soul_registry, root, protocol_config, catalog,
+        output_registry, soul_registry, root, protocol_config, catalog, replacement,
         market_registry, market_treasury, market_call_cap,
     );
     assert_soul_market_custody_header(
@@ -1349,19 +1703,22 @@ public fun new_physical_materialization_witness_v8<PaymentCoin>(
     }
 }
 
-/// Only the exact Physical package, borrowing its Core-issued call cap, can
-/// consume the materialization witness.
+/// Only the exact live Physical package can consume this one-transaction proof.
 public fun consume_physical_materialization_witness_v8<
-    PhysicalOriginalMarker,
-    PhysicalCallableMarker,
+    PhysicalRuntimeWitness: drop,
 >(
     witness: PhysicalMaterializationWitnessV8,
+    physical_authority: PhysicalRuntimeWitness,
+    protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    replacement: &FreshTupleReplacementBindingV2,
 ): (PhysicalCompleteBindingV8, PhysicalSelectionBindingV8, String, vector<u8>) {
-    binding::assert_physical_call_cap_v8(catalog, physical_call_cap);
-    binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(
-        binding::physical_binding_v8(binding::catalog_binding_v8(catalog)));
+    binding::assert_catalog_current_v8(protocol_config, catalog);
+    binding::assert_replacement_current_v2(replacement, catalog);
+    binding::assert_exact_witness_type_v2<PhysicalRuntimeWitness>(
+        binding::binding_at_v2(binding::catalog_binding_v8(catalog), 4),
+        &b"physical_v8", &b"PhysicalRuntimeWitnessV2");
+    let _ = physical_authority;
     let PhysicalMaterializationWitnessV8 {
         complete, selection, materialization_key, witness_commitment,
     } = witness;
@@ -1475,14 +1832,14 @@ fun finish_complete<PaymentCoin>(
             loadout_id, loadout_revision, loadout_commitment,
             output_policy_commitment: policy.row_commitment,
             renderer_schema_commitment: policy.renderer_schema_commitment,
-            economics_commitment: *maker::economics_commitment_v8(&economics),
+            economics_commitment: *maker::economics_commitment_v2(&economics),
             recipe_commitment, render_commitment, output_commitment,
             base_line, pack_lines, total_paid_atomic, protected,
         }));
     let output_uid = object::new(ctx);
     let output_id = output_uid.to_inner();
     let receipt_uid = object::new(ctx);
-    let complete_output = CompleteOutputV8 {
+    let mut complete_output = CompleteOutputV8 {
         id: output_uid, version: VERSION, root_id, maker_version,
         root_content_commitment, output_registry_id, output_key,
         original_holder: holder, holder, loadout_id,
@@ -1494,13 +1851,20 @@ fun finish_complete<PaymentCoin>(
         scope_key, asset_key, seal_id: option::none(),
         protection_binding_commitment: vector[],
     };
+    dynamic_field::add(&mut complete_output.id, CompleteRecipeKeyV8 {},
+        CompleteRecipeSnapshotV8 {
+            version: VERSION,
+            attached_pack_definitions: *runtime::loadout_attached_pack_definitions_v8(loadout),
+            definition_slots: *runtime::loadout_definition_slots_v8(loadout),
+            selections: *runtime::loadout_selections_v8(loadout),
+        });
     let receipt = CompleteReceiptV8 {
         id: receipt_uid, version: VERSION, output_id, root_id, maker_version,
         root_content_commitment, output_key, original_holder: holder, holder,
         loadout_id, loadout_revision, loadout_commitment,
         output_policy_commitment: policy.row_commitment,
         renderer_schema_commitment: policy.renderer_schema_commitment,
-        economics_commitment: *maker::economics_commitment_v8(&economics),
+        economics_commitment: *maker::economics_commitment_v2(&economics),
         recipe_commitment, render_commitment, output_commitment,
         base_line, pack_lines, total_paid_atomic, receipt_commitment,
         protected, seal_id: option::none(),
@@ -1938,12 +2302,12 @@ fun assert_live_soul_bundle<PaymentCoin>(
     assert!(receipt.protected == output.protected, EInvalidBinding);
     let economics = maker::root_economics_v8(root);
     assert!(receipt.economics_commitment
-        == *maker::economics_commitment_v8(&economics), EInvalidBinding);
-    let rights = maker::root_rights_v8(root);
+        == *maker::economics_commitment_v2(&economics), EInvalidBinding);
+    let rights = maker::root_rights_v2(root);
     assert!(soul.soul_creator_royalty_bps
-        == maker::rights_soul_creator_royalty_bps_v8(&rights), EInvalidBinding);
+        == maker::rights_soul_creator_royalty_bps_v2(&rights), EInvalidBinding);
     assert!(soul.maker_source_royalty_bps
-        == maker::rights_maker_source_royalty_bps_v8(&rights), EInvalidBinding);
+        == maker::rights_maker_source_royalty_bps_v2(&rights), EInvalidBinding);
     let policy = borrow_policy(output_registry, output.output_key);
     assert!(policy.row_commitment == output.output_policy_commitment,
         EInvalidBinding);
@@ -1980,66 +2344,6 @@ fun assert_live_soul_bundle<PaymentCoin>(
 
 fun assert_soul_market_boundary<
     PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
-    MarketRegistry: key,
-    MarketTreasury: key,
->(
-    output_registry: &OutputRegistryV8,
-    soul_registry: &SoulRegistryV8,
-    root: &MakerRootV8<PaymentCoin>,
-    catalog: &ProductReleaseCatalogV8,
-    market_registry: &MarketRegistry,
-    market_treasury: &MarketTreasury,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
-) {
-    binding::assert_market_call_cap_v8(catalog, market_call_cap);
-    binding::assert_catalog_snapshot_v8(
-        catalog,
-        maker::root_protocol_config_id_v8(root),
-        maker::root_protocol_config_revision_v8(root),
-        maker::root_protocol_config_commitment_v8(root),
-    );
-    let catalog_product = binding::catalog_binding_v8(catalog);
-    let market_binding = binding::market_binding_v8(catalog_product);
-    binding::assert_type_origins_v8<
-        MarketOriginalMarker,
-        MarketCallableMarker,
-    >(market_binding);
-    binding::assert_type_original_v8<MarketRegistry>(market_binding);
-    binding::assert_type_original_v8<MarketTreasury>(market_binding);
-    assert!(maker::root_product_release_catalog_id_v8(root)
-        == binding::catalog_id_v8(catalog), EInvalidBinding);
-    assert!(binding::product_binding_commitment_v8(
-        maker::root_product_release_binding_v8(root),
-    ) == binding::product_binding_commitment_v8(catalog_product),
-        EInvalidBinding);
-    binding::assert_same_call_cap_set_v8(
-        maker::root_product_release_call_cap_set_v8(root),
-        binding::catalog_call_cap_set_v8(catalog),
-    );
-    assert_registry_pair(root, output_registry, soul_registry);
-    let capability = maker::root_capability_registry_binding_v8(root);
-    assert!(maker::capability_catalog_id_v8(capability)
-        == binding::catalog_id_v8(catalog), EInvalidBinding);
-    binding::assert_same_call_cap_set_v8(
-        maker::capability_call_cap_set_v8(capability),
-        binding::catalog_call_cap_set_v8(catalog),
-    );
-    assert!(maker::capability_output_registry_id_v8(capability)
-        == object::id(output_registry), EInvalidBinding);
-    assert!(maker::capability_soul_registry_id_v8(capability)
-        == object::id(soul_registry), EInvalidBinding);
-    assert!(maker::capability_market_registry_id_v8(capability)
-        == object::id(market_registry), EInvalidBinding);
-    assert!(maker::capability_market_treasury_id_v8(capability)
-        == object::id(market_treasury), EInvalidBinding);
-}
-
-fun assert_active_soul_market_boundary<
-    PaymentCoin,
-    MarketOriginalMarker,
-    MarketCallableMarker,
     MarketRegistry: key,
     MarketTreasury: key,
 >(
@@ -2048,20 +2352,60 @@ fun assert_active_soul_market_boundary<
     root: &MakerRootV8<PaymentCoin>,
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
     market_registry: &MarketRegistry,
     market_treasury: &MarketTreasury,
-    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: &RuntimeCallerCapV1,
+) {
+    // Returns remain possible after protocol changes. New custody/purchase
+    // additionally require live protocol authority in the active wrapper.
+    let economics = maker::root_economics_v8(root);
+    assert!(maker::economics_protocol_config_id_v2(&economics)
+        == protocol::config_id_v8(protocol_config), EInvalidBinding);
+    binding::assert_replacement_current_v2(replacement, catalog);
+    binding::assert_runtime_caller_cap_v1(market_call_cap, 1, replacement, catalog);
+    maker::assert_product_release_catalog_v8(root, catalog);
+    let market_binding = binding::binding_at_v2(binding::catalog_binding_v8(catalog), 5);
+    binding::assert_exact_single_argument_type_v2<MarketRegistry, PaymentCoin>(
+        market_binding, &b"market_v8", &b"MarketRegistryV8");
+    binding::assert_exact_single_argument_type_v2<MarketTreasury, PaymentCoin>(
+        market_binding, &b"market_v8", &b"MarketTreasuryV8");
+    assert_registry_pair(root, output_registry, soul_registry);
+    let ids = maker::root_companion_registry_ids_v2(root);
+    assert!(companion::output_registry_id_v2(ids)
+        == object::id(output_registry), EInvalidBinding);
+    assert!(companion::soul_registry_id_v2(ids)
+        == object::id(soul_registry), EInvalidBinding);
+    assert!(companion::market_registry_id_v2(ids)
+        == object::id(market_registry), EInvalidBinding);
+    // Market alone owns the caller cap and validates registry↔treasury fields;
+    // Output also binds the exact treasury ID into every custody ticket/header.
+    let _ = market_treasury;
+}
+
+fun assert_active_soul_market_boundary<
+    PaymentCoin,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    replacement: &FreshTupleReplacementBindingV2,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    market_call_cap: &RuntimeCallerCapV1,
 ) {
     maker::assert_current_protocol_config_v8(root, protocol_config);
     binding::assert_catalog_current_v8(protocol_config, catalog);
     assert_soul_market_boundary<
         PaymentCoin,
-        MarketOriginalMarker,
-        MarketCallableMarker,
         MarketRegistry,
         MarketTreasury,
     >(
-        output_registry, soul_registry, root, catalog, market_registry,
+        output_registry, soul_registry, root, protocol_config, catalog, replacement, market_registry,
         market_treasury, market_call_cap,
     );
     assert_active_registry_pair(output_registry, soul_registry, root);
@@ -2140,7 +2484,8 @@ fun assert_config(catalog: &ProductReleaseCatalogV8, config: &OutputPackageConfi
     assert!(&config.product_binding_commitment
         == binding::product_binding_commitment_v8(binding::catalog_binding_v8(catalog)),
         EInvalidConfig);
-    binding::assert_output_call_cap_v8(catalog, &config.output_call_cap)
+    binding::assert_role_config_installation_v2(
+        catalog, 3, object::id(config), &config.installation_commitment)
 }
 
 fun assert_registry_root<PaymentCoin>(
@@ -2150,7 +2495,7 @@ fun assert_registry_root<PaymentCoin>(
     assert!(output.version == VERSION, EInvalidBinding);
     maker::assert_root_identity_v8(
         root, output.root_id, output.maker_version, &output.root_content_commitment);
-    assert!(&output.renderer_commitment == maker::root_renderer_commitment_v8(root), EInvalidBinding);
+    assert!(&output.renderer_commitment == maker::root_renderer_commitment_v2(root), EInvalidBinding);
     assert!(output.expected_output_count <= MAX_OUTPUT_POLICY_COUNT, EInvalidBinding);
     assert_hash(&output.expected_policy_commitment);
     assert_hash(&output.rolling_policy_commitment);
@@ -2193,10 +2538,10 @@ fun assert_active_output_registry<PaymentCoin>(
     assert!(output.sealed, ERegistryNotSealed);
     assert!(output.rolling_policy_commitment
         == output.expected_policy_commitment, EInvalidCommitment);
-    let capabilities = maker::root_capability_registry_binding_v8(root);
-    assert!(maker::capability_output_registry_id_v8(capabilities)
+    let registry_ids = maker::root_companion_registry_ids_v2(root);
+    assert!(companion::output_registry_id_v2(registry_ids)
         == object::id(output), EInvalidBinding);
-    assert!(maker::capability_soul_registry_id_v8(capabilities)
+    assert!(companion::soul_registry_id_v2(registry_ids)
         == output.soul_registry_id, EInvalidBinding)
 }
 
@@ -2318,6 +2663,7 @@ fun record_finished_output(
     registry.output_count = registry.output_count + 1;
 }
 
+#[test_only]
 fun record_soul(registry: &mut SoulRegistryV8, soul: &CanonicalSoulV8) {
     let soul_id = object::id(soul);
     assert!(!registry.souls.contains(soul_id), EDuplicate);
@@ -2442,6 +2788,19 @@ public fun pending_scope_key_v8(pending: &ProtectedCompletePendingV8): &String {
 public fun pending_asset_key_v8(pending: &ProtectedCompletePendingV8): &String {
     &pending.output.asset_key
 }
+public fun pending_render_blob_id_v8(pending: &ProtectedCompletePendingV8): &String {
+    &pending.output.render_blob_id
+}
+public fun pending_render_sha256_v8(
+    pending: &ProtectedCompletePendingV8,
+): &vector<u8> {
+    &pending.output.render_sha256
+}
+public fun pending_render_blob_commitment_v8(
+    pending: &ProtectedCompletePendingV8,
+): &vector<u8> {
+    &pending.output.render_blob_commitment
+}
 public fun pending_complete_instance_commitment_v8(
     pending: &ProtectedCompletePendingV8,
 ): vector<u8> {
@@ -2555,6 +2914,124 @@ public fun receipt_commitment_v8(receipt: &CompleteReceiptV8): &vector<u8> {
     &receipt.receipt_commitment
 }
 
+/// The generic witness must be the exact frozen Core Soulidity binding type.
+/// Its fields are certified from live native state, not supplied by the reader.
+public fun certify_native_complete_decrypt_v8<PaymentCoin, OwnerWitness: drop>(
+    provenance: &NativeSoulBindingV8,
+    output: &CompleteOutputV8,
+    receipt: &CompleteReceiptV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    holder: address,
+    ownership_epoch: u64,
+    witness: OwnerWitness,
+    ctx: &TxContext,
+): NativeCompleteDecryptProofV8 {
+    soulidity_binding::assert_owner_witness_v8<OwnerWitness>(protocol_config);
+    assert_exact_holder(holder, ctx.sender());
+    assert_native_owner_claim(&witness, provenance.soul_id,
+        provenance.soul_state_id, holder, ownership_epoch);
+    let _ = witness;
+    let economics = maker::root_economics_v8(root);
+    assert!(provenance.version == VERSION
+        && provenance.protocol_config_id == object::id(protocol_config)
+        && maker::economics_protocol_config_id_v2(&economics) == object::id(protocol_config),
+        EInvalidBinding);
+    assert_native_complete_marker(output, object::id(provenance));
+    assert_complete_decrypt_pair(output, receipt, root);
+    assert!(provenance.root_id == output.root_id
+        && provenance.maker_version == output.maker_version
+        && provenance.root_content_commitment == output.root_content_commitment
+        && provenance.output_id == object::id(output)
+        && provenance.receipt_id == object::id(receipt)
+        && provenance.original_holder == output.original_holder
+        && provenance.original_holder == receipt.original_holder
+        && output.holder == provenance.original_holder
+        && receipt.holder == provenance.original_holder
+        && provenance.output_key == output.output_key
+        && provenance.output_policy_commitment == output.output_policy_commitment
+        && provenance.recipe_commitment == output.recipe_commitment
+        && provenance.render_commitment == output.render_commitment
+        && provenance.output_commitment == output.output_commitment
+        && provenance.receipt_commitment == receipt.receipt_commitment
+        && provenance.authorization_commitment == derive_soul_authorization_commitment(output, receipt),
+        EInvalidBinding);
+    NativeCompleteDecryptProofV8 {
+        holder, receipt_id: object::id(receipt), output_id: object::id(output),
+        recipe_commitment: output.recipe_commitment,
+        render_commitment: output.render_commitment,
+        output_commitment: output.output_commitment,
+        receipt_commitment: receipt.receipt_commitment,
+        scope_key: output.scope_key, asset_key: output.asset_key,
+        seal_id: *output.seal_id.borrow(),
+    }
+}
+
+fun assert_native_owner_claim<OwnerWitness: drop>(
+    witness: &OwnerWitness, soul_id: ID, soul_state_id: ID,
+    holder: address, ownership_epoch: u64,
+) {
+    let zero = object::id_from_address(@0x0);
+    assert!(soul_id != zero && soul_state_id != zero && soul_id != soul_state_id,
+        EInvalidBinding);
+    assert!(bcs::to_bytes(witness) == bcs::to_bytes(&NativeSoulOwnerClaimV8 {
+        soul_id, soul_state_id, holder, ownership_epoch,
+    }), EInvalidProof);
+}
+
+fun assert_native_complete_marker(output: &CompleteOutputV8, binding_id: ID) {
+    assert!(dynamic_field::exists_with_type<NativeCompleteBindingKeyV8, ID>(
+        &output.id, NativeCompleteBindingKeyV8 {}), EInvalidBinding);
+    assert!(*dynamic_field::borrow<NativeCompleteBindingKeyV8, ID>(
+        &output.id, NativeCompleteBindingKeyV8 {}) == binding_id, EInvalidBinding);
+}
+
+public fun consume_native_complete_decrypt_proof_v8(
+    proof: NativeCompleteDecryptProofV8,
+): (address, ID, ID, vector<u8>, vector<u8>, vector<u8>, vector<u8>,
+    String, String, vector<u8>) {
+    let NativeCompleteDecryptProofV8 {
+        holder, receipt_id, output_id, recipe_commitment, render_commitment,
+        output_commitment, receipt_commitment, scope_key, asset_key, seal_id,
+    } = proof;
+    (holder, receipt_id, output_id, recipe_commitment, render_commitment,
+        output_commitment, receipt_commitment, scope_key, asset_key, seal_id)
+}
+
+/// Recompute the complete immutable pair; issuance fields are evidence, not a
+/// second current-owner authority. Only the native scoped proof uses this path.
+fun assert_complete_decrypt_pair<PaymentCoin>(
+    output: &CompleteOutputV8, receipt: &CompleteReceiptV8,
+    root: &MakerRootV8<PaymentCoin>,
+) {
+    assert!(output.version == VERSION && receipt.version == VERSION,
+        EInvalidBinding);
+    maker::assert_root_identity_v8(
+        root, output.root_id, output.maker_version,
+        &output.root_content_commitment);
+    assert!(receipt.root_id == output.root_id
+        && receipt.maker_version == output.maker_version
+        && receipt.root_content_commitment == output.root_content_commitment,
+        EInvalidBinding);
+    assert!(receipt.output_id == object::id(output), EInvalidBinding);
+    assert!(receipt.output_key == output.output_key
+        && receipt.loadout_id == output.loadout_id
+        && receipt.loadout_revision == output.loadout_revision
+        && receipt.loadout_commitment == output.loadout_commitment
+        && receipt.output_policy_commitment == output.output_policy_commitment
+        && receipt.renderer_schema_commitment == output.renderer_schema_commitment
+        && receipt.recipe_commitment == output.recipe_commitment
+        && receipt.render_commitment == output.render_commitment
+        && receipt.output_commitment == output.output_commitment,
+        EInvalidBinding);
+    assert!(output.protected && receipt.protected, EInvalidPolicy);
+    assert!(derive_current_output_commitment(output) == output.output_commitment,
+        EInvalidCommitment);
+    assert!(derive_current_receipt_commitment(receipt) == receipt.receipt_commitment,
+        EInvalidCommitment);
+    assert_protection_binding(output, receipt);
+}
+
 public fun physical_complete_output_registry_id_v8(
     binding: &PhysicalCompleteBindingV8,
 ): ID { binding.output_registry_id }
@@ -2657,6 +3134,110 @@ public fun physical_selection_asset_content_commitment_v8(
 /// key-only bundle. This helper creates one exact unprotected bundle and the
 /// matching Output/Soul registry records without adding production bytecode.
 #[test_only]
+public fun protected_complete_pending_for_testing_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    holder: address,
+    scope_key: String,
+    asset_key: String,
+    ctx: &mut TxContext,
+): ProtectedCompletePendingV8 {
+    let output_uid = object::new(ctx);
+    let output_id = output_uid.to_inner();
+    let receipt_uid = object::new(ctx);
+    let base_line = BaseCompleteLineV8 {
+        ordinal: 0, base_gross_atomic: 0, base_protocol_atomic: 0,
+        maker_atomic: 0, fixed_protocol_atomic: 0, total_atomic: 0,
+    };
+    let mut output = CompleteOutputV8 {
+        id: output_uid, version: VERSION,
+        root_id: maker::root_id_v8(root),
+        maker_version: maker::root_maker_version_v8(root),
+        root_content_commitment: *maker::root_content_commitment_v8(root),
+        output_registry_id: maker::root_id_v8(root),
+        output_key: b"protected-fixture".to_string(),
+        original_holder: holder, holder,
+        loadout_id: maker::root_id_v8(root), loadout_revision: 0,
+        loadout_commitment: test_hash(91),
+        output_policy_commitment: test_hash(92),
+        renderer_schema_commitment: test_hash(93),
+        recipe_commitment: test_hash(94),
+        render_commitment: test_hash(95),
+        render_blob_id: b"protected-ciphertext".to_string(),
+        render_sha256: test_hash(96),
+        render_blob_commitment: test_hash(97),
+        output_commitment: vector[],
+        protected: true,
+        scope_key,
+        asset_key,
+        seal_id: option::none(),
+        protection_binding_commitment: vector[],
+    };
+    output.output_commitment = derive_current_output_commitment(&output);
+    let economics = maker::root_economics_v8(root);
+    let mut receipt = CompleteReceiptV8 {
+        id: receipt_uid, version: VERSION, output_id,
+        root_id: output.root_id, maker_version: output.maker_version,
+        root_content_commitment: output.root_content_commitment,
+        output_key: output.output_key,
+        original_holder: holder, holder,
+        loadout_id: output.loadout_id, loadout_revision: output.loadout_revision,
+        loadout_commitment: output.loadout_commitment,
+        output_policy_commitment: output.output_policy_commitment,
+        renderer_schema_commitment: output.renderer_schema_commitment,
+        economics_commitment: *maker::economics_commitment_v2(&economics),
+        recipe_commitment: output.recipe_commitment,
+        render_commitment: output.render_commitment,
+        output_commitment: output.output_commitment,
+        base_line, pack_lines: vector[], total_paid_atomic: 0,
+        receipt_commitment: vector[], protected: true,
+        seal_id: option::none(),
+    };
+    receipt.receipt_commitment = derive_current_receipt_commitment(&receipt);
+    ProtectedCompletePendingV8 { output, receipt }
+}
+
+#[test_only]
+public fun borrow_soul_mint_authorization_for_testing_v8(
+    authorization: &SoulMintAuthorizationV8,
+): (&CompleteOutputV8, &CompleteReceiptV8) {
+    (&authorization.output, &authorization.receipt)
+}
+
+#[test_only]
+public fun destroy_soul_mint_authorization_for_testing_v8(
+    authorization: SoulMintAuthorizationV8,
+) {
+    let SoulMintAuthorizationV8 {
+        mut output,
+        receipt,
+        authorization_commitment: _,
+    } = authorization;
+    remove_recipe_for_testing(&mut output);
+    let CompleteOutputV8 {
+        id: output_uid, version: _, root_id: _, maker_version: _,
+        root_content_commitment: _, output_registry_id: _, output_key: _,
+        original_holder: _, holder: _, loadout_id: _, loadout_revision: _,
+        loadout_commitment: _, output_policy_commitment: _,
+        renderer_schema_commitment: _, recipe_commitment: _,
+        render_commitment: _, render_blob_id: _, render_sha256: _,
+        render_blob_commitment: _, output_commitment: _, protected: _,
+        scope_key: _, asset_key: _, seal_id: _,
+        protection_binding_commitment: _,
+    } = output;
+    let CompleteReceiptV8 {
+        id: receipt_uid, version: _, output_id: _, root_id: _, maker_version: _,
+        root_content_commitment: _, output_key: _, original_holder: _, holder: _,
+        loadout_id: _, loadout_revision: _, loadout_commitment: _,
+        output_policy_commitment: _, renderer_schema_commitment: _,
+        economics_commitment: _, recipe_commitment: _, render_commitment: _,
+        output_commitment: _, base_line: _, pack_lines: _, total_paid_atomic: _,
+        receipt_commitment: _, protected: _, seal_id: _,
+    } = receipt;
+    output_uid.delete();
+    receipt_uid.delete();
+}
+
+#[test_only]
 public fun new_soul_market_bundle_for_testing_v8<PaymentCoin>(
     output_registry: &mut OutputRegistryV8,
     soul_registry: &mut SoulRegistryV8,
@@ -2713,7 +3294,7 @@ public fun new_soul_market_bundle_for_testing_v8<PaymentCoin>(
         loadout_commitment: output.loadout_commitment,
         output_policy_commitment: output.output_policy_commitment,
         renderer_schema_commitment: output.renderer_schema_commitment,
-        economics_commitment: *maker::economics_commitment_v8(&economics),
+        economics_commitment: *maker::economics_commitment_v2(&economics),
         recipe_commitment: output.recipe_commitment,
         render_commitment: output.render_commitment,
         output_commitment: output.output_commitment,
@@ -2722,7 +3303,7 @@ public fun new_soul_market_bundle_for_testing_v8<PaymentCoin>(
         seal_id: option::none(),
     };
     receipt.receipt_commitment = derive_current_receipt_commitment(&receipt);
-    let rights = maker::root_rights_v8(root);
+    let rights = maker::root_rights_v2(root);
     let mut soul = CanonicalSoulV8 {
         id: object::new(ctx), version: VERSION,
         soul_registry_id: object::id(soul_registry),
@@ -2736,9 +3317,9 @@ public fun new_soul_market_bundle_for_testing_v8<PaymentCoin>(
         output_commitment: output.output_commitment,
         receipt_commitment: receipt.receipt_commitment,
         soul_creator_royalty_bps:
-            maker::rights_soul_creator_royalty_bps_v8(&rights),
+            maker::rights_soul_creator_royalty_bps_v2(&rights),
         maker_source_royalty_bps:
-            maker::rights_maker_source_royalty_bps_v8(&rights),
+            maker::rights_maker_source_royalty_bps_v2(&rights),
         soul_commitment: vector[],
     };
     soul.soul_commitment = derive_current_soul_commitment(&soul);
@@ -2770,10 +3351,11 @@ public fun transfer_soul_market_bundle_for_testing_v8(
 
 #[test_only]
 public fun destroy_soul_market_bundle_for_testing_v8(
-    output: CompleteOutputV8,
+    mut output: CompleteOutputV8,
     receipt: CompleteReceiptV8,
     soul: CanonicalSoulV8,
 ) {
+    remove_recipe_for_testing(&mut output);
     let CompleteOutputV8 {
         id: output_uid, version: _, root_id: _, maker_version: _,
         root_content_commitment: _, output_registry_id: _, output_key: _,
@@ -2832,9 +3414,10 @@ public fun physical_base_selection_binding_for_testing_v8(
 #[test_only]
 public fun destroy_output_package_config_for_testing(config: OutputPackageConfigV8) {
     let OutputPackageConfigV8 { id, version: _, catalog_id: _,
-        product_binding_commitment: _, output_call_cap } = config;
+        product_binding_commitment: _, installation_commitment: _,
+        runtime_caller_cap } = config;
     id.delete();
-    binding::destroy_call_cap_for_testing(output_call_cap)
+    runtime_caller_cap.destroy!(|cap| binding::destroy_runtime_caller_cap_for_testing(cap))
 }
 
 #[test_only]
@@ -2888,19 +3471,11 @@ public fun destroy_registries_for_testing(
 }
 
 #[test_only]
-public struct TestMarketOriginalMarkerV8 has drop {}
-#[test_only]
-public struct TestMarketCallableMarkerV8 has drop {}
-#[test_only]
-public struct TestMarketRegistryV8 has key { id: UID }
-#[test_only]
-public struct TestMarketTreasuryV8 has key { id: UID }
-#[test_only]
 public struct TestDependencyRegistryV8 has key { id: UID }
 #[test_only]
 public struct TestMarketConfigV8 has key {
     id: UID,
-    market_call_cap: PackageCallCapV8<MarketRoleV8>,
+    market_call_cap: Option<RuntimeCallerCapV1>,
 }
 #[test_only]
 public struct TestMarketListingV8 has key {
@@ -2909,205 +3484,204 @@ public struct TestMarketListingV8 has key {
 }
 #[test_only]
 public struct SoulMarketScenarioIdsV8 has copy, drop {
-    root_id: ID,
-    catalog_id: ID,
-    output_registry_id: ID,
-    soul_registry_id: ID,
-    market_registry_id: ID,
-    market_treasury_id: ID,
-    market_config_id: ID,
-    listing_id: ID,
-    output_id: ID,
-    receipt_id: ID,
-    soul_id: ID,
+    root_id: ID, catalog_id: ID, protocol_id: ID, replacement_id: ID,
+    output_registry_id: ID, soul_registry_id: ID,
+    market_registry_id: ID, market_treasury_id: ID, market_config_id: ID,
+    listing_id: ID, output_id: ID, receipt_id: ID, soul_id: ID,
 }
 
+/// The fixture uses exact isolated package identities, real setup-cap consumers,
+/// a sealed replacement and production bootstrap caller-cap minting. Root
+/// lifecycle is test state only; this is not an activation/Market deployment E2E.
 #[test_only]
-fun setup_soul_market_scenario(
-    scenario: &mut Scenario,
-): SoulMarketScenarioIdsV8 {
+fun setup_soul_market_scenario(scenario: &mut Scenario): SoulMarketScenarioIdsV8 {
     let ctx = scenario.ctx();
     let seller = ctx.sender();
-    let (mut protocol_config, protocol_treasury, protocol_admin) =
+    let (protocol_config, protocol_treasury, protocol_admin) =
         protocol::new_protocol_with_treasury_for_testing<SUI>(true, ctx);
-    let economics = maker::new_economics_snapshot_v8<SUI>(
-        &protocol_config, maker::access_free_v8(), 0,
-        maker::complete_unlimited_free_v8(), 0, 0, 0,
-    );
-    let rights = maker::new_onchain_native_rights_snapshot_v8(
-        ctx, 250, 250, 500,
-    );
-    let root_content_commitment = test_hash(51);
-    let counts = base::new_base_definition_counts_v8(1, 1, 1, 1, 0, 0);
-    let commitments = base::minimal_expected_commitments_for_testing(
-        root_content_commitment,
-    );
+    let addresses = vector[
+        protocol::config_core_original_package_id_v8(&protocol_config).to_address(),
+        @0x11, @0x12, @0x13, @0x14, @0x15, @0x16];
+    let mut callables = addresses;
+    *callables.borrow_mut(0) = protocol::config_core_callable_package_id_v8(&protocol_config).to_address();
+    let mut catalog = binding::product_release_catalog_at_addresses_for_testing(
+        &protocol_config, addresses, callables, ctx);
+    let seal_config = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let runtime_config = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let output_config = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let physical_config = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let market_config = TestMarketConfigV8 { id: object::new(ctx), market_call_cap: option::none() };
+    let release_config = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let seal_cap = binding::take_seal_call_cap_v8(&protocol_config, &protocol_admin, &mut catalog);
+    0x11::seal_v8::setup_for_testing(&mut catalog, seal_cap, object::id(&seal_config), test_hash(11));
+    let runtime_cap = binding::take_runtime_call_cap_v8(&protocol_config, &protocol_admin, &mut catalog);
+    0x12::runtime_v8::setup_for_testing(&mut catalog, runtime_cap, object::id(&runtime_config));
+    let output_cap = binding::take_output_call_cap_v8(&protocol_config, &protocol_admin, &mut catalog);
+    0x13::output_v8::setup_for_testing(&mut catalog, output_cap, object::id(&output_config));
+    let physical_cap = binding::take_physical_call_cap_v8(&protocol_config, &protocol_admin, &mut catalog);
+    0x14::physical_v8::setup_for_testing(&mut catalog, physical_cap, object::id(&physical_config));
+    let market_cap = binding::take_market_call_cap_v8(&protocol_config, &protocol_admin, &mut catalog);
+    0x15::market_v8::setup_for_testing(&mut catalog, market_cap, object::id(&market_config));
+    let release_cap = binding::take_release_call_cap_v8(&protocol_config, &protocol_admin, &mut catalog);
+    0x16::release_v8::setup_for_testing(&mut catalog, release_cap, object::id(&release_config));
+    let input = binding::new_fresh_tuple_replacement_binding_input_v2(
+        &catalog, object::id(&runtime_config), object::id(&output_config),
+        object::id(&market_config), object::id(&release_config));
+    binding::seal_fresh_tuple_replacement_binding_v2(
+        &protocol_config, &protocol_admin, &mut catalog, input, ctx);
+    let protocol_id = object::id(&protocol_config);
+    let catalog_id = object::id(&catalog);
+    let market_config_id = object::id(&market_config);
+    protocol::share_protocol_with_treasury_for_testing(protocol_config, protocol_treasury, protocol_admin, ctx);
+    binding::share_product_release_catalog_v8(catalog);
+    transfer::share_object(seal_config);
+    transfer::share_object(runtime_config);
+    transfer::share_object(output_config);
+    transfer::share_object(physical_config);
+    transfer::share_object(market_config);
+    transfer::share_object(release_config);
+
+    scenario.next_tx(seller);
+    let protocol_config = scenario.take_shared_by_id<ProtocolConfigV8>(protocol_id);
+    let protocol_admin = scenario.take_from_sender<protocol::ProtocolAdminCapV8>();
+    let mut catalog = scenario.take_shared_by_id<ProductReleaseCatalogV8>(catalog_id);
+    let replacement = scenario.take_immutable<FreshTupleReplacementBindingV2>();
+    let replacement_id = object::id(&replacement);
+    binding::begin_fresh_tuple_bootstrap_v2(&protocol_config, &protocol_admin,
+        &replacement, &mut catalog, scenario.ctx());
+    test_scenario::return_shared(protocol_config);
+    test_scenario::return_shared(catalog);
+    test_scenario::return_immutable(replacement);
+    scenario.return_to_sender(protocol_admin);
+
+    scenario.next_tx(seller);
+    let protocol_config = scenario.take_shared_by_id<ProtocolConfigV8>(protocol_id);
+    let protocol_admin = scenario.take_from_sender<protocol::ProtocolAdminCapV8>();
+    let catalog = scenario.take_shared_by_id<ProductReleaseCatalogV8>(catalog_id);
+    let replacement = scenario.take_immutable_by_id<FreshTupleReplacementBindingV2>(replacement_id);
+    let mut bootstrap = scenario.take_from_sender<FreshTupleBootstrapAdminV2>();
+    let mut market_config = scenario.take_shared_by_id<TestMarketConfigV8>(market_config_id);
+    let (output_caller, market_caller) = binding::mint_runtime_caller_caps_v1(
+        &protocol_config, &mut bootstrap, &replacement, &catalog);
+    binding::destroy_runtime_caller_cap_for_testing(output_caller);
+    market_config.market_call_cap.fill(market_caller);
+    scenario.return_to_sender(bootstrap);
+    let ctx = scenario.ctx();
+    let economics = maker::new_economics_snapshot_v8<SUI>(&protocol_config, 0, 0,
+        maker::complete_unlimited_free_v8(), 0, 0, 0);
+    let rights = maker::new_onchain_native_rights_snapshot_v8(ctx, 250, 250, 500);
+    let counts = base::new_base_definition_counts_v8(1, 0, 1, 1, 1, 0, 1);
     let clock = sui::clock::create_for_testing(ctx);
     let (mut root, mut base_registry, maker_treasury, admin) =
-        core::new_initial_maker_draft_v8<SUI>(
-            &protocol_config,
-            b"output-market-fixture".to_string(),
-            test_hash(52),
-            b"output-market-fixture-blob".to_string(),
-            test_hash(53),
-            root_content_commitment,
-            counts,
-            commitments,
-            test_hash(54),
-            economics,
-            rights,
-            &clock,
-            ctx,
-        );
-    base::populate_and_seal_minimal_for_testing(
-        &mut base_registry, &root, &admin,
-    );
-    let mut catalog = binding::product_release_catalog_with_market_for_testing(
-        &protocol_config,
-        maker::root_core_original_package_id_v8(&root).to_address(),
-        maker::root_core_callable_package_id_v8(&root).to_address(),
-        type_name::original_id<TestMarketOriginalMarkerV8>(),
-        type_name::defining_id<TestMarketCallableMarkerV8>(),
-        ctx,
-    );
-    let catalog_witness = binding::release_catalog_witness_for_testing(&catalog);
-    maker::finalize_product_release_binding_v8(
-        &mut root, &admin, &protocol_config, catalog_witness, ctx,
-    );
-    let release_cap = binding::take_release_call_cap_v8(
-        &protocol_config, &protocol_admin, &mut catalog,
-    );
-    let seal_cap = binding::take_seal_call_cap_v8(
-        &protocol_config, &protocol_admin, &mut catalog,
-    );
-    let runtime_cap = binding::take_runtime_call_cap_v8(
-        &protocol_config, &protocol_admin, &mut catalog,
-    );
-    let output_cap = binding::take_output_call_cap_v8(
-        &protocol_config, &protocol_admin, &mut catalog,
-    );
-    let physical_cap = binding::take_physical_call_cap_v8(
-        &protocol_config, &protocol_admin, &mut catalog,
-    );
-    let market_call_cap = binding::take_market_call_cap_v8(
-        &protocol_config, &protocol_admin, &mut catalog,
-    );
+        core::new_initial_maker_draft_v8<SUI>(&protocol_config,
+            b"output-market-fixture".to_string(), test_hash(61), test_hash(62),
+            test_hash(63), test_hash(52), b"output-market-fixture-blob".to_string(),
+            test_hash(53), test_hash(51), counts,
+            base::minimal_author_rows_commitment_for_testing(), test_hash(54),
+            economics, rights, &clock, ctx);
+    base::populate_and_seal_minimal_for_testing(&mut base_registry, &mut root, &admin);
+    maker::finalize_product_release_binding_v8(&mut root, &admin, &protocol_config, &catalog, ctx);
     let output_key = b"market-png".to_string();
     let schema_commitment = test_hash(55);
-    let row_commitment = derive_output_policy_row_commitment_v8(
-        &root, 0, output_key, false, b"".to_string(), schema_commitment,
-        POLICY_ALL_ADMITTED, vector[],
-    );
+    let row_commitment = derive_output_policy_row_commitment_v8(&root, 0,
+        output_key, false, b"".to_string(), schema_commitment, POLICY_ALL_ADMITTED, vector[]);
     let expected_policy_commitment = advance_output_registry_commitment_v8(
-        &root, 0, empty_output_registry_commitment_v8(&root), row_commitment,
-    );
-    let (mut output_registry, soul_registry) = new_output_registries_v8(
-        &root, &admin, 1, expected_policy_commitment, ctx,
-    );
-    append_output_policy_v8(
-        &mut output_registry, &root, &admin, 0, output_key, false,
-        b"".to_string(), schema_commitment, POLICY_ALL_ADMITTED, vector[],
-        row_commitment,
-    );
+        &root, 0, empty_output_registry_commitment_v8(&root), row_commitment);
+    let (mut output_registry, soul_registry) =
+        new_output_registries_v8(&root, &admin, 1, expected_policy_commitment, ctx);
+    append_output_policy_v8(&mut output_registry, &root, &admin, 0, output_key,
+        false, b"".to_string(), schema_commitment, POLICY_ALL_ADMITTED, vector[], row_commitment);
     seal_output_registry_v8(&mut output_registry, &root, &admin);
-    let seal_policy = TestDependencyRegistryV8 { id: object::new(ctx) };
     let seal_registry = TestDependencyRegistryV8 { id: object::new(ctx) };
     let runtime_definitions = TestDependencyRegistryV8 { id: object::new(ctx) };
     let pack_registry = TestDependencyRegistryV8 { id: object::new(ctx) };
     let admission_authority = TestDependencyRegistryV8 { id: object::new(ctx) };
     let physical_registry = TestDependencyRegistryV8 { id: object::new(ctx) };
-    let market_registry = TestMarketRegistryV8 { id: object::new(ctx) };
-    let market_treasury = TestMarketTreasuryV8 { id: object::new(ctx) };
-    let (seal_ready, runtime_ready, output_ready, physical_ready, market_ready) =
-        activation::readiness_set_for_testing(
-            &root, &catalog, &seal_policy, &seal_registry,
-            &runtime_definitions, &pack_registry, &admission_authority,
-            &output_registry, &soul_registry, &physical_registry,
-            &market_registry, &market_treasury,
-        );
-    activation::activate_maker_for_testing(
-        &mut root, &admin, &protocol_config, &catalog, &base_registry,
-        &maker_treasury, &protocol_treasury, &release_cap,
-        seal_ready, runtime_ready, output_ready, physical_ready, market_ready,
-        ctx,
-    );
-    binding::destroy_call_cap_for_testing(release_cap);
-    binding::destroy_call_cap_for_testing(seal_cap);
-    binding::destroy_call_cap_for_testing(runtime_cap);
-    binding::destroy_call_cap_for_testing(output_cap);
-    binding::destroy_call_cap_for_testing(physical_cap);
-    let mut soul_registry = soul_registry;
-    let (output, receipt, soul) = new_soul_market_bundle_for_testing_v8(
-        &mut output_registry, &mut soul_registry, &root, seller, ctx,
-    );
-    let market_config = TestMarketConfigV8 {
-        id: object::new(ctx), market_call_cap,
-    };
-    let mut listing = TestMarketListingV8 {
-        id: object::new(ctx), custody: option::none(),
-    };
-    let output_id = object::id(&output);
-    let receipt_id = object::id(&receipt);
-    let soul_id = object::id(&soul);
-    let ticket = custody_soul_bundle_for_market_v8<
-        SUI,
-        TestMarketOriginalMarkerV8,
-        TestMarketCallableMarkerV8,
-        TestMarketRegistryV8,
-        TestMarketTreasuryV8,
-    >(
-        output, receipt, soul, &mut listing.id, &output_registry,
-        &soul_registry, &root, &protocol_config, &catalog, &market_registry,
-        &market_treasury, &market_config.market_call_cap, ctx,
-    );
-    let custody = consume_soul_market_custody_ticket_v8<
-        SUI,
-        TestMarketOriginalMarkerV8,
-        TestMarketCallableMarkerV8,
-        TestMarketRegistryV8,
-        TestMarketTreasuryV8,
-    >(
-        ticket, &listing.id, &output_registry, &soul_registry, &root,
-        &catalog, &market_registry, &market_treasury,
-        &market_config.market_call_cap,
-    );
-    listing.custody.fill(custody);
-    let ids = SoulMarketScenarioIdsV8 {
-        root_id: object::id(&root),
-        catalog_id: object::id(&catalog),
-        output_registry_id: object::id(&output_registry),
-        soul_registry_id: object::id(&soul_registry),
-        market_registry_id: object::id(&market_registry),
-        market_treasury_id: object::id(&market_treasury),
-        market_config_id: object::id(&market_config),
-        listing_id: object::id(&listing),
-        output_id,
-        receipt_id,
-        soul_id,
-    };
+    let (market_registry, market_treasury) = 0x15::market_v8::new_for_testing<SUI>(ctx);
+    let builder = maker::begin_companion_binding_for_testing(
+        &root, &admin, &protocol_config, &catalog, &replacement, ctx);
+    let builder = companion::append_runtime_v2(builder,
+        0x12::runtime_v8::companion_witness_for_testing(), &protocol_config, &catalog,
+        &replacement, object::id(&runtime_definitions), object::id(&pack_registry), object::id(&admission_authority), ctx);
+    let builder = companion::append_seal_v2(builder,
+        0x11::seal_v8::companion_witness_for_testing(), &protocol_config, &catalog, &replacement,
+        object::id(&seal_registry), ctx);
+    let builder = companion::append_output_v2(builder,
+        0x13::output_v8::companion_witness_for_testing(), &protocol_config, &catalog, &replacement,
+        object::id(&output_registry), object::id(&soul_registry), ctx);
+    let builder = companion::append_physical_v2(builder,
+        0x14::physical_v8::companion_witness_for_testing(), &protocol_config, &catalog, &replacement,
+        object::id(&physical_registry), ctx);
+    let builder = companion::append_market_v2(builder,
+        0x15::market_v8::companion_witness_for_testing(), &protocol_config, &catalog, &replacement,
+        object::id(&market_registry), ctx);
+    maker::finish_companion_binding_for_testing(builder, &mut root, &admin,
+        &protocol_config, &catalog, &replacement, ctx);
+    let root_id = object::id(&root);
+    let output_registry_id = object::id(&output_registry);
+    let soul_registry_id = object::id(&soul_registry);
+    let market_registry_id = object::id(&market_registry);
+    let market_treasury_id = object::id(&market_treasury);
     clock.destroy_for_testing();
-    protocol::set_protocol_enabled_v8(
-        &mut protocol_config, &protocol_admin, false,
-    );
-    protocol::destroy_protocol_with_treasury_for_testing(
-        protocol_config, protocol_treasury, protocol_admin,
-    );
-    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_draft_v8());
-    core::share_maker_draft_v8(
-        root, base_registry, maker_treasury, admin, ctx,
-    );
-    binding::share_product_release_catalog_v8(catalog);
+    core::share_maker_draft_v8(root, base_registry, maker_treasury, admin, ctx);
     share_output_registries_v8(output_registry, soul_registry);
-    transfer::share_object(seal_policy);
     transfer::share_object(seal_registry);
     transfer::share_object(runtime_definitions);
     transfer::share_object(pack_registry);
     transfer::share_object(admission_authority);
     transfer::share_object(physical_registry);
-    transfer::share_object(market_registry);
-    transfer::share_object(market_treasury);
-    transfer::share_object(market_config);
+    0x15::market_v8::share_for_testing(market_registry, market_treasury);
+    test_scenario::return_shared(protocol_config);
+    test_scenario::return_shared(catalog);
+    test_scenario::return_shared(market_config);
+    test_scenario::return_immutable(replacement);
+    scenario.return_to_sender(protocol_admin);
+
+    // Share the actual draft before exercising the ACTIVE boundary.
+    scenario.next_tx(seller);
+    let mut root = scenario.take_shared_by_id<MakerRootV8<SUI>>(root_id);
+    let mut output_registry = scenario.take_shared_by_id<OutputRegistryV8>(output_registry_id);
+    let mut soul_registry = scenario.take_shared_by_id<SoulRegistryV8>(soul_registry_id);
+    let market_registry = scenario.take_shared_by_id<TestMarketRegistryV8<SUI>>(market_registry_id);
+    let market_treasury = scenario.take_shared_by_id<TestMarketTreasuryV8<SUI>>(market_treasury_id);
+    let market_config = scenario.take_shared_by_id<TestMarketConfigV8>(market_config_id);
+    let mut protocol_config = scenario.take_shared_by_id<ProtocolConfigV8>(protocol_id);
+    let protocol_admin = scenario.take_from_sender<protocol::ProtocolAdminCapV8>();
+    let catalog = scenario.take_shared_by_id<ProductReleaseCatalogV8>(catalog_id);
+    let replacement = scenario.take_immutable_by_id<FreshTupleReplacementBindingV2>(replacement_id);
+    let ctx = scenario.ctx();
+    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    let (output, receipt, soul) = new_soul_market_bundle_for_testing_v8(
+        &mut output_registry, &mut soul_registry, &root, seller, ctx);
+    let mut listing = TestMarketListingV8 { id: object::new(ctx), custody: option::none() };
+    let output_id = object::id(&output);
+    let receipt_id = object::id(&receipt);
+    let soul_id = object::id(&soul);
+    let ticket = custody_soul_bundle_for_market_v8(
+        output, receipt, soul, &mut listing.id, &output_registry, &soul_registry,
+        &root, &protocol_config, &catalog, &replacement, &market_registry,
+        &market_treasury, market_config.market_call_cap.borrow(), ctx);
+    let custody = consume_soul_market_custody_ticket_v8(ticket, &listing.id,
+        &output_registry, &soul_registry, &root, &protocol_config, &catalog,
+        &replacement, &market_registry, &market_treasury, market_config.market_call_cap.borrow());
+    listing.custody.fill(custody);
+    let ids = SoulMarketScenarioIdsV8 {
+        root_id, catalog_id, protocol_id, replacement_id,
+        output_registry_id, soul_registry_id, market_registry_id, market_treasury_id,
+        market_config_id, listing_id: object::id(&listing), output_id, receipt_id, soul_id,
+    };
+    protocol::set_protocol_enabled_v8(&mut protocol_config, &protocol_admin, false);
     transfer::share_object(listing);
+    test_scenario::return_shared(root);
+    test_scenario::return_shared(output_registry);
+    test_scenario::return_shared(soul_registry);
+    test_scenario::return_shared(market_registry);
+    test_scenario::return_shared(market_treasury);
+    test_scenario::return_shared(protocol_config);
+    test_scenario::return_shared(catalog);
+    test_scenario::return_shared(market_config);
+    test_scenario::return_immutable(replacement);
+    scenario.return_to_sender(protocol_admin);
     ids
 }
 
@@ -3311,6 +3885,83 @@ fun test_protected_artifacts(ctx: &mut TxContext): (CompleteOutputV8, CompleteRe
         seal_id: option::none(),
     };
     (output, receipt)
+}
+
+#[test]
+fun native_complete_read_marker_has_exact_move_key_and_binding() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 801, 0, 0, 0);
+    let (mut output, receipt) = test_protected_artifacts(&mut ctx);
+    assert!(bcs::to_bytes(&NativeCompleteBindingKeyV8 {}) == vector[0], 100);
+    let id = object::id_from_address(@0x99);
+    dynamic_field::add(&mut output.id, NativeCompleteBindingKeyV8 {}, id);
+    assert_native_complete_marker(&output, id);
+    transfer::freeze_object(output);
+    transfer::freeze_object(receipt);
+}
+
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun native_complete_read_marker_rejects_wrong_value_type() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 802, 0, 0, 0);
+    let (mut output, receipt) = test_protected_artifacts(&mut ctx);
+    dynamic_field::add(&mut output.id, NativeCompleteBindingKeyV8 {}, 99u64);
+    assert_native_complete_marker(&output, object::id_from_address(@0x99));
+    transfer::freeze_object(output);
+    transfer::freeze_object(receipt);
+}
+
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun native_complete_read_marker_rejects_other_provenance() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 803, 0, 0, 0);
+    let (mut output, receipt) = test_protected_artifacts(&mut ctx);
+    dynamic_field::add(&mut output.id, NativeCompleteBindingKeyV8 {}, object::id_from_address(@0x99));
+    assert_native_complete_marker(&output, object::id_from_address(@0x98));
+    transfer::freeze_object(output);
+    transfer::freeze_object(receipt);
+}
+
+#[test, expected_failure(abort_code = EInvalidBinding)]
+fun native_complete_read_marker_rejects_missing_marker() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 804, 0, 0, 0);
+    let (output, receipt) = test_protected_artifacts(&mut ctx);
+    assert_native_complete_marker(&output, object::id_from_address(@0x99));
+    transfer::freeze_object(output);
+    transfer::freeze_object(receipt);
+}
+
+#[test]
+fun native_complete_read_owner_claim_matches_exact_live_epoch() {
+    let soul_id = object::id_from_address(@0x41);
+    let soul_state_id = object::id_from_address(@0x42);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        soul_id, soul_state_id, @0xB22, 7);
+    assert_native_owner_claim(&witness, soul_id, soul_state_id, @0xB22, 7);
+}
+
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun native_complete_read_owner_claim_rejects_stale_epoch() {
+    let soul_id = object::id_from_address(@0x41);
+    let soul_state_id = object::id_from_address(@0x42);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        soul_id, soul_state_id, @0xB22, 7);
+    assert_native_owner_claim(&witness, soul_id, soul_state_id, @0xB22, 6);
+}
+
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun native_complete_read_owner_claim_rejects_wrong_holder() {
+    let soul_id = object::id_from_address(@0x41);
+    let soul_state_id = object::id_from_address(@0x42);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        soul_id, soul_state_id, @0xB22, 7);
+    assert_native_owner_claim(&witness, soul_id, soul_state_id, @0xA11, 7);
+}
+
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun native_complete_read_owner_claim_rejects_other_state() {
+    let soul_id = object::id_from_address(@0x41);
+    let soul_state_id = object::id_from_address(@0x42);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        soul_id, soul_state_id, @0xB22, 7);
+    assert_native_owner_claim(&witness, soul_id, object::id_from_address(@0x43), @0xB22, 7);
 }
 
 #[test]
@@ -3559,16 +4210,18 @@ fun market_return_cross_transaction_survives_archived_root_and_config_drift() {
     {
         let mut root = scenario.take_shared_by_id<MakerRootV8<SUI>>(ids.root_id);
         let catalog = scenario.take_shared_by_id<ProductReleaseCatalogV8>(ids.catalog_id);
+        let protocol_config = scenario.take_shared_by_id<ProtocolConfigV8>(ids.protocol_id);
+        let replacement = scenario.take_immutable_by_id<FreshTupleReplacementBindingV2>(ids.replacement_id);
         let output_registry = scenario.take_shared_by_id<OutputRegistryV8>(
             ids.output_registry_id,
         );
         let soul_registry = scenario.take_shared_by_id<SoulRegistryV8>(
             ids.soul_registry_id,
         );
-        let market_registry = scenario.take_shared_by_id<TestMarketRegistryV8>(
+        let market_registry = scenario.take_shared_by_id<TestMarketRegistryV8<SUI>>(
             ids.market_registry_id,
         );
-        let market_treasury = scenario.take_shared_by_id<TestMarketTreasuryV8>(
+        let market_treasury = scenario.take_shared_by_id<TestMarketTreasuryV8<SUI>>(
             ids.market_treasury_id,
         );
         let market_config = scenario.take_shared_by_id<TestMarketConfigV8>(
@@ -3592,18 +4245,18 @@ fun market_return_cross_transaction_survives_archived_root_and_config_drift() {
         let custody = *listing.custody.borrow();
         return_soul_bundle_from_market_v8<
             SUI,
-            TestMarketOriginalMarkerV8,
-            TestMarketCallableMarkerV8,
-            TestMarketRegistryV8,
-            TestMarketTreasuryV8,
+            TestMarketRegistryV8<SUI>,
+            TestMarketTreasuryV8<SUI>,
         >(
             output_receiving, receipt_receiving, soul_receiving,
             &mut listing.id, &custody, &output_registry,
-            &soul_registry, &root, &catalog, &market_registry,
-            &market_treasury, &market_config.market_call_cap,
+            &soul_registry, &root, &protocol_config, &catalog, &replacement, &market_registry,
+            &market_treasury, market_config.market_call_cap.borrow(),
         );
         test_scenario::return_shared(root);
         test_scenario::return_shared(catalog);
+        test_scenario::return_shared(protocol_config);
+        test_scenario::return_immutable(replacement);
         test_scenario::return_shared(output_registry);
         test_scenario::return_shared(soul_registry);
         test_scenario::return_shared(market_registry);

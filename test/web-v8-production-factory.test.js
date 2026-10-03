@@ -15,7 +15,7 @@ import {
   createFreshV8Controller,
   parseFreshV8Route,
   renderFreshV8App,
-} from '../app.js';
+} from '../maker-v8-market-controller.js';
 import { createProductionMakerV8BrowserAdapters } from '../maker-v8-browser.js';
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
@@ -149,33 +149,16 @@ function activationEvent(runtime) {
       catalog_id: runtime.catalogId,
       product_binding_commitment: bytes32(60),
       call_cap_set_commitment: bytes32(61),
-      native_capability_mask: '127',
-      capability_binding_commitment: bytes32(7),
       base_registry_id: IDs.baseRegistryId,
-      seal_policy_config_id: runtime.roleConfigIds.seal,
-      seal_registry_id: IDs.sealRegistryId,
-      runtime_definition_registry_id: IDs.runtimeDefinitionRegistryId,
-      pack_registry_id: IDs.packRegistryId,
-      admission_authority_id: IDs.packAdmissionAuthorityId,
-      output_registry_id: IDs.outputRegistryId,
-      soul_registry_id: IDs.soulRegistryId,
-      physical_registry_id: IDs.physicalRegistryId,
-      market_registry_id: IDs.marketRegistryId,
-      market_treasury_id: IDs.marketTreasuryId,
+      registry_ids: companionFields(),
+      replacement_id: id(60),
+      bootstrap_certificate_id: id(61),
     },
   };
 }
 
-function capabilityFields(runtime) {
+function companionFields() {
   return {
-    native_capability_mask: '127',
-    catalog_id: runtime.catalogId,
-    call_cap_set: {},
-    protocol_config_id: runtime.protocolConfigId,
-    base_registry_id: IDs.baseRegistryId,
-    maker_treasury_id: IDs.makerTreasuryId,
-    protocol_treasury_id: runtime.protocolTreasuryId,
-    seal_policy_config_id: runtime.roleConfigIds.seal,
     seal_registry_id: IDs.sealRegistryId,
     runtime_definition_registry_id: IDs.runtimeDefinitionRegistryId,
     pack_registry_id: IDs.packRegistryId,
@@ -184,13 +167,6 @@ function capabilityFields(runtime) {
     soul_registry_id: IDs.soulRegistryId,
     physical_registry_id: IDs.physicalRegistryId,
     market_registry_id: IDs.marketRegistryId,
-    market_treasury_id: IDs.marketTreasuryId,
-    seal_readiness_commitment: bytes32(8),
-    runtime_readiness_commitment: bytes32(9),
-    output_readiness_commitment: bytes32(10),
-    physical_readiness_commitment: bytes32(11),
-    market_readiness_commitment: bytes32(12),
-    commitment: bytes32(7),
   };
 }
 
@@ -210,28 +186,41 @@ function rootResponse(runtime, lifecycleCode) {
       maker_key: 'offline-production-maker',
       maker_version: '42',
       version_commitment: bytes32(1),
-      previous_root_id: [],
-      previous_version_commitment: [],
-      successor_authority_id: [],
-      successor_root_id: [],
-      renderer_commitment: bytes32(3),
-      manifest_blob_id: 'offline-manifest',
-      manifest_sha256: bytes32(13),
-      content_commitment: bytes32(0xaa),
-      base_registry_id: [IDs.baseRegistryId],
-      maker_treasury_id: [IDs.makerTreasuryId],
+      previous_root_id: null,
+      previous_version_commitment: null,
+      successor_authority_id: null,
+      successor_root_id: null,
+      maker_document_commitment: bytes32(10),
+      creator_defaults_commitment: bytes32(11),
+      living_content_binding_commitment: bytes32(12),
+      content: {
+        renderer_commitment: bytes32(3),
+        manifest_blob_id: 'offline-manifest',
+        manifest_sha256: bytes32(13),
+        content_commitment: bytes32(0xaa),
+      },
+      base_registry_id: IDs.baseRegistryId,
+      maker_treasury_id: IDs.makerTreasuryId,
       expected_base_definition_count: '2',
       expected_base_registry_commitment: bytes32(14),
       expected_pack_admission_policy_commitment: bytes32(15),
       economics: {
         protocol_config_id: runtime.protocolConfigId,
         protocol_config_revision: '7',
-        protocol_config_commitment: bytes32(4),
+        protocol_config_commitment: bytes32(0xdd),
+        protocol_treasury_id: runtime.protocolTreasuryId,
+        commitment: bytes32(0xbb),
       },
-      rights: {},
-      product_release_binding: [{}],
-      pack_admission_binding: [{}],
-      capability_registry_binding: { fields: capabilityFields(runtime) },
+      rights: { commitment: bytes32(0xcc) },
+      publication: {
+        catalog_id: runtime.catalogId,
+        sealed_base_registry_commitment: '10'.repeat(32),
+        release_commitments: {
+          product_binding_commitment: bytes32(60),
+          call_cap_set_commitment: bytes32(61),
+        },
+        registry_ids: companionFields(),
+      },
       created_at_ms: '1',
     },
   );
@@ -445,6 +434,9 @@ async function productionFixture() {
     async getObject(request) {
       reads.set(request.id, (reads.get(request.id) || 0) + 1);
       return objects.get(request.id) ?? attestation.getObject(request);
+    },
+    async getDynamicField(request) {
+      return attestation.getDynamicField(request);
     },
     async queryEvents(request) {
       eventQueries.push(request);

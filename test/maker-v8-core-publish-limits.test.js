@@ -38,6 +38,6 @@ test('every production Maker v8 struct stays within the Sui publish verifier fie
   const makerRoot = structs.find((entry) => entry.name === 'MakerRootV8');
   assert.deepEqual(
     makerRoot,
-    { name: 'MakerRootV8', fields: 31, source: 'core/maker_v8.move' },
+    { name: 'MakerRootV8', fields: 29, source: 'core/maker_v8.move' },
   );
 });

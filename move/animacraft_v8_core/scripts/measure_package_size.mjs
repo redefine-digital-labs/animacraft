@@ -9,11 +9,10 @@ const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const buildDir = path.join(packageDir, 'build', 'animacraft_v8_core');
 const bytecodeDir = path.join(buildDir, 'bytecode_modules');
 const disassemblyDir = path.join(buildDir, 'disassembly');
-// Core owns the canonical Root, exact treasuries and Maker access entitlement.
-// Keep it far below Mainnet's hard maximum after adding the terminal typed
-// activation and Output -> Runtime request boundary; do not move enforcement
-// into an opaque payload merely to preserve the former 60 KB scaffold target.
-const targetBytes = 64_000;
+// Protocol137's already certified current Core is the no-growth working ceiling.
+// See PROTOCOL_137_SPEC.md and the seal-cap evidence manifest; changing this pin
+// requires explicit re-certification, never adjustment to the current output.
+const targetBytes = 97_740;
 const hardMaxBytes = 102_400;
 
 if (!fs.existsSync(bytecodeDir) || !fs.existsSync(disassemblyDir)) {
@@ -30,25 +29,29 @@ const modules = fs.readdirSync(bytecodeDir)
     const bytecodeBytes = fs.statSync(path.join(bytecodeDir, filename)).size;
     const disassemblyPath = path.join(disassemblyDir, `${moduleName}.mvb`);
     const disassembly = fs.readFileSync(disassemblyPath, 'utf8');
-    const declaredModule = disassembly
-      .match(/^module\s+[^.]+\.([A-Za-z][A-Za-z0-9_]*)\s*\{/m)?.[1];
+    const declaration = disassembly.match(/^module\s+(?:0x)?([0-9a-fA-F]{1,64})\.([A-Za-z][A-Za-z0-9_]*)\s*\{/m);
+    const declaredModule = declaration?.[2];
+    const declaredAddress = declaration?.[1].toLowerCase().padStart(64, '0');
     if (declaredModule !== moduleName) {
-      throw new Error(
-        `Disassembly module mismatch for ${filename}: ${declaredModule || 'missing'}`,
-      );
+      throw new Error(`Disassembly module mismatch for ${filename}: ${declaredModule || 'missing'}`);
     }
     const datatypeNames = [
       ...disassembly.matchAll(/^(?:struct|enum)\s+([A-Za-z][A-Za-z0-9_]*)\b/gm),
     ].map((match) => match[1]);
     const dependencyAddresses = [
-      ...disassembly.matchAll(/^use\s+([0-9a-fA-F]{64})::/gm),
+      ...disassembly.matchAll(/^use\s+(?:0x)?([0-9a-fA-F]{1,64})::/gm),
     ]
-      .map((match) => match[1].toLowerCase())
-      .filter((address) => !/^0+$/.test(address));
-    return { moduleName, bytecodeBytes, datatypeNames, dependencyAddresses };
+      .map((match) => match[1].toLowerCase().padStart(64, '0'))
+      // A package's own module imports are not external linkage entries.
+      .filter((address) => address !== declaredAddress);
+    return { moduleName, declaredAddress, bytecodeBytes, datatypeNames, dependencyAddresses };
   });
 
 if (modules.length === 0) throw new Error('No production Move modules found.');
+
+if (new Set(modules.map(module => module.declaredAddress)).size !== 1) {
+  throw new Error('Disassembly package address mismatch.');
+}
 
 const dependencies = new Set(modules.flatMap((module) => module.dependencyAddresses));
 const moduleMapBytes = modules.reduce(

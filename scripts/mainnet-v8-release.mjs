@@ -23,7 +23,23 @@ import {
 } from '@mysten/sui/utils';
 import { verifyTransactionSignature } from '@mysten/sui/verify';
 import { RpcError } from '@protobuf-ts/runtime-rpc';
+import { MAINNET_WALRUS_PACKAGE_CONFIG } from '@mysten/walrus';
 import { blake2b } from '@noble/hashes/blake2.js';
+import { captureNativeSoulSource, restoreNativeSoulSource, inspectNativeSoulSourceRepositories,
+  verifyNativeSoulSourceCheckout, assertNativeSoulSourceRevision, NATIVE_SOUL_SOURCE_ORDER,
+  NATIVE_SOUL_SOURCE_NAMES } from './native-soul-source-cas.mjs';
+import { assertMainnetV8SourcePlan } from './mainnet-v8-release-lib.mjs';
+import { readNativeSoulExternalPublications, nativeSoulExternalCommitmentEntries, NATIVE_SOUL_EXTERNAL_PUBLICATIONS,
+  NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY } from './native-soul-external-publications.mjs';
+import { assertMakerV8WalrusExecutionV1, readMakerV8WalrusExecutionV1 } from '../maker-v8-walrus-execution.js';
+import { buildNativeSoulBootstrapTransaction, NATIVE_SOUL_BOOTSTRAP_STAGES } from './native-soul-bootstrap-transactions.mjs';
+import { certifyNativeSoulBootstrapHistory, nativeSoulBootstrapPriorKinds } from './native-soul-bootstrap-loader.mjs';
+import { deriveNativeSoulBootstrapStageData, deriveNativeSoulFinalBootstrapObjects } from './native-soul-bootstrap-context.mjs';
+import { assertMakerV8Runtime } from '../maker-v8-runtime.js';
+import { deriveMakerV8ProtocolConfigCommitment } from '../maker-v8-protocol-commitment.js';
+import { decodeNativeSoulBootstrapHistoryObject } from './native-soul-bootstrap-history.mjs';
+import { buildNativeSoulMarketActivationTransaction, nativeSoulMarketActivationOutputReferences,
+  validateNativeSoulMarketActivationHistory } from './native-soul-market-activation.mjs';
 
 import {
   MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT,
@@ -32,10 +48,15 @@ import {
   isMakerV8SuiGrpcNotFoundError,
 } from '../maker-v8-sui-grpc.js';
 import {
-  ROLE_DEPENDENCIES,
-  ROLE_PUBLISH_DEPENDENCIES,
   ROLE_ORDER,
   ROLE_PACKAGE_NAMES,
+  MAINNET_V8_PUBLISH_ORDER,
+  MAINNET_V8_PUBLISH_PACKAGE_NAMES,
+  MAINNET_V8_RELEASE_STEPS,
+  MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS,
+  nativeSoulBootstrapInputFromStageData,
+  nativeSoulMarketActivationInputFromStageData,
+  deriveMainnetV8MarketActivationWalContext,
   MAINNET_V8_DEFAULT_COMMITTEE,
   MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
   MAINNET_V8_DEFAULT_COMMITTEE_OWNER,
@@ -45,9 +66,15 @@ import {
   appendReleaseWal,
   assertMainnetV8FinalSealPolicy,
   assertMainnetV8SealPolicyTemplate,
+  assertMainnetV8PackageReadbackBcs,
+  assertMainnetV8NativeBootstrapReadback,
+  certifyMainnetV8SoulidityInitialization,
+  assertMainnetV8PublishedModuleBytes,
   assertReleasePlan,
+  assertMainnetV8ReleasePlanContents,
   buildAbiArtifact,
   buildFinalManifest,
+  mainnetV8CatalogCommitmentsFromFinalManifest,
   buildMainnetV8AbandonEvidence,
   buildMainnetV8ManifestEvidence,
   buildMainnetV8OutcomeEvidence,
@@ -69,18 +96,17 @@ import {
   sha256Hex,
 } from './mainnet-v8-release-lib.mjs';
 import { attestMakerV8Runtime } from '../maker-v8-chain.js';
-import { deriveMakerV8ReleaseCommitments } from '../maker-v8-compiler.js';
 
 export const MAINNET_V8_RELEASE_RUNNER_SCHEMA = 'animacraft.mainnet-v8-release-runner.v1';
 export const MAINNET_V8_RELEASE_TOOLCHAIN = Object.freeze({
-  suiVersion: '1.77.2',
-  suiSourceCommit: '51d177ad7d65102fc368b582408f466d97b31548',
-  suiVersionOutput: 'sui 1.77.2-51d177ad7d65',
+  suiVersion: '1.80.1',
+  suiSourceCommit: '671ba71e69c711ded76a11ef90297c4f2d5ac474',
+  suiVersionOutput: 'sui 1.80.1-671ba71e69c7',
   suiBinarySha256: MAINNET_V8_SUI_BINARY_SHA256,
-  protocolVersion: '133',
+  protocolVersion: '137',
   objectRuntimeMaxCachedObjects: '1000',
   objectRuntimeMaxStoreEntries: '1000',
-  frameworkRevision: '73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1',
+  frameworkRevision: '722ac4fcf4841346c91775f596c4ce23fb7fbd0f',
 });
 export const MAINNET_V8_USDC_TYPE =
   '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
@@ -99,41 +125,7 @@ export const MAINNET_V8_MINIMUM_GAS_CUSHION = 100_000_000n;
 export const MAINNET_V8_WAL_FILENAME = 'release-wal.json';
 export const MAINNET_V8_PLAN_FILENAME = 'release-plan.json';
 export const MAINNET_V8_PUBLISHED_FILENAME = 'Published.toml';
-export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS = Object.freeze([
-  'MAINNET_V8_CREATED_OUTPUT_INVALID',
-  'MAINNET_V8_PACKAGE_BYTES_DRIFT',
-  'MAINNET_V8_INIT_WRITE_SET_INVALID',
-  'MAINNET_V8_MOVE_FIELDS_INVALID',
-  'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
-  'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
-  'MAKER_V8_CHAIN_HASH_INVALID',
-  'MAKER_V8_CORE_ARTIFACT_UNMEASURED',
-]);
-const MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT = Object.freeze({
-  code: 'MAINNET_V8_MOVE_FIELDS_INVALID',
-  message: 'ProtocolTreasuryV8.revenue has no exact Move field record.',
-});
-const MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT = Object.freeze({
-  code: 'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
-  message: 'Bootstrap effects must contain exactly seven created shared outputs.',
-});
-const MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT = Object.freeze({
-  code: 'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
-  message: 'ProductReleaseCatalogV8.seal_call_cap must be an exact Move Option<PackageCallCapV8>.',
-});
-const MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT = Object.freeze({
-  code: 'MAKER_V8_CHAIN_HASH_INVALID',
-  message: 'catalog.binding.core.source_commitment must contain exactly 32 bytes.',
-  label: 'catalog.binding.core.source_commitment',
-});
-const MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT = Object.freeze({
-  code: 'MAKER_V8_CORE_ARTIFACT_UNMEASURED',
-  message: 'Core base_registry_v8 module bytes do not match the metered seal-cap artifact.',
-  expectedSha256: '89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7',
-  observedSha256: 'e2d9c684426838f37a5798ad6ec24d34c8d599b6f6dc3bd2907aee20742d7484',
-  byteLength: 9412,
-});
-
+export { MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS };
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, '..');
 const HEX_32 = /^[0-9a-f]{64}$/;
@@ -144,31 +136,6 @@ const GET_TRANSACTION = 'GetTransaction';
 const COMMANDS = new Set([
   'prepare', 'run', 'resume', 'abandon', 'status', 'verify', 'export-config',
 ]);
-const CONFIG_ROLE_MODULES = Object.freeze({
-  seal: 'seal_v8',
-  runtime: 'runtime_binding_v8',
-  output: 'output_v8',
-  physical: 'physical_v8',
-  market: 'market_v8',
-  release: 'release_v8',
-});
-const CONFIG_ROLE_FUNCTIONS = Object.freeze({
-  seal: Object.freeze(['new_seal_policy_config_v8', 'share_seal_policy_config_v8']),
-  runtime: Object.freeze(['new_runtime_package_config_v8', 'share_runtime_package_config_v8']),
-  output: Object.freeze(['new_output_package_config_v8', 'share_output_package_config_v8']),
-  physical: Object.freeze(['new_physical_package_config_v8', 'share_physical_package_config_v8']),
-  market: Object.freeze(['new_market_package_config_v8', 'share_market_package_config_v8']),
-  release: Object.freeze(['new_release_package_config_v8', 'share_release_package_config_v8']),
-});
-const MARKERS = Object.freeze({
-  core: Object.freeze(['protocol_config_v8', 'CorePackageMarkerV8']),
-  seal: Object.freeze(['seal_v8', 'SealOriginalMarkerV8', 'SealCallableMarkerV8']),
-  runtime: Object.freeze(['runtime_v8', 'RuntimeOriginalMarkerV8', 'RuntimeCallableMarkerV8']),
-  output: Object.freeze(['output_v8', 'OutputOriginalMarkerV8', 'OutputCallableMarkerV8']),
-  physical: Object.freeze(['physical_v8', 'PhysicalOriginalMarkerV8', 'PhysicalCallableMarkerV8']),
-  market: Object.freeze(['market_v8', 'MarketOriginalMarkerV8', 'MarketCallableMarkerV8']),
-  release: Object.freeze(['release_v8', 'ReleaseOriginalMarkerV8', 'ReleaseCallableMarkerV8']),
-});
 const SUI_EVENT_BCS = bcs.struct('MainnetV8ReleaseSuiEvent', {
   package_id: bcs.Address,
   transaction_module: bcs.string(),
@@ -183,61 +150,6 @@ const SEAL_KEY_SERVER_OBJECT_BCS = bcs.struct('MainnetV8SealKeyServerObject', {
   id: bcs.Address,
   first_version: bcs.u64(),
   last_version: bcs.u64(),
-});
-const PROTOCOL_CONFIG_COMMITMENT_INPUT_BCS = bcs.struct('MainnetV8ProtocolConfigCommitmentInput', {
-  domain: bcs.byteVector(),
-  version: bcs.u64(),
-  config_id: bcs.Address,
-  core_original_package_id: bcs.Address,
-  core_callable_package_id: bcs.Address,
-  revision: bcs.u64(),
-  treasury_id: bcs.option(bcs.Address),
-  payment_coin_type: bcs.string(),
-  primary_content_fee_bps: bcs.u16(),
-  fixed_complete_fee_atomic: bcs.u64(),
-  maker_market_fee_bps: bcs.u16(),
-  soul_market_fee_bps: bcs.u16(),
-  enabled: bcs.bool(),
-});
-const PROTOCOL_TREASURY_INITIALIZED_EVENT_BCS = bcs.struct('MainnetV8ProtocolTreasuryInitialized', {
-  config_id: bcs.Address,
-  treasury_id: bcs.Address,
-  revision: bcs.u64(),
-  commitment: bcs.byteVector(),
-});
-const PROTOCOL_ENABLED_CHANGED_EVENT_BCS = bcs.struct('MainnetV8ProtocolEnabledChanged', {
-  config_id: bcs.Address,
-  revision: bcs.u64(),
-  enabled: bcs.bool(),
-  commitment: bcs.byteVector(),
-});
-const SEAL_KEY_SERVER_BINDING_BCS = bcs.struct('MainnetV8SealKeyServerBinding', {
-  key_server_id: bcs.Address,
-  weight: bcs.u16(),
-});
-const SEAL_POLICY_COMMITMENT_INPUT_BCS = bcs.struct('MainnetV8SealPolicyCommitmentInput', {
-  domain: bcs.byteVector(),
-  version: bcs.u64(),
-  protocol_config_id: bcs.Address,
-  protocol_config_revision: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  seal_original_package_id: bcs.Address,
-  seal_callable_package_id: bcs.Address,
-  seal_binding_commitment: bcs.byteVector(),
-  seal_authority_id: bcs.Address,
-  call_cap_set_commitment: bcs.byteVector(),
-  key_servers: bcs.vector(SEAL_KEY_SERVER_BINDING_BCS),
-  threshold: bcs.u16(),
-  key_server_set_commitment: bcs.byteVector(),
-  encryption_policy_commitment: bcs.byteVector(),
-});
-const SEAL_POLICY_CREATED_EVENT_BCS = bcs.struct('MainnetV8SealPolicyCreated', {
-  config_id: bcs.Address,
-  catalog_id: bcs.Address,
-  threshold: bcs.u16(),
-  key_server_set_commitment: bcs.byteVector(),
-  commitment: bcs.byteVector(),
 });
 const UPGRADE_CAP_BCS = bcs.struct('MainnetV8UpgradeCap', {
   id: bcs.Address,
@@ -264,106 +176,6 @@ const PROTOCOL_ADMIN_CAP_BCS = bcs.struct('MainnetV8ProtocolAdminCap', {
   id: bcs.Address,
   version: bcs.u64(),
   config_id: bcs.Address,
-});
-const PROTOCOL_BALANCE_BCS = bcs.struct('MainnetV8ProtocolBalance', {
-  value: bcs.u64(),
-});
-const PROTOCOL_TREASURY_BCS = bcs.struct('MainnetV8ProtocolTreasury', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  config_id: bcs.Address,
-  revenue: PROTOCOL_BALANCE_BCS,
-  total_collected: bcs.u128(),
-  total_withdrawn: bcs.u128(),
-});
-const PACKAGE_CALL_CAP_BCS = bcs.struct('MainnetV8PackageCallCap', {
-  version: bcs.u64(),
-  authority_id: bcs.Address,
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  role_binding_commitment: bcs.byteVector(),
-  call_cap_set_commitment: bcs.byteVector(),
-});
-const EXACT_PACKAGE_BINDING_BCS = bcs.struct('MainnetV8ExactPackageBinding', {
-  original_package_id: bcs.Address,
-  callable_package_id: bcs.Address,
-  source_commitment: bcs.byteVector(),
-  package_commitment: bcs.byteVector(),
-  abi_commitment: bcs.byteVector(),
-  commitment: bcs.byteVector(),
-});
-const PRODUCT_RELEASE_BINDING_BCS = bcs.struct('MainnetV8ProductReleaseBinding', {
-  version: bcs.u64(),
-  native_capability_mask: bcs.u64(),
-  core: EXACT_PACKAGE_BINDING_BCS,
-  seal: EXACT_PACKAGE_BINDING_BCS,
-  runtime: EXACT_PACKAGE_BINDING_BCS,
-  output: EXACT_PACKAGE_BINDING_BCS,
-  physical: EXACT_PACKAGE_BINDING_BCS,
-  market: EXACT_PACKAGE_BINDING_BCS,
-  release: EXACT_PACKAGE_BINDING_BCS,
-  commitment: bcs.byteVector(),
-});
-const PACKAGE_CALL_CAP_SET_BCS = bcs.struct('MainnetV8PackageCallCapSet', {
-  version: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  seal_authority_id: bcs.Address,
-  runtime_authority_id: bcs.Address,
-  output_authority_id: bcs.Address,
-  physical_authority_id: bcs.Address,
-  market_authority_id: bcs.Address,
-  release_authority_id: bcs.Address,
-  commitment: bcs.byteVector(),
-});
-const PRODUCT_RELEASE_CATALOG_BCS = bcs.struct('MainnetV8ProductReleaseCatalog', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  protocol_config_id: bcs.Address,
-  protocol_config_revision: bcs.u64(),
-  protocol_config_commitment: bcs.byteVector(),
-  binding: PRODUCT_RELEASE_BINDING_BCS,
-  call_cap_set: PACKAGE_CALL_CAP_SET_BCS,
-  seal_call_cap: bcs.option(PACKAGE_CALL_CAP_BCS),
-  runtime_call_cap: bcs.option(PACKAGE_CALL_CAP_BCS),
-  output_call_cap: bcs.option(PACKAGE_CALL_CAP_BCS),
-  physical_call_cap: bcs.option(PACKAGE_CALL_CAP_BCS),
-  market_call_cap: bcs.option(PACKAGE_CALL_CAP_BCS),
-  release_call_cap: bcs.option(PACKAGE_CALL_CAP_BCS),
-});
-const SEAL_POLICY_CONFIG_BCS = bcs.struct('MainnetV8SealPolicyConfig', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  protocol_config_id: bcs.Address,
-  protocol_config_revision: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  seal_original_package_id: bcs.Address,
-  seal_callable_package_id: bcs.Address,
-  seal_binding_commitment: bcs.byteVector(),
-  seal_authority_id: bcs.Address,
-  call_cap_set_commitment: bcs.byteVector(),
-  seal_call_cap: PACKAGE_CALL_CAP_BCS,
-  key_servers: bcs.vector(SEAL_KEY_SERVER_BINDING_BCS),
-  threshold: bcs.u16(),
-  key_server_set_commitment: bcs.byteVector(),
-  encryption_policy_commitment: bcs.byteVector(),
-  commitment: bcs.byteVector(),
-});
-const SIMPLE_PACKAGE_CONFIG_BCS = bcs.struct('MainnetV8SimplePackageConfig', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  call_cap: PACKAGE_CALL_CAP_BCS,
-});
-const BOUND_PACKAGE_CONFIG_BCS = bcs.struct('MainnetV8BoundPackageConfig', {
-  id: bcs.Address,
-  version: bcs.u64(),
-  catalog_id: bcs.Address,
-  product_binding_commitment: bcs.byteVector(),
-  call_cap_set_commitment: bcs.byteVector(),
-  call_cap: PACKAGE_CALL_CAP_BCS,
 });
 
 export class MainnetV8ReleaseError extends Error {
@@ -619,7 +431,7 @@ export async function inspectMainnetV8Toolchain({ suiBinary }) {
   });
   if (observed.versionOutput !== MAINNET_V8_RELEASE_TOOLCHAIN.suiVersionOutput
     || observed.suiBinarySha256 !== MAINNET_V8_RELEASE_TOOLCHAIN.suiBinarySha256) {
-    fail('MAINNET_V8_TOOLCHAIN_DRIFT', 'Sui release binary differs from the approved protocol-133 toolchain.', {
+    fail('MAINNET_V8_TOOLCHAIN_DRIFT', 'Sui release binary differs from the approved protocol-137 toolchain.', {
       expected: MAINNET_V8_RELEASE_TOOLCHAIN,
       observed,
     });
@@ -654,18 +466,10 @@ async function withApprovedSuiBinarySnapshot(suiBinary, operation) {
   }
 }
 
-export async function inspectMainnetV8GitSource(repositoryRoot = REPOSITORY_ROOT) {
-  const [status, commit, tree] = await Promise.all([
-    runProcess('git', ['status', '--porcelain=v1'], { cwd: repositoryRoot }),
-    runProcess('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot }),
-    runProcess('git', ['rev-parse', 'HEAD^{tree}'], { cwd: repositoryRoot }),
-  ]);
-  if (status.stdout.length !== 0) {
-    fail('MAINNET_V8_GIT_DIRTY', 'Mainnet release requires one clean committed source tree.', {
-      status: status.stdout,
-    });
-  }
-  return Object.freeze({ commit: commit.stdout.trim(), tree: tree.stdout.trim() });
+export async function inspectMainnetV8GitSource({ repositoryRoot, soulidityRoot }) {
+  const { repositories } = await inspectNativeSoulSourceRepositories({ animacraftRoot: repositoryRoot, soulidityRoot });
+  // Base Git provenance only, not the authority for the working-source bytes.
+  return Object.freeze(repositories);
 }
 
 export async function assertMainnetV8ProtocolProfile(client) {
@@ -682,6 +486,7 @@ export async function assertMainnetV8ProtocolProfile(client) {
       !== MAINNET_V8_RELEASE_TOOLCHAIN.objectRuntimeMaxCachedObjects
     || profile?.attributes?.object_runtime_max_num_store_entries
       !== MAINNET_V8_RELEASE_TOOLCHAIN.objectRuntimeMaxStoreEntries
+    || profile?.featureFlags?.enable_unified_linkage !== true
     || systemState?.systemState?.protocolVersion !== MAINNET_V8_RELEASE_TOOLCHAIN.protocolVersion) {
     fail('MAINNET_V8_PROTOCOL_DRIFT', 'Live gRPC does not expose the approved Sui Mainnet protocol profile.', {
       chainIdentifier,
@@ -703,40 +508,17 @@ export async function assertMainnetV8ProtocolProfile(client) {
   });
 }
 
-async function archiveCleanSource({ repositoryRoot, commit, destination }) {
-  await fsp.mkdir(destination, { recursive: true });
-  const archivePath = path.join(path.dirname(destination), 'source.tar');
-  await runProcess('git', ['archive', '--format=tar', `--output=${archivePath}`, commit], { cwd: repositoryRoot });
-  await runProcess('tar', ['-xf', archivePath, '-C', destination]);
-  await fsp.unlink(archivePath);
-}
-
-function listSourceFiles(packageDirectory) {
-  const selected = [];
-  for (const name of ['Move.toml', 'Move.lock']) {
-    const filename = path.join(packageDirectory, name);
-    if (!fs.existsSync(filename)) fail('MAINNET_V8_SOURCE_FILE_MISSING', `${filename} is missing.`);
-    selected.push(filename);
-  }
-  const sourceRoot = path.join(packageDirectory, 'sources');
-  const walk = (directory) => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      const filename = path.join(directory, entry.name);
-      if (entry.isDirectory()) walk(filename);
-      else if (entry.isFile() && filename.endsWith('.move')) selected.push(filename);
-    }
-  };
-  walk(sourceRoot);
-  return selected.sort();
-}
-
-async function buildSourceArtifactForRole({ role, checkoutRoot, git, toolchain }) {
-  const packageName = ROLE_PACKAGE_NAMES[role];
-  const packageDirectory = path.join(checkoutRoot, 'move', packageName);
+async function buildSourceArtifactForRole({ role, checkoutRoot, sourceRevision, toolchain }) {
+  assertNativeSoulSourceRevision(sourceRevision);
+  const source = sourceRevision.packages.find(pkg => pkg.role === role);
+  if (!source) fail('MAINNET_V8_SOURCE_ARTIFACT_INVALID', 'Unknown current source package.');
+  const packageName = source.packageName;
+  await verifyNativeSoulSourceCheckout({ sourceRevision, checkoutRoot });
   return await buildSourceArtifact({
     role,
     packageName,
-    release: { gitCommit: git.commit, gitTree: git.tree },
+    release: { snapshotSha256: sourceRevision.snapshotSha256, repository: source.repository,
+      ...sourceRevision.repositories[source.repository] },
     toolchain: {
       suiVersion: toolchain.suiVersion,
       suiVersionOutput: toolchain.suiVersionOutput,
@@ -744,15 +526,25 @@ async function buildSourceArtifactForRole({ role, checkoutRoot, git, toolchain }
       suiBinarySha256: toolchain.suiBinarySha256,
       frameworkRevision: toolchain.frameworkRevision,
     },
-    files: await Promise.all(listSourceFiles(packageDirectory).map(async (filename) => {
-      const bytes = new Uint8Array(await fsp.readFile(filename));
-      return Object.freeze({
-        path: path.relative(packageDirectory, filename).split(path.sep).join('/'),
-        byteLength: String(bytes.length),
-        sha256: sha256Hex(bytes),
-      });
-    })),
+    originalFiles: source.originalFiles,
+    files: source.files,
   });
+}
+
+/** Capture and seal the complete current source input. This is deliberately a
+ * SOURCE unit, not a publication plan, transaction, simulation or READY record. */
+export async function prepareMainnetV8Source({ repositoryRoot, soulidityRoot, storePath, checkoutRoot, toolchain }) {
+  const sourceRevision = await captureNativeSoulSource({ animacraftRoot: repositoryRoot, soulidityRoot, storePath });
+  await restoreNativeSoulSource({ sourceRevision, storePath, checkoutRoot });
+  const packages = [];
+  for (const role of NATIVE_SOUL_SOURCE_ORDER) {
+    const sourceArtifact = await buildSourceArtifactForRole({ role, checkoutRoot, sourceRevision, toolchain });
+    packages.push({ role, packageName: NATIVE_SOUL_SOURCE_NAMES[role], sourceArtifact,
+      sourceCommitment: computeSourceCommitment(sourceArtifact) });
+  }
+  const sourcePlan = { sourceRevision, toolchain: packages[0].sourceArtifact.toolchain, packages };
+  assertMainnetV8SourcePlan(sourcePlan);
+  return Object.freeze(sourcePlan);
 }
 
 async function moduleFiles(packageDirectory, packageName) {
@@ -776,18 +568,28 @@ export async function buildMainnetV8Package({
   checkoutRoot,
   publishedTomlPath,
   suiBinary,
-  git,
+  sourceRevision,
   toolchain,
   sourceArtifact = null,
 }) {
-  if (!ROLE_ORDER.includes(role)) fail('MAINNET_V8_ROLE_INVALID', `Unknown role ${role}.`);
-  const packageName = ROLE_PACKAGE_NAMES[role];
+  if (!NATIVE_SOUL_SOURCE_ORDER.includes(role)) fail('MAINNET_V8_ROLE_INVALID', `Unknown source package ${role}.`);
+  await verifyNativeSoulSourceCheckout({ sourceRevision, checkoutRoot });
+  const externalEntries = readNativeSoulExternalPublications({ sourceRevision, checkoutRoot });
+  const publishedText = await fsp.readFile(publishedTomlPath, 'utf8');
+  if (canonicalJson(parsePublishedToml(publishedText).externalEntries) !== canonicalJson(externalEntries)) {
+    fail('MAINNET_V8_PUBLISHED_TOML_INVALID', 'Build publication metadata differs from the exact external source closure.');
+  }
+  const packageName = NATIVE_SOUL_SOURCE_NAMES[role];
   const packageDirectory = path.join(checkoutRoot, 'move', packageName);
   const result = await runProcess(suiBinary, [
     'move', 'build', '--path', packageDirectory, '--force', '--warnings-are-errors',
     '--dump-bytecode-as-base64', '--build-env', 'mainnet', '--pubfile-path', publishedTomlPath,
   ], { cwd: checkoutRoot });
   const output = parseJsonOutput(result, `${role} move build`);
+  if (await fsp.readFile(publishedTomlPath, 'utf8') !== publishedText
+    || canonicalJson(readNativeSoulExternalPublications({ sourceRevision, checkoutRoot })) !== canonicalJson(externalEntries)) {
+    fail('MAINNET_V8_PUBLISHED_TOML_INVALID', 'Publication metadata/source changed during build.');
+  }
   exactKeys(output, ['modules', 'dependencies', 'digest'], `${role} build output`);
   if (!Array.isArray(output.modules) || !Array.isArray(output.dependencies) || !Array.isArray(output.digest)) {
     fail('MAINNET_V8_BUILD_OUTPUT_INVALID', `${role} build output is incomplete.`);
@@ -799,7 +601,7 @@ export async function buildMainnetV8Package({
     fail('MAINNET_V8_BUILD_MODULE_DRIFT', `${role} dump modules differ from compiled bytecode files.`);
   }
   const observedSourceArtifact = await buildSourceArtifactForRole({
-    role, checkoutRoot, git, toolchain,
+    role, checkoutRoot, sourceRevision, toolchain,
   });
   if (sourceArtifact !== null
     && canonicalJson(sourceArtifact) !== canonicalJson(observedSourceArtifact)) {
@@ -873,115 +675,14 @@ export function buildMainnetV8PublishTransaction({ modules, dependencies, transa
   return configureMainnetV8Transaction(transaction, transactionContext);
 }
 
-function shared(transaction, reference, mutable) {
-  exactKeys(reference, ['objectId', 'initialSharedVersion'], 'shared reference');
-  return transaction.sharedObjectRef({
-    objectId: address(reference.objectId, 'shared.objectId'),
-    initialSharedVersion: decimal(reference.initialSharedVersion, 'shared.initialSharedVersion'),
-    mutable,
-  });
-}
-
-function owned(transaction, reference) {
-  exactKeys(reference, ['objectId', 'version', 'digest'], 'owned reference');
-  return transaction.objectRef({
-    objectId: address(reference.objectId, 'owned.objectId'),
-    version: decimal(reference.version, 'owned.version'),
-    digest: digest(reference.digest, 'owned.digest'),
-  });
-}
 
 export function buildMainnetV8InitTransaction({ packageIds, protocolConfig, protocolAdminCap, transactionContext }) {
-  const transaction = new Transaction();
-  const config = shared(transaction, protocolConfig, true);
-  const admin = owned(transaction, protocolAdminCap);
-  transaction.moveCall({
-    target: `${packageIds.core}::protocol_config_v8::initialize_protocol_treasury_v8`,
-    typeArguments: [MAINNET_V8_USDC_TYPE],
-    arguments: [config, admin],
-  });
-  transaction.moveCall({
-    target: `${packageIds.core}::protocol_config_v8::set_protocol_enabled_v8`,
-    arguments: [config, admin, transaction.pure.bool(true)],
+  const transaction = buildNativeSoulBootstrapTransaction('INITIALIZE_PROTOCOL', {
+    packageIds, protocolConfig, protocolAdminCap,
   });
   return configureMainnetV8Transaction(transaction, transactionContext);
 }
 
-function markerTypes(packageIds) {
-  const coreMarker = `${packageIds.core}::${MARKERS.core[0]}::${MARKERS.core[1]}`;
-  const values = [coreMarker, coreMarker];
-  for (const role of ROLE_ORDER.slice(1)) {
-    const [moduleName, original, callable] = MARKERS[role];
-    values.push(`${packageIds[role]}::${moduleName}::${original}`);
-    values.push(`${packageIds[role]}::${moduleName}::${callable}`);
-  }
-  return values;
-}
-
-export function buildMainnetV8BootstrapTransaction({
-  packageIds,
-  protocolConfig,
-  protocolAdminCap,
-  commitments,
-  sealPolicy,
-  transactionContext,
-}) {
-  const checkedPolicy = assertMainnetV8FinalSealPolicy(sealPolicy);
-  const transaction = new Transaction();
-  const config = shared(transaction, protocolConfig, false);
-  const admin = owned(transaction, protocolAdminCap);
-  const commitmentArgs = ROLE_ORDER.map((role) => {
-    const value = commitments[role];
-    exactKeys(value, ['source', 'package', 'abi'], `${role} commitments`);
-    return transaction.moveCall({
-      target: `${packageIds.core}::package_binding_v8::new_package_commitments_v8`,
-      arguments: [
-        transaction.pure.vector('u8', fromHex(hash32(value.source, `${role}.source`))),
-        transaction.pure.vector('u8', fromHex(hash32(value.package, `${role}.package`))),
-        transaction.pure.vector('u8', fromHex(hash32(value.abi, `${role}.abi`))),
-      ],
-    });
-  });
-  const catalog = transaction.moveCall({
-    target: `${packageIds.core}::package_binding_v8::certify_product_release_catalog_v8`,
-    typeArguments: markerTypes(packageIds),
-    arguments: [config, admin, ...commitmentArgs],
-  });
-  for (const role of ROLE_ORDER.slice(1)) {
-    const cap = transaction.moveCall({
-      target: `${packageIds.core}::package_binding_v8::take_${role}_call_cap_v8`,
-      arguments: [config, admin, catalog],
-    });
-    const [createName, shareName] = CONFIG_ROLE_FUNCTIONS[role];
-    const moduleName = CONFIG_ROLE_MODULES[role];
-    const args = role === 'seal'
-      ? [
-          config,
-          admin,
-          catalog,
-          cap,
-          transaction.pure.vector('address', checkedPolicy.keyServers.map((entry) => entry.objectId)),
-          transaction.pure.vector('u16', checkedPolicy.keyServers.map((entry) => Number(entry.weight))),
-          transaction.pure.u16(Number(checkedPolicy.threshold)),
-          transaction.pure.vector('u8', fromHex(checkedPolicy.keyServerSetCommitment)),
-          transaction.pure.vector('u8', fromHex(checkedPolicy.encryptionPolicyCommitment)),
-        ]
-      : [catalog, cap];
-    const roleConfig = transaction.moveCall({
-      target: `${packageIds[role]}::${moduleName}::${createName}`,
-      arguments: args,
-    });
-    transaction.moveCall({
-      target: `${packageIds[role]}::${moduleName}::${shareName}`,
-      arguments: [roleConfig],
-    });
-  }
-  transaction.moveCall({
-    target: `${packageIds.core}::package_binding_v8::share_product_release_catalog_v8`,
-    arguments: [catalog],
-  });
-  return configureMainnetV8Transaction(transaction, transactionContext);
-}
 
 export async function inspectMainnetV8Transaction(transaction) {
   const transactionBytes = await transaction.build({ maxSizeBytes: MAINNET_V8_MAX_TRANSACTION_BYTES });
@@ -1197,17 +898,52 @@ function assertMainnetV8ReadyExecutionGates(plan, readyArtifact, envelope) {
  * Store/WAL hashes are integrity evidence only; this compiler-side comparison is
  * the execution authority used before signing, querying, or broadcasting.
  */
-export async function assertMainnetV8TransactionMatchesReady({
+export function buildMainnetV8ReadyTransaction({ ordinal, readyArtifact, transactionContext }) {
+  const ordinalText = decimal(String(ordinal), 'ordinal');
+  const step = MAINNET_V8_RELEASE_STEPS.find(entry => entry.ordinal === ordinalText);
+  if (!step || step.kind === 'VERIFY_AND_EXPORT') {
+    fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'This ordinal does not have a release transaction.');
+  }
+  if (!plain(readyArtifact) || readyArtifact.kind !== step.kind) {
+    fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'READY kind differs from the exact release stage.');
+  }
+  if (step.kind === 'PUBLISH') {
+    if (readyArtifact.role !== step.role
+      || !Array.isArray(readyArtifact.modules) || !Array.isArray(readyArtifact.dependencies)) {
+      fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'Publish READY artifact differs from its ordinal.');
+    }
+    return buildMainnetV8PublishTransaction({
+      modules: readyArtifact.modules,
+      dependencies: readyArtifact.dependencies,
+      transactionContext,
+    });
+  }
+  if (step.kind === 'ACTIVATE_SOULIDITY_MARKET') {
+    return configureMainnetV8Transaction(buildNativeSoulMarketActivationTransaction(
+      nativeSoulMarketActivationInputFromStageData(readyArtifact.stageData)), transactionContext);
+  }
+  return configureMainnetV8Transaction(buildNativeSoulBootstrapTransaction(
+    step.kind, nativeSoulBootstrapInputFromStageData(step.kind, readyArtifact.stageData),
+  ), transactionContext);
+}
+
+export async function assertMainnetV8TransactionMatchesReady(input) {
+  assertReleasePlan(input.plan);
+  return assertMainnetV8TransactionMatchesReadyContents(input);
+}
+
+/** Offline byte/content comparison shared with the guarded execution matcher.
+ * A successful comparison does not authorize WAL writes, signing or submission;
+ * execution callers must continue using assertMainnetV8TransactionMatchesReady.
+ */
+export async function assertMainnetV8TransactionMatchesReadyContents({
   ordinal,
   plan,
   readyArtifact,
   unsignedEnvelope,
 }) {
-  assertReleasePlan(plan);
+  assertMainnetV8ReleasePlanContents(plan);
   const ordinalText = decimal(String(ordinal), 'ordinal');
-  if (BigInt(ordinalText) > 8n) {
-    fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'Only transaction ordinals 0 through 8 have TransactionData.');
-  }
   if (!plain(readyArtifact) || !plain(readyArtifact.protocolProfile)) {
     fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'READY artifact is malformed.');
   }
@@ -1216,60 +952,10 @@ export async function assertMainnetV8TransactionMatchesReady({
     fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'READY sender/gas owner differs from the immutable plan.');
   }
   assertMainnetV8ReadyExecutionGates(plan, readyArtifact, hydrated);
-  const transactionContext = transactionContextFromReady(plan, readyArtifact, hydrated);
-  let expected;
-  if (BigInt(ordinalText) < 7n) {
-    const role = ROLE_ORDER[Number(ordinalText)];
-    if (readyArtifact.kind !== 'PUBLISH' || readyArtifact.role !== role
-      || !Array.isArray(readyArtifact.modules) || !Array.isArray(readyArtifact.dependencies)) {
-      fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'Publish READY artifact differs from its ordinal.');
-    }
-    expected = buildMainnetV8PublishTransaction({
-      modules: readyArtifact.modules,
-      dependencies: readyArtifact.dependencies,
-      transactionContext,
-    });
-  } else if (ordinalText === '7') {
-    if (readyArtifact.kind !== 'INITIALIZE_PROTOCOL') {
-      fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'Ordinal 7 must be INITIALIZE_PROTOCOL.');
-    }
-    exactKeys(
-      readyArtifact.stageData,
-      ['packageIds', 'protocolConfig', 'protocolAdminCap'],
-      'INITIALIZE_PROTOCOL stageData',
-    );
-    expected = buildMainnetV8InitTransaction({
-      packageIds: exactMainnetV8PackageIds(readyArtifact.stageData.packageIds),
-      protocolConfig: readyArtifact.stageData.protocolConfig,
-      protocolAdminCap: readyArtifact.stageData.protocolAdminCap,
-      transactionContext,
-    });
-  } else {
-    if (readyArtifact.kind !== 'BOOTSTRAP_RELEASE') {
-      fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'Ordinal 8 must be BOOTSTRAP_RELEASE.');
-    }
-    exactKeys(
-      readyArtifact.stageData,
-      [
-        'packageIds', 'protocolConfig', 'protocolAdminCap', 'commitments',
-        'sealPolicy', 'keyServerCertificates',
-      ],
-      'BOOTSTRAP_RELEASE stageData',
-    );
-    if (!Array.isArray(readyArtifact.stageData.keyServerCertificates)
-      || readyArtifact.stageData.keyServerCertificates.length
-        !== readyArtifact.stageData.sealPolicy.keyServers.length) {
-      fail('MAINNET_V8_READY_TRANSACTION_DRIFT', 'Bootstrap key-server certificates differ from Seal policy.');
-    }
-    expected = buildMainnetV8BootstrapTransaction({
-      packageIds: exactMainnetV8PackageIds(readyArtifact.stageData.packageIds),
-      protocolConfig: readyArtifact.stageData.protocolConfig,
-      protocolAdminCap: readyArtifact.stageData.protocolAdminCap,
-      commitments: exactMainnetV8Commitments(readyArtifact.stageData.commitments),
-      sealPolicy: readyArtifact.stageData.sealPolicy,
-      transactionContext,
-    });
-  }
+  const expected = buildMainnetV8ReadyTransaction({
+    ordinal: ordinalText, readyArtifact,
+    transactionContext: transactionContextFromReady(plan, readyArtifact, hydrated),
+  });
   const rebuilt = await inspectMainnetV8Transaction(expected);
   if (!sameBytes(rebuilt.transactionBytes, hydrated.transactionBytes)
     || !sameBytes(rebuilt.transactionKindBytes, hydrated.transactionKindBytes)
@@ -1294,26 +980,6 @@ export async function prepareUnsignedMainnetV8Transaction({
   buildTransaction,
   nonce = randomUint32(),
 }) {
-  let gasBudget = MAINNET_V8_PRELIMINARY_GAS_BUDGET;
-  let finalEnvelope = null;
-  let finalSimulation = null;
-  for (let pass = 0; pass < 4; pass += 1) {
-    const context = releaseTransactionContext(profile, sender, gasBudget, nonce);
-    const transaction = buildTransaction(context);
-    const envelope = await inspectMainnetV8Transaction(transaction);
-    if (envelope.sender !== sender || envelope.gasOwner !== sender) {
-      fail('MAINNET_V8_SIGNER_DRIFT', 'Prepared transaction sender/gas owner differs from release signer.');
-    }
-    const simulation = await simulateMainnetV8Transaction(client, envelope);
-    const recommended = BigInt(simulation.recommendedGasBudget);
-    finalEnvelope = envelope;
-    finalSimulation = simulation;
-    if (recommended <= gasBudget) break;
-    gasBudget = recommended;
-  }
-  if (finalEnvelope === null || BigInt(finalSimulation.recommendedGasBudget) > BigInt(finalEnvelope.gasBudget)) {
-    fail('MAINNET_V8_GAS_BUDGET_UNSTABLE', 'Dry-run gas recommendation did not converge within the bounded passes.');
-  }
   const balanceResponse = await client.core.getBalance({
     owner: sender,
     coinType: `${normalizeSuiAddress('0x2')}::sui::SUI`,
@@ -1321,6 +987,53 @@ export async function prepareUnsignedMainnetV8Transaction({
   const balance = balanceResponse?.balance;
   const addressBalance = decimal(String(balance?.addressBalance), 'gasFunding.addressBalance');
   const coinBalance = decimal(String(balance?.coinBalance), 'gasFunding.coinBalance');
+  if (balance?.coinType !== `${normalizeSuiAddress('0x2')}::sui::SUI`
+    || BigInt(addressBalance) < MAINNET_V8_MINIMUM_GAS_CUSHION) {
+    fail('MAINNET_V8_GAS_FUNDING_INSUFFICIENT', 'Signer address balance cannot fund the minimum simulation cushion.', {
+      addressBalance,
+      minimumGasCushion: MAINNET_V8_MINIMUM_GAS_CUSHION.toString(),
+    });
+  }
+  let gasBudget = MAINNET_V8_PRELIMINARY_GAS_BUDGET;
+  let finalEnvelope = null;
+  let finalSimulation = null;
+  let checkedPassComplete = false;
+  for (let pass = 0; pass < 4; pass += 1) {
+    const context = releaseTransactionContext(profile, sender, gasBudget, nonce);
+    const transaction = buildTransaction(context);
+    const envelope = await inspectMainnetV8Transaction(transaction);
+    if (envelope.sender !== sender || envelope.gasOwner !== sender) {
+      fail('MAINNET_V8_SIGNER_DRIFT', 'Prepared transaction sender/gas owner differs from release signer.');
+    }
+    // The first pass is an estimate only.  Disabling address-balance gas
+    // selection lets the node use its mock gas coin and report an exact cost
+    // even when the signer cannot yet fund the conservative preliminary cap.
+    // Every executable READY envelope is rebuilt and simulated again below
+    // with normal checks and real address-balance gas selection.
+    const estimateOnly = pass === 0;
+    const simulation = await simulateMainnetV8Transaction(client, envelope, {
+      checksEnabled: !estimateOnly,
+      doGasSelection: !estimateOnly,
+    });
+    const recommended = BigInt(simulation.recommendedGasBudget);
+    finalEnvelope = envelope;
+    finalSimulation = simulation;
+    if (recommended > BigInt(addressBalance)) {
+      fail('MAINNET_V8_GAS_FUNDING_INSUFFICIENT', 'Signer address balance cannot fund the dry-run-derived gas budget.', {
+        addressBalance,
+        recommendedGasBudget: recommended.toString(),
+      });
+    }
+    if (!estimateOnly && recommended === gasBudget) {
+      checkedPassComplete = true;
+      break;
+    }
+    gasBudget = recommended;
+  }
+  if (!checkedPassComplete || finalEnvelope === null
+    || BigInt(finalSimulation.recommendedGasBudget) !== BigInt(finalEnvelope.gasBudget)) {
+    fail('MAINNET_V8_GAS_BUDGET_UNSTABLE', 'Dry-run gas recommendation did not converge within the bounded passes.');
+  }
   if (balance?.coinType !== `${normalizeSuiAddress('0x2')}::sui::SUI`
     || BigInt(addressBalance) < BigInt(finalEnvelope.gasBudget)) {
     fail('MAINNET_V8_GAS_FUNDING_INSUFFICIENT', 'Signer address balance cannot fund exact prepared gas budget.', {
@@ -1340,10 +1053,14 @@ export async function prepareUnsignedMainnetV8Transaction({
   });
 }
 
-export async function simulateMainnetV8Transaction(client, envelope) {
+export async function simulateMainnetV8Transaction(client, envelope, {
+  checksEnabled = true,
+  doGasSelection = true,
+} = {}) {
   const result = await client.simulateTransaction({
     transaction: envelope.transactionBytes,
-    checksEnabled: true,
+    checksEnabled,
+    doGasSelection,
     include: { effects: true, events: true, objectTypes: true, bcs: true, transaction: true },
   });
   const value = result?.$kind === 'Transaction' ? result.Transaction : result?.FailedTransaction;
@@ -1540,6 +1257,12 @@ export function writtenReferencesFromEffects(effectsBytes, expectedDigest) {
         digest: digest(packageDigest, 'effects.package.digest'),
         owner: Object.freeze({ kind: 'Immutable' }),
       })];
+    }
+    // Sui effects_v2: a Move object created then wrapped has no live ObjectRef.
+    if (change.inputState?.$kind === 'NotExist'
+      && change.outputState?.$kind === 'NotExist'
+      && change.idOperation?.$kind === 'Created') {
+      return [];
     }
     if (change.idOperation?.$kind !== 'Created'
       && ['NotExist', 'AccumulatorWriteV1'].includes(change.outputState?.$kind)) {
@@ -1901,45 +1624,7 @@ export function normalizeMainnetV8MovePackageDescriptor(value) {
   });
 }
 
-export function assertMainnetV8PublishedModuleBytes({
-  role,
-  moduleName,
-  packageId,
-  sourceBase64,
-  publishedBase64,
-}) {
-  const label = `${role}.${moduleName}`;
-  const source = fromBase64(sourceBase64);
-  const published = fromBase64(publishedBase64);
-  const publishedAddress = fromHex(address(packageId, `${label}.packageId`));
-  if (source.length !== published.length || publishedAddress.length !== 32) {
-    fail('MAINNET_V8_PACKAGE_BYTES_DRIFT', `${label} published module length is invalid.`);
-  }
-  const differing = [];
-  for (let index = 0; index < source.length; index += 1) {
-    if (source[index] !== published[index]) differing.push(index);
-  }
-  const start = differing[0];
-  if (differing.length !== 32 || !Number.isInteger(start)
-    || differing.some((index, offset) => index !== start + offset)
-    || differing.some((index) => source[index] !== 0)
-    || differing.some((index, offset) => published[index] !== publishedAddress[offset])) {
-    fail(
-      'MAINNET_V8_PACKAGE_BYTES_DRIFT',
-      `${label} differs from clean bytecode beyond the one Sui self-address publication substitution.`,
-    );
-  }
-  const expectedPublished = Uint8Array.from(source);
-  expectedPublished.set(publishedAddress, start);
-  if (!sameBytes(expectedPublished, published)) {
-    fail('MAINNET_V8_PACKAGE_BYTES_DRIFT', `${label} published module bytes are invalid.`);
-  }
-  return Object.freeze({
-    sourceSha256: sha256Hex(source),
-    publishedSha256: sha256Hex(published),
-    selfAddressOffset: String(start),
-  });
-}
+export { assertMainnetV8PublishedModuleBytes };
 
 export async function readMainnetV8PackageCertificate({ client, transport, role, build, reference, transactionDigest }) {
   const historical = await transport.getHistoricalObject({
@@ -2053,26 +1738,45 @@ export async function readMainnetV8PackageCertificate({ client, transport, role,
     fail('MAINNET_V8_PACKAGE_TYPE_ORIGIN_DRIFT', `${role} Package BCS type origins differ from its gRPC ABI descriptor.`);
   }
   const expectedDependencies = [...build.packageArtifact.dependencies].sort();
-  const observedDependencies = linkage.map((entry) => entry.originalId).sort();
-  if (canonicalJson(observedDependencies) !== canonicalJson(expectedDependencies)
-    || linkage.some((entry) => entry.upgradedId !== entry.originalId)) {
+  const observedDependencies = linkage.map((entry) => entry.upgradedId).sort();
+  if (expectedDependencies.length > 4096 || new Set(expectedDependencies).size !== expectedDependencies.length
+    || new Set(observedDependencies).size !== observedDependencies.length
+    || canonicalJson(observedDependencies) !== canonicalJson(expectedDependencies)) {
     fail('MAINNET_V8_PACKAGE_LINKAGE_DRIFT', `${role} Package BCS linkage differs from the exact build dependency DAG.`, {
       expectedDependencies,
       linkage,
     });
   }
-  return Object.freeze({
+  const dependencyPackages = [];
+  for (const targetId of expectedDependencies) {
+    const edge = linkage.find(row => row.upgradedId === targetId);
+    const object = await transport.getHistoricalObject({ objectId: targetId, version: BigInt(edge.upgradedVersion) });
+    if (object.type !== 'package' || object.owner?.Immutable !== true || object.objectId !== targetId
+      || object.version !== edge.upgradedVersion) {
+      fail('MAINNET_V8_PACKAGE_LINKAGE_DRIFT', `${role} exact historical dependency package is unavailable.`);
+    }
+    dependencyPackages.push(Object.freeze({
+      reference: Object.freeze({ objectId: targetId, version: edge.upgradedVersion, digest: object.digest }),
+      objectBcsBase64: toBase64(object.objectBcs),
+    }));
+  }
+  const certificate = Object.freeze({
     schemaVersion: MAINNET_V8_RELEASE_RUNNER_SCHEMA,
     role,
     transactionDigest,
     reference,
     moduleMapSha256: sha256Hex(new TextEncoder().encode(canonicalJson(expectedModules))),
     objectBcsSha256: sha256Hex(historical.objectBcs),
+    objectBcsBase64: toBase64(historical.objectBcs),
+    dependencyPackages: Object.freeze(dependencyPackages),
     typeOrigins,
     linkage,
     descriptor,
     abiArtifact,
   });
+  assertMainnetV8PackageReadbackBcs(certificate, expectedDependencies,
+    build.modules.map(module => ({ name: module.name, bytesBase64: module.base64 })));
+  return certificate;
 }
 
 function moveFields(value, label) {
@@ -2110,434 +1814,6 @@ function moveHash(value, label) {
   return hash32(observed, label);
 }
 
-function normalizedPackageCallCapFromBcs(value, label) {
-  if (!plain(value)) fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label} BCS is not one call capability.`);
-  return Object.freeze({
-    version: decimal(String(value.version), `${label}.version`),
-    authorityId: address(value.authority_id, `${label}.authority_id`),
-    catalogId: address(value.catalog_id, `${label}.catalog_id`),
-    productBindingCommitment: moveHash(
-      value.product_binding_commitment,
-      `${label}.product_binding_commitment`,
-    ),
-    roleBindingCommitment: moveHash(
-      value.role_binding_commitment,
-      `${label}.role_binding_commitment`,
-    ),
-    callCapSetCommitment: moveHash(
-      value.call_cap_set_commitment,
-      `${label}.call_cap_set_commitment`,
-    ),
-  });
-}
-
-function normalizedPackageCallCapFromMove(value, label) {
-  const fields = moveFields(value, label);
-  exactKeys(fields, [
-    'version', 'authority_id', 'catalog_id', 'product_binding_commitment',
-    'role_binding_commitment', 'call_cap_set_commitment',
-  ], `${label}.fields`);
-  return Object.freeze({
-    version: moveU64(fields.version, `${label}.version`),
-    authorityId: moveId(fields.authority_id, `${label}.authority_id`),
-    catalogId: moveId(fields.catalog_id, `${label}.catalog_id`),
-    productBindingCommitment: moveHash(
-      fields.product_binding_commitment,
-      `${label}.product_binding_commitment`,
-    ),
-    roleBindingCommitment: moveHash(
-      fields.role_binding_commitment,
-      `${label}.role_binding_commitment`,
-    ),
-    callCapSetCommitment: moveHash(
-      fields.call_cap_set_commitment,
-      `${label}.call_cap_set_commitment`,
-    ),
-  });
-}
-
-function normalizedExactBindingFromBcs(value, label) {
-  if (!plain(value)) fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label} BCS is not one exact binding.`);
-  return Object.freeze({
-    originalPackageId: address(value.original_package_id, `${label}.original_package_id`),
-    callablePackageId: address(value.callable_package_id, `${label}.callable_package_id`),
-    sourceCommitment: moveHash(value.source_commitment, `${label}.source_commitment`),
-    packageCommitment: moveHash(value.package_commitment, `${label}.package_commitment`),
-    abiCommitment: moveHash(value.abi_commitment, `${label}.abi_commitment`),
-    commitment: moveHash(value.commitment, `${label}.commitment`),
-  });
-}
-
-function normalizedExactBindingFromMove(value, label) {
-  const fields = moveFields(value, label);
-  exactKeys(fields, [
-    'original_package_id', 'callable_package_id', 'source_commitment',
-    'package_commitment', 'abi_commitment', 'commitment',
-  ], `${label}.fields`);
-  return Object.freeze({
-    originalPackageId: moveId(fields.original_package_id, `${label}.original_package_id`),
-    callablePackageId: moveId(fields.callable_package_id, `${label}.callable_package_id`),
-    sourceCommitment: moveHash(fields.source_commitment, `${label}.source_commitment`),
-    packageCommitment: moveHash(fields.package_commitment, `${label}.package_commitment`),
-    abiCommitment: moveHash(fields.abi_commitment, `${label}.abi_commitment`),
-    commitment: moveHash(fields.commitment, `${label}.commitment`),
-  });
-}
-
-function normalizedProductBindingFromBcs(value, label) {
-  if (!plain(value)) fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label} BCS is not a product binding.`);
-  return Object.freeze({
-    version: decimal(String(value.version), `${label}.version`),
-    nativeCapabilityMask: decimal(
-      String(value.native_capability_mask),
-      `${label}.native_capability_mask`,
-    ),
-    roles: Object.freeze(Object.fromEntries(ROLE_ORDER.map((role) => [
-      role,
-      normalizedExactBindingFromBcs(value[role], `${label}.${role}`),
-    ]))),
-    commitment: moveHash(value.commitment, `${label}.commitment`),
-  });
-}
-
-function normalizedProductBindingFromMove(value, label) {
-  const fields = moveFields(value, label);
-  exactKeys(fields, [
-    'version', 'native_capability_mask', ...ROLE_ORDER, 'commitment',
-  ], `${label}.fields`);
-  return Object.freeze({
-    version: moveU64(fields.version, `${label}.version`),
-    nativeCapabilityMask: moveU64(
-      fields.native_capability_mask,
-      `${label}.native_capability_mask`,
-    ),
-    roles: Object.freeze(Object.fromEntries(ROLE_ORDER.map((role) => [
-      role,
-      normalizedExactBindingFromMove(fields[role], `${label}.${role}`),
-    ]))),
-    commitment: moveHash(fields.commitment, `${label}.commitment`),
-  });
-}
-
-function normalizedCallCapSetFromBcs(value, label) {
-  if (!plain(value)) fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label} BCS is not a call-cap set.`);
-  return Object.freeze({
-    version: decimal(String(value.version), `${label}.version`),
-    catalogId: address(value.catalog_id, `${label}.catalog_id`),
-    productBindingCommitment: moveHash(
-      value.product_binding_commitment,
-      `${label}.product_binding_commitment`,
-    ),
-    authorities: Object.freeze(Object.fromEntries(ROLE_ORDER.slice(1).map((role) => [
-      role,
-      address(value[`${role}_authority_id`], `${label}.${role}_authority_id`),
-    ]))),
-    commitment: moveHash(value.commitment, `${label}.commitment`),
-  });
-}
-
-function normalizedCallCapSetFromMove(value, label) {
-  const fields = moveFields(value, label);
-  exactKeys(fields, [
-    'version', 'catalog_id', 'product_binding_commitment',
-    ...ROLE_ORDER.slice(1).map((role) => `${role}_authority_id`),
-    'commitment',
-  ], `${label}.fields`);
-  return Object.freeze({
-    version: moveU64(fields.version, `${label}.version`),
-    catalogId: moveId(fields.catalog_id, `${label}.catalog_id`),
-    productBindingCommitment: moveHash(
-      fields.product_binding_commitment,
-      `${label}.product_binding_commitment`,
-    ),
-    authorities: Object.freeze(Object.fromEntries(ROLE_ORDER.slice(1).map((role) => [
-      role,
-      moveId(fields[`${role}_authority_id`], `${label}.${role}_authority_id`),
-    ]))),
-    commitment: moveHash(fields.commitment, `${label}.commitment`),
-  });
-}
-
-function moveOptionalCallCap(value, label) {
-  if (value !== null) {
-    fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label} must be an exact Move Option<PackageCallCapV8>.`);
-  }
-  return null;
-}
-
-function assertCatalogRawBcs(output) {
-  const parsed = parseExactMoveContents(output, PRODUCT_RELEASE_CATALOG_BCS, 'ProductReleaseCatalogV8');
-  const fields = moveFields(output.fields, 'ProductReleaseCatalogV8');
-  exactKeys(fields, [
-    'id', 'version', 'protocol_config_id', 'protocol_config_revision',
-    'protocol_config_commitment', 'binding', 'call_cap_set',
-    ...ROLE_ORDER.slice(1).map((role) => `${role}_call_cap`),
-  ], 'ProductReleaseCatalogV8.fields');
-  const fromBcs = Object.freeze({
-    id: address(parsed.id, 'ProductReleaseCatalogV8.bcs.id'),
-    version: decimal(String(parsed.version), 'ProductReleaseCatalogV8.bcs.version'),
-    protocolConfigId: address(
-      parsed.protocol_config_id,
-      'ProductReleaseCatalogV8.bcs.protocol_config_id',
-    ),
-    protocolConfigRevision: decimal(
-      String(parsed.protocol_config_revision),
-      'ProductReleaseCatalogV8.bcs.protocol_config_revision',
-    ),
-    protocolConfigCommitment: moveHash(
-      parsed.protocol_config_commitment,
-      'ProductReleaseCatalogV8.bcs.protocol_config_commitment',
-    ),
-    binding: normalizedProductBindingFromBcs(parsed.binding, 'ProductReleaseCatalogV8.bcs.binding'),
-    callCapSet: normalizedCallCapSetFromBcs(
-      parsed.call_cap_set,
-      'ProductReleaseCatalogV8.bcs.call_cap_set',
-    ),
-    callCaps: Object.freeze(Object.fromEntries(ROLE_ORDER.slice(1).map((role) => [
-      role,
-      parsed[`${role}_call_cap`] == null
-        ? null
-        : normalizedPackageCallCapFromBcs(
-            parsed[`${role}_call_cap`],
-            `ProductReleaseCatalogV8.bcs.${role}_call_cap`,
-          ),
-    ]))),
-  });
-  const fromMove = Object.freeze({
-    id: moveId(fields.id, 'ProductReleaseCatalogV8.id'),
-    version: moveU64(fields.version, 'ProductReleaseCatalogV8.version'),
-    protocolConfigId: moveId(fields.protocol_config_id, 'ProductReleaseCatalogV8.protocol_config_id'),
-    protocolConfigRevision: moveU64(
-      fields.protocol_config_revision,
-      'ProductReleaseCatalogV8.protocol_config_revision',
-    ),
-    protocolConfigCommitment: moveHash(
-      fields.protocol_config_commitment,
-      'ProductReleaseCatalogV8.protocol_config_commitment',
-    ),
-    binding: normalizedProductBindingFromMove(fields.binding, 'ProductReleaseCatalogV8.binding'),
-    callCapSet: normalizedCallCapSetFromMove(fields.call_cap_set, 'ProductReleaseCatalogV8.call_cap_set'),
-    callCaps: Object.freeze(Object.fromEntries(ROLE_ORDER.slice(1).map((role) => [
-      role,
-      moveOptionalCallCap(fields[`${role}_call_cap`], `ProductReleaseCatalogV8.${role}_call_cap`),
-    ]))),
-  });
-  if (fromBcs.id !== output.reference.objectId
-    || canonicalJson(fromBcs) !== canonicalJson(fromMove)
-    || Object.values(fromBcs.callCaps).some((value) => value !== null)) {
-    fail(
-      'MAINNET_V8_BOOTSTRAP_BCS_DRIFT',
-      'ProductReleaseCatalogV8 raw historical BCS differs from decoded fields or retains a call capability.',
-    );
-  }
-  return fromBcs;
-}
-
-function normalizedConfigBaseFromBcs(value, label, { callCapSet }) {
-  const result = {
-    id: address(value.id, `${label}.id`),
-    version: decimal(String(value.version), `${label}.version`),
-    catalogId: address(value.catalog_id, `${label}.catalog_id`),
-    productBindingCommitment: moveHash(
-      value.product_binding_commitment,
-      `${label}.product_binding_commitment`,
-    ),
-  };
-  if (callCapSet) {
-    result.callCapSetCommitment = moveHash(
-      value.call_cap_set_commitment,
-      `${label}.call_cap_set_commitment`,
-    );
-  }
-  return result;
-}
-
-function normalizedConfigBaseFromMove(fields, label, { callCapSet }) {
-  const result = {
-    id: moveId(fields.id, `${label}.id`),
-    version: moveU64(fields.version, `${label}.version`),
-    catalogId: moveId(fields.catalog_id, `${label}.catalog_id`),
-    productBindingCommitment: moveHash(
-      fields.product_binding_commitment,
-      `${label}.product_binding_commitment`,
-    ),
-  };
-  if (callCapSet) {
-    result.callCapSetCommitment = moveHash(
-      fields.call_cap_set_commitment,
-      `${label}.call_cap_set_commitment`,
-    );
-  }
-  return result;
-}
-
-function assertCompanionConfigRawBcs(output, role) {
-  const label = `${role} package config`;
-  const simple = ['runtime', 'output'].includes(role);
-  const schema = simple ? SIMPLE_PACKAGE_CONFIG_BCS : BOUND_PACKAGE_CONFIG_BCS;
-  const capField = `${role}_call_cap`;
-  const parsed = parseExactMoveContents(output, schema, label);
-  const fields = moveFields(output.fields, label);
-  exactKeys(fields, [
-    'id', 'version', 'catalog_id', 'product_binding_commitment',
-    ...(simple ? [] : ['call_cap_set_commitment']), capField,
-  ], `${label}.fields`);
-  const fromBcs = Object.freeze({
-    ...normalizedConfigBaseFromBcs(parsed, `${label}.bcs`, { callCapSet: !simple }),
-    callCap: normalizedPackageCallCapFromBcs(parsed.call_cap, `${label}.bcs.${capField}`),
-  });
-  const fromMove = Object.freeze({
-    ...normalizedConfigBaseFromMove(fields, label, { callCapSet: !simple }),
-    callCap: normalizedPackageCallCapFromMove(fields[capField], `${label}.${capField}`),
-  });
-  if (fromBcs.id !== output.reference.objectId
-    || canonicalJson(fromBcs) !== canonicalJson(fromMove)) {
-    fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label} raw historical BCS differs from decoded fields.`);
-  }
-  return fromBcs;
-}
-
-function assertSealConfigRawBcs(output) {
-  const label = 'SealPolicyConfigV8';
-  const parsed = parseExactMoveContents(output, SEAL_POLICY_CONFIG_BCS, label);
-  const fields = moveFields(output.fields, label);
-  exactKeys(fields, [
-    'id', 'version', 'protocol_config_id', 'protocol_config_revision', 'catalog_id',
-    'product_binding_commitment', 'seal_original_package_id', 'seal_callable_package_id',
-    'seal_binding_commitment', 'seal_authority_id', 'call_cap_set_commitment',
-    'seal_call_cap', 'key_servers', 'threshold', 'key_server_set_commitment',
-    'encryption_policy_commitment', 'commitment',
-  ], `${label}.fields`);
-  if (!Array.isArray(fields.key_servers)) {
-    fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label}.key_servers must be one exact vector.`);
-  }
-  const normalizeBcsKeyServer = (entry, entryLabel) => Object.freeze({
-    objectId: address(entry.key_server_id, `${entryLabel}.key_server_id`),
-    weight: decimal(String(entry.weight), `${entryLabel}.weight`),
-  });
-  const normalizeMoveKeyServer = (entry, entryLabel) => {
-    const row = moveFields(entry, entryLabel);
-    exactKeys(row, ['key_server_id', 'weight'], `${entryLabel}.fields`);
-    return Object.freeze({
-      objectId: moveId(row.key_server_id, `${entryLabel}.key_server_id`),
-      weight: moveU64(row.weight, `${entryLabel}.weight`),
-    });
-  };
-  const fromBcs = Object.freeze({
-    id: address(parsed.id, `${label}.bcs.id`),
-    version: decimal(String(parsed.version), `${label}.bcs.version`),
-    protocolConfigId: address(parsed.protocol_config_id, `${label}.bcs.protocol_config_id`),
-    protocolConfigRevision: decimal(
-      String(parsed.protocol_config_revision),
-      `${label}.bcs.protocol_config_revision`,
-    ),
-    catalogId: address(parsed.catalog_id, `${label}.bcs.catalog_id`),
-    productBindingCommitment: moveHash(
-      parsed.product_binding_commitment,
-      `${label}.bcs.product_binding_commitment`,
-    ),
-    sealOriginalPackageId: address(
-      parsed.seal_original_package_id,
-      `${label}.bcs.seal_original_package_id`,
-    ),
-    sealCallablePackageId: address(
-      parsed.seal_callable_package_id,
-      `${label}.bcs.seal_callable_package_id`,
-    ),
-    sealBindingCommitment: moveHash(
-      parsed.seal_binding_commitment,
-      `${label}.bcs.seal_binding_commitment`,
-    ),
-    sealAuthorityId: address(parsed.seal_authority_id, `${label}.bcs.seal_authority_id`),
-    callCapSetCommitment: moveHash(
-      parsed.call_cap_set_commitment,
-      `${label}.bcs.call_cap_set_commitment`,
-    ),
-    callCap: normalizedPackageCallCapFromBcs(parsed.seal_call_cap, `${label}.bcs.seal_call_cap`),
-    keyServers: Object.freeze(parsed.key_servers.map((entry, index) => normalizeBcsKeyServer(
-      entry,
-      `${label}.bcs.key_servers[${index}]`,
-    ))),
-    threshold: decimal(String(parsed.threshold), `${label}.bcs.threshold`),
-    keyServerSetCommitment: moveHash(
-      parsed.key_server_set_commitment,
-      `${label}.bcs.key_server_set_commitment`,
-    ),
-    encryptionPolicyCommitment: moveHash(
-      parsed.encryption_policy_commitment,
-      `${label}.bcs.encryption_policy_commitment`,
-    ),
-    commitment: moveHash(parsed.commitment, `${label}.bcs.commitment`),
-  });
-  const fromMove = Object.freeze({
-    id: moveId(fields.id, `${label}.id`),
-    version: moveU64(fields.version, `${label}.version`),
-    protocolConfigId: moveId(fields.protocol_config_id, `${label}.protocol_config_id`),
-    protocolConfigRevision: moveU64(
-      fields.protocol_config_revision,
-      `${label}.protocol_config_revision`,
-    ),
-    catalogId: moveId(fields.catalog_id, `${label}.catalog_id`),
-    productBindingCommitment: moveHash(
-      fields.product_binding_commitment,
-      `${label}.product_binding_commitment`,
-    ),
-    sealOriginalPackageId: moveId(
-      fields.seal_original_package_id,
-      `${label}.seal_original_package_id`,
-    ),
-    sealCallablePackageId: moveId(
-      fields.seal_callable_package_id,
-      `${label}.seal_callable_package_id`,
-    ),
-    sealBindingCommitment: moveHash(
-      fields.seal_binding_commitment,
-      `${label}.seal_binding_commitment`,
-    ),
-    sealAuthorityId: moveId(fields.seal_authority_id, `${label}.seal_authority_id`),
-    callCapSetCommitment: moveHash(
-      fields.call_cap_set_commitment,
-      `${label}.call_cap_set_commitment`,
-    ),
-    callCap: normalizedPackageCallCapFromMove(fields.seal_call_cap, `${label}.seal_call_cap`),
-    keyServers: Object.freeze(fields.key_servers.map((entry, index) => normalizeMoveKeyServer(
-      entry,
-      `${label}.key_servers[${index}]`,
-    ))),
-    threshold: moveU64(fields.threshold, `${label}.threshold`),
-    keyServerSetCommitment: moveHash(
-      fields.key_server_set_commitment,
-      `${label}.key_server_set_commitment`,
-    ),
-    encryptionPolicyCommitment: moveHash(
-      fields.encryption_policy_commitment,
-      `${label}.encryption_policy_commitment`,
-    ),
-    commitment: moveHash(fields.commitment, `${label}.commitment`),
-  });
-  if (fromBcs.id !== output.reference.objectId
-    || canonicalJson(fromBcs) !== canonicalJson(fromMove)) {
-    fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', `${label} raw historical BCS differs from decoded fields.`);
-  }
-  return fromBcs;
-}
-
-export function assertMainnetV8BootstrapRawBcs(prepared) {
-  const catalog = assertCatalogRawBcs(prepared.catalog);
-  const configs = Object.freeze(Object.fromEntries(ROLE_ORDER.slice(1).map((role) => [
-    role,
-    role === 'seal'
-      ? assertSealConfigRawBcs(prepared.configs[role])
-      : assertCompanionConfigRawBcs(prepared.configs[role], role),
-  ])));
-  if (catalog.version !== '8' || catalog.binding.version !== '8'
-    || catalog.binding.nativeCapabilityMask !== '127'
-    || catalog.callCapSet.version !== '8'
-    || Object.values(configs).some((config) => config.version !== '8')) {
-    fail('MAINNET_V8_BOOTSTRAP_BCS_DRIFT', 'Bootstrap raw BCS has an unsupported version/capability mask.');
-  }
-  return Object.freeze({ catalog, configs });
-}
 
 export function deriveMainnetV8ProtocolConfigCommitment({
   configId,
@@ -2548,37 +1824,33 @@ export function deriveMainnetV8ProtocolConfigCommitment({
   enabled,
 }) {
   const input = {
-    domain: new TextEncoder().encode('animacraft-v8/protocol-config'),
-    version: '8',
-    config_id: address(configId, 'protocol commitment.configId'),
-    core_original_package_id: address(
+    configId: address(configId, 'protocol commitment.configId'),
+    coreOriginalPackageId: address(
       coreOriginalPackageId,
       'protocol commitment.coreOriginalPackageId',
     ),
-    core_callable_package_id: address(
+    coreCallablePackageId: address(
       coreCallablePackageId,
       'protocol commitment.coreCallablePackageId',
     ),
     revision: decimal(String(revision), 'protocol commitment.revision'),
-    treasury_id: treasuryId == null
+    treasuryId: treasuryId == null
       ? null
       : address(treasuryId, 'protocol commitment.treasuryId'),
-    payment_coin_type: MAINNET_V8_USDC_TYPE,
-    primary_content_fee_bps: 1000,
-    fixed_complete_fee_atomic: '0',
-    maker_market_fee_bps: 250,
-    soul_market_fee_bps: 250,
+    paymentCoinType: MAINNET_V8_USDC_TYPE,
+    primaryContentFeeBps: 1000,
+    fixedCompleteFeeAtomic: '0',
+    makerMarketFeeBps: 250,
+    soulMarketFeeBps: 250,
     enabled: moveBool(enabled, 'protocol commitment.enabled'),
   };
-  let encoded;
   try {
-    encoded = PROTOCOL_CONFIG_COMMITMENT_INPUT_BCS.serialize(input).toBytes();
+    return deriveMakerV8ProtocolConfigCommitment(input);
   } catch (cause) {
     fail('MAINNET_V8_PROTOCOL_COMMITMENT_INVALID', 'ProtocolConfig commitment input is invalid.', {
       cause: String(cause?.message ?? cause),
     });
   }
-  return sha256Hex(encoded);
 }
 
 function expectedProtocolConfigCommitment(fields, output, {
@@ -2811,13 +2083,16 @@ export async function certifyMainnetV8PackagePublish({
   finalityEvidence,
   signer,
 }) {
+  if (!MAINNET_V8_PUBLISH_ORDER.includes(role)) {
+    fail('MAINNET_V8_PACKAGE_OUTPUT_CARDINALITY', 'Unknown native publication role.');
+  }
   const transactionDigest = digest(finalityEvidence.digest, 'finality.digest');
   const writes = writtenReferencesFromEffects(
     fromBase64(finalityEvidence.effectsBcsBase64),
     transactionDigest,
   );
   const created = writes.filter((entry) => entry.operation === 'CREATED');
-  const expectedCreatedCount = role === 'core' ? 4 : 2;
+  const expectedCreatedCount = role === 'soulidity' ? 33 : role === 'core' ? 4 : 2;
   if (writes.length !== expectedCreatedCount || created.length !== expectedCreatedCount) {
     fail('MAINNET_V8_PACKAGE_WRITE_SET_INVALID', `${role} publish effects contain unexpected persistent writes.`, {
       expectedCreatedCount,
@@ -2847,6 +2122,7 @@ export async function certifyMainnetV8PackagePublish({
   );
   let protocolConfig = null;
   let protocolAdminCap = null;
+  let soulidityInitialization = null;
   if (role === 'core') {
     protocolConfig = assertInitialProtocolConfig(exactType(
       moveOutputs,
@@ -2861,6 +2137,9 @@ export async function certifyMainnetV8PackagePublish({
     if (moveOutputs.length !== 3) {
       fail('MAINNET_V8_CORE_OUTPUT_CARDINALITY', 'Core publish created unexpected additional Move objects.');
     }
+  } else if (role === 'soulidity') {
+    soulidityInitialization = certifyMainnetV8SoulidityInitialization({ packageCertificate,
+      writes, moveOutputs, signer, transactionDigest });
   } else if (moveOutputs.length !== 1) {
     fail('MAINNET_V8_PACKAGE_OUTPUT_CARDINALITY', `${role} publish created unexpected additional Move objects.`);
   }
@@ -2873,596 +2152,12 @@ export async function certifyMainnetV8PackagePublish({
     upgradeCap,
     protocolConfig,
     protocolAdminCap,
+    soulidityInitialization,
   });
 }
 
-function assertEnabledProtocolConfig(output, packageIds, treasuryId) {
-  const fields = moveFields(output.fields, 'ProtocolConfigV8');
-  exactKeys(fields, [
-    'id', 'version', 'core_original_package_id', 'core_callable_package_id',
-    'revision', 'treasury_id', 'payment_coin_type', 'primary_content_fee_bps',
-    'fixed_complete_fee_atomic', 'maker_market_fee_bps', 'soul_market_fee_bps',
-    'enabled', 'commitment',
-  ], 'ProtocolConfigV8.fields');
-  if (moveId(fields.id, 'ProtocolConfigV8.id') !== output.reference.objectId
-    || moveU64(fields.version, 'ProtocolConfigV8.version') !== '8'
-    || moveId(fields.core_original_package_id, 'ProtocolConfigV8.core_original_package_id') !== packageIds.core
-    || moveId(fields.core_callable_package_id, 'ProtocolConfigV8.core_callable_package_id') !== packageIds.core
-    || moveU64(fields.revision, 'ProtocolConfigV8.revision') !== '2'
-    || moveOptionId(fields.treasury_id, 'ProtocolConfigV8.treasury_id') !== treasuryId
-    || fields.payment_coin_type !== MAINNET_V8_USDC_TYPE
-    || moveU64(fields.primary_content_fee_bps, 'ProtocolConfigV8.primary_content_fee_bps') !== '1000'
-    || moveU64(fields.fixed_complete_fee_atomic, 'ProtocolConfigV8.fixed_complete_fee_atomic') !== '0'
-    || moveU64(fields.maker_market_fee_bps, 'ProtocolConfigV8.maker_market_fee_bps') !== '250'
-    || moveU64(fields.soul_market_fee_bps, 'ProtocolConfigV8.soul_market_fee_bps') !== '250'
-    || moveBool(fields.enabled, 'ProtocolConfigV8.enabled') !== true) {
-    fail('MAINNET_V8_PROTOCOL_CONFIG_INVALID', 'Enabled ProtocolConfigV8 differs from exact init outcome.');
-  }
-  const expectedCommitment = expectedProtocolConfigCommitment(fields, output, {
-    revision: '2',
-    treasuryId,
-    enabled: true,
-  });
-  if (moveHash(fields.commitment, 'ProtocolConfigV8.commitment') !== expectedCommitment) {
-    fail('MAINNET_V8_PROTOCOL_COMMITMENT_DRIFT', 'Enabled ProtocolConfigV8 commitment is invalid.');
-  }
-  const parsed = parseExactMoveContents(output, PROTOCOL_CONFIG_BCS, 'enabled ProtocolConfigV8');
-  if (parsed.id !== output.reference.objectId
-    || parsed.version !== '8'
-    || parsed.core_original_package_id !== packageIds.core
-    || parsed.core_callable_package_id !== packageIds.core
-    || parsed.revision !== '2'
-    || parsed.treasury_id !== treasuryId
-    || parsed.payment_coin_type !== MAINNET_V8_USDC_TYPE
-    || parsed.primary_content_fee_bps !== 1000
-    || parsed.fixed_complete_fee_atomic !== '0'
-    || parsed.maker_market_fee_bps !== 250
-    || parsed.soul_market_fee_bps !== 250
-    || parsed.enabled !== true
-    || moveHash(parsed.commitment, 'ProtocolConfigV8.bcs.commitment') !== expectedCommitment) {
-    fail('MAINNET_V8_PROTOCOL_CONFIG_INVALID', 'Enabled ProtocolConfigV8 historical BCS differs from its exact decoded fields.');
-  }
-  return output;
-}
 
-function parseProtocolConfigEvent(event, {
-  packageId,
-  signer,
-  name,
-  schema,
-  label,
-}) {
-  if (event.package_id !== packageId
-    || event.transaction_module !== 'protocol_config_v8'
-    || event.sender !== signer
-    || event.event_type?.address !== packageId
-    || event.event_type?.module !== 'protocol_config_v8'
-    || event.event_type?.name !== name
-    || !Array.isArray(event.event_type?.typeParams)
-    || event.event_type.typeParams.length !== 0) {
-    fail('MAINNET_V8_PROTOCOL_EVENT_DRIFT', `${label} event envelope is invalid.`, {
-      event: canonicalizeSdk(event),
-    });
-  }
-  let parsed;
-  let roundtrip;
-  const contents = Uint8Array.from(event.contents);
-  try {
-    parsed = schema.parse(contents);
-    roundtrip = schema.serialize(parsed).toBytes();
-  } catch (cause) {
-    fail('MAINNET_V8_PROTOCOL_EVENT_DRIFT', `${label} event contents are invalid BCS.`, {
-      cause: String(cause?.message ?? cause),
-    });
-  }
-  if (!sameBytes(contents, roundtrip)) {
-    fail('MAINNET_V8_PROTOCOL_EVENT_DRIFT', `${label} event contents are noncanonical.`);
-  }
-  return parsed;
-}
 
-export function assertMainnetV8ProtocolInitEvents({
-  finalityEvidence,
-  packageIds,
-  signer,
-  protocolConfigId,
-  treasuryId,
-}) {
-  if (finalityEvidence.eventsDigest == null || finalityEvidence.transactionEvents == null) {
-    fail('MAINNET_V8_PROTOCOL_EVENTS_MISSING', 'Protocol init must include its two exact events.');
-  }
-  let eventEnvelope;
-  let roundtrip;
-  try {
-    const bytesValue = fromBase64(finalityEvidence.transactionEvents.bcsBase64);
-    eventEnvelope = SUI_TRANSACTION_EVENTS_BCS.parse(bytesValue);
-    roundtrip = SUI_TRANSACTION_EVENTS_BCS.serialize(eventEnvelope).toBytes();
-    if (!sameBytes(bytesValue, roundtrip)) throw new Error('noncanonical TransactionEvents');
-  } catch (cause) {
-    fail('MAINNET_V8_PROTOCOL_EVENT_DRIFT', 'Protocol init TransactionEvents are invalid.', {
-      cause: String(cause?.message ?? cause),
-    });
-  }
-  if (eventEnvelope.data.length !== 2
-    || finalityEvidence.transactionEvents.eventCount !== '2') {
-    fail('MAINNET_V8_PROTOCOL_EVENT_CARDINALITY', 'Protocol init must emit exactly two events.');
-  }
-  const treasury = parseProtocolConfigEvent(eventEnvelope.data[0], {
-    packageId: packageIds.core,
-    signer,
-    name: 'ProtocolTreasuryV8Initialized',
-    schema: PROTOCOL_TREASURY_INITIALIZED_EVENT_BCS,
-    label: 'ProtocolTreasuryV8Initialized',
-  });
-  const enabled = parseProtocolConfigEvent(eventEnvelope.data[1], {
-    packageId: packageIds.core,
-    signer,
-    name: 'ProtocolV8EnabledChanged',
-    schema: PROTOCOL_ENABLED_CHANGED_EVENT_BCS,
-    label: 'ProtocolV8EnabledChanged',
-  });
-  const intermediateCommitment = deriveMainnetV8ProtocolConfigCommitment({
-    configId: protocolConfigId,
-    coreOriginalPackageId: packageIds.core,
-    coreCallablePackageId: packageIds.core,
-    revision: '1',
-    treasuryId,
-    enabled: false,
-  });
-  const finalCommitment = deriveMainnetV8ProtocolConfigCommitment({
-    configId: protocolConfigId,
-    coreOriginalPackageId: packageIds.core,
-    coreCallablePackageId: packageIds.core,
-    revision: '2',
-    treasuryId,
-    enabled: true,
-  });
-  if (treasury.config_id !== protocolConfigId
-    || treasury.treasury_id !== treasuryId
-    || String(treasury.revision) !== '1'
-    || moveHash(treasury.commitment, 'ProtocolTreasuryV8Initialized.commitment')
-      !== intermediateCommitment
-    || enabled.config_id !== protocolConfigId
-    || String(enabled.revision) !== '2'
-    || enabled.enabled !== true
-    || moveHash(enabled.commitment, 'ProtocolV8EnabledChanged.commitment') !== finalCommitment) {
-    fail('MAINNET_V8_PROTOCOL_EVENT_DRIFT', 'Protocol init events do not bind the exact intermediate/final config commitments.');
-  }
-  return Object.freeze({
-    treasuryInitialized: canonicalizeSdk(treasury),
-    enabledChanged: canonicalizeSdk(enabled),
-    intermediateCommitment,
-    finalCommitment,
-  });
-}
-
-function assertProtocolTreasury(output, configId) {
-  const fields = moveFields(output.fields, 'ProtocolTreasuryV8');
-  exactKeys(fields, [
-    'id', 'version', 'config_id', 'revenue', 'total_collected', 'total_withdrawn',
-  ], 'ProtocolTreasuryV8.fields');
-  if (moveId(fields.id, 'ProtocolTreasuryV8.id') !== output.reference.objectId
-    || moveU64(fields.version, 'ProtocolTreasuryV8.version') !== '8'
-    || moveId(fields.config_id, 'ProtocolTreasuryV8.config_id') !== configId
-    || moveU64(fields.revenue, 'ProtocolTreasuryV8.revenue') !== '0'
-    || moveU64(fields.total_collected, 'ProtocolTreasuryV8.total_collected') !== '0'
-    || moveU64(fields.total_withdrawn, 'ProtocolTreasuryV8.total_withdrawn') !== '0') {
-    fail('MAINNET_V8_PROTOCOL_TREASURY_INVALID', 'ProtocolTreasuryV8 initial fields are invalid.');
-  }
-  const parsed = parseExactMoveContents(output, PROTOCOL_TREASURY_BCS, 'ProtocolTreasuryV8');
-  if (parsed.id !== output.reference.objectId
-    || parsed.version !== '8'
-    || parsed.config_id !== configId
-    || parsed.revenue.value !== '0'
-    || parsed.total_collected !== '0'
-    || parsed.total_withdrawn !== '0') {
-    fail('MAINNET_V8_PROTOCOL_TREASURY_INVALID', 'ProtocolTreasuryV8 historical BCS differs from its decoded fields.');
-  }
-  return output;
-}
-
-export async function certifyMainnetV8ProtocolInit({
-  transport,
-  packageIds,
-  protocolConfigId,
-  protocolAdminCapId,
-  signer,
-  finalityEvidence,
-}) {
-  const transactionDigest = digest(finalityEvidence.digest, 'init finality.digest');
-  const writes = writtenReferencesFromEffects(
-    fromBase64(finalityEvidence.effectsBcsBase64),
-    transactionDigest,
-  );
-  const configWrites = writes.filter((reference) => reference.objectId === protocolConfigId
-    && reference.operation === 'MUTATED');
-  const adminWrites = writes.filter((reference) => reference.objectId === protocolAdminCapId
-    && reference.operation === 'MUTATED');
-  const created = writes.filter((reference) => reference.operation === 'CREATED');
-  if (writes.length !== 3 || configWrites.length !== 1
-    || adminWrites.length !== 1 || created.length !== 1) {
-    fail('MAINNET_V8_INIT_WRITE_SET_INVALID', 'Protocol init must mutate config/AdminCap and create only treasury.', {
-      writes,
-    });
-  }
-  const relevant = [configWrites[0], adminWrites[0], created[0]];
-  const outputs = await Promise.all(relevant.map((reference) => readExactMainnetV8MoveOutput({
-    transport,
-    reference,
-    transactionDigest,
-  })));
-  const treasury = assertProtocolTreasury(exactType(
-    outputs,
-    `${packageIds.core}::protocol_config_v8::ProtocolTreasuryV8<${MAINNET_V8_USDC_TYPE}>`,
-    'ProtocolTreasuryV8',
-  ), protocolConfigId);
-  const config = assertEnabledProtocolConfig(exactType(
-    outputs,
-    `${packageIds.core}::protocol_config_v8::ProtocolConfigV8`,
-    'ProtocolConfigV8',
-  ), packageIds, treasury.reference.objectId);
-  const protocolAdminCap = assertProtocolAdminCap(exactType(
-    outputs,
-    `${packageIds.core}::protocol_config_v8::ProtocolAdminCapV8`,
-    'ProtocolAdminCapV8',
-  ), protocolConfigId, signer);
-  const events = assertMainnetV8ProtocolInitEvents({
-    finalityEvidence,
-    packageIds,
-    signer: address(signer, 'protocol init signer'),
-    protocolConfigId,
-    treasuryId: treasury.reference.objectId,
-  });
-  return Object.freeze({
-    schemaVersion: MAINNET_V8_RELEASE_RUNNER_SCHEMA,
-    kind: 'PROTOCOL_INIT_CERTIFICATE',
-    transactionDigest,
-    protocolConfig: config,
-    protocolAdminCap,
-    protocolTreasury: treasury,
-    events,
-  });
-}
-
-function runtimeConfigFromBootstrap({ packageIds, initCertificate, outputs }) {
-  const catalog = exactType(
-    outputs,
-    `${packageIds.core}::package_binding_v8::ProductReleaseCatalogV8`,
-    'ProductReleaseCatalogV8',
-  );
-  const configTypes = {
-    seal: `${packageIds.seal}::seal_v8::SealPolicyConfigV8`,
-    runtime: `${packageIds.runtime}::runtime_binding_v8::RuntimePackageConfigV8`,
-    output: `${packageIds.output}::output_v8::OutputPackageConfigV8`,
-    physical: `${packageIds.physical}::physical_v8::PhysicalPackageConfigV8`,
-    market: `${packageIds.market}::market_v8::MarketPackageConfigV8`,
-    release: `${packageIds.release}::release_v8::ReleasePackageConfigV8`,
-  };
-  const configs = Object.fromEntries(Object.entries(configTypes).map(([role, type]) => [
-    role,
-    exactType(outputs, type, `${role} package config`),
-  ]));
-  return Object.freeze({
-    runtimeConfig: Object.freeze({
-      schemaVersion: 'animacraft.maker-v8-runtime.v8',
-      protocolVersion: 8,
-      enabled: true,
-      catalogId: catalog.reference.objectId,
-      protocolConfigId: initCertificate.protocolConfig.reference.objectId,
-      protocolTreasuryId: initCertificate.protocolTreasury.reference.objectId,
-      paymentCoinType: MAINNET_V8_USDC_TYPE,
-      clockObjectId: normalizeSuiAddress('0x6'),
-      roles: Object.fromEntries(ROLE_ORDER.map((role) => [role, {
-        typeOriginPackageId: packageIds[role],
-        callablePackageId: packageIds[role],
-      }])),
-      roleConfigIds: Object.fromEntries(Object.entries(configs).map(([role, output]) => [
-        role,
-        output.reference.objectId,
-      ])),
-      makerBindings: [],
-    }),
-    catalog,
-    configs: Object.freeze(configs),
-  });
-}
-
-export function deriveMainnetV8SealPolicyCommitment({
-  protocolConfigId,
-  catalogId,
-  productBindingCommitment,
-  sealOriginalPackageId,
-  sealCallablePackageId,
-  sealBindingCommitment,
-  sealAuthorityId,
-  callCapSetCommitment,
-  sealPolicy,
-}) {
-  assertMainnetV8FinalSealPolicy(sealPolicy);
-  const input = {
-    domain: new TextEncoder().encode('animacraft-v8/seal/policy'),
-    version: '8',
-    protocol_config_id: address(protocolConfigId, 'Seal policy protocolConfigId'),
-    protocol_config_revision: '2',
-    catalog_id: address(catalogId, 'Seal policy catalogId'),
-    product_binding_commitment: fromHex(hash32(
-      productBindingCommitment,
-      'Seal policy productBindingCommitment',
-    )),
-    seal_original_package_id: address(sealOriginalPackageId, 'Seal policy original package'),
-    seal_callable_package_id: address(sealCallablePackageId, 'Seal policy callable package'),
-    seal_binding_commitment: fromHex(hash32(
-      sealBindingCommitment,
-      'Seal policy bindingCommitment',
-    )),
-    seal_authority_id: address(sealAuthorityId, 'Seal policy authorityId'),
-    call_cap_set_commitment: fromHex(hash32(
-      callCapSetCommitment,
-      'Seal policy callCapSetCommitment',
-    )),
-    key_servers: sealPolicy.keyServers.map((entry) => ({
-      key_server_id: address(entry.objectId, 'Seal policy key server ID'),
-      weight: Number(decimal(entry.weight, 'Seal policy key server weight')),
-    })),
-    threshold: Number(decimal(sealPolicy.threshold, 'Seal policy threshold')),
-    key_server_set_commitment: fromHex(hash32(
-      sealPolicy.keyServerSetCommitment,
-      'Seal policy keyServerSetCommitment',
-    )),
-    encryption_policy_commitment: fromHex(hash32(
-      sealPolicy.encryptionPolicyCommitment,
-      'Seal policy encryptionPolicyCommitment',
-    )),
-  };
-  return sha256Hex(SEAL_POLICY_COMMITMENT_INPUT_BCS.serialize(input).toBytes());
-}
-
-async function deriveBootstrapReleaseCommitments({ attested, packageIds }) {
-  const roles = Object.fromEntries(ROLE_ORDER.map((role) => {
-    const row = attested.catalog.roles[role];
-    const marker = MARKERS[role];
-    const module = marker[0];
-    const originalMarker = marker[1];
-    const callableMarker = marker[2] ?? marker[1];
-    return [role, {
-      originalPackageId: row.originalPackageId,
-      callablePackageId: row.callablePackageId,
-      sourceCommitment: row.sourceCommitment,
-      packageCommitment: row.packageCommitment,
-      abiCommitment: row.abiCommitment,
-      bindingCommitment: row.commitment,
-      originalMarkerType: `${packageIds[role]}::${module}::${originalMarker}`,
-      callableMarkerType: `${packageIds[role]}::${module}::${callableMarker}`,
-    }];
-  }));
-  const derived = await deriveMakerV8ReleaseCommitments({
-    catalogId: attested.catalog.objectId,
-    roles,
-    authorities: attested.catalog.authorities,
-  });
-  if (derived.productBindingCommitment !== attested.catalog.productBindingCommitment
-    || derived.callCapSetCommitment !== attested.catalog.callCapSetCommitment) {
-    fail('MAINNET_V8_CATALOG_COMMITMENT_DRIFT', 'Catalog product/call-cap commitments do not derive from exact role bindings.');
-  }
-  return derived;
-}
-
-function assertSealBootstrapFields(
-  sealConfig,
-  sealPolicy,
-  initCertificate,
-  catalog,
-  releaseCommitments,
-) {
-  const fields = moveFields(sealConfig.fields, 'SealPolicyConfigV8');
-  const keyServers = fields.key_servers;
-  if (!Array.isArray(keyServers) || keyServers.length !== sealPolicy.keyServers.length) {
-    fail('MAINNET_V8_SEAL_POLICY_READBACK_DRIFT', 'Seal key-server row count differs from immutable release policy.');
-  }
-  keyServers.forEach((entry, index) => {
-    const row = moveFields(entry, `SealPolicyConfigV8.key_servers[${index}]`);
-    exactKeys(row, ['key_server_id', 'weight'], `SealPolicyConfigV8.key_servers[${index}]`);
-    if (moveId(row.key_server_id, 'Seal key_server_id') !== sealPolicy.keyServers[index].objectId
-      || moveU64(row.weight, 'Seal weight') !== sealPolicy.keyServers[index].weight) {
-      fail('MAINNET_V8_SEAL_POLICY_READBACK_DRIFT', 'Seal key-server binding differs from immutable release policy.');
-    }
-  });
-  const expectedCommitment = deriveMainnetV8SealPolicyCommitment({
-    protocolConfigId: initCertificate.protocolConfig.reference.objectId,
-    catalogId: catalog.reference?.objectId ?? catalog.objectId,
-    productBindingCommitment: releaseCommitments.productBindingCommitment,
-    sealOriginalPackageId: releaseCommitments.roles.seal.originalPackageId,
-    sealCallablePackageId: releaseCommitments.roles.seal.callablePackageId,
-    sealBindingCommitment: releaseCommitments.roles.seal.bindingCommitment,
-    sealAuthorityId: releaseCommitments.authorities.seal,
-    callCapSetCommitment: releaseCommitments.callCapSetCommitment,
-    sealPolicy,
-  });
-  if (moveId(fields.protocol_config_id, 'Seal protocol_config_id')
-      !== initCertificate.protocolConfig.reference.objectId
-    || moveU64(fields.protocol_config_revision, 'Seal protocol_config_revision') !== '2'
-    || moveId(fields.catalog_id, 'Seal catalog_id') !== catalog.reference.objectId
-    || moveU64(fields.threshold, 'Seal threshold') !== sealPolicy.threshold
-    || moveHash(fields.key_server_set_commitment, 'Seal key_server_set_commitment')
-      !== sealPolicy.keyServerSetCommitment
-    || moveHash(fields.encryption_policy_commitment, 'Seal encryption_policy_commitment')
-      !== sealPolicy.encryptionPolicyCommitment
-    || moveHash(fields.commitment, 'Seal commitment') !== expectedCommitment) {
-    fail('MAINNET_V8_SEAL_POLICY_READBACK_DRIFT', 'SealPolicyConfigV8 differs from immutable release policy.');
-  }
-  return expectedCommitment;
-}
-
-export function assertMainnetV8BootstrapEvents({
-  finalityEvidence,
-  packageIds,
-  signer,
-  sealConfigId,
-  catalogId,
-  sealPolicy,
-  sealPolicyCommitment,
-}) {
-  if (finalityEvidence.eventsDigest == null || finalityEvidence.transactionEvents == null) {
-    fail('MAINNET_V8_BOOTSTRAP_EVENTS_MISSING', 'Bootstrap must include the exact Seal policy event.');
-  }
-  let envelope;
-  try {
-    const eventBytes = fromBase64(finalityEvidence.transactionEvents.bcsBase64);
-    envelope = SUI_TRANSACTION_EVENTS_BCS.parse(eventBytes);
-    const roundtrip = SUI_TRANSACTION_EVENTS_BCS.serialize(envelope).toBytes();
-    if (!sameBytes(eventBytes, roundtrip)) throw new Error('noncanonical TransactionEvents');
-  } catch (cause) {
-    fail('MAINNET_V8_BOOTSTRAP_EVENT_DRIFT', 'Bootstrap TransactionEvents are invalid.', {
-      cause: String(cause?.message ?? cause),
-    });
-  }
-  if (envelope.data.length !== 1 || finalityEvidence.transactionEvents.eventCount !== '1') {
-    fail('MAINNET_V8_BOOTSTRAP_EVENT_CARDINALITY', 'Bootstrap must emit exactly one SealPolicyCreatedV8 event.');
-  }
-  const event = envelope.data[0];
-  if (event.package_id !== packageIds.seal
-    || event.transaction_module !== 'seal_v8'
-    || event.sender !== signer
-    || event.event_type?.address !== packageIds.seal
-    || event.event_type?.module !== 'seal_v8'
-    || event.event_type?.name !== 'SealPolicyCreatedV8'
-    || !Array.isArray(event.event_type?.typeParams)
-    || event.event_type.typeParams.length !== 0) {
-    fail('MAINNET_V8_BOOTSTRAP_EVENT_DRIFT', 'SealPolicyCreatedV8 event envelope is invalid.');
-  }
-  let parsed;
-  const contents = Uint8Array.from(event.contents);
-  try {
-    parsed = SEAL_POLICY_CREATED_EVENT_BCS.parse(contents);
-    const roundtrip = SEAL_POLICY_CREATED_EVENT_BCS.serialize(parsed).toBytes();
-    if (!sameBytes(contents, roundtrip)) throw new Error('noncanonical event contents');
-  } catch (cause) {
-    fail('MAINNET_V8_BOOTSTRAP_EVENT_DRIFT', 'SealPolicyCreatedV8 event BCS is invalid.', {
-      cause: String(cause?.message ?? cause),
-    });
-  }
-  if (parsed.config_id !== sealConfigId
-    || parsed.catalog_id !== catalogId
-    || String(parsed.threshold) !== sealPolicy.threshold
-    || moveHash(parsed.key_server_set_commitment, 'SealPolicyCreatedV8.key_server_set_commitment')
-      !== sealPolicy.keyServerSetCommitment
-    || moveHash(parsed.commitment, 'SealPolicyCreatedV8.commitment') !== sealPolicyCommitment) {
-    fail('MAINNET_V8_BOOTSTRAP_EVENT_DRIFT', 'SealPolicyCreatedV8 event differs from exact bootstrap outputs.');
-  }
-  return Object.freeze(canonicalizeSdk(parsed));
-}
-
-export async function certifyMainnetV8Bootstrap({
-  transport,
-  packageIds,
-  packageCommitments,
-  initCertificate,
-  sealPolicy,
-  signer,
-  finalityEvidence,
-}) {
-  const transactionDigest = digest(finalityEvidence.digest, 'bootstrap finality.digest');
-  const writes = writtenReferencesFromEffects(
-    fromBase64(finalityEvidence.effectsBcsBase64),
-    transactionDigest,
-  );
-  const created = writes.filter((entry) => entry.operation === 'CREATED');
-  const adminWrites = writes.filter((entry) =>
-    entry.objectId === initCertificate.protocolAdminCap.reference.objectId
-      && entry.operation === 'MUTATED');
-  if (writes.length !== 8 || created.length !== 7 || adminWrites.length !== 1) {
-    fail('MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID', 'Bootstrap effects must create seven shared outputs and mutate only ProtocolAdminCap.', {
-      writes,
-    });
-  }
-  const [outputs, protocolAdminCapOutput] = await Promise.all([
-    Promise.all(created.map((reference) => readExactMainnetV8MoveOutput({
-      transport,
-      reference,
-      transactionDigest,
-    }))),
-    readExactMainnetV8MoveOutput({
-      transport,
-      reference: adminWrites[0],
-      transactionDigest,
-    }),
-  ]);
-  if (outputs.length !== 7 || outputs.some((output) => !Object.hasOwn(output.owner, 'Shared'))) {
-    fail('MAINNET_V8_BOOTSTRAP_OUTPUT_CARDINALITY', 'Bootstrap must create exactly Catalog plus six shared configs.');
-  }
-  const prepared = runtimeConfigFromBootstrap({ packageIds, initCertificate, outputs });
-  const protocolAdminCap = assertProtocolAdminCap(
-    protocolAdminCapOutput,
-    initCertificate.protocolConfig.reference.objectId,
-    signer,
-  );
-  // Treat current JSON as a presentation layer only.  Every catalog/config
-  // semantic field used below must first match the canonical historical BCS
-  // created by this exact transaction.
-  assertMainnetV8BootstrapRawBcs(prepared);
-  const attested = await attestMakerV8Runtime(transport, prepared.runtimeConfig, { network: 'mainnet' });
-  const exactAttestedObjects = [
-    [attested.catalog, prepared.catalog, 'catalog'],
-    ...Object.keys(prepared.configs).map((role) => [
-      attested.configs[role], prepared.configs[role], `${role} config`,
-    ]),
-  ];
-  for (const [observed, expected, label] of exactAttestedObjects) {
-    if (canonicalJson(observed.objectRef) !== canonicalJson(expected.reference)) {
-      fail('MAINNET_V8_BOOTSTRAP_ATTESTATION_DRIFT', `${label} attestation does not bind the exact created effects reference.`);
-    }
-  }
-  const protocolFields = moveFields(initCertificate.protocolConfig.fields, 'ProtocolConfigV8');
-  if (String(attested.catalog.protocolConfigRevision) !== '2'
-    || attested.catalog.protocolConfigCommitment
-      !== moveHash(protocolFields.commitment, 'ProtocolConfigV8.commitment')) {
-    fail('MAINNET_V8_CATALOG_PROTOCOL_DRIFT', 'Catalog does not bind the exact enabled ProtocolConfig snapshot.');
-  }
-  const releaseCommitments = await deriveBootstrapReleaseCommitments({ attested, packageIds });
-  for (const role of ROLE_ORDER) {
-    const observed = attested.catalog.roles[role];
-    const expected = packageCommitments[role];
-    if (observed.sourceCommitment !== expected.source
-      || observed.packageCommitment !== expected.package
-      || observed.abiCommitment !== expected.abi) {
-      fail('MAINNET_V8_CATALOG_COMMITMENT_DRIFT', `${role} catalog commitments differ from release artifacts.`);
-    }
-  }
-  const sealPolicyCommitment = assertSealBootstrapFields(
-    prepared.configs.seal,
-    sealPolicy,
-    initCertificate,
-    prepared.catalog,
-    releaseCommitments,
-  );
-  const events = assertMainnetV8BootstrapEvents({
-    finalityEvidence,
-    packageIds,
-    signer: address(signer, 'bootstrap signer'),
-    sealConfigId: prepared.configs.seal.reference.objectId,
-    catalogId: prepared.catalog.reference.objectId,
-    sealPolicy,
-    sealPolicyCommitment,
-  });
-  return Object.freeze({
-    schemaVersion: MAINNET_V8_RELEASE_RUNNER_SCHEMA,
-    kind: 'BOOTSTRAP_CERTIFICATE',
-    transactionDigest,
-    protocolAdminCap,
-    runtimeConfig: prepared.runtimeConfig,
-    catalog: prepared.catalog,
-    configs: prepared.configs,
-    releaseCommitments,
-    sealPolicyCommitment,
-    events,
-    attestation: canonicalizeSdk({
-      catalog: attested.catalog,
-      configs: attested.configs,
-      packageTuple: attested.packageTuple,
-      coreArtifact: attested.coreArtifact,
-    }),
-  });
-}
 
 function randomUint32() {
   return randomBytes(4).readUInt32LE(0);
@@ -3487,9 +2182,10 @@ function releaseTransactionContext(
 function printUsage() {
   process.stdout.write(`Usage: node scripts/mainnet-v8-release.mjs <command> [options]\n\n`);
   process.stdout.write(`Commands: prepare, run, resume, abandon, status, verify, export-config\n`);
-  process.stdout.write(`Required for prepare: --state-dir PATH --sui-binary PATH --sender 0x...\n`);
+  process.stdout.write(`Required for prepare: --state-dir PATH --soulidity-root PATH --sui-binary PATH --sender 0x...\n`);
   process.stdout.write(`Required for run/resume: --state-dir PATH --sui-binary PATH --execution-plan-id SHA256\n`);
   process.stdout.write(`After manifest seal, run/resume also requires --release-id SHA256\n`);
+  process.stdout.write(`Export requires completed verification: --state-dir PATH --format json|soulidity-env (default json); no writes.\n`);
   process.stdout.write(`Abandon requires both IDs plus --reason-code PROTOCOL_INIT_PAYMENT_COIN_TYPE_MISMATCH; it never signs or broadcasts.\n`);
   process.stdout.write(`Known parser incidents may be reopened with --repair-readback-incident; this never signs or broadcasts by itself.\n`);
   process.stdout.write(`Writes require all three gates: --confirm-mainnet --allow-signing --allow-broadcast\n`);
@@ -3527,11 +2223,13 @@ async function writeJsonAtomic(filename, value) {
 
 export async function prepareMainnetV8Release({
   repositoryRoot = REPOSITORY_ROOT,
+  soulidityRoot,
   stateDir,
   suiBinary,
   sender,
   sealPolicy: sealPolicyInput,
   client = new SuiGrpcClient({ network: 'mainnet', baseUrl: MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT }),
+  transport = createProductionMakerV8SuiGrpcTransport(),
 }) {
   const checkedSender = address(sender, 'sender');
   if (checkedSender !== MAINNET_V8_RELEASE_SIGNER) {
@@ -3553,37 +2251,39 @@ export async function prepareMainnetV8Release({
   const stagingState = `${resolvedState}.preparing.${process.pid}.${randomBytes(8).toString('hex')}`;
   await fsp.mkdir(stagingState, { recursive: true, mode: 0o700 });
   try {
-  const [git, toolchain, profile] = await Promise.all([
-    inspectMainnetV8GitSource(repositoryRoot),
-    inspectMainnetV8Toolchain({ suiBinary }),
-    assertMainnetV8ProtocolProfile(client),
-  ]);
+  // Source identity records the required toolchain, not proof of its execution.
+  // The actual binary is checked below before any build/RPC/READY is allowed.
+  const toolchain = MAINNET_V8_RELEASE_TOOLCHAIN;
   const sealPolicy = assertMainnetV8SealPolicyTemplate(sealPolicyInput);
   const checkoutRoot = path.join(stagingState, 'source');
-  await archiveCleanSource({ repositoryRoot, commit: git.commit, destination: checkoutRoot });
+  const sourcePlan = await prepareMainnetV8Source({ repositoryRoot, soulidityRoot,
+    storePath: path.join(stagingState, 'source-cas'), checkoutRoot, toolchain });
+  await inspectMainnetV8Toolchain({ suiBinary });
+  const profile = await assertMainnetV8ProtocolProfile(client);
+  // Resolve and execute the live external version before publishing anything.
+  // Static dependency metadata alone does not prove compatibility with System.
+  await preflightMainnetV8WalrusExecution({ client, transport, profile, sender: checkedSender });
   const publishedTomlPath = path.join(stagingState, MAINNET_V8_PUBLISHED_FILENAME);
   await fsp.writeFile(publishedTomlPath, renderPublishedToml({
     buildEnv: 'mainnet', chainId: '35834a8a', entries: [],
+    externalEntries: readNativeSoulExternalPublications({ sourceRevision: sourcePlan.sourceRevision, checkoutRoot }),
   }), { encoding: 'utf8', mode: 0o600 });
-  const sourceArtifacts = Object.fromEntries(await Promise.all(ROLE_ORDER.map(async (role) => [
-    role,
-    await buildSourceArtifactForRole({ role, checkoutRoot, git, toolchain }),
-  ])));
+  const sourceArtifacts = Object.fromEntries(sourcePlan.packages.map(entry => [entry.role, entry.sourceArtifact]));
   const coreBuild = await withApprovedSuiBinarySnapshot(
-    toolchain.path,
+    suiBinary,
     async (snapshotPath) => buildMainnetV8Package({
       role: 'core',
       checkoutRoot,
       publishedTomlPath,
       suiBinary: snapshotPath,
-      git,
+      sourceRevision: sourcePlan.sourceRevision,
       toolchain: Object.freeze({ ...toolchain, path: snapshotPath }),
       sourceArtifact: sourceArtifacts.core,
     }),
   );
   const plan = await createReleasePlan({
     sender: checkedSender,
-    sourceRevision: { gitCommit: git.commit, gitTree: git.tree, clean: true },
+    sourceRevision: sourcePlan.sourceRevision,
     toolchain: {
       suiVersion: toolchain.suiVersion,
       suiVersionOutput: toolchain.suiVersionOutput,
@@ -3592,13 +2292,16 @@ export async function prepareMainnetV8Release({
       frameworkRevision: toolchain.frameworkRevision,
     },
     sealPolicy,
-    packages: ROLE_ORDER.map((role) => ({
+    packages: NATIVE_SOUL_SOURCE_ORDER.map((role) => ({
       role,
-      packageName: ROLE_PACKAGE_NAMES[role],
+      packageName: NATIVE_SOUL_SOURCE_NAMES[role],
       sourceArtifact: sourceArtifacts[role],
     })),
   });
   assertReleasePlan(plan);
+  const initialPublished = await bindInitialPublishedPrefix({ executionPlanId: computeExecutionPlanId(plan),
+    checkoutRoot, publishedTomlPath,
+    externalEntries: readNativeSoulExternalPublications({ sourceRevision: sourcePlan.sourceRevision, checkoutRoot }) });
   const preparedCore = await prepareUnsignedMainnetV8Transaction({
     client,
     profile,
@@ -3617,7 +2320,7 @@ export async function prepareMainnetV8Release({
     packageCommitment: computePackageCommitment(coreBuild.packageArtifact),
     modules: coreBuild.publishModules,
     dependencies: coreBuild.dependencies,
-    publishedTomlSha256: sha256Hex(await fsp.readFile(publishedTomlPath)),
+    publishedTomlSha256: initialPublished.sha256,
     simulation: preparedCore.simulation,
     gasFunding: preparedCore.gasFunding,
     protocolProfile: profile,
@@ -3665,6 +2368,7 @@ function mainnetV8ReleasePaths(stateDir) {
     wal: path.join(root, MAINNET_V8_WAL_FILENAME),
     published: path.join(root, MAINNET_V8_PUBLISHED_FILENAME),
     checkout: path.join(root, 'source'),
+    sourceStore: path.join(root, 'source-cas'),
     exportedConfig: path.join(root, 'animacraft-mainnet-v8-config.json'),
     releaseCertificate: path.join(root, 'chain-release-certificate.json'),
   });
@@ -3734,8 +2438,8 @@ function packageIdsFromFinalManifest(wal) {
 function publishedEntryFromDetails(checkoutRoot, details) {
   const readback = details.certificate.readback;
   return Object.freeze({
-    packageName: ROLE_PACKAGE_NAMES[readback.role],
-    source: path.join(path.resolve(checkoutRoot), 'move', ROLE_PACKAGE_NAMES[readback.role]),
+    packageName: MAINNET_V8_PUBLISH_PACKAGE_NAMES[readback.role],
+    source: path.join(path.resolve(checkoutRoot), 'move', MAINNET_V8_PUBLISH_PACKAGE_NAMES[readback.role]),
     publishedAt: readback.package.reference.objectId,
     originalId: readback.package.reference.objectId,
     version: '1',
@@ -3745,22 +2449,33 @@ function publishedEntryFromDetails(checkoutRoot, details) {
   });
 }
 
-function publishedPrefixSnapshot(wal, checkoutRoot, completedCount = ROLE_ORDER.length) {
+export function publishedPrefixSnapshot(wal, checkoutRoot, completedCount = MAINNET_V8_PUBLISH_ORDER.length,
+  externalEntries) {
   if (!Number.isSafeInteger(completedCount)
-    || completedCount < 0 || completedCount > ROLE_ORDER.length) {
+    || completedCount < 0 || completedCount > MAINNET_V8_PUBLISH_ORDER.length) {
     fail('MAINNET_V8_PUBLISHED_PREFIX_INVALID', 'Published prefix length is out of bounds.');
   }
   const entries = [];
   for (let ordinal = 0; ordinal < completedCount; ordinal += 1) {
     const success = wal.events.find((event) => event.ordinal === String(ordinal)
       && event.status === 'FINALIZED_SUCCESS');
-    if (!success) break;
+    if (!success) {
+      if (wal.events.some(event => event.status === 'FINALIZED_SUCCESS'
+        && Number(event.ordinal) > ordinal && Number(event.ordinal) < completedCount)) {
+        fail('MAINNET_V8_PUBLISHED_PREFIX_INVALID', 'Published prefix has a missing predecessor.');
+      }
+      break;
+    }
+    if (success.evidence?.observation?.details?.certificate?.readback?.role !== MAINNET_V8_PUBLISH_ORDER[ordinal]) {
+      fail('MAINNET_V8_PUBLISHED_PREFIX_INVALID', 'Published readback role differs from the publication ordinal.');
+    }
     entries.push(publishedEntryFromDetails(checkoutRoot, success.evidence.observation.details));
   }
   const text = renderPublishedToml({
     buildEnv: 'mainnet',
     chainId: '35834a8a',
     entries,
+    externalEntries,
   });
   const parsed = parsePublishedToml(text);
   if (renderPublishedToml(parsed) !== text) {
@@ -3784,9 +2499,11 @@ function publishedPrefixSnapshot(wal, checkoutRoot, completedCount = ROLE_ORDER.
       ...entry,
       source: path.join(commitmentRoot, 'move', entry.packageName),
     })),
+    externalEntries: nativeSoulExternalCommitmentEntries(parsed.externalEntries, commitmentRoot),
   });
   return Object.freeze({
     entries: parsed.entries,
+    externalEntries: parsed.externalEntries,
     text,
     rawSha256: sha256Hex(new TextEncoder().encode(text)),
     sha256: sha256Hex(new TextEncoder().encode(commitmentText)),
@@ -3816,10 +2533,24 @@ async function writePublishedPrefix(filename, snapshot) {
   return snapshot;
 }
 
+/** Bind the already-built initial Core pubfile to the same portable commitment
+ * used by resumed/clean-room builds, once its execution plan ID is known. */
+export async function bindInitialPublishedPrefix({ executionPlanId, checkoutRoot, publishedTomlPath, externalEntries }) {
+  if (typeof executionPlanId !== 'string' || !/^[0-9a-f]{64}$/.test(executionPlanId)) {
+    fail('MAINNET_V8_PUBLISHED_PREFIX_INVALID', 'Initial publication requires the exact execution plan ID.');
+  }
+  const snapshot = publishedPrefixSnapshot({ executionPlanId, events: [] }, checkoutRoot, 0, externalEntries);
+  if (await fsp.readFile(publishedTomlPath, 'utf8') !== snapshot.text) {
+    fail('MAINNET_V8_PUBLISHED_TOML_COLD_READ_DRIFT', 'Initial built publication metadata changed before plan binding.');
+  }
+  return writePublishedPrefix(publishedTomlPath, snapshot);
+}
+
 async function materializePublishedPrefix(paths, wal) {
   return writePublishedPrefix(
     paths.published,
-    publishedPrefixSnapshot(wal, paths.checkout),
+    publishedPrefixSnapshot(wal, paths.checkout, MAINNET_V8_PUBLISH_ORDER.length,
+      readNativeSoulExternalPublications({ sourceRevision: wal.plan.sourceRevision, checkoutRoot: paths.checkout })),
   );
 }
 
@@ -3833,28 +2564,62 @@ function predecessorForReady(wal, ordinal) {
   });
 }
 
-export function assertMainnetV8ReadyWalContext({ wal, ordinal, readyArtifact }) {
-  assertReleasePlan(wal?.plan);
-  const ordinalText = decimal(String(ordinal), 'READY context ordinal');
-  const ordinalNumber = Number(ordinalText);
-  if (!Number.isSafeInteger(ordinalNumber) || ordinalNumber < 0 || ordinalNumber > 9
-    || !plain(readyArtifact)) {
-    fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'READY context is malformed.');
+export function nativeSoulBootstrapPriorReadbacksFromWal({ wal, stage }) {
+  const target = MAINNET_V8_RELEASE_STEPS.find(step => step.kind === stage);
+  if (!target || !NATIVE_SOUL_BOOTSTRAP_STAGES.includes(target.kind)) {
+    fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Unknown native bootstrap stage.');
   }
-  const expectedPredecessor = predecessorForReady(wal, ordinalNumber);
+  const prior = { core: finalizedDetails(wal, 0).certificate.readback };
+  for (const step of MAINNET_V8_RELEASE_STEPS) {
+    if (step.kind === 'PUBLISH') continue;
+    if (Number(step.ordinal) >= Number(target.ordinal)) break;
+    prior[step.kind] = finalizedDetails(wal, step.ordinal).certificate.readback;
+  }
+  return prior;
+}
+
+export function nativeSoulBootstrapContextFromWal({ wal, stage, keyServerCertificates, walrusSystem, walrusExecution }) {
+  if (!wal.finalManifest || wal.finalManifest.releaseId !== wal.releaseId) {
+    fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Native stage requires the exact sealed final manifest.');
+  }
+  const extras = {};
+  if (keyServerCertificates !== undefined) extras.keyServerCertificates = keyServerCertificates;
+  if (walrusSystem !== undefined) extras.walrusSystem = walrusSystem;
+  if (walrusExecution !== undefined) extras.walrusExecution = walrusExecution;
+  return deriveNativeSoulBootstrapStageData({
+    stage, manifest: wal.finalManifest, plan: wal.plan,
+    priorReadbacks: nativeSoulBootstrapPriorReadbacksFromWal({ wal, stage }), ...extras,
+  });
+}
+
+export function nativeSoulMarketActivationContextFromWal(wal) {
+  const predecessorSteps = MAINNET_V8_RELEASE_STEPS.filter(row =>
+    row.kind === 'PUBLISH' && row.role === 'soulidity' || row.kind === 'FINALIZE_BOOTSTRAP');
+  return deriveMainnetV8MarketActivationWalContext({ plan: wal.plan, manifest: wal.finalManifest,
+    successfulCertificates: new Map(predecessorSteps.map(row => [row.ordinal, {
+      details: finalizedDetails(wal, row.ordinal),
+    }])) });
+}
+
+// Data/context projection of certified WAL records. Execution still requires
+// the guarded plan validator below and the cold WAL's full finality checks.
+export function assertMainnetV8ReadyWalContextContents({ wal, ordinal, readyArtifact }) {
+  const ordinalText = decimal(String(ordinal), 'READY context ordinal');
+  const step = MAINNET_V8_RELEASE_STEPS.find(entry => entry.ordinal === ordinalText);
+  if (!step || !plain(readyArtifact) || readyArtifact.kind !== step.kind) {
+    fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'READY context has no matching release step.');
+  }
+  const expectedPredecessor = predecessorForReady(wal, Number(ordinalText));
   if (canonicalJson(readyArtifact.predecessorReadback) !== canonicalJson(expectedPredecessor)) {
     fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'READY predecessor differs from the durable finalized head.');
   }
-  if (ordinalNumber < ROLE_ORDER.length) {
-    const role = ROLE_ORDER[ordinalNumber];
-    const planned = wal.plan.packages[ordinalNumber];
-    if (readyArtifact.kind !== 'PUBLISH' || readyArtifact.role !== role
-      || readyArtifact.packageArtifact?.role !== role
-      || planned.packageName !== ROLE_PACKAGE_NAMES[role]
-      || canonicalJson(readyArtifact.dependencies)
-        !== canonicalJson(readyArtifact.packageArtifact?.dependencies)
-      || computePackageCommitment(readyArtifact.packageArtifact)
-        !== readyArtifact.packageCommitment) {
+  if (step.kind === 'PUBLISH') {
+    const role = step.role;
+    const planned = wal.plan.packages[Number(ordinalText)];
+    if (readyArtifact.role !== role || readyArtifact.packageArtifact?.role !== role
+      || planned?.role !== role || planned.packageName !== MAINNET_V8_PUBLISH_PACKAGE_NAMES[role]
+      || canonicalJson(readyArtifact.dependencies) !== canonicalJson(readyArtifact.packageArtifact?.dependencies)
+      || computePackageCommitment(readyArtifact.packageArtifact) !== readyArtifact.packageCommitment) {
       fail('MAINNET_V8_READY_CONTEXT_DRIFT', `${role} READY is not bound to its immutable plan/build artifact.`);
     }
     return readyArtifact;
@@ -3862,75 +2627,26 @@ export function assertMainnetV8ReadyWalContext({ wal, ordinal, readyArtifact }) 
   if (!wal.finalManifest || wal.finalManifest.releaseId !== wal.releaseId) {
     fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Stage READY requires the exact sealed final manifest.');
   }
-  const packageIds = packageIdsFromFinalManifest(wal);
-  const core = finalizedDetails(wal, 0).certificate.readback;
   let expectedStageData;
-  if (ordinalText === '7') {
-    if (readyArtifact.kind !== 'INITIALIZE_PROTOCOL') {
-      fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Ordinal 7 must be INITIALIZE_PROTOCOL.');
-    }
-    expectedStageData = Object.freeze({
-      packageIds,
-      protocolConfig: sharedReferenceFromOutput(core.protocolConfig, 'Core ProtocolConfig'),
-      protocolAdminCap: ownedReferenceFromOutput(core.protocolAdminCap, 'Core ProtocolAdminCap'),
-    });
-  } else if (ordinalText === '8') {
-    if (readyArtifact.kind !== 'BOOTSTRAP_RELEASE') {
-      fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Ordinal 8 must be BOOTSTRAP_RELEASE.');
-    }
-    const init = finalizedDetails(wal, 7).certificate.readback;
-    const finalSealPolicy = assertMainnetV8FinalSealPolicy(
-      wal.finalManifest.sealPolicy,
-      wal.plan.sealPolicy,
-    );
-    if (!Array.isArray(readyArtifact.stageData?.keyServerCertificates)
-      || readyArtifact.stageData.keyServerCertificates.length !== finalSealPolicy.keyServers.length) {
-      fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Bootstrap READY lacks exact Seal key-server certificates.');
-    }
-    readyArtifact.stageData.keyServerCertificates.forEach((certificate, index) => {
-      exactKeys(certificate, [
-        'objectId', 'type', 'version', 'digest', 'owner', 'previousTransaction', 'contentSha256',
-      ], `keyServerCertificates[${index}]`);
-      if (certificate.objectId !== finalSealPolicy.keyServers[index].objectId
-        || typeof certificate.type !== 'string'
-        || !/::key_server::KeyServer$/.test(certificate.type)) {
-        fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Bootstrap READY key-server certificate differs from final Seal policy.');
-      }
-      address(certificate.owner, `keyServerCertificates[${index}].owner`);
-      decimal(certificate.version, `keyServerCertificates[${index}].version`);
-      digest(certificate.digest, `keyServerCertificates[${index}].digest`);
-      digest(certificate.previousTransaction, `keyServerCertificates[${index}].previousTransaction`);
-      hash32(certificate.contentSha256, `keyServerCertificates[${index}].contentSha256`);
-    });
-    const commitments = Object.freeze(Object.fromEntries(wal.finalManifest.packages.map((entry) => [
-      entry.role,
-      Object.freeze({
-        source: entry.sourceCommitment,
-        package: entry.packageCommitment,
-        abi: entry.abiCommitment,
-      }),
-    ])));
-    expectedStageData = Object.freeze({
-      packageIds,
-      protocolConfig: sharedReferenceFromOutput(init.protocolConfig, 'Initialized ProtocolConfig'),
-      protocolAdminCap: ownedReferenceFromOutput(
-        init.protocolAdminCap, 'Initialized ProtocolAdminCap',
-      ),
-      commitments,
-      sealPolicy: finalSealPolicy,
-      keyServerCertificates: readyArtifact.stageData.keyServerCertificates,
-    });
-  } else {
-    if (readyArtifact.kind !== 'VERIFY_AND_EXPORT') {
-      fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Ordinal 9 must be VERIFY_AND_EXPORT.');
-    }
-    const bootstrap = finalizedDetails(wal, 8).certificate;
-    expectedStageData = Object.freeze({
-      releaseId: wal.releaseId,
-      finalManifestSha256: mainnetV8JsonSha(wal.finalManifest),
+  if (step.kind === 'VERIFY_AND_EXPORT') {
+    const finalStage = MAINNET_V8_RELEASE_STEPS.find(entry => entry.kind === 'FINALIZE_BOOTSTRAP');
+    const bootstrap = finalizedDetails(wal, finalStage.ordinal).certificate;
+    expectedStageData = {
+      releaseId: wal.releaseId, finalManifestSha256: mainnetV8JsonSha(wal.finalManifest),
       bootstrapCertificateSha256: bootstrap.readbackSha256,
+      marketActivationCertificateSha256: finalizedDetails(wal,
+        MAINNET_V8_RELEASE_STEPS.find(row => row.kind === 'ACTIVATE_SOULIDITY_MARKET').ordinal).certificate.readbackSha256,
       exportFilename: 'animacraft-mainnet-v8-config.json',
-    });
+    };
+  } else if (step.kind === 'ACTIVATE_SOULIDITY_MARKET') {
+    expectedStageData = nativeSoulMarketActivationContextFromWal(wal).stageData;
+  } else {
+    const extras = step.kind === 'SETUP_RELEASE' ? {
+      keyServerCertificates: readyArtifact.stageData?.keyServerCertificates,
+      walrusSystem: readyArtifact.stageData?.walrusSystem,
+      walrusExecution: readyArtifact.stageData?.walrusExecution,
+    } : {};
+    expectedStageData = nativeSoulBootstrapContextFromWal({ wal, stage: step.kind, ...extras }).stageData;
   }
   if (canonicalJson(readyArtifact.stageData) !== canonicalJson(expectedStageData)
     || readyArtifact.stageDataSha256 !== mainnetV8JsonSha(expectedStageData)) {
@@ -3939,12 +2655,17 @@ export function assertMainnetV8ReadyWalContext({ wal, ordinal, readyArtifact }) 
   return readyArtifact;
 }
 
+export function assertMainnetV8ReadyWalContext(input) {
+  assertReleasePlan(input.wal?.plan);
+  return assertMainnetV8ReadyWalContextContents(input);
+}
+
 async function appendReadyEvent({ paths, wal, ordinal, readyArtifact, unsignedEnvelope }) {
   assertMainnetV8ReadyWalContext({ wal, ordinal, readyArtifact });
   const evidence = buildMainnetV8ReadyEvidence({
     ordinal: String(ordinal), attempt: '0', readyArtifact, unsignedEnvelope,
   });
-  if (ordinal < 9) {
+  if (MAINNET_V8_RELEASE_STEPS.find(step => step.ordinal === String(ordinal))?.kind !== 'VERIFY_AND_EXPORT') {
     await assertMainnetV8TransactionMatchesReady({
       ordinal: String(ordinal), plan: wal.plan, readyArtifact, unsignedEnvelope,
     });
@@ -3956,17 +2677,18 @@ async function appendReadyEvent({ paths, wal, ordinal, readyArtifact, unsignedEn
 
 function buildIdentityFromPlan(plan, suiBinary) {
   return Object.freeze({
-    git: Object.freeze({ commit: plan.sourceRevision.gitCommit, tree: plan.sourceRevision.gitTree }),
+    sourceRevision: plan.sourceRevision,
     toolchain: Object.freeze({ ...plan.toolchain, path: path.resolve(suiBinary) }),
   });
 }
 
 async function assertFreshCheckoutSources({ checkoutRoot, plan, identity }) {
-  const observed = await Promise.all(ROLE_ORDER.map(async (role, index) => {
+  assertMainnetV8SourcePlan(plan);
+  const observed = await Promise.all(NATIVE_SOUL_SOURCE_ORDER.map(async (role, index) => {
     const artifact = await buildSourceArtifactForRole({
       role,
       checkoutRoot,
-      git: identity.git,
+      sourceRevision: identity.sourceRevision,
       toolchain: identity.toolchain,
     });
     const expected = plan.packages[index];
@@ -3979,38 +2701,23 @@ async function assertFreshCheckoutSources({ checkoutRoot, plan, identity }) {
   return Object.freeze(observed);
 }
 
-async function withFreshSourceArchive({ repositoryRoot, plan }, operation) {
-  assertReleasePlan(plan);
+async function withFreshSourceArchive({ sourceStorePath, plan }, operation) {
+  assertMainnetV8SourcePlan(plan);
+  if (typeof sourceStorePath !== 'string' || !path.isAbsolute(sourceStorePath)) {
+    fail('NATIVE_SOUL_SOURCE_INVALID', 'Exact source CAS path is required; there is no Git fallback.');
+  }
   if (typeof operation !== 'function') {
     fail('MAINNET_V8_BUILD_OPERATION_INVALID', 'Fresh source archive requires one operation.');
   }
   const identity = Object.freeze({
-    git: Object.freeze({
-      commit: plan.sourceRevision.gitCommit,
-      tree: plan.sourceRevision.gitTree,
-    }),
+    sourceRevision: plan.sourceRevision,
     toolchain: plan.toolchain,
   });
-  const observedTree = (await runProcess(
-    'git',
-    ['rev-parse', `${identity.git.commit}^{tree}`],
-    { cwd: repositoryRoot },
-  )).stdout.trim();
-  if (observedTree !== identity.git.tree) {
-    fail('MAINNET_V8_GIT_TREE_DRIFT', 'Approved release commit no longer resolves to its immutable tree.', {
-      expected: identity.git.tree,
-      observed: observedTree,
-    });
-  }
   const temporaryRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'animacraft-mainnet-v8-build-'));
   await fsp.chmod(temporaryRoot, 0o700);
   try {
     const checkoutRoot = path.join(temporaryRoot, 'source');
-    await archiveCleanSource({
-      repositoryRoot,
-      commit: identity.git.commit,
-      destination: checkoutRoot,
-    });
+    await restoreNativeSoulSource({ sourceRevision: plan.sourceRevision, storePath: sourceStorePath, checkoutRoot });
     const sourceArtifacts = await assertFreshCheckoutSources({
       checkoutRoot,
       plan,
@@ -4027,11 +2734,11 @@ async function withFreshSourceArchive({ repositoryRoot, plan }, operation) {
   }
 }
 
-export async function inspectMainnetV8FreshSourceArchive({ repositoryRoot, plan }) {
+export async function inspectMainnetV8FreshSourceArchive({ sourceStorePath, plan }) {
   return withFreshSourceArchive(
-    { repositoryRoot: path.resolve(repositoryRoot), plan },
+    { sourceStorePath, plan },
     async ({ sourceArtifacts, identity }) => Object.freeze({
-      git: identity.git,
+      sourceRevision: identity.sourceRevision,
       sourceCommitments: Object.freeze(Object.fromEntries(
         sourceArtifacts.map((artifact) => [artifact.role, computeSourceCommitment(artifact)]),
       )),
@@ -4039,7 +2746,7 @@ export async function inspectMainnetV8FreshSourceArchive({ repositoryRoot, plan 
   );
 }
 
-async function withFreshReleaseCheckout({ repositoryRoot, wal, suiBinary }, operation) {
+async function withFreshReleaseCheckout({ sourceStorePath, wal, suiBinary }, operation) {
   if (typeof operation !== 'function') {
     fail('MAINNET_V8_BUILD_OPERATION_INVALID', 'Fresh release checkout requires one build operation.');
   }
@@ -4052,7 +2759,7 @@ async function withFreshReleaseCheckout({ repositoryRoot, wal, suiBinary }, oper
     || observedToolchain.frameworkRevision !== wal.plan.toolchain.frameworkRevision) {
     fail('MAINNET_V8_TOOLCHAIN_DRIFT', 'Clean-room build toolchain differs from the immutable release plan.');
   }
-  return withFreshSourceArchive({ repositoryRoot, plan: wal.plan }, async ({
+  return withFreshSourceArchive({ sourceStorePath, plan: wal.plan }, async ({
     temporaryRoot,
     checkoutRoot,
   }) => {
@@ -4061,11 +2768,12 @@ async function withFreshReleaseCheckout({ repositoryRoot, wal, suiBinary }, oper
       destination: path.join(temporaryRoot, 'sui'),
     });
     const snapshotIdentity = Object.freeze({
-      git: identity.git,
+      sourceRevision: identity.sourceRevision,
       toolchain: Object.freeze({ ...identity.toolchain, path: snapshotPath }),
     });
     const publishedTomlPath = path.join(temporaryRoot, MAINNET_V8_PUBLISHED_FILENAME);
-    const published = publishedPrefixSnapshot(wal, checkoutRoot);
+    const published = publishedPrefixSnapshot(wal, checkoutRoot, MAINNET_V8_PUBLISH_ORDER.length,
+      readNativeSoulExternalPublications({ sourceRevision: wal.plan.sourceRevision, checkoutRoot }));
     await writePublishedPrefix(publishedTomlPath, published);
     return await operation(Object.freeze({
       checkoutRoot,
@@ -4074,14 +2782,6 @@ async function withFreshReleaseCheckout({ repositoryRoot, wal, suiBinary }, oper
       identity: snapshotIdentity,
     }));
   });
-}
-
-function expectedProductDependencies(wal, ordinal) {
-  const role = ROLE_ORDER[ordinal];
-  return ROLE_PUBLISH_DEPENDENCIES[role]
-    .map((dependencyRole) => finalizedDetails(wal, ROLE_ORDER.indexOf(dependencyRole))
-      .certificate.readback.package.reference.objectId)
-    .sort();
 }
 
 /**
@@ -4098,14 +2798,14 @@ export async function assertMainnetV8ReadyBuild({
   repositoryRoot = REPOSITORY_ROOT,
 }) {
   const ordinal = Number(decimal(event.ordinal, 'READY build ordinal'));
-  if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= ROLE_ORDER.length) {
+  if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= MAINNET_V8_PUBLISH_ORDER.length) {
     return Object.freeze({ kind: 'NON_PUBLISH', ordinal: event.ordinal });
   }
   if (event.status !== 'READY' || event.attempt !== '0') {
     fail('MAINNET_V8_READY_BUILD_DRIFT', 'Only the canonical publish READY cursor can be rebuilt.');
   }
   const ready = event.evidence?.readyArtifact;
-  const role = ROLE_ORDER[ordinal];
+  const role = MAINNET_V8_PUBLISH_ORDER[ordinal];
   if (!plain(ready) || ready.kind !== 'PUBLISH' || ready.role !== role) {
     fail('MAINNET_V8_READY_BUILD_DRIFT', `${role} READY does not contain its exact publish artifact.`);
   }
@@ -4114,7 +2814,7 @@ export async function assertMainnetV8ReadyBuild({
     fail('MAINNET_V8_READY_BUILD_DRIFT', `${role} READY is not bound to the finalized Published.toml prefix.`);
   }
   const { build, published } = await withFreshReleaseCheckout(
-    { repositoryRoot, wal, suiBinary },
+    { sourceStorePath: paths.sourceStore ?? path.join(paths.root, 'source-cas'), wal, suiBinary },
     async ({ checkoutRoot, publishedTomlPath, published: freshPublished, identity }) => ({
       published: freshPublished,
       build: await buildMainnetV8Package({
@@ -4122,7 +2822,7 @@ export async function assertMainnetV8ReadyBuild({
         checkoutRoot,
         publishedTomlPath,
         suiBinary: identity.toolchain.path,
-        git: identity.git,
+        sourceRevision: identity.sourceRevision,
         toolchain: identity.toolchain,
         sourceArtifact: wal.plan.packages[ordinal].sourceArtifact,
       }),
@@ -4132,21 +2832,13 @@ export async function assertMainnetV8ReadyBuild({
     || published.sha256 !== ready.publishedTomlSha256) {
     fail('MAINNET_V8_READY_BUILD_DRIFT', `${role} clean-room Published.toml prefix differs from durable READY.`);
   }
-  const expectedDependencies = expectedProductDependencies(wal, ordinal);
-  const priorPackageIds = ROLE_ORDER.slice(0, ordinal).map((_, priorOrdinal) =>
-    finalizedDetails(wal, priorOrdinal).certificate.readback.package.reference.objectId);
-  const observedProductDependencies = priorPackageIds
-    .filter((packageId) => build.dependencies.includes(packageId))
-    .sort();
-  if (canonicalJson(observedProductDependencies) !== canonicalJson(expectedDependencies)
-    || canonicalJson(build.packageArtifact) !== canonicalJson(ready.packageArtifact)
+  // Exact dependencies come from this approved compiler rebuild of the bound
+  // SOURCE, not a stale hand-maintained seven-role dependency expectation.
+  if (canonicalJson(build.packageArtifact) !== canonicalJson(ready.packageArtifact)
     || computePackageCommitment(build.packageArtifact) !== ready.packageCommitment
     || canonicalJson(build.publishModules) !== canonicalJson(ready.modules)
     || canonicalJson(build.dependencies) !== canonicalJson(ready.dependencies)) {
-    fail('MAINNET_V8_READY_BUILD_DRIFT', `${role} cold rebuild differs from the durable READY build seal.`, {
-      expectedDependencies,
-      observedProductDependencies,
-    });
+    fail('MAINNET_V8_READY_BUILD_DRIFT', `${role} cold rebuild differs from the durable READY build seal.`);
   }
   return Object.freeze({
     kind: 'PUBLISH_BUILD_VERIFIED',
@@ -4159,6 +2851,7 @@ export async function assertMainnetV8ReadyBuild({
 
 export async function verifyMainnetV8FinalPackages({
   repositoryRoot = REPOSITORY_ROOT,
+  sourceStorePath,
   wal,
   suiBinary,
   client,
@@ -4168,17 +2861,21 @@ export async function verifyMainnetV8FinalPackages({
   if (!wal.finalManifest || wal.releaseId !== wal.finalManifest.releaseId) {
     fail('MAINNET_V8_FINAL_MANIFEST_REQUIRED', 'Final package verification requires the sealed manifest.');
   }
+  if (canonicalJson(wal.finalManifest.packages) !== canonicalJson(mainnetV8FinalPackageRowsFromWal(wal))) {
+    fail('MAINNET_V8_FINAL_PACKAGE_DRIFT', 'Final package inventory differs from the eight finalized publication certificates.');
+  }
   return withFreshReleaseCheckout(
-    { repositoryRoot, wal, suiBinary },
+    { sourceStorePath, wal, suiBinary },
     async ({ checkoutRoot, publishedTomlPath, identity }) => {
       const packages = [];
-      for (let ordinal = 0; ordinal < ROLE_ORDER.length; ordinal += 1) {
-        const role = ROLE_ORDER[ordinal];
+      for (let ordinal = 0; ordinal < MAINNET_V8_PUBLISH_ORDER.length; ordinal += 1) {
+        const role = MAINNET_V8_PUBLISH_ORDER[ordinal];
         const ready = cursorEvidence(wal, ordinal, '0', 'READY').readyArtifact;
         const details = finalizedDetails(wal, ordinal);
         const durablePackage = details.certificate.readback.package;
         const manifest = wal.finalManifest.packages[ordinal];
-        const published = publishedPrefixSnapshot(wal, checkoutRoot, ordinal);
+        const published = publishedPrefixSnapshot(wal, checkoutRoot, ordinal,
+          readNativeSoulExternalPublications({ sourceRevision: wal.plan.sourceRevision, checkoutRoot }));
         await writePublishedPrefix(publishedTomlPath, published);
         if (ready.role !== role || ready.publishedTomlSha256 !== published.sha256) {
           fail('MAINNET_V8_FINAL_PACKAGE_DRIFT', `${role} READY is not bound to its historical Published.toml prefix.`);
@@ -4188,7 +2885,7 @@ export async function verifyMainnetV8FinalPackages({
           checkoutRoot,
           publishedTomlPath,
           suiBinary: identity.toolchain.path,
-          git: identity.git,
+          sourceRevision: identity.sourceRevision,
           toolchain: identity.toolchain,
           sourceArtifact: wal.plan.packages[ordinal].sourceArtifact,
         });
@@ -4258,10 +2955,10 @@ async function preparePublishReady({
   client,
   repositoryRoot = REPOSITORY_ROOT,
 }) {
-  const role = ROLE_ORDER[ordinal];
+  const role = MAINNET_V8_PUBLISH_ORDER[ordinal];
   const persistentPublished = await materializePublishedPrefix(paths, wal);
   const { build, published } = await withFreshReleaseCheckout(
-    { repositoryRoot, wal, suiBinary },
+    { sourceStorePath: paths.sourceStore ?? path.join(paths.root, 'source-cas'), wal, suiBinary },
     async ({ checkoutRoot, publishedTomlPath, published: freshPublished, identity }) => ({
       published: freshPublished,
       build: await buildMainnetV8Package({
@@ -4269,7 +2966,7 @@ async function preparePublishReady({
         checkoutRoot,
         publishedTomlPath,
         suiBinary: identity.toolchain.path,
-        git: identity.git,
+        sourceRevision: identity.sourceRevision,
         toolchain: identity.toolchain,
         sourceArtifact: wal.plan.packages[ordinal].sourceArtifact,
       }),
@@ -4277,13 +2974,6 @@ async function preparePublishReady({
   );
   if (published.sha256 !== persistentPublished.sha256) {
     fail('MAINNET_V8_BUILD_DEPENDENCY_DRIFT', `${role} clean-room Published.toml differs from durable prefix.`);
-  }
-  const expectedRoleDependencies = expectedProductDependencies(wal, ordinal);
-  if (expectedRoleDependencies.some((dependencyId) => !build.dependencies.includes(dependencyId))) {
-    fail('MAINNET_V8_BUILD_DEPENDENCY_DRIFT', `${role} build omits a finalized role dependency.`, {
-      expectedRoleDependencies,
-      observedDependencies: build.dependencies,
-    });
   }
   const profile = await assertMainnetV8ProtocolProfile(client);
   const prepared = await prepareUnsignedMainnetV8Transaction({
@@ -4334,34 +3024,62 @@ function ownedReferenceFromOutput(output, label) {
   });
 }
 
-async function prepareInitReady({ paths, wal, client }) {
+export async function readMainnetV8WalrusSystemReference({ transport }) {
+  const evidence = await readMakerV8WalrusExecutionV1({ transport,
+    minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY });
+  return assertMakerV8WalrusExecutionV1(evidence,
+    { minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY }).system;
+}
+
+export async function preflightMainnetV8WalrusExecution({ client, transport, profile, sender }) {
+  const evidence = await readMakerV8WalrusExecutionV1({ transport,
+    minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY });
+  const target = assertMakerV8WalrusExecutionV1(evidence,
+    { minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY });
+  await prepareUnsignedMainnetV8Transaction({ client, profile, sender,
+    buildTransaction: context => {
+      const tx = new Transaction();
+      tx.moveCall({ target: target.packageId + '::system::epoch',
+        arguments: [tx.sharedObjectRef({ ...target.system, mutable: false })] });
+      return configureMainnetV8Transaction(tx, context);
+    } });
+  return target;
+}
+
+export async function prepareMainnetV8StageReady({ paths, wal, stage, client, transport }) {
+  assertReleasePlan(wal.plan);
+  const step = MAINNET_V8_RELEASE_STEPS.find(entry => entry.kind === stage);
+  if (!step || !(NATIVE_SOUL_BOOTSTRAP_STAGES.includes(stage) || stage === 'ACTIVATE_SOULIDITY_MARKET')) {
+    fail('MAINNET_V8_READY_CONTEXT_DRIFT', 'Cannot prepare an unknown release stage.');
+  }
   const published = await materializePublishedPrefix(paths, wal);
-  const packageIds = packageIdsFromFinalManifest(wal);
-  const core = finalizedDetails(wal, 0).certificate.readback;
-  const protocolConfig = sharedReferenceFromOutput(core.protocolConfig, 'Core ProtocolConfig');
-  const protocolAdminCap = ownedReferenceFromOutput(core.protocolAdminCap, 'Core ProtocolAdminCap');
-  const stageData = Object.freeze({ packageIds, protocolConfig, protocolAdminCap });
+  const extras = {};
+  if (stage === 'SETUP_RELEASE') {
+    const [keyServerCertificates, walrusExecution] = await Promise.all([
+      certifyMainnetV8SealKeyServers({ transport, sealPolicy: wal.finalManifest.sealPolicy }),
+      readMakerV8WalrusExecutionV1({ transport, minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY }),
+    ]);
+    const walrusSystem = assertMakerV8WalrusExecutionV1(walrusExecution,
+      { minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY }).system;
+    Object.assign(extras, { keyServerCertificates, walrusSystem, walrusExecution });
+  }
+  const { stageData } = stage === 'ACTIVATE_SOULIDITY_MARKET'
+    ? nativeSoulMarketActivationContextFromWal(wal) : nativeSoulBootstrapContextFromWal({ wal, stage, ...extras });
   const profile = await assertMainnetV8ProtocolProfile(client);
   const prepared = await prepareUnsignedMainnetV8Transaction({
-    client,
-    profile,
-    sender: wal.plan.sender,
-    buildTransaction: (transactionContext) => buildMainnetV8InitTransaction({
-      packageIds, protocolConfig, protocolAdminCap, transactionContext,
+    client, profile, sender: wal.plan.sender,
+    buildTransaction: transactionContext => buildMainnetV8ReadyTransaction({
+      ordinal: step.ordinal, readyArtifact: { kind: stage, stageData }, transactionContext,
     }),
   });
   const readyArtifact = Object.freeze({
-    kind: 'INITIALIZE_PROTOCOL',
-    stageData,
-    stageDataSha256: mainnetV8JsonSha(stageData),
-    publishedTomlSha256: published.sha256,
-    simulation: prepared.simulation,
-    gasFunding: prepared.gasFunding,
-    protocolProfile: profile,
-    predecessorReadback: predecessorForReady(wal, 7),
+    kind: stage, stageData, stageDataSha256: mainnetV8JsonSha(stageData),
+    publishedTomlSha256: published.sha256, simulation: prepared.simulation,
+    gasFunding: prepared.gasFunding, protocolProfile: profile,
+    predecessorReadback: predecessorForReady(wal, Number(step.ordinal)),
   });
   return appendReadyEvent({
-    paths, wal, ordinal: 7, readyArtifact, unsignedEnvelope: prepared.unsignedEnvelope,
+    paths, wal, ordinal: Number(step.ordinal), readyArtifact, unsignedEnvelope: prepared.unsignedEnvelope,
   });
 }
 
@@ -4422,123 +3140,82 @@ async function certifyMainnetV8SealKeyServers({ transport, sealPolicy }) {
   return Object.freeze(certificates);
 }
 
-async function rereadExactMoveOutput(transport, output, label) {
-  const observed = await readExactMainnetV8MoveOutput({
-    transport,
-    reference: Object.freeze({ ...output.reference, owner: output.owner }),
-    transactionDigest: output.previousTransaction,
+
+
+export async function rereadNativeBootstrapHistoryObject({ transport, evidence }) {
+  decodeNativeSoulBootstrapHistoryObject(evidence);
+  const expected = structuredClone(evidence);
+  const current = (await transport.getObject({ id: expected.reference.objectId,
+    options: { showType: true, showOwner: true } }))?.data;
+  if (!current || current.objectId !== expected.reference.objectId
+    || current.version !== expected.reference.version || current.digest !== expected.reference.digest) {
+    fail('MAINNET_V8_STAGE_AUTHORITY_DRIFT', 'A native bootstrap predecessor changed after READY.');
+  }
+  const historical = await transport.getHistoricalObject({
+    objectId: expected.reference.objectId, version: BigInt(expected.reference.version),
   });
-  if (canonicalJson(observed) !== canonicalJson(output)) {
-    fail('MAINNET_V8_STAGE_AUTHORITY_DRIFT', `${label} changed after READY was durably frozen.`);
+  const observed = nativeBootstrapHistoryEnvelope({
+    reference: { objectId: historical.objectId, version: historical.version, digest: historical.digest },
+    type: historical.type, owner: historical.owner, previousTransaction: historical.previousTransaction,
+    objectBcsBase64: toBase64(historical.objectBcs),
+  });
+  decodeNativeSoulBootstrapHistoryObject(observed);
+  if (canonicalJson(observed) !== canonicalJson(expected)) {
+    fail('MAINNET_V8_STAGE_AUTHORITY_DRIFT', 'Historical authority differs from the certified READY predecessor.');
   }
   return observed;
 }
 
 export async function assertMainnetV8StageReadyAuthority({ wal, event, transport }) {
-  const ordinal = Number(decimal(event.ordinal, 'stage authority ordinal'));
-  if (ordinal < ROLE_ORDER.length || ordinal > 8) {
-    return Object.freeze({ kind: 'NO_STAGE_AUTHORITY', ordinal: event.ordinal });
+  assertReleasePlan(wal.plan);
+  const step = MAINNET_V8_RELEASE_STEPS.find(entry => entry.ordinal === event.ordinal);
+  if (!step) fail('MAINNET_V8_STAGE_AUTHORITY_DRIFT', 'Unknown READY authority ordinal.');
+  if (step.kind === 'PUBLISH' || step.kind === 'VERIFY_AND_EXPORT') {
+    return Object.freeze({ kind: 'NON_BOOTSTRAP', ordinal: event.ordinal });
   }
-  if (event.status !== 'READY' || event.attempt !== '0') {
-    fail('MAINNET_V8_STAGE_AUTHORITY_DRIFT', 'Stage authority can only be checked at canonical READY.');
-  }
-  const core = finalizedDetails(wal, 0).certificate.readback;
-  if (ordinal === 7) {
-    await Promise.all([
-      rereadExactMoveOutput(transport, core.protocolConfig, 'Core ProtocolConfig'),
-      rereadExactMoveOutput(transport, core.protocolAdminCap, 'Core ProtocolAdminCap'),
+  const readyArtifact = event.evidence.readyArtifact;
+  assertMainnetV8ReadyWalContext({ wal, ordinal: event.ordinal, readyArtifact });
+  const extras = step.kind === 'SETUP_RELEASE' ? {
+    keyServerCertificates: readyArtifact.stageData.keyServerCertificates,
+    walrusSystem: readyArtifact.stageData.walrusSystem,
+    walrusExecution: readyArtifact.stageData.walrusExecution,
+  } : {};
+  const { priorObjects } = step.kind === 'ACTIVATE_SOULIDITY_MARKET'
+    ? nativeSoulMarketActivationContextFromWal(wal) : nativeSoulBootstrapContextFromWal({ wal, stage: step.kind, ...extras });
+  const observed = await Promise.all(Object.entries(priorObjects).map(async ([kind, evidence]) => [
+    kind, await rereadNativeBootstrapHistoryObject({ transport, evidence }),
+  ]));
+  if (step.kind === 'SETUP_RELEASE') {
+    const [keyServerCertificates, walrusExecution] = await Promise.all([
+      certifyMainnetV8SealKeyServers({ transport, sealPolicy: wal.finalManifest.sealPolicy }),
+      readMakerV8WalrusExecutionV1({ transport, minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY }),
     ]);
-    return Object.freeze({
-      kind: 'INITIALIZE_AUTHORITY_VERIFIED',
-      protocolConfigSha256: mainnetV8JsonSha(core.protocolConfig),
-      protocolAdminCapSha256: mainnetV8JsonSha(core.protocolAdminCap),
-    });
+    const target = assertMakerV8WalrusExecutionV1(walrusExecution,
+      { minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY });
+    const expectedTarget = assertMakerV8WalrusExecutionV1(extras.walrusExecution,
+      { minimumDependency: NATIVE_SOUL_WALRUS_MINIMUM_DEPENDENCY });
+    if (canonicalJson(keyServerCertificates) !== canonicalJson(extras.keyServerCertificates)
+      || canonicalJson(target.system) !== canonicalJson(extras.walrusSystem)
+      || canonicalJson(target) !== canonicalJson(expectedTarget)) {
+      fail('MAINNET_V8_STAGE_AUTHORITY_DRIFT', 'SETUP external authority differs from READY.');
+    }
   }
-  const initialized = finalizedDetails(wal, 7).certificate.readback;
-  const finalSealPolicy = assertMainnetV8FinalSealPolicy(
-    wal.finalManifest?.sealPolicy,
-    wal.plan.sealPolicy,
-  );
-  const [protocolConfig, protocolAdminCap, keyServerCertificates] = await Promise.all([
-    rereadExactMoveOutput(transport, initialized.protocolConfig, 'Initialized ProtocolConfig'),
-    rereadExactMoveOutput(transport, initialized.protocolAdminCap, 'Initialized ProtocolAdminCap'),
-    certifyMainnetV8SealKeyServers({ transport, sealPolicy: finalSealPolicy }),
-  ]);
-  const expectedCertificates = event.evidence.readyArtifact.stageData.keyServerCertificates;
-  if (canonicalJson(keyServerCertificates) !== canonicalJson(expectedCertificates)) {
-    fail('MAINNET_V8_STAGE_AUTHORITY_DRIFT', 'Seal key-server snapshot changed after bootstrap READY.');
-  }
-  return Object.freeze({
-    kind: 'BOOTSTRAP_AUTHORITY_VERIFIED',
-    protocolConfigSha256: mainnetV8JsonSha(protocolConfig),
-    protocolAdminCapSha256: mainnetV8JsonSha(protocolAdminCap),
-    keyServerCertificatesSha256: mainnetV8JsonSha(keyServerCertificates),
-  });
+  return Object.freeze({ kind: 'RELEASE_STAGE_AUTHORITY_VERIFIED', stage: step.kind,
+    priorObjectsSha256: mainnetV8JsonSha(Object.fromEntries(observed)) });
 }
 
-async function prepareBootstrapReady({ paths, wal, client, transport }) {
-  const published = await materializePublishedPrefix(paths, wal);
-  const packageIds = packageIdsFromFinalManifest(wal);
-  const init = finalizedDetails(wal, 7).certificate.readback;
-  const protocolConfig = sharedReferenceFromOutput(init.protocolConfig, 'Initialized ProtocolConfig');
-  const protocolAdminCap = ownedReferenceFromOutput(
-    init.protocolAdminCap, 'Initialized ProtocolAdminCap',
-  );
-  const commitments = Object.freeze(Object.fromEntries(wal.finalManifest.packages.map((entry) => [
-    entry.role,
-    Object.freeze({
-      source: entry.sourceCommitment,
-      package: entry.packageCommitment,
-      abi: entry.abiCommitment,
-    }),
-  ])));
-  const finalSealPolicy = assertMainnetV8FinalSealPolicy(
-    wal.finalManifest.sealPolicy,
-    wal.plan.sealPolicy,
-  );
-  const keyServerCertificates = await certifyMainnetV8SealKeyServers({
-    transport, sealPolicy: finalSealPolicy,
-  });
-  const stageData = Object.freeze({
-    packageIds,
-    protocolConfig,
-    protocolAdminCap,
-    commitments,
-    sealPolicy: finalSealPolicy,
-    keyServerCertificates,
-  });
-  const profile = await assertMainnetV8ProtocolProfile(client);
-  const prepared = await prepareUnsignedMainnetV8Transaction({
-    client,
-    profile,
-    sender: wal.plan.sender,
-    buildTransaction: (transactionContext) => buildMainnetV8BootstrapTransaction({
-      packageIds, protocolConfig, protocolAdminCap, commitments,
-      sealPolicy: finalSealPolicy, transactionContext,
-    }),
-  });
-  const readyArtifact = Object.freeze({
-    kind: 'BOOTSTRAP_RELEASE',
-    stageData,
-    stageDataSha256: mainnetV8JsonSha(stageData),
-    publishedTomlSha256: published.sha256,
-    simulation: prepared.simulation,
-    gasFunding: prepared.gasFunding,
-    protocolProfile: profile,
-    predecessorReadback: predecessorForReady(wal, 8),
-  });
-  return appendReadyEvent({
-    paths, wal, ordinal: 8, readyArtifact, unsignedEnvelope: prepared.unsignedEnvelope,
-  });
-}
+
 
 async function prepareVerifyReady({ paths, wal, client }) {
   const published = await materializePublishedPrefix(paths, wal);
-  const bootstrapDetails = finalizedDetails(wal, 8);
+  const ordinal = MAINNET_V8_RELEASE_STEPS.find(step => step.kind === 'VERIFY_AND_EXPORT').ordinal;
+  const bootstrapDetails = finalizedDetails(wal, MAINNET_V8_RELEASE_STEPS.find(step => step.kind === 'FINALIZE_BOOTSTRAP').ordinal);
   const stageData = Object.freeze({
     releaseId: wal.releaseId,
     finalManifestSha256: mainnetV8JsonSha(wal.finalManifest),
     bootstrapCertificateSha256: bootstrapDetails.certificate.readbackSha256,
+    marketActivationCertificateSha256: finalizedDetails(wal,
+      MAINNET_V8_RELEASE_STEPS.find(row => row.kind === 'ACTIVATE_SOULIDITY_MARKET').ordinal).certificate.readbackSha256,
     exportFilename: path.basename(paths.exportedConfig),
   });
   const profile = await assertMainnetV8ProtocolProfile(client);
@@ -4550,11 +3227,208 @@ async function prepareVerifyReady({ paths, wal, client }) {
     simulation: null,
     gasFunding: null,
     protocolProfile: profile,
-    predecessorReadback: predecessorForReady(wal, 9),
+    predecessorReadback: predecessorForReady(wal, Number(ordinal)),
   });
   return appendReadyEvent({
-    paths, wal, ordinal: 9, readyArtifact, unsignedEnvelope: null,
+    paths, wal, ordinal: Number(ordinal), readyArtifact, unsignedEnvelope: null,
   });
+}
+
+export function mainnetV8RuntimeConfigFromWal(wal) {
+  // Called only after cold WAL certification by the executor. This projection
+  // does not establish finality or enable an incomplete release on its own.
+  wal = structuredClone(wal);
+  const stage = 'FINALIZE_BOOTSTRAP';
+  const ordinal = MAINNET_V8_RELEASE_STEPS.find(row => row.kind === stage).ordinal;
+  const finalReadback = finalizedDetails(wal, Number(ordinal)).certificate.readback;
+  const final = deriveNativeSoulFinalBootstrapObjects({ manifest: wal.finalManifest, plan: wal.plan,
+    priorReadbacks: nativeSoulBootstrapPriorReadbacksFromWal({ wal, stage }), finalReadback });
+  const { packageIds, decoded } = final;
+  const nativeStep = MAINNET_V8_RELEASE_STEPS.find(row => row.kind === 'PUBLISH' && row.role === 'soulidity');
+  const native = finalizedDetails(wal, Number(nativeStep.ordinal)).certificate.readback;
+  const sealed = wal.finalManifest.packages.find(row => row.role === 'soulidity');
+  if (native.package.reference.objectId !== packageIds.soulidity
+    || native.package.reference.digest !== sealed.packageDigest
+    || native.soulidityInitialization?.packageId !== packageIds.soulidity) {
+    fail('MAINNET_V8_FINAL_ATTESTATION_DRIFT', 'Native publication identity differs from the sealed manifest.');
+  }
+  const external = name => {
+    const pin = NATIVE_SOUL_EXTERNAL_PUBLICATIONS.find(row => row.packageName === name);
+    const matches = native.package.linkage.filter(row => row.originalId === pin.originalId);
+    if (matches.length !== 1 || matches[0].upgradedId !== pin.publishedAt
+      || matches[0].upgradedVersion !== pin.version) {
+      fail('MAINNET_V8_FINAL_ATTESTATION_DRIFT', `${name} native dependency differs from the verified release pin.`);
+    }
+    return matches[0].upgradedId;
+  };
+  const binding = decoded.nativeSoulBinding.fields.value;
+  const expectedNativeBinding = Object.fromEntries([
+    ['soulOriginalType', 'soul_original'], ['soulDefiningType', 'soul_defining'],
+    ['mintWitnessOriginalType', 'mint_original'], ['mintWitnessDefiningType', 'mint_defining'],
+    ['ownerWitnessOriginalType', 'owner_original'], ['ownerWitnessDefiningType', 'owner_defining'],
+  ].map(([key, field]) => [key, `0x${binding[field].name}`]));
+  const ids = native.soulidityInitialization.ids;
+  const runtimeConfig = {
+    schemaVersion: 'animacraft.maker-v8-runtime.v8', protocolVersion: 8,
+    enabled: decoded.protocol.fields.enabled,
+    catalogId: decoded.catalog.reference.objectId,
+    protocolConfigId: decoded.protocol.reference.objectId,
+    protocolTreasuryId: decoded.protocolTreasury.reference.objectId,
+    paymentCoinType: decoded.protocol.fields.payment_coin_type,
+    clockObjectId: normalizeSuiAddress('0x6'),
+    roles: Object.fromEntries(ROLE_ORDER.map(role => [role, {
+      typeOriginPackageId: packageIds[role], callablePackageId: packageIds[role],
+    }])),
+    roleConfigIds: Object.fromEntries(ROLE_ORDER.filter(role => role !== 'core').map(role => [
+      role, decoded[`${role}Config`].reference.objectId,
+    ])), makerBindings: [],
+    nativeSoulIntegration: {
+      soulidityOriginalPackageId: packageIds.soulidity, soulidityCallablePackageId: packageIds.soulidity,
+      soulidityCallableDigest: sealed.packageDigest, kioskPackageId: external('Kiosk'), walrusPackageId: external('Walrus'),
+      marketConfigV2Id: ids.marketConfigV2Id, kindRegistryId: ids.kindRegistryId,
+      kioskRegistryId: ids.kioskRegistryId, soulTransferPolicyId: ids.soulTransferPolicyId, expectedNativeBinding,
+    },
+  };
+  const validatedRuntime = assertMakerV8Runtime(runtimeConfig, { requireEnabled: true,
+    resolveTypeOriginPackageId: role => packageIds[role] });
+  const packageTarget = role => {
+    const row = wal.finalManifest.packages.find(entry => entry.role === role);
+    return Object.freeze({ originalPackageId: row.packageId, callablePackageId: row.packageId,
+      callableDigest: row.packageDigest });
+  };
+  const output = packageTarget('output');
+  const receiveTarget = Object.freeze({
+    protocolConfigId: validatedRuntime.protocolConfigId, coreOriginalPackageId: packageIds.core,
+    outputOriginalPackageId: output.originalPackageId, outputCallablePackageId: output.callablePackageId,
+    outputCallableDigest: output.callableDigest,
+    soulidityOriginalPackageId: packageIds.soulidity, soulidityCallablePackageId: packageIds.soulidity,
+    soulidityCallableDigest: sealed.packageDigest,
+    expectedNativeBinding: validatedRuntime.nativeSoulIntegration.expectedNativeBinding,
+    runtime: packageTarget('runtime'), release: packageTarget('release'),
+    equipmentMarket: Object.freeze({ ...packageTarget('market'),
+      replacementId: decoded.replacement.reference.objectId }),
+    // Initialization proves identities, not product acceptance or market enablement.
+    equipmentWritesEnabled: false, marketWritesEnabled: false,
+  });
+  const collectionPolicyId = ids.collectionTransferPolicyId;
+  if (typeof collectionPolicyId !== 'string' || !/^0x[0-9a-f]{64}$/.test(collectionPolicyId)
+    || /^0x0+$/.test(collectionPolicyId)
+    || [ids.marketConfigV2Id, ids.kindRegistryId, ids.kioskRegistryId, ids.soulTransferPolicyId].includes(collectionPolicyId)) {
+    fail('MAINNET_V8_FINAL_ATTESTATION_DRIFT', 'Native collection policy must be a distinct certified object.');
+  }
+  // IDs are derived by the enclosing cold publication BCS verifier.
+  // Refuse an incomplete projection rather than exporting undefined values.
+  const registryIds = new Set([packageIds.soulidity, ids.marketConfigV2Id,
+    ids.kindRegistryId, ids.kioskRegistryId, ids.soulTransferPolicyId, collectionPolicyId]);
+  for (const key of ['profileRegistryId', 'socialRegistryId', 'communityRegistryId', 'communityVoteRegistryId']) {
+    const value = ids[key];
+    if (typeof value !== 'string' || !/^0x[0-9a-f]{64}$/.test(value)
+      || /^0x0+$/.test(value) || registryIds.has(value)) {
+      fail('MAINNET_V8_FINAL_ATTESTATION_DRIFT', `${key} must be a distinct certified initialization object.`);
+    }
+    registryIds.add(value);
+  }
+  const soulidityEnvironment = Object.freeze({
+    NEXT_PUBLIC_SUI_NETWORK: 'mainnet',
+    NEXT_PUBLIC_SOULIDITY_ORIGINAL_PACKAGE_ID: packageIds.soulidity,
+    NEXT_PUBLIC_SOULIDITY_CALLABLE_PACKAGE_ID: packageIds.soulidity,
+    NEXT_PUBLIC_SOULIDITY_MARKET_CONFIG_V2_PACKAGE_ID: packageIds.soulidity,
+    NEXT_PUBLIC_SOULIDITY_MARKET_CONFIG_V2_ID: ids.marketConfigV2Id,
+    NEXT_PUBLIC_SOULIDITY_KIND_REGISTRY_ID: ids.kindRegistryId,
+    NEXT_PUBLIC_SOULIDITY_PROFILE_REGISTRY_ID: ids.profileRegistryId,
+    NEXT_PUBLIC_SOULIDITY_SOCIAL_REGISTRY_ID: ids.socialRegistryId,
+    NEXT_PUBLIC_SOULIDITY_COMMUNITY_REGISTRY_ID: ids.communityRegistryId,
+    NEXT_PUBLIC_SOULIDITY_COMMUNITY_VOTE_REGISTRY_ID: ids.communityVoteRegistryId,
+    NEXT_PUBLIC_SOULIDITY_KIOSK_REGISTRY_ID: ids.kioskRegistryId,
+    NEXT_PUBLIC_SOULIDITY_SOUL_TRANSFER_POLICY_ID: ids.soulTransferPolicyId,
+    NEXT_PUBLIC_SOULIDITY_COLLECTION_TRANSFER_POLICY_ID: collectionPolicyId,
+    NEXT_PUBLIC_KIOSK_PACKAGE_ID: validatedRuntime.nativeSoulIntegration.kioskPackageId,
+    // Blob identity uses the original type package, not its upgraded callable ID.
+    // The matching Walrus linkage was checked above by external('Walrus').
+    NEXT_PUBLIC_WALRUS_BLOB_TYPE: `${NATIVE_SOUL_EXTERNAL_PUBLICATIONS.find(row => row.packageName === 'Walrus').originalId}::blob::Blob`,
+    NEXT_PUBLIC_SOULIDITY_PAYMENT_COIN_TYPE: validatedRuntime.paymentCoinType,
+    NEXT_PUBLIC_ANIMACRAFT_V8_RECEIVE_TARGET_JSON: canonicalJson(receiveTarget),
+  });
+  return Object.freeze({ runtimeConfig: validatedRuntime, soulidityEnvironment,
+    finalReadback: final.finalReadback, objects: final.objects });
+}
+
+export function mainnetV8MarketActivationFromWal(wal) {
+  const ordinal = MAINNET_V8_RELEASE_STEPS.find(row => row.kind === 'ACTIVATE_SOULIDITY_MARKET').ordinal;
+  const certificate = finalizedDetails(wal, ordinal).certificate;
+  const { stageData, priorObjects } = nativeSoulMarketActivationContextFromWal(wal);
+  const finality = certificate.finalityEvidence;
+  const transactionBytes = fromBase64(finality.transactionBase64);
+  if (TransactionDataBuilder.getDigestFromBytes(transactionBytes) !== finality.digest
+    || certificate.readbackSha256 !== mainnetV8JsonSha(certificate.readback)
+    || canonicalJson(certificate.readback.input) !== canonicalJson(stageData)
+    || canonicalJson(certificate.readback.priorObjects) !== canonicalJson(priorObjects)) {
+    fail('MAINNET_V8_FINAL_ATTESTATION_DRIFT', 'Market activation differs from its certified transaction or predecessor.');
+  }
+  const observed = validateNativeSoulMarketActivationHistory({ input: stageData, sender: wal.plan.sender,
+    transactionBytes, effectsBytes: fromBase64(finality.effectsBcsBase64), priorObjects,
+    objects: certificate.readback.objects });
+  if (canonicalJson(observed) !== canonicalJson(certificate.readback)) {
+    fail('MAINNET_V8_FINAL_ATTESTATION_DRIFT', 'Market activation readback does not prove the exact enabled configuration.');
+  }
+  return Object.freeze({ transactionDigest: finality.digest, readbackSha256: certificate.readbackSha256,
+    readback: observed });
+}
+
+export function buildMainnetV8PairedConfig({ wal, packageVerification }) {
+  const bootstrap = mainnetV8RuntimeConfigFromWal(wal);
+  const activation = mainnetV8MarketActivationFromWal(wal);
+  return Object.freeze({
+    schemaVersion: MAINNET_V8_RELEASE_RUNNER_SCHEMA,
+    kind: 'ANIMACRAFT_MAINNET_V8_CONFIG', executionPlanId: wal.executionPlanId, releaseId: wal.releaseId,
+    runtimeConfig: bootstrap.runtimeConfig, soulidityEnvironment: bootstrap.soulidityEnvironment,
+    marketActivation: Object.freeze({ transactionDigest: activation.transactionDigest,
+      readbackSha256: activation.readbackSha256, primaryEnabled: true, secondaryEnabled: true }),
+    packageIds: packageIdsFromFinalManifest(wal), finalManifest: structuredClone(wal.finalManifest),
+    packageVerification: structuredClone(packageVerification), protectedDecryptionReady: false,
+    protectedDecryptionBlocker: Object.freeze({ code: 'ENOKI_SEAL_API_KEY_REQUIRED',
+      aggregator: MAINNET_V8_DEFAULT_AGGREGATOR, secretStoredInArtifact: false }),
+  });
+}
+
+// Content verification over an already authenticated cold WAL. The public
+// reader below must call readReleaseWal before this projection is reachable.
+export function assertMainnetV8ExportConfigContents({ wal, bytes }) {
+  const head = headEvent(wal);
+  if (head?.status !== 'FINALIZED_SUCCESS' || nextMainnetV8FinalizedAction(head).kind !== 'COMPLETE') {
+    fail('MAINNET_V8_EXPORT_INCOMPLETE', 'Only a completed final verification can export deployment configuration.');
+  }
+  const certificate = finalizedDetails(wal, head.ordinal).certificate;
+  const buffer = Buffer.from(bytes);
+  if (certificate.exports.filename !== 'animacraft-mainnet-v8-config.json'
+    || sha256Hex(buffer) !== certificate.exports.sha256) {
+    fail('MAINNET_V8_CONFIG_EXPORT_DRIFT', 'Export bytes differ from the completed release certificate.');
+  }
+  let config;
+  try { config = JSON.parse(buffer.toString('utf8')); }
+  catch { fail('MAINNET_V8_CONFIG_EXPORT_DRIFT', 'Export is not valid JSON.'); }
+  const expected = buildMainnetV8PairedConfig({ wal, packageVerification: certificate.verification.packageVerification });
+  if (canonicalJson(config) !== canonicalJson(expected)) {
+    fail('MAINNET_V8_CONFIG_EXPORT_DRIFT', 'Export differs from the certified two-product configuration.');
+  }
+  return expected;
+}
+
+export async function readMainnetV8DeploymentConfig({ stateDir, format = 'json' }) {
+  if (!['json', 'soulidity-env'].includes(format)) {
+    fail('MAINNET_V8_ARGUMENT_INVALID', 'Export format must be json or soulidity-env.');
+  }
+  const paths = mainnetV8ReleasePaths(stateDir);
+  const wal = await readReleaseWal({ path: paths.wal });
+  const bytes = await fsp.readFile(paths.exportedConfig);
+  const config = assertMainnetV8ExportConfigContents({ wal, bytes });
+  if (format === 'json') return bytes.toString('utf8');
+  return Object.entries(config.soulidityEnvironment).map(([key, value]) => {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key) || typeof value !== 'string' || /['\r\n\0]/.test(value)) {
+      fail('MAINNET_V8_CONFIG_EXPORT_DRIFT', 'Chain configuration cannot be rendered as a literal env value.');
+    }
+    return `${key}='${value}'`;
+  }).join('\n') + '\n';
 }
 
 async function performVerifyAndExport({
@@ -4566,16 +3440,22 @@ async function performVerifyAndExport({
   repositoryRoot,
   operations,
 }) {
-  const bootstrapDetails = finalizedDetails(wal, 8);
-  const bootstrap = bootstrapDetails.certificate.readback;
+  wal = structuredClone(wal);
+  const bootstrap = mainnetV8RuntimeConfigFromWal(wal);
+  const activation = mainnetV8MarketActivationFromWal(wal);
   const packageVerification = await operations.verifyFinalPackages({
     repositoryRoot,
+    sourceStorePath: paths.sourceStore ?? path.join(paths.root, 'source-cas'),
     wal,
     suiBinary,
     client,
     transport,
   });
   const attested = await attestMakerV8Runtime(transport, bootstrap.runtimeConfig, { network: 'mainnet' });
+  // Activation is part of this release, not an assumption derived from publish.
+  // Both mutable references must still match the finalized enable transaction.
+  await Promise.all(Object.values(activation.readback.objects).map(evidence =>
+    rereadNativeBootstrapHistoryObject({ transport, evidence })));
   const packageIds = packageIdsFromFinalManifest(wal);
   for (const role of ROLE_ORDER) {
     const observed = attested.catalog.roles[role];
@@ -4588,22 +3468,7 @@ async function performVerifyAndExport({
       fail('MAINNET_V8_FINAL_ATTESTATION_DRIFT', `${role} final runtime attestation differs from sealed manifest.`);
     }
   }
-  const exportedConfig = Object.freeze({
-    schemaVersion: MAINNET_V8_RELEASE_RUNNER_SCHEMA,
-    kind: 'ANIMACRAFT_MAINNET_V8_CONFIG',
-    executionPlanId: wal.executionPlanId,
-    releaseId: wal.releaseId,
-    runtimeConfig: bootstrap.runtimeConfig,
-    packageIds,
-    finalManifest: wal.finalManifest,
-    packageVerification,
-    protectedDecryptionReady: false,
-    protectedDecryptionBlocker: Object.freeze({
-      code: 'ENOKI_SEAL_API_KEY_REQUIRED',
-      aggregator: MAINNET_V8_DEFAULT_AGGREGATOR,
-      secretStoredInArtifact: false,
-    }),
-  });
+  const exportedConfig = buildMainnetV8PairedConfig({ wal, packageVerification });
   await writeJsonAtomic(paths.exportedConfig, exportedConfig);
   const cold = JSON.parse(await fsp.readFile(paths.exportedConfig, 'utf8'));
   if (canonicalJson(cold) !== canonicalJson(exportedConfig)) {
@@ -4616,12 +3481,9 @@ async function performVerifyAndExport({
     finalManifestSha256: mainnetV8JsonSha(wal.finalManifest),
     packageVerification,
     packageVerificationSha256: mainnetV8JsonSha(packageVerification),
-    runtimeAttestationSha256: mainnetV8JsonSha(canonicalizeSdk({
-      catalog: attested.catalog,
-      configs: attested.configs,
-      packageTuple: attested.packageTuple,
-      coreArtifact: attested.coreArtifact,
-    })),
+    runtimeAttestationSha256: mainnetV8JsonSha(bootstrap.finalReadback),
+    marketActivationCertificateSha256: finalizedDetails(wal,
+      MAINNET_V8_RELEASE_STEPS.find(row => row.kind === 'ACTIVATE_SOULIDITY_MARKET').ordinal).certificate.readbackSha256,
   });
   const exports = Object.freeze({
     filename: path.basename(paths.exportedConfig),
@@ -4688,7 +3550,7 @@ async function appendFinalityObservation({ paths, wal, outcome }) {
     fail('MAINNET_V8_FINALITY_STATUS_INVALID', `Unsupported finalized outcome ${outcome.status}.`);
   }
   const certificate = finalityCertificate(finalityEvidence, null);
-  const details = Number(event.ordinal) < ROLE_ORDER.length
+  const details = Number(event.ordinal) < MAINNET_V8_PUBLISH_ORDER.length
     ? {
         packageArtifact: ready.readyArtifact.packageArtifact,
         packageCommitment: ready.readyArtifact.packageCommitment,
@@ -4706,11 +3568,107 @@ async function appendFinalityObservation({ paths, wal, outcome }) {
 
 function transientReadbackError(error) {
   const code = String(error?.code ?? '');
-  return /(?:UNAVAILABLE|TIMEOUT|DEADLINE|NOT_FOUND|PRUNED|ARCHIVAL|NETWORK|RPC)/.test(code);
+  // GRPC is a namespace, not a transient failure: BCS/JSON/identity drift must stop.
+  return /(?:^|_)(?:UNAVAILABLE|TIMEOUT|DEADLINE_EXCEEDED|NOT_FOUND|PRUNED|ARCHIVAL_UNAVAILABLE|NETWORK_ERROR|RPC_ERROR)$/.test(code);
 }
 
-async function certifyOrdinalReadback({ ordinal, wal, ready, client, transport, finalityEvidence }) {
-  if (ordinal < ROLE_ORDER.length) {
+function nativeBootstrapHistoryEnvelope(output) {
+  const owner = canonicalOwner(output.owner, 'native bootstrap historical owner');
+  const historicalOwner = owner.Shared ? { kind: 'shared', initialSharedVersion: owner.Shared.initial_shared_version }
+    : owner.AddressOwner ? { kind: 'address', address: owner.AddressOwner }
+      : owner.ObjectOwner ? { kind: 'object', objectId: owner.ObjectOwner } : { kind: 'immutable' };
+  return Object.freeze({ reference: Object.freeze({ ...output.reference }), type: output.type,
+    owner: Object.freeze(historicalOwner), previousTransaction: output.previousTransaction,
+    objectBcsBase64: output.objectBcsBase64 });
+}
+
+export function nativeSoulBootstrapPriorObjectsFromWal({ wal, ordinal }) {
+  const step = MAINNET_V8_RELEASE_STEPS.find(entry => entry.ordinal === String(ordinal));
+  if (!step || !NATIVE_SOUL_BOOTSTRAP_STAGES.includes(step.kind)) {
+    fail('MAINNET_V8_READBACK_ORDINAL_INVALID', 'No native bootstrap predecessor inventory at this ordinal.');
+  }
+  const core = finalizedDetails(wal, 0).certificate.readback;
+  if (core.role !== 'core') fail('MAINNET_V8_READBACK_PREDECESSOR_INVALID', 'Core publication predecessor is missing.');
+  const objects = { protocol: nativeBootstrapHistoryEnvelope(core.protocolConfig),
+    protocolAdmin: nativeBootstrapHistoryEnvelope(core.protocolAdminCap) };
+  for (const previous of MAINNET_V8_RELEASE_STEPS) {
+    if (previous.kind === 'PUBLISH') continue;
+    if (Number(previous.ordinal) >= Number(step.ordinal)) break;
+    const readback = finalizedDetails(wal, previous.ordinal).certificate.readback;
+    if (readback.schema !== 'native-soul-bootstrap-history-v1' || readback.stage !== previous.kind
+      || !plain(readback.objects)) {
+      fail('MAINNET_V8_READBACK_PREDECESSOR_INVALID', 'Native bootstrap predecessor differs from the required stage.');
+    }
+    Object.assign(objects, readback.objects);
+  }
+  return Object.freeze(Object.fromEntries(nativeSoulBootstrapPriorKinds(step.kind).map(kind => {
+    if (!objects[kind]) fail('MAINNET_V8_READBACK_PREDECESSOR_INVALID', `Missing ${kind} from certified native predecessors.`);
+    return [kind, structuredClone(objects[kind])];
+  })));
+}
+
+export async function certifyMainnetV8NativeBootstrap({ transport, stage, input, priorObjects, signer, finalityEvidence }) {
+  // Freeze the whole certificate input before the first historical RPC await;
+  // callers cannot swap event bytes while the exact objects are being loaded.
+  const snapshot = structuredClone({ input, priorObjects, signer, finalityEvidence });
+  const transactionBytes = fromBase64(snapshot.finalityEvidence.transactionBase64);
+  const transactionDigest = digest(snapshot.finalityEvidence.digest, 'native bootstrap finality digest');
+  if (TransactionDataBuilder.getDigestFromBytes(transactionBytes) !== transactionDigest) {
+    fail('MAINNET_V8_READBACK_TRANSACTION_INVALID', 'Native bootstrap bytes differ from the finalized transaction digest.');
+  }
+  const result = await certifyNativeSoulBootstrapHistory({ stage, input: snapshot.input, sender: snapshot.signer,
+    transactionBytes,
+    effectsBytes: fromBase64(snapshot.finalityEvidence.effectsBcsBase64), priorObjects: snapshot.priorObjects,
+    readHistoricalObject: async reference => {
+      // No latest-object JSON lookup: delayed recovery must read the exact
+      // version/digest selected by the finalized transaction's effects.
+      const historical = await transport.getHistoricalObject({
+        objectId: reference.objectId, version: BigInt(reference.version),
+      });
+      return nativeBootstrapHistoryEnvelope({
+        reference: { objectId: historical.objectId, version: historical.version, digest: historical.digest },
+        type: historical.type, owner: historical.owner, previousTransaction: historical.previousTransaction,
+        objectBcsBase64: toBase64(historical.objectBcs),
+      });
+    },
+  });
+  if (result.history.effects.transactionDigest !== transactionDigest) {
+    fail('MAINNET_V8_READBACK_TRANSACTION_INVALID', 'Native bootstrap history does not match the finalized transaction digest.');
+  }
+  const readback = Object.freeze({ schema: result.schema, stage, input: result.input,
+    objects: result.objects, priorObjects: result.priorObjects, consensusObjects: result.consensusObjects });
+  // Live certification and cold recovery accept exactly the same state,
+  // commitment and event proof. A loaded object inventory alone is insufficient.
+  return assertMainnetV8NativeBootstrapReadback(readback, stage, snapshot.finalityEvidence, snapshot.signer);
+}
+
+export async function certifyMainnetV8MarketActivation({ transport, input, priorObjects, signer, finalityEvidence }) {
+  const frozenInput = structuredClone(input), frozenPrior = structuredClone(priorObjects);
+  const transactionBytes = fromBase64(finalityEvidence.transactionBase64);
+  const effectsBytes = fromBase64(finalityEvidence.effectsBcsBase64);
+  const transactionDigest = digest(finalityEvidence.digest, 'market activation finality digest');
+  if (TransactionDataBuilder.getDigestFromBytes(transactionBytes) !== transactionDigest) {
+    fail('MAINNET_V8_READBACK_TRANSACTION_INVALID', 'Market activation bytes differ from the finalized digest.');
+  }
+  const args = { input: frozenInput, sender: signer, transactionBytes, effectsBytes, priorObjects: frozenPrior };
+  const references = nativeSoulMarketActivationOutputReferences(args);
+  const reads = await Promise.allSettled(Object.entries(references).map(async ([kind, reference]) => {
+    const historical = await transport.getHistoricalObject({ objectId: reference.objectId, version: BigInt(reference.version) });
+    return [kind, nativeBootstrapHistoryEnvelope({
+      reference: { objectId: historical.objectId, version: historical.version, digest: historical.digest },
+      type: historical.type, owner: historical.owner, previousTransaction: historical.previousTransaction,
+      objectBcsBase64: toBase64(historical.objectBcs),
+    })];
+  }));
+  const rejected = reads.find(row => row.status === 'rejected');
+  if (rejected) throw rejected.reason;
+  return validateNativeSoulMarketActivationHistory({ ...args,
+    objects: Object.fromEntries(reads.map(row => row.value)) });
+}
+
+export async function certifyOrdinalReadback({ ordinal, wal, ready, client, transport, finalityEvidence }) {
+  const step = MAINNET_V8_RELEASE_STEPS.find(entry => entry.ordinal === String(ordinal));
+  if (step?.kind === 'PUBLISH') {
     const artifact = ready.readyArtifact.packageArtifact;
     const build = Object.freeze({
       packageArtifact: artifact,
@@ -4722,44 +3680,30 @@ async function certifyOrdinalReadback({ ordinal, wal, ready, client, transport, 
     return certifyMainnetV8PackagePublish({
       client,
       transport,
-      role: ROLE_ORDER[ordinal],
+      role: step.role,
       build,
       finalityEvidence,
       signer: wal.plan.sender,
     });
   }
-  if (ordinal === 7) {
-    const packageIds = packageIdsFromFinalManifest(wal);
-    const core = finalizedDetails(wal, 0).certificate.readback;
-    return certifyMainnetV8ProtocolInit({
-      transport,
-      packageIds,
-      protocolConfigId: core.protocolConfig.reference.objectId,
-      protocolAdminCapId: ready.readyArtifact.stageData.protocolAdminCap.objectId,
-      signer: wal.plan.sender,
-      finalityEvidence,
-    });
+  if (step?.kind === 'ACTIVATE_SOULIDITY_MARKET') {
+    if (ready.readyArtifact.kind !== step.kind) {
+      fail('MAINNET_V8_READBACK_ORDINAL_INVALID', 'READY kind differs from market activation.');
+    }
+    return certifyMainnetV8MarketActivation({ transport,
+      input: nativeSoulMarketActivationInputFromStageData(ready.readyArtifact.stageData),
+      priorObjects: nativeSoulMarketActivationContextFromWal(wal).priorObjects,
+      signer: wal.plan.sender, finalityEvidence });
   }
-  if (ordinal === 8) {
-    const packageIds = packageIdsFromFinalManifest(wal);
-    const packageCommitments = Object.freeze(Object.fromEntries(
-      wal.finalManifest.packages.map((entry) => [entry.role, Object.freeze({
-        source: entry.sourceCommitment,
-        package: entry.packageCommitment,
-        abi: entry.abiCommitment,
-      })]),
-    ));
-    return certifyMainnetV8Bootstrap({
-      transport,
-      packageIds,
-      packageCommitments,
-      initCertificate: finalizedDetails(wal, 7).certificate.readback,
-      sealPolicy: assertMainnetV8FinalSealPolicy(
-        wal.finalManifest.sealPolicy,
-        wal.plan.sealPolicy,
-      ),
-      signer: wal.plan.sender,
-      finalityEvidence,
+  if (step && NATIVE_SOUL_BOOTSTRAP_STAGES.includes(step.kind)) {
+    if (ready.readyArtifact.kind !== step.kind) {
+      fail('MAINNET_V8_READBACK_ORDINAL_INVALID', 'READY kind differs from the native readback stage.');
+    }
+    return certifyMainnetV8NativeBootstrap({
+      transport, stage: step.kind,
+      input: nativeSoulBootstrapInputFromStageData(step.kind, ready.readyArtifact.stageData),
+      priorObjects: nativeSoulBootstrapPriorObjectsFromWal({ wal, ordinal }),
+      signer: wal.plan.sender, finalityEvidence,
     });
   }
   fail('MAINNET_V8_READBACK_ORDINAL_INVALID', `Ordinal ${ordinal} has no transaction readback.`);
@@ -4805,7 +3749,7 @@ async function certifyPendingReadback({ paths, wal, client, transport, operation
     return Object.freeze({ wal: stopped, blocked: 'INCIDENT_STOPPED', error });
   }
   const certificate = finalityCertificate(finalityEvidence, readback);
-  const details = ordinal < ROLE_ORDER.length
+  const details = ordinal < MAINNET_V8_PUBLISH_ORDER.length
     ? {
         packageArtifact: ready.readyArtifact.packageArtifact,
         packageCommitment: ready.readyArtifact.packageCommitment,
@@ -4825,47 +3769,10 @@ async function certifyPendingReadback({ paths, wal, client, transport, operation
 }
 
 function repairableReadbackIncident(event) {
-  const incident = event?.evidence?.observation?.details?.incident;
-  const exactTreasuryBalanceIncident = event?.ordinal === '7'
-    && incident?.code === MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.code
-    && incident?.message === MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.message
-    && plain(incident?.details) && Object.keys(incident.details).length === 0;
-  const exactBootstrapAdminWriteIncident = event?.ordinal === '8'
-    && incident?.code === MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.code
-    && incident?.message === MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.message
-    && Array.isArray(incident?.details?.writes)
-    && incident.details.writes.length === 8;
-  const exactBootstrapOptionJsonIncident = event?.ordinal === '8'
-    && incident?.code === MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.code
-    && incident?.message === MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.message
-    && plain(incident?.details) && Object.keys(incident.details).length === 0;
-  const exactBootstrapHashJsonIncident = event?.ordinal === '8'
-    && incident?.code === MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.code
-    && incident?.message === MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.message
-    && plain(incident?.details)
-    && Object.keys(incident.details).length === 1
-    && incident.details.label === MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.label;
-  const exactCorePublishedModuleIncident = event?.ordinal === '8'
-    && incident?.code === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.code
-    && incident?.message === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.message
-    && plain(incident?.details)
-    && Object.keys(incident.details).length === 3
-    && incident.details.expectedSha256 === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.expectedSha256
-    && incident.details.observedSha256 === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.observedSha256
-    && incident.details.byteLength === MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.byteLength;
-  return event?.status === 'INCIDENT_STOPPED'
-    && event.ordinal !== '9'
-    && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(incident?.code)
-    && (incident.code !== MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.code
-      || exactTreasuryBalanceIncident)
-    && (incident.code !== MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.code
-      || exactBootstrapAdminWriteIncident)
-    && (incident.code !== MAINNET_V8_BOOTSTRAP_OPTION_JSON_INCIDENT.code
-      || exactBootstrapOptionJsonIncident)
-    && (incident.code !== MAINNET_V8_BOOTSTRAP_HASH_JSON_INCIDENT.code
-      || exactBootstrapHashJsonIncident)
-    && (incident.code !== MAINNET_V8_CORE_PUBLISHED_MODULE_INCIDENT.code
-      || exactCorePublishedModuleIncident);
+  const step = MAINNET_V8_RELEASE_STEPS.find(entry => entry.ordinal === event?.ordinal);
+  return event?.status === 'INCIDENT_STOPPED' && step !== undefined
+    && step.kind !== 'VERIFY_AND_EXPORT'
+    && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(event.evidence?.observation?.details?.incident?.code);
 }
 
 function pendingReadbackRepair(wal) {
@@ -4902,11 +3809,20 @@ async function reopenReadbackIncident({ paths, wal }) {
   });
 }
 
-function finalManifestFromWal(wal) {
-  const packages = ROLE_ORDER.map((role, ordinal) => {
+// Collect every publication, not the seven Catalog commitments. This is a
+// projection of already-certified WAL evidence, not a standalone authorization.
+export function mainnetV8FinalPackageRowsFromWal(wal) {
+  if (!Array.isArray(wal?.plan?.packages)
+    || wal.plan.packages.length !== MAINNET_V8_PUBLISH_ORDER.length) {
+    fail('MAINNET_V8_FINAL_MANIFEST_INVALID', 'Final manifest requires all eight planned publications.');
+  }
+  return Object.freeze(MAINNET_V8_PUBLISH_ORDER.map((role, ordinal) => {
     const details = finalizedDetails(wal, ordinal);
     const certificate = details.certificate;
     const readback = certificate.readback;
+    if (wal.plan.packages[ordinal].role !== role || readback.role !== role) {
+      fail('MAINNET_V8_FINAL_MANIFEST_INVALID', `${role} final manifest evidence is at the wrong publication ordinal.`);
+    }
     return Object.freeze({
       role,
       packageId: readback.package.reference.objectId,
@@ -4920,8 +3836,11 @@ function finalManifestFromWal(wal) {
       finalityEvidenceSha256: certificate.finalityEvidenceSha256,
       readbackSha256: certificate.readbackSha256,
     });
-  });
-  return buildFinalManifest({ plan: wal.plan, packages });
+  }));
+}
+
+function finalManifestFromWal(wal) {
+  return buildFinalManifest({ plan: wal.plan, packages: mainnetV8FinalPackageRowsFromWal(wal) });
 }
 
 function typedNotFoundQuery({ signed, observedAt, afterWatermark = null }) {
@@ -5273,17 +4192,19 @@ async function signReadyTransaction({
 
 async function sealFinalManifest({ paths, wal }) {
   const finalManifest = finalManifestFromWal(wal);
+  const ordinal = String(MAINNET_V8_PUBLISH_ORDER.length - 1);
   const evidence = buildMainnetV8ManifestEvidence({
-    ordinal: '6', attempt: '0', finalManifest, plan: wal.plan,
+    ordinal, attempt: '0', finalManifest, plan: wal.plan,
   });
   return appendAndColdRead(paths, wal, {
-    ordinal: '6', attempt: '0', status: 'FINAL_MANIFEST_SEALED', evidence,
+    ordinal, attempt: '0', status: 'FINAL_MANIFEST_SEALED', evidence,
   });
 }
 
 function releaseCertificateFromWal(wal) {
   const event = headEvent(wal);
-  if (event.ordinal !== '9' || event.status !== 'FINALIZED_SUCCESS'
+  if (MAINNET_V8_RELEASE_STEPS.find(step => step.ordinal === event.ordinal)?.kind !== 'VERIFY_AND_EXPORT'
+    || event.status !== 'FINALIZED_SUCCESS'
     || wal.releaseId === null || wal.finalManifest?.releaseId !== wal.releaseId) {
     fail('MAINNET_V8_RELEASE_CERTIFICATE_INVALID', 'Release certificate requires the exact completed WAL head.');
   }
@@ -5294,12 +4215,16 @@ function releaseCertificateFromWal(wal) {
     releaseId: wal.releaseId,
     executionPlan: wal.plan,
     finalManifest: wal.finalManifest,
-    packagePublishes: Object.freeze(ROLE_ORDER.map((role, ordinal) => Object.freeze({
+    packagePublishes: Object.freeze(MAINNET_V8_PUBLISH_ORDER.map((role, ordinal) => Object.freeze({
       role,
       finalized: finalizedDetails(wal, ordinal),
     }))),
-    protocolInitialization: finalizedDetails(wal, 7),
-    bootstrap: finalizedDetails(wal, 8),
+    bootstrapStages: Object.freeze(MAINNET_V8_RELEASE_STEPS
+      .filter(step => NATIVE_SOUL_BOOTSTRAP_STAGES.includes(step.kind))
+      .map(step => Object.freeze({ stage: step.kind, ordinal: step.ordinal,
+        finalized: finalizedDetails(wal, step.ordinal) }))),
+    marketActivation: finalizedDetails(wal,
+      MAINNET_V8_RELEASE_STEPS.find(row => row.kind === 'ACTIVATE_SOULIDITY_MARKET').ordinal),
     verifyAndExport: event.evidence.observation.details,
   });
 }
@@ -5348,7 +4273,7 @@ async function verifyOnlyOrdinal({
   });
   const evidence = buildMainnetV8OutcomeEvidence({
     status: 'FINALIZED_SUCCESS',
-    ordinal: '9',
+    ordinal: event.ordinal,
     attempt: event.attempt,
     readyArtifactSha256: event.evidence.readyArtifactSha256,
     signedArtifact: null,
@@ -5360,10 +4285,29 @@ async function verifyOnlyOrdinal({
     },
   });
   const complete = await appendAndColdRead(paths, wal, {
-    ordinal: '9', attempt: event.attempt, status: 'FINALIZED_SUCCESS', evidence,
+    ordinal: event.ordinal, attempt: event.attempt, status: 'FINALIZED_SUCCESS', evidence,
   });
   await ensureReleaseCertificate(paths, complete);
   return complete;
+}
+
+export function nextMainnetV8FinalizedAction(event) {
+  const index = MAINNET_V8_RELEASE_STEPS.findIndex(step => step.ordinal === event?.ordinal);
+  if (index < 0 || !['FINALIZED_SUCCESS', 'FINAL_MANIFEST_SEALED'].includes(event.status)) {
+    fail('MAINNET_V8_WAL_STATE_UNHANDLED', 'No finalized-stage action for this cursor.');
+  }
+  const step = MAINNET_V8_RELEASE_STEPS[index];
+  const next = MAINNET_V8_RELEASE_STEPS[index + 1];
+  const lastPublish = step.kind === 'PUBLISH' && next?.kind !== 'PUBLISH';
+  if (event.status === 'FINAL_MANIFEST_SEALED' && !lastPublish) {
+    fail('MAINNET_V8_WAL_STATE_UNHANDLED', 'Manifest can only be sealed after the final publication.');
+  }
+  if (lastPublish && event.status === 'FINALIZED_SUCCESS') return Object.freeze({ kind: 'SEAL_MANIFEST' });
+  if (!next) return Object.freeze({ kind: 'COMPLETE' });
+  if (next.kind === 'PUBLISH') return Object.freeze({ kind: 'PREPARE_PUBLISH', ordinal: Number(next.ordinal) });
+  if (next.kind === 'VERIFY_AND_EXPORT') return Object.freeze({ kind: 'PREPARE_VERIFY' });
+  if (next.kind === 'ACTIVATE_SOULIDITY_MARKET') return Object.freeze({ kind: 'PREPARE_MARKET_ACTIVATION' });
+  return Object.freeze({ kind: 'PREPARE_BOOTSTRAP', stage: next.kind });
 }
 
 export async function executeMainnetV8Release({
@@ -5404,7 +4348,7 @@ export async function executeMainnetV8Release({
     if (expectedReleaseId !== null) {
       fail(
         'MAINNET_V8_RELEASE_ID_PREMATURE',
-        'A releaseId cannot be approved before the seven-package final manifest is sealed.',
+        'A releaseId cannot be approved before the eight-package final manifest is sealed.',
       );
     }
   } else {
@@ -5450,7 +4394,7 @@ export async function executeMainnetV8Release({
       return Object.freeze({ status: event.status, wal, writesComplete: false });
     }
     if (event.status === 'READY') {
-      if (ordinal === 9) {
+      if (MAINNET_V8_RELEASE_STEPS.find(step => step.ordinal === event.ordinal)?.kind === 'VERIFY_AND_EXPORT') {
         wal = await verifyOnlyOrdinal({
           paths,
           wal,
@@ -5508,35 +4452,34 @@ export async function executeMainnetV8Release({
       }
       continue;
     }
-    if (event.status === 'FINALIZED_SUCCESS') {
-      if (ordinal < 6) {
+    if (event.status === 'FINALIZED_SUCCESS' || event.status === 'FINAL_MANIFEST_SEALED') {
+      const action = nextMainnetV8FinalizedAction(event);
+      if (action.kind === 'PREPARE_PUBLISH') {
         wal = await preparePublishReady({
           paths,
           wal,
-          ordinal: ordinal + 1,
+          ordinal: action.ordinal,
           suiBinary,
           client,
           repositoryRoot,
         });
-      } else if (ordinal === 6) {
+      } else if (action.kind === 'SEAL_MANIFEST') {
         wal = await sealFinalManifest({ paths, wal });
         return Object.freeze({
           status: 'FINAL_MANIFEST_REVIEW_REQUIRED',
           wal,
           writesComplete: false,
         });
-      } else if (ordinal === 7) {
-        wal = await prepareBootstrapReady({ paths, wal, client, transport });
-      } else if (ordinal === 8) {
+      } else if (action.kind === 'PREPARE_BOOTSTRAP') {
+        wal = await prepareMainnetV8StageReady({ paths, wal, stage: action.stage, client, transport });
+      } else if (action.kind === 'PREPARE_MARKET_ACTIVATION') {
+        wal = await prepareMainnetV8StageReady({ paths, wal, stage: 'ACTIVATE_SOULIDITY_MARKET', client, transport });
+      } else if (action.kind === 'PREPARE_VERIFY') {
         wal = await prepareVerifyReady({ paths, wal, client });
-      } else if (ordinal === 9) {
+      } else if (action.kind === 'COMPLETE') {
         await ensureReleaseCertificate(paths, wal);
         return Object.freeze({ status: 'CHAIN_RELEASE_COMPLETE', wal, writesComplete: true });
       }
-      continue;
-    }
-    if (event.status === 'FINAL_MANIFEST_SEALED') {
-      wal = await prepareInitReady({ paths, wal, client });
       continue;
     }
     fail('MAINNET_V8_WAL_STATE_UNHANDLED', `Unhandled durable state ${event.status}.`);
@@ -5566,7 +4509,9 @@ export async function abandonMainnetV8Release({
     fail('MAINNET_V8_RELEASE_ID_NOT_APPROVED', 'Release abandonment differs from the externally approved releaseId.');
   }
   const head = headEvent(wal);
-  if (head.status !== 'FINAL_MANIFEST_SEALED' || head.ordinal !== '6') {
+  const initialization = MAINNET_V8_RELEASE_STEPS.find(step => step.kind === 'INITIALIZE_PROTOCOL');
+  const action = head.status === 'FINAL_MANIFEST_SEALED' ? nextMainnetV8FinalizedAction(head) : null;
+  if (action?.kind !== 'PREPARE_BOOTSTRAP' || action.stage !== initialization.kind) {
     fail('MAINNET_V8_ABANDON_STATE_INVALID', 'Only a sealed, pre-init release may be abandoned by this incident path.');
   }
   const core = wal.finalManifest.packages.find((entry) => entry.role === 'core');
@@ -5578,7 +4523,7 @@ export async function abandonMainnetV8Release({
     plan: wal.plan,
     reason: {
       code: reasonCode,
-      failedOrdinal: '7',
+      failedOrdinal: initialization.ordinal,
       errorCode: 'MAINNET_V8_SIMULATION_FAILED',
       moveAbort: {
         packageId: core.packageId,
@@ -5624,6 +4569,7 @@ async function main(argv = process.argv.slice(2)) {
     const sealPolicy = await loadSealPolicy(options);
     const prepared = await prepareMainnetV8Release({
       stateDir,
+      soulidityRoot: options['soulidity-root'] && path.resolve(options['soulidity-root']),
       suiBinary: options['sui-binary'],
       sender: options.sender,
       sealPolicy,
@@ -5689,7 +4635,7 @@ async function main(argv = process.argv.slice(2)) {
   if (command === 'verify') {
     const wal = await readReleaseWal({ path: path.join(stateDir, MAINNET_V8_WAL_FILENAME) });
     const complete = headEvent(wal).status === 'FINALIZED_SUCCESS'
-      && headEvent(wal).ordinal === '9';
+      && nextMainnetV8FinalizedAction(headEvent(wal)).kind === 'COMPLETE';
     process.stdout.write(`${JSON.stringify({
       status: complete ? 'CHAIN_RELEASE_COMPLETE' : 'INCOMPLETE',
       executionPlanId: wal.executionPlanId,
@@ -5700,7 +4646,7 @@ async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (command === 'export-config') {
-    const content = await fsp.readFile(path.join(stateDir, 'animacraft-mainnet-v8-config.json'), 'utf8');
+    const content = await readMainnetV8DeploymentConfig({ stateDir, format: options.format ?? 'json' });
     process.stdout.write(content);
     return;
   }

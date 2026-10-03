@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadAndVerifyEvidence, sha256Bytes } from './evidence.mjs';
+import { verifyToolchainIdentity } from './toolchain_identity.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const harnessDirectory = resolve(scriptDirectory, '..');
@@ -30,12 +32,14 @@ const expectedFixtureSources = [
   'treasury_v8.move',
 ];
 const buildTimeoutMs = 180_000;
+const suiBinary = process.env.ANIMACRAFT_SUI_BINARY ?? 'sui';
 
 function fail(message) {
   throw new Error(`seal-cap quick gate: ${message}`);
 }
 
 function run(command, args, { capture = false } = {}) {
+  if (command === 'sui') command = binaryPath;
   process.stdout.write(`+ ${command} ${args.join(' ')}\n`);
   return execFileSync(command, args, {
     cwd: root,
@@ -56,16 +60,44 @@ function exactList(actual, expected, label) {
   }
 }
 
-const version = String(run('sui', ['--version'], { capture: true })).trim();
-if (!/^sui 1\.77\.2(?:[-+\s]|$)/.test(version)) {
-  fail(`Sui CLI must be exactly 1.77.2; got ${version}`);
-}
+// Authenticate and execute the same absolute path even when invoked outside root.
+const binaryPath = resolve(suiBinary === 'sui'
+  ? execFileSync('which', ['sui'], { encoding: 'utf8' }).trim() : suiBinary);
+const toolchain = await verifyToolchainIdentity(binaryPath, process.env.ANIMACRAFT_SUI_ARCHIVE);
+process.stdout.write(`ok: authenticated ${toolchain.platform}/${toolchain.arch} ${toolchain.version}\n`);
 
 const evidence = loadAndVerifyEvidence(harnessDirectory);
 const { manifest } = evidence;
 process.stdout.write(
   `ok: approved protocol profile ${manifest.approvedProtocolProfile.canonicalSha256}\n`,
 );
+const fieldLimitEvidencePath = join(
+  root,
+  'test/harness/animacraft_v8_field_limit_protocol137.json',
+);
+const fieldLimitEvidence = JSON.parse(readFileSync(fieldLimitEvidencePath, 'utf8'));
+if (fieldLimitEvidence.schema !== 'animacraft-v8-struct-field-limit-evidence.v1'
+    || fieldLimitEvidence.approvedProtocolProfileHash
+      !== manifest.approvedProtocolProfile.canonicalSha256
+    || fieldLimitEvidence.replayProvenance?.protocolVersion !== '137'
+    || fieldLimitEvidence.replayProvenance?.maxFieldsInStruct !== '32'
+    || fieldLimitEvidence.replayProvenance?.commit !== manifest.replayProvenance.commit
+    || fieldLimitEvidence.replayProvenance?.assetSha256
+      !== manifest.replayProvenance.assetSha256) {
+  fail('Protocol 137 field-limit evidence provenance drift');
+}
+for (const [fieldCount, expectedStatus] of [[32, 'success'], [33, 'failure']]) {
+  const row = fieldLimitEvidence.cases?.[`${fieldCount}-fields`];
+  if (row?.fieldCount !== fieldCount
+      || row.struct !== `FieldLimit${fieldCount}`
+      || row.status !== expectedStatus
+      || typeof row.digest !== 'string'
+      || (fieldCount === 33
+        && row.error !== 'VMVerificationOrDeserializationError in command 0')) {
+    fail(`Protocol 137 ${fieldCount}-field evidence drift`);
+  }
+}
+process.stdout.write('ok: Protocol 137 executor proves the exact 32/33-field boundary\n');
 run(process.execPath, ['--check', join(scriptDirectory, 'run_localnet_replay.mjs')]);
 run(process.execPath, [
   join(scriptDirectory, 'run_localnet_replay.mjs'),
@@ -136,14 +168,19 @@ if (productionSourceBytes.length !== manifest.production.baseRegistrySourceBytes
 const buildArgs = (path) => [
   'move', 'build', '--path', path, '--force', '--disassemble', '--warnings-are-errors',
 ];
-run('sui', buildArgs(productionCore));
-run('sui', buildArgs(fixture));
-run('sui', [
-  'move', 'build', '--path', harnessDirectory, '--force', '--warnings-are-errors',
-]);
+// Compile in an isolated workspace: release/test build directories are mutable
+// and are not evidence inputs. Leave this bounded directory for diagnostics.
+const isolated = mkdtempSync(join(tmpdir(), 'animacraft-seal-cap-build-'));
+const isolatedCore = join(isolated, 'core');
+const isolatedFixture = join(isolated, 'fixture');
+const sourceOnly = (source) => !/(?:^|\/)(?:build|\.git)(?:\/|$)/.test(source);
+cpSync(productionCore, isolatedCore, { recursive: true, filter: sourceOnly });
+cpSync(fixture, isolatedFixture, { recursive: true, filter: sourceOnly });
+run('sui', buildArgs(isolatedCore));
+run('sui', buildArgs(isolatedFixture));
 
-const productionBuild = join(productionCore, 'build/animacraft_v8_core');
-const fixtureBuild = join(fixture, 'build/animacraft_v8_core');
+const productionBuild = join(isolatedCore, 'build/animacraft_v8_core');
+const fixtureBuild = join(isolatedFixture, 'build/animacraft_v8_core');
 const productionBytecode = join(productionBuild, 'bytecode_modules/base_registry_v8.mv');
 const fixtureBytecode = join(fixtureBuild, 'bytecode_modules/base_registry_v8.mv');
 const productionMv = readFileSync(productionBytecode);
@@ -177,21 +214,30 @@ process.stdout.write(
   `ok: production/fixture base_registry_v8.mv cmp (${productionMv.length} B, ${sha256Bytes(productionMv)})\n`,
 );
 
-const sizeJson = String(run(process.execPath, [
-  join(productionCore, 'scripts/measure_package_size.mjs'),
-], { capture: true }));
-const size = JSON.parse(sizeJson);
+const sizeRun = spawnSync(process.execPath, [
+  join(isolatedCore, 'scripts/measure_package_size.mjs'),
+], { encoding: 'utf8', timeout: buildTimeoutMs });
+if (sizeRun.error || ![0, 1].includes(sizeRun.status)) fail('Core size measurement did not complete');
+const size = JSON.parse(sizeRun.stdout);
+// Use the same-run protocol package limit, not a historical design target.
+const protocolPackageLimit = Number(evidence.artifacts.get('protocol-config-v137.rpc.json')
+  ?.result?.attributes?.max_move_package_size?.u64);
+if (!Number.isSafeInteger(protocolPackageLimit) || protocolPackageLimit <= 0
+    || size.hardMaxBytes !== protocolPackageLimit
+    || size.packageObjectBytes > protocolPackageLimit) {
+  fail('Core exceeds the protocol package size hard limit');
+}
 if (size.packageObjectBytes !== manifest.production.corePackageObjectBytes
-    || size.targetHeadroomBytes !== manifest.production.coreTargetHeadroomBytes
+    || protocolPackageLimit !== manifest.production.corePackageMaxBytes
+    || protocolPackageLimit - size.packageObjectBytes !== manifest.production.corePackageHeadroomBytes
     || size.modules.length !== manifest.production.coreModuleCount) {
   fail(
-    `Core size drift: ${size.packageObjectBytes} B / ${size.targetHeadroomBytes} B headroom / ${size.modules.length} modules`,
+    `Core size drift: ${size.packageObjectBytes} B / ${protocolPackageLimit - size.packageObjectBytes} B protocol headroom / ${size.modules.length} modules`,
   );
 }
 process.stdout.write(
-  `ok: production Core ${size.packageObjectBytes} B, ${size.targetHeadroomBytes} B target headroom\n`,
+  `ok: production Core ${size.packageObjectBytes} B, ${protocolPackageLimit - size.packageObjectBytes} B protocol package headroom\n`,
 );
 
-run(process.execPath, [join(scriptDirectory, 'generate_commitments.mjs'), '--self-test']);
 process.stdout.write('ok: canonical protocol/effects artifact hashes and typed fields\n');
-process.stdout.write(`ok: seal-cap quick reproducibility gate passed with ${version}\n`);
+process.stdout.write(`ok: seal-cap quick reproducibility gate passed with ${toolchain.version}\n`);

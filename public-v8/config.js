@@ -1,59 +1,99 @@
 (() => {
-  window.SoulidityMakerV8 = Object.freeze({
-    schemaVersion: 'animacraft.maker-v8-runtime.v8',
-    protocolVersion: 8,
-    enabled: true,
-    catalogId: '0x98c4172b00ef802b801c01348ad9da640424ddbaee61a33eb835091305502498',
-    protocolConfigId: '0x598d25ca56848bfe0d51acc054784d186a81f827e791f2d523c197e0c7a89334',
-    protocolTreasuryId: '0x40a47df4956b33461163ba803d520156187fcf4c954a04984744f9a8b4c82736',
-    paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
-    clockObjectId: '0x0000000000000000000000000000000000000000000000000000000000000006',
-    roles: Object.freeze({
-      core: Object.freeze({
-        typeOriginPackageId: '0xca762c5432604d6680fbdc87367c3956a2e7536eb2d12222eb929945d97c9e6e',
-        callablePackageId: '0xca762c5432604d6680fbdc87367c3956a2e7536eb2d12222eb929945d97c9e6e',
-      }),
-      seal: Object.freeze({
-        typeOriginPackageId: '0x0f12dc22b720dc9d87cde8d76952ab252959cced372e8511abb54cbaa177e2a3',
-        callablePackageId: '0x0f12dc22b720dc9d87cde8d76952ab252959cced372e8511abb54cbaa177e2a3',
-      }),
-      runtime: Object.freeze({
-        typeOriginPackageId: '0xa2d7c3c289d884d5899eb0afdfae8abca7555fb8640b493016502196a7500476',
-        callablePackageId: '0xa2d7c3c289d884d5899eb0afdfae8abca7555fb8640b493016502196a7500476',
-      }),
-      output: Object.freeze({
-        typeOriginPackageId: '0x09bb4c47e26b4cfa94d4c309ee9ba6d734cca6dc36111067c388deab12e20438',
-        callablePackageId: '0x09bb4c47e26b4cfa94d4c309ee9ba6d734cca6dc36111067c388deab12e20438',
-      }),
-      physical: Object.freeze({
-        typeOriginPackageId: '0x88abc74b3e3ba58f96cd3bc23ccccb774b489657ddd7f64b959210a08e056936',
-        callablePackageId: '0x88abc74b3e3ba58f96cd3bc23ccccb774b489657ddd7f64b959210a08e056936',
-      }),
-      market: Object.freeze({
-        typeOriginPackageId: '0x85c13a96e7f5a90f9d9da9fe7ab0cd11b6b9d48366b376b07aa962c43d67ac0c',
-        callablePackageId: '0x85c13a96e7f5a90f9d9da9fe7ab0cd11b6b9d48366b376b07aa962c43d67ac0c',
-      }),
-      release: Object.freeze({
-        typeOriginPackageId: '0x4ce1a661a5a427d607ec486ce8aaa7f7bb8e8c1f7f30770eca55e4a079a89297',
-        callablePackageId: '0x4ce1a661a5a427d607ec486ce8aaa7f7bb8e8c1f7f30770eca55e4a079a89297',
-      }),
-    }),
-    roleConfigIds: Object.freeze({
-      seal: '0x89312e9eb5084f96bdc3d51166d82af7aa067302c5b860967adec6a92ad37252',
-      runtime: '0x462cf4c9914fab9d325f2f9f033e7c352b35491d9e63a1a51dd9044215cf567f',
-      output: '0xf929355299d648ddb21542b2d083c264f372bc4b39fb718cb8d13bded8a8cb9a',
-      physical: '0xf94e2ebd4884e780dbbc5358a47aedc3a4ade20a34fafb5ffe1538754c1a0f1e',
-      market: '0x782fc6ea257bdd45c999d5ffcf3025715ed4b705869b2f51307a041a60a1e7d4',
-      release: '0x3d4090074c209c39fb6c6fa6f0188276ca58c94fb839d6572baae83b4d2334a7',
-    }),
-    makerBindings: Object.freeze([]),
+  // Certified release 841ef068a4be52cd3b1dfc2ff2a04d65adb30f302ba141dd044dad889630c01b.
+  // Runtime identity comes from the completed chain release, not a latest lookup.
+  const freeze = (value) => {
+    if (value && typeof value === 'object') {
+      Object.values(value).forEach(freeze);
+      Object.freeze(value);
+    }
+    return value;
+  };
+
+  window.ANIMACRAFT_CONFIG = Object.freeze({
+    soulidityAppUrl: 'https://www.soulidity.ai',
   });
 
+  window.SoulidityMakerV8 = freeze({
+  "catalogId": "0x633c79e2885145c118d6f5d0fc55e2d0dc42a7669b49b54720c59080b32d3a9e",
+  "clockObjectId": "0x0000000000000000000000000000000000000000000000000000000000000006",
+  "enabled": true,
+  "makerBindings": [],
+  "nativeSoulIntegration": {
+    "expectedNativeBinding": {
+      "mintWitnessDefiningType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::animacraft_v8_binding::MintBindingWitnessV8",
+      "mintWitnessOriginalType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::animacraft_v8_binding::MintBindingWitnessV8",
+      "ownerWitnessDefiningType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::animacraft_v8_binding::SoulOwnerWitnessV8",
+      "ownerWitnessOriginalType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::animacraft_v8_binding::SoulOwnerWitnessV8",
+      "soulDefiningType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::soul::Soul",
+      "soulOriginalType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::soul::Soul"
+    },
+    "kindRegistryId": "0xd439d16b69f7ccf215cc0eaeccf0b15ab0516291e2a2b658ee8a30164dc0c757",
+    "kioskPackageId": "0xdfb4f1d4e43e0c3ad834dcd369f0d39005c872e118c9dc1c5da9765bb93ee5f3",
+    "kioskRegistryId": "0x8d1824f776f559364d28349a64e47a40281ccf47c3e7806f6827607621592d7e",
+    "marketConfigV2Id": "0x5dee51db7db7ac34a20d97108296b00f0a06800c904d439bd72e6e62fe6ef117",
+    "soulTransferPolicyId": "0x90ccf7778737306a3c27f13bd4d52f5e910d906ff25c9abd7f42f6846795f27a",
+    "soulidityCallableDigest": "2anrfAx5byCFio61gQPToTd9cey389kQYzvoL4UwrEbx",
+    "soulidityCallablePackageId": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41",
+    "soulidityOriginalPackageId": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41",
+    "walrusPackageId": "0xfa65cb2d62f4d39e60346fb7d501c12538ca2bbc646eaa37ece2aec5f897814e"
+  },
+  "paymentCoinType": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+  "protocolConfigId": "0x07e44857d9e88108d25aefe2bc15421cf1086846be370f6afa8f79d481368aa7",
+  "protocolTreasuryId": "0x2ee02c442e42f8f55515b02f194e8b645c94a4214bf2710eef9b14753cdc74fd",
+  "protocolVersion": 8,
+  "roleConfigIds": {
+    "market": "0x948a6e52770e0424c6f15d30f0ee9964662babcbc886b5bda832238a968a3476",
+    "output": "0x52a55f9f49911e0160ed809b42ace478ee35dfe58b7eb3bd71b62e4802c4b6c1",
+    "physical": "0x4d097348bd030b1344c5a745659d07fed23d97be7235fa5243d7dcb279924bf9",
+    "release": "0x60ada183eb73f3e97b809a1e87d7081e3e2f0bd5b36f98d1703347f6bb91e3b1",
+    "runtime": "0x581c205bbc9659790432899ab0d63f4b7db4040d0b5a5b695933308dc1ad906a",
+    "seal": "0x59baab9432aa5c6831683316316675c9f7f8ba3a53fa0811d100af79ca1249e1"
+  },
+  "roles": {
+    "core": {
+      "callablePackageId": "0xce6a5fa79a4583951a381484ba2b6c4f82746d6570183e3540a108d988d98902",
+      "typeOriginPackageId": "0xce6a5fa79a4583951a381484ba2b6c4f82746d6570183e3540a108d988d98902"
+    },
+    "market": {
+      "callablePackageId": "0x3f4148b6c75e2db1daebbbadeb37666ec32bb8b38ebc0f93a2cbde07f9acae7e",
+      "typeOriginPackageId": "0x3f4148b6c75e2db1daebbbadeb37666ec32bb8b38ebc0f93a2cbde07f9acae7e"
+    },
+    "output": {
+      "callablePackageId": "0xe3a54b021cba35c1221cc0fb5cf347ea8805da61f000fa5bfa5f5e4812fe5f0b",
+      "typeOriginPackageId": "0xe3a54b021cba35c1221cc0fb5cf347ea8805da61f000fa5bfa5f5e4812fe5f0b"
+    },
+    "physical": {
+      "callablePackageId": "0x0a07de1e7e9b2e4b089e78cd6eeefccc47c5a3257c88109520cfafadc7b171ed",
+      "typeOriginPackageId": "0x0a07de1e7e9b2e4b089e78cd6eeefccc47c5a3257c88109520cfafadc7b171ed"
+    },
+    "release": {
+      "callablePackageId": "0x9f6078e49e87d885c91bdba99e90ecf93c1d85682be34e390667832f143e85bb",
+      "typeOriginPackageId": "0x9f6078e49e87d885c91bdba99e90ecf93c1d85682be34e390667832f143e85bb"
+    },
+    "runtime": {
+      "callablePackageId": "0x9c88bca9969c4d7cadfb5ad491c0828acc2781efaff93b724e91104b15720b00",
+      "typeOriginPackageId": "0x9c88bca9969c4d7cadfb5ad491c0828acc2781efaff93b724e91104b15720b00"
+    },
+    "seal": {
+      "callablePackageId": "0x12504100e9b3315562d84b874034b805ad1be2fd7472ccf40506f489e45855f2",
+      "typeOriginPackageId": "0x12504100e9b3315562d84b874034b805ad1be2fd7472ccf40506f489e45855f2"
+    }
+  },
+  "schemaVersion": "animacraft.maker-v8-runtime.v8"
+});
+
+  // User-authorized current deployment. Wallet confirmation remains mandatory.
   window.SoulidityV8Execution = Object.freeze({
     schemaVersion: 'animacraft.web-execution.v8',
     network: 'mainnet',
     chainIdentifier: '35834a8a',
     allowWalletSignature: true,
     allowBroadcast: true,
+  });
+
+  // Protected-content acceptance still requires the production Seal API key.
+  window.AnimacraftV8Protection = Object.freeze({
+    schemaVersion: 'animacraft.protected-execution.v1',
+    allowProtectedContent: false,
   });
 })();

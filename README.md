@@ -80,21 +80,51 @@ verify the seven package digests and configs, and only then enable execution.
 
 ## Local verification
 
-Requires Node.js 22.12+ and a compatible Sui CLI.
+The protected-content browser path has no owned rendering/key proxy and needs
+no private server environment key. Runtime configuration remains public in
+`public-v8/config.js`; every protected operation still attests chain policy.
+The currently deployed credential-requiring Seal committee is not usable by
+this no-secret path. A new independently verified policy release and real
+wallet-authorized decryption acceptance remain required; candidate PoP/CORS
+checks alone do not satisfy that acceptance.
+
+Every `npm run build` checks browser source, imported application modules and
+emitted assets for the retired protected APIs, Node crypto and server-only
+credentials/aggregator adapter. The same guard can be rerun without building:
+
+```bash
+node scripts/browser-backend-retirement-guard.mjs --source
+node scripts/browser-backend-retirement-guard.mjs --dist dist
+```
+
+The guard excludes historical documents, test fixtures and release tooling.
+No live credentials or chain configuration are removed by it.
+
+Requires Node.js 22.12+ and the approved Sui1.80.1-671ba71e69c7 CLI.
 
 ```bash
 npm ci
 npm run check
-npm run move:test
-npm run move:build
-npm run move:probes
-npm run move:size
+npm run move:release-gates -- --soulidity-root /path/to/reviewed/soulidity --sui /path/to/approved/sui
+ANIMACRAFT_SUI_BINARY=/path/to/approved/sui npm run move:seal-cap:quick
 ```
 
 `npm run check` runs the fresh client syntax suite, all fresh-v8 JavaScript
-tests, and a Vite production build. The Move commands cover all seven packages,
-adversarial compile probes, and bytecode size gates. Core remains at 63,918 of
-the self-imposed 64,000-byte production target (82 bytes headroom).
+tests, and a Vite production build. The release command snapshots the reviewed
+Animacraft/Soulidity pair once and runs all eight package suites, joint acceptance,
+build, seven adversarial groups, forced disassembly, package budgets and eight-package
+field limits. Component commands (move:test/build/probes/size/field-limits) use this
+same paired runner and require the same explicit peer root and approved CLI arguments;
+they are scoped diagnostics, not a complete release pass. No historical checkout fallback.
+
+Core's current certified no-growth ceiling is97,740 bytes, with4,660 bytes to the
+Protocol137 hard ceiling102,400. This explicitly supersedes the old64,000-byte
+candidate target; it does not claim that target passed. See
+docs/codex/PROTOCOL_137_SPEC.md. The independent seal-cap quick gate authenticates
+the CLI and reproduces the original-address bytecode certificate. On Linux x64,
+also set ANIMACRAFT_SUI_ARCHIVE to the downloaded official Ubuntu archive; the gate
+verifies its pinned digest and extracted executable against the actual CLI. CI
+requires exact peer commit variables and preserves both quick and graph evidence.
 
 The exact bounded acceptance contract is
 [`docs/codex/CLIENT_V8_CUTOVER_SPEC.md`](docs/codex/CLIENT_V8_CUTOVER_SPEC.md).

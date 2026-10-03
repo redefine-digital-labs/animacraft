@@ -13,7 +13,6 @@ import {
 } from '../maker-v8-market.js';
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
-  attestMakerV8Runtime,
 } from '../maker-v8-chain.js';
 import { MAKER_V8_TRANSACTION_ABSENCE_SCHEMA } from '../maker-v8-actions.js';
 import {
@@ -36,7 +35,7 @@ import {
   makerV8RecoveryScopeKey,
   makerV8RecoveryScopeLookupKey,
 } from '../maker-v8-recovery.js';
-import { CORE_BASE_REGISTRY_MODULE_BASE64 } from './fixtures/maker-v8-runtime-attestation.js';
+import { attestFixtureRuntime } from './fixtures/maker-v8-runtime-attestation.js';
 
 const packageId = (digit) => `0x${digit.repeat(64)}`;
 const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
@@ -57,9 +56,10 @@ function absentTransactionResult(transactionDigest, {
     digest: transactionDigest,
     absence: {
       schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
-      kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
-      rpcCode: -32602,
-      rpcType: 'InvalidParams',
+      kind: 'SUI_GRPC_TRANSACTION_NOT_FOUND',
+      grpcCode: 'NOT_FOUND',
+      grpcService: 'sui.rpc.v2.LedgerService',
+      grpcMethod: 'GetTransaction',
       requestedDigest: transactionDigest,
       chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
       watermarkEpoch,
@@ -98,116 +98,7 @@ const runtimeInput = Object.freeze({
   makerBindings: Object.freeze([]),
 });
 
-function runtimeAttestationRpc(runtime) {
-  const runtimeRoles = Object.keys(runtime.roles);
-  const roles = ['seal', 'runtime', 'output', 'physical', 'market', 'release'];
-  const authority = Object.fromEntries(roles.map((role, index) => [role, id(900 + index)]));
-  const roleCommitment = Object.fromEntries(
-    Object.keys(runtime.roles).map((role, index) => [role, bytes32(40 + index)]),
-  );
-  const productCommitment = bytes32(60);
-  const callSetCommitment = bytes32(61);
-  const objectResponse = (type, objectId, fields) => ({
-    data: {
-      objectId,
-      version: '1',
-      digest,
-      type,
-      owner: { Shared: { initial_shared_version: '1' } },
-      content: {
-        dataType: 'moveObject',
-        type,
-        fields: { id: { id: objectId }, ...fields },
-      },
-    },
-  });
-  const binding = Object.fromEntries(
-    Object.entries(runtime.roles).map(([role, identity], index) => [role, { fields: {
-      original_package_id: identity.typeOriginPackageId,
-      callable_package_id: identity.callablePackageId,
-      source_commitment: bytes32(10 + index),
-      package_commitment: bytes32(20 + index),
-      abi_commitment: bytes32(30 + index),
-      commitment: roleCommitment[role],
-    } }]),
-  );
-  const catalog = objectResponse(
-    `${runtime.roles.core.typeOriginPackageId}::package_binding_v8::ProductReleaseCatalogV8`,
-    runtime.catalogId,
-    {
-      version: '8',
-      protocol_config_id: runtime.protocolConfigId,
-      protocol_config_revision: '7',
-      protocol_config_commitment: bytes32(4),
-      binding: { fields: {
-        version: '8',
-        native_capability_mask: '127',
-        ...binding,
-        commitment: productCommitment,
-      } },
-      call_cap_set: { fields: {
-        version: '8',
-        catalog_id: runtime.catalogId,
-        product_binding_commitment: productCommitment,
-        ...Object.fromEntries(roles.map((role) => [`${role}_authority_id`, authority[role]])),
-        commitment: callSetCommitment,
-      } },
-      ...Object.fromEntries(roles.map((role) => [`${role}_call_cap`, null])),
-    },
-  );
-  const typeNames = {
-    seal: ['seal_v8', 'SealPolicyConfigV8'],
-    runtime: ['runtime_binding_v8', 'RuntimePackageConfigV8'],
-    output: ['output_v8', 'OutputPackageConfigV8'],
-    physical: ['physical_v8', 'PhysicalPackageConfigV8'],
-    market: ['market_v8', 'MarketPackageConfigV8'],
-    release: ['release_v8', 'ReleasePackageConfigV8'],
-  };
-  const configs = Object.fromEntries(roles.map((role) => {
-    const [moduleName, typeName] = typeNames[role];
-    return [role, objectResponse(
-      `${runtime.roles[role].typeOriginPackageId}::${moduleName}::${typeName}`,
-      runtime.roleConfigIds[role],
-      {
-        version: '8',
-        catalog_id: runtime.catalogId,
-        product_binding_commitment: productCommitment,
-        call_cap_set_commitment: callSetCommitment,
-        [`${role}_call_cap`]: { fields: {
-          version: '8',
-          authority_id: authority[role],
-          catalog_id: runtime.catalogId,
-          product_binding_commitment: productCommitment,
-          role_binding_commitment: roleCommitment[role],
-          call_cap_set_commitment: callSetCommitment,
-        } },
-      },
-    )];
-  }));
-  return {
-    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
-    async getObject({ id: objectId }) {
-      if (objectId === runtime.catalogId) return catalog;
-      const packageIndex = runtimeRoles.findIndex((role) => runtime.roles[role].callablePackageId === objectId);
-      if (packageIndex >= 0) return {
-        data: {
-          objectId,
-          version: '1',
-          digest: String(packageIndex + 2).repeat(44),
-          owner: { Immutable: true },
-          bcs: { dataType: 'package', id: objectId, version: '1', moduleMap: packageIndex === 0 ? { base_registry_v8: CORE_BASE_REGISTRY_MODULE_BASE64 } : {} },
-        },
-      };
-      const role = roles.find((candidate) => runtime.roleConfigIds[candidate] === objectId);
-      return configs[role];
-    },
-  };
-}
-
-const attestedRuntime = (await attestMakerV8Runtime(
-  runtimeAttestationRpc(runtimeInput),
-  runtimeInput,
-)).runtime;
+const attestedRuntime = await attestFixtureRuntime(runtimeInput);
 const marketClient = createMarketV8Client(attestedRuntime, { network: NETWORK });
 const { types } = marketClient;
 
@@ -1195,6 +1086,9 @@ test('real SDK bytes and durable fields fail closed under adversarial tampering'
     ['descriptor package tuple', (record) => { record.plan.market.descriptor.packageTuple[0].callablePackageId = id(7002); }],
     ['descriptor package digest', (record) => { record.plan.market.descriptor.packageTuple[0].packageDigest = 'Z'.repeat(32); }],
     ['descriptor object ref', (record) => { record.plan.market.descriptor.arguments[0].objectId = id(7003); }],
+    ['descriptor replacement id', (record) => { record.plan.market.descriptor.arguments.find((arg) => arg.name === 'replacement').objectId = id(7003); }],
+    ['descriptor replacement version', (record) => { record.plan.market.descriptor.arguments.find((arg) => arg.name === 'replacement').version = '99'; }],
+    ['descriptor replacement digest', (record) => { record.plan.market.descriptor.arguments.find((arg) => arg.name === 'replacement').digest = 'Z'.repeat(32); }],
     ['descriptor quote', (record) => { record.plan.market.descriptor.expectation.quoteCommitment = `0x${'ab'.repeat(32)}`; }],
     ['runtime package tuple', (record) => { record.plan.market.runtime.roles.core.callablePackageId = id(7004); }],
     ['gas snapshot', (record) => { record.plan.gas.budget = '10000001'; }],

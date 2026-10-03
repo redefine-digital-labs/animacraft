@@ -1,0 +1,9 @@
+[package]
+name = "output_native_soul_compile"
+edition = "2024.beta"
+
+[dependencies]
+animacraft_v8_output = { local = "../.." }
+
+[addresses]
+output_native_soul_compile = "0x0"

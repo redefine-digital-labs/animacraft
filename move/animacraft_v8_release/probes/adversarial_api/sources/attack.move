@@ -1,17 +1,17 @@
 module release_adversarial_api::attack;
 
-use animacraft_v8_core::package_binding_v8::{PackageCallCapV8, ReleaseRoleV8};
 use animacraft_v8_release::release_v8::{
     ReleasePackageConfigV8,
     ReleaseRenderWitnessV8,
     ReleaseTransportWitnessV8,
 };
 
-// Must fail: no external package can borrow Release's private call cap.
+// Setup consumes Release's cap. External packages still cannot access the
+// config's private installation state to impersonate its authority.
 public fun extract_release_cap(
     config: &ReleasePackageConfigV8,
-): &PackageCallCapV8<ReleaseRoleV8> {
-    &config.release_call_cap
+): &vector<u8> {
+    &config.installation_commitment
 }
 
 // Must fail independently: ciphertext transport authority is also

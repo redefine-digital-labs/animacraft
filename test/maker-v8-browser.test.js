@@ -12,6 +12,7 @@ import {
   SUI_MAINNET_CHAIN,
   StandardConnect,
   StandardEvents,
+  SuiSignPersonalMessage,
   SuiSignTransaction,
   WALLET_STANDARD_ERROR__USER__REQUEST_REJECTED,
   WalletStandardError,
@@ -105,24 +106,28 @@ const mainnetExecution = (overrides = {}) => ({
 
 test('compiler gRPC pins the exact measured Sui protocol profile', async () => {
   const response = {
-    protocolVersion: '133',
+    protocolVersion: '137',
     attributes: {
       object_runtime_max_num_cached_objects: '1000',
       object_runtime_max_num_store_entries: '1000',
     },
-    featureFlags: {},
+    featureFlags: { enable_unified_linkage: true },
   };
   const read = (value) => readMakerV8CompilerProtocolProfileV8({
     async getProtocolConfig() { return structuredClone(value); },
   });
   assert.deepEqual(await read(response), {
-    protocolVersion: '133',
+    protocolVersion: '137',
     objectRuntimeMaxNumCachedObjects: '1000',
     objectRuntimeMaxNumStoreEntries: '1000',
   });
 
   for (const [mutate, code] of [
+    [(value) => { value.featureFlags.enable_unified_linkage = false; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
+    [(value) => { delete value.featureFlags.enable_unified_linkage; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
     [(value) => { value.protocolVersion = '131'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(value) => { value.protocolVersion = '135'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(value) => { value.protocolVersion = '138'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
     [(value) => { value.attributes.object_runtime_max_num_cached_objects = '999'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
     [(value) => { value.attributes.object_runtime_max_num_store_entries = '1001'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
     [(value) => { delete value.attributes.object_runtime_max_num_store_entries; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
@@ -207,10 +212,11 @@ async function compilerFinalizedFixture() {
 function walletHarness(keypair, onSign = null) {
   let changeListener = null;
   let signCalls = 0;
+  let personalSignCalls = 0;
   const account = {
     address: keypair.toSuiAddress(),
     chains: [SUI_MAINNET_CHAIN],
-    features: [SuiSignTransaction],
+    features: [SuiSignTransaction, SuiSignPersonalMessage],
     publicKey: keypair.getPublicKey().toRawBytes(),
   };
   const wallet = {
@@ -240,6 +246,14 @@ function walletHarness(keypair, onSign = null) {
           return keypair.signTransaction(await transaction.build());
         },
       },
+      [SuiSignPersonalMessage]: {
+        version: '1.1.0',
+        async signPersonalMessage({ message }) {
+          personalSignCalls += 1;
+          const signed = await keypair.signPersonalMessage(message);
+          return { bytes: toBase64(message), signature: signed.signature };
+        },
+      },
     },
   };
   const registryListeners = new Map();
@@ -250,7 +264,11 @@ function walletHarness(keypair, onSign = null) {
       return () => registryListeners.delete(event);
     },
   };
-  return { wallet, account, registry, get signCalls() { return signCalls; } };
+  return {
+    wallet, account, registry,
+    get signCalls() { return signCalls; },
+    get personalSignCalls() { return personalSignCalls; },
+  };
 }
 
 function exactBytes(keypair) {
@@ -457,9 +475,10 @@ test('production transaction absence classifier is typed, watermarked, and reche
     error: null,
     absence: {
       schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
-      kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
-      rpcCode: -32602,
-      rpcType: 'InvalidParams',
+      kind: 'SUI_GRPC_TRANSACTION_NOT_FOUND',
+      grpcCode: 'NOT_FOUND',
+      grpcService: 'sui.rpc.v2.LedgerService',
+      grpcMethod: 'GetTransaction',
       requestedDigest: suiDigest,
       chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
       watermarkEpoch: '102',
@@ -538,6 +557,32 @@ test('real browser module import and production factory never consult an injecte
   } finally {
     delete globalThis.SoulidityV8Adapters;
   }
+});
+
+test('production adapters accept the dAppKit-selected Fresh-v8 wallet without consulting registry selection', async () => {
+  const selected = Object.freeze({
+    getCurrentAccount: async () => ({ address: objectId(44), network: 'mainnet' }),
+    reconnect: async () => ({ address: objectId(44), network: 'mainnet' }),
+    signExactTransaction: async (input) => input,
+    verifyExactSignature: async () => ({ verified: true }),
+    subscribe: () => () => {},
+    dispose: () => {},
+  });
+  const walletRegistry = {
+    get() { throw new Error('registry wallet auto-selection must not run'); },
+  };
+  const adapters = createProductionMakerV8BrowserAdapters({
+    execution: mainnetExecution(),
+    client: buildClient(),
+    walletRegistry,
+    wallet: selected,
+    dataSource: dataSourceStub(),
+  });
+  assert.equal(adapters.wallet, selected);
+  assert.deepEqual(await adapters.wallet.getCurrentAccount(), {
+    address: objectId(44),
+    network: 'mainnet',
+  });
 });
 
 test('false execution gates permit public browse, canonical build, and dry-run but never sign or broadcast', async () => {
@@ -712,6 +757,37 @@ test('Wallet Standard returns the exact bytes and fails closed on account or RPC
       bytes, digest: transactionDigest, signer: keypair.toSuiAddress(),
     }),
     { code: 'MAKER_V8_BROWSER_NETWORK_DRIFT' },
+  );
+});
+
+test('Wallet Standard authorizes a Seal session with the exact personal message only', async () => {
+  const keypair = new Ed25519Keypair();
+  const harness = walletHarness(keypair);
+  const connector = createWalletStandardConnectorV8({
+    registry: harness.registry,
+    execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: true }),
+    client: buildClient(),
+  });
+  const message = new TextEncoder().encode('animacraft-v8/seal/session/one');
+  const signed = await connector.signExactPersonalMessage({
+    message,
+    signer: keypair.toSuiAddress(),
+  });
+  assert.equal(signed.bytes, toBase64(message));
+  assert.equal(signed.signer, keypair.toSuiAddress());
+  assert.equal(typeof signed.signature, 'string');
+  assert.equal(harness.personalSignCalls, 1);
+  assert.equal(harness.signCalls, 0);
+
+  const wrong = Uint8Array.from(message);
+  harness.wallet.features[SuiSignPersonalMessage].signPersonalMessage = async () => {
+    const substituted = Uint8Array.from([...wrong, 0]);
+    const result = await keypair.signPersonalMessage(substituted);
+    return { bytes: toBase64(substituted), signature: result.signature };
+  };
+  await assert.rejects(
+    connector.signExactPersonalMessage({ message, signer: keypair.toSuiAddress() }),
+    { code: 'MAKER_V8_BROWSER_PERSONAL_MESSAGE_INVALID' },
   );
 });
 
@@ -1341,6 +1417,33 @@ test('gRPC historical readback preserves an exact uint64 bigint version', async 
   assert.equal(result.fields.version, 8);
 });
 
+test('compiler historical readback decodes exact optional Seal hashes and empty protection bindings', async () => {
+  const expectedType = `${objectId(51)}::output_v8::CompleteOutputV8`;
+  const ref = {
+    objectId: objectId(54), version: '8', digest: suiDigest,
+    owner: { kind: 'AddressOwner', value: objectId(55) },
+  };
+  const result = await readMakerV8CompilerHistoricalObjectV8({
+    async getHistoricalObject() {
+      return {
+        objectId: ref.objectId, version: ref.version, digest: ref.digest,
+        type: expectedType,
+        owner: { AddressOwner: objectId(55) },
+        previousTransaction: suiDigest,
+        parsed: {
+          seal_id: { vec: [Array(32).fill(9)] },
+          protection_binding_commitment: [],
+        },
+        contentBcs: new Uint8Array([1]), objectBcs: new Uint8Array([2]),
+      };
+    },
+  }, ref, expectedType, 'CompleteOutput', [
+    'sealId', 'protectionBindingCommitment',
+  ], suiDigest);
+  assert.equal(result.fields.sealId, '09'.repeat(32));
+  assert.equal(result.fields.protectionBindingCommitment, '');
+});
+
 test('compiler recovery binds canonical gRPC TransactionData, Core sender/digest/kind, and raw effects', async () => {
   const fixture = await compilerFinalizedFixture();
   const client = {
@@ -1440,6 +1543,8 @@ test('compiler shared historical projections preserve exact initial version and 
     });
     assert.equal(result.fields.version, 8);
     assert.equal(result.fields.rootId, objectId(53));
+    assert.deepEqual(result.owner, ref.owner);
+    assert.equal(Object.isFrozen(result.owner.value), true);
   }
   const historicalClient = (mutate) => ({
     async getHistoricalObject() {
@@ -1481,4 +1586,56 @@ test('compiler shared historical projections preserve exact initial version and 
     (error) => error.code === 'MAKER_V8_BROWSER_READBACK_UNAVAILABLE'
       && error.details.archivalRpcRequired === true,
   );
+});
+
+test('compiler historical readback preserves exact wallet versus Kiosk ownership', async () => {
+  const expectedType = `${objectId(51)}::soul::Soul`;
+  for (const kind of ['AddressOwner', 'ObjectOwner', 'Immutable']) {
+    const owner = Object.freeze({ kind, value: kind === 'Immutable' ? true : objectId(54) });
+    const ref = { objectId: objectId(52), version: '7', digest: suiDigest, owner };
+    const client = (observedOwner = owner) => ({
+      async getHistoricalObject() {
+        return {
+          objectId: ref.objectId, version: ref.version, digest: ref.digest,
+          type: expectedType, owner: observedOwner, previousTransaction: suiDigest,
+          parsed: { version: '8' },
+          contentBcs: new Uint8Array([1]), objectBcs: new Uint8Array([2]),
+        };
+      },
+    });
+    const result = await readMakerV8CompilerHistoricalObjectV8(
+      client(), ref, expectedType, 'Native Soul', ['version'], suiDigest,
+    );
+    assert.deepEqual(result.owner, owner);
+    assert.equal(Object.isFrozen(result.owner), true);
+    assert.equal(result.reference.kind, kind === 'Immutable' ? 'immutable' : 'owned');
+    if (kind !== 'Immutable') {
+      for (const wrongOwner of [
+        { kind, value: objectId(55) },
+        { kind: kind === 'AddressOwner' ? 'ObjectOwner' : 'AddressOwner', value: owner.value },
+      ]) {
+        await assert.rejects(readMakerV8CompilerHistoricalObjectV8(
+          client(wrongOwner), ref, expectedType, 'Native Soul', ['version'], suiDigest,
+        ), { code: 'MAKER_V8_BROWSER_HISTORICAL_OWNER_DRIFT' });
+      }
+    }
+  }
+});
+
+test('native SoulState historical content/access/collection Options keep exact IDs without relaxing ordinary IDs', async () => {
+  const owner = { kind: 'Shared', value: { initialSharedVersion: '1' } };
+  const ref = { objectId: objectId(52), version: '7', digest: suiDigest, owner };
+  const read = (type, contentId) => readMakerV8CompilerHistoricalObjectV8({
+    async getHistoricalObject() {
+      return { objectId: ref.objectId, version: ref.version, digest: ref.digest,
+        type, owner, previousTransaction: suiDigest,
+        parsed: { content_id: contentId, access_list_id: [objectId(54)], collection_id: [] },
+        contentBcs: new Uint8Array([1]), objectBcs: new Uint8Array([2]) };
+    },
+  }, ref, type, 'SoulState', ['contentId', 'accessListId', 'collectionId'], suiDigest);
+  const native = `${objectId(51)}::soul::SoulState`;
+  const result = await read(native, { vec: [objectId(53)] });
+  assert.deepEqual(result.fields, { contentId: objectId(53), accessListId: objectId(54), collectionId: null });
+  await assert.rejects(read(native, [objectId(53), objectId(54)]), { code: 'MAKER_V8_COMPILER_ID_INVALID' });
+  await assert.rejects(read(`${objectId(51)}::other::Record`, []), { code: 'MAKER_V8_COMPILER_ID_INVALID' });
 });

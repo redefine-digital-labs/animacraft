@@ -10,8 +10,10 @@ use std::type_name;
 use sui::balance::{Self as balance, Balance};
 use sui::coin::{Self as coin, Coin};
 use sui::event;
+use sui::dynamic_field;
 
 const VERSION: u64 = 8;
+const HASH_LENGTH: u64 = 32;
 const DEFAULT_PRIMARY_CONTENT_FEE_BPS: u16 = 1_000;
 const DEFAULT_FIXED_COMPLETE_FEE_ATOMIC: u64 = 0;
 const DEFAULT_MAKER_MARKET_FEE_BPS: u16 = 250;
@@ -27,6 +29,10 @@ const ETreasuryNotInitialized: u64 = 6;
 const ETreasuryMismatch: u64 = 7;
 const EInvalidRecipient: u64 = 8;
 const EInvalidAmount: u64 = 9;
+const ECatalogAlreadyCertified: u64 = 10;
+const ECatalogMismatch: u64 = 11;
+const ESoulidityBindingAlreadyInstalled: u64 = 12;
+const ESoulidityBindingMissing: u64 = 13;
 
 /// Fresh v8 one-time witness. It is unrelated to every legacy package.
 public struct PROTOCOL_CONFIG_V8 has drop {}
@@ -58,6 +64,63 @@ public struct ProtocolAdminCapV8 has key {
     config_id: ID,
 }
 
+public struct ProductReleaseCatalogSlotKeyV2 has copy, drop, store {}
+
+public struct ProductReleaseCatalogSlotV2 has store {
+    catalog_id: ID,
+}
+
+public struct SoulidityBindingSlotKeyV8 has copy, drop, store {}
+
+#[test]
+fun native_binding_slot_key_bcs_matches_client() {
+    assert!(bcs::to_bytes(&SoulidityBindingSlotKeyV8 {}) == vector[0], 100);
+    assert!(bcs::to_bytes(&ProductReleaseCatalogSlotKeyV2 {}) == vector[0], 101);
+}
+
+/// Protocol-owned immutable type identity, outside mutable fee revisions.
+/// This is not a transferable or independently constructible config object.
+public struct SoulidityBindingV8 has copy, drop, store {
+    config_id: ID,
+    soul_original: type_name::TypeName,
+    soul_defining: type_name::TypeName,
+    mint_original: type_name::TypeName,
+    mint_defining: type_name::TypeName,
+    owner_original: type_name::TypeName,
+    owner_defining: type_name::TypeName,
+}
+
+public(package) fun attach_soulidity_binding_v8(
+    config: &mut ProtocolConfigV8, admin: &ProtocolAdminCapV8,
+    soul_original: type_name::TypeName, soul_defining: type_name::TypeName,
+    mint_original: type_name::TypeName, mint_defining: type_name::TypeName,
+    owner_original: type_name::TypeName, owner_defining: type_name::TypeName,
+) {
+    assert_protocol_admin_v8(config, admin);
+    assert!(!dynamic_field::exists(&config.id, ProductReleaseCatalogSlotKeyV2 {}), ECatalogAlreadyCertified);
+    assert!(!dynamic_field::exists(&config.id, SoulidityBindingSlotKeyV8 {}), ESoulidityBindingAlreadyInstalled);
+    let config_id = object::id(config);
+    dynamic_field::add(&mut config.id, SoulidityBindingSlotKeyV8 {}, SoulidityBindingV8 {
+        config_id, soul_original, soul_defining, mint_original, mint_defining,
+        owner_original, owner_defining,
+    });
+}
+
+public(package) fun borrow_soulidity_binding_v8(config: &ProtocolConfigV8): &SoulidityBindingV8 {
+    assert!(dynamic_field::exists(&config.id, SoulidityBindingSlotKeyV8 {}), ESoulidityBindingMissing);
+    let binding = dynamic_field::borrow<SoulidityBindingSlotKeyV8, SoulidityBindingV8>(&config.id, SoulidityBindingSlotKeyV8 {});
+    assert!(binding.config_id == object::id(config), EConfigDrift);
+    binding
+}
+
+public fun soulidity_binding_config_id_v8(binding: &SoulidityBindingV8): ID { binding.config_id }
+public fun soulidity_soul_original_v8(binding: &SoulidityBindingV8): type_name::TypeName { binding.soul_original }
+public fun soulidity_soul_defining_v8(binding: &SoulidityBindingV8): type_name::TypeName { binding.soul_defining }
+public fun soulidity_mint_original_v8(binding: &SoulidityBindingV8): type_name::TypeName { binding.mint_original }
+public fun soulidity_mint_defining_v8(binding: &SoulidityBindingV8): type_name::TypeName { binding.mint_defining }
+public fun soulidity_owner_original_v8(binding: &SoulidityBindingV8): type_name::TypeName { binding.owner_original }
+public fun soulidity_owner_defining_v8(binding: &SoulidityBindingV8): type_name::TypeName { binding.owner_defining }
+
 /// The one protocol-wide revenue sink for the configured PaymentCoin. Every
 /// companion settles its exact protocol line into this shared object; no
 /// companion may return a loose protocol-fee Coin to its caller.
@@ -70,20 +133,20 @@ public struct ProtocolTreasuryV8<phantom PaymentCoin> has key {
     total_withdrawn: u128,
 }
 
-public struct ProtocolConfigCommitmentInputV8 has drop {
-    domain: vector<u8>,
-    version: u64,
+public struct ProtocolConfigCommitmentInputV2 has drop {
+    domain: String,
+    schema_revision: u64,
     config_id: ID,
+    config_revision: u64,
+    enabled: bool,
     core_original_package_id: ID,
     core_callable_package_id: ID,
-    revision: u64,
     treasury_id: Option<ID>,
     payment_coin_type: String,
     primary_content_fee_bps: u16,
     fixed_complete_fee_atomic: u64,
     maker_market_fee_bps: u16,
     soul_market_fee_bps: u16,
-    enabled: bool,
 }
 
 public struct ProtocolV8EnabledChanged has copy, drop {
@@ -137,21 +200,16 @@ fun init(otw: PROTOCOL_CONFIG_V8, ctx: &mut TxContext) {
     transfer::transfer(cap, ctx.sender());
 }
 
-public fun version_v8(): u64 { VERSION }
-public fun default_primary_content_fee_bps_v8(): u16 {
-    DEFAULT_PRIMARY_CONTENT_FEE_BPS
+public fun is_nonzero_hash_v2(value: &vector<u8>): bool {
+    if (value.length() != HASH_LENGTH) return false;
+    let mut index = 0;
+    while (index < HASH_LENGTH) {
+        if (value[index] != 0) return true;
+        index = index + 1;
+    };
+    false
 }
-public fun default_fixed_complete_fee_atomic_v8(): u64 {
-    DEFAULT_FIXED_COMPLETE_FEE_ATOMIC
-}
-public fun default_maker_market_fee_bps_v8(): u16 {
-    DEFAULT_MAKER_MARKET_FEE_BPS
-}
-public fun default_soul_market_fee_bps_v8(): u16 {
-    DEFAULT_SOUL_MARKET_FEE_BPS
-}
-
-public fun native_usdc_type_v8(): String {
+fun native_usdc_type_v8(): String {
     b"0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
         .to_string()
 }
@@ -236,6 +294,18 @@ public fun assert_enabled_v8(config: &ProtocolConfigV8) {
     );
 }
 
+/// Narrow identity check for Core's stop-only lifecycle path. Disabling the
+/// protocol changes its revision/commitment, but must not prevent an owner from
+/// stopping an existing Maker. No issuance or resume path may use this check.
+public(package) fun assert_stop_identity_v8(config: &ProtocolConfigV8) {
+    assert!(config.version == VERSION, EConfigDrift);
+    assert!(config.treasury_id.is_some(), ETreasuryNotInitialized);
+    assert!(config.core_original_package_id == current_core_original_package_id(),
+        ECorePackageMismatch);
+    assert!(config.core_callable_package_id == current_core_callable_package_id(),
+        ECorePackageMismatch);
+}
+
 /// Any package may deposit only into the exact config-bound treasury. This is
 /// intentionally public so split v8 companions can settle atomically; it can
 /// never withdraw or redirect funds.
@@ -298,26 +368,84 @@ public fun assert_protocol_admin_v8(
     assert!(cap.config_id == object::id(config), EInvalidAdminCap);
 }
 
+/// Claims the only production Catalog slot for this fresh ProtocolConfig.
+/// The slot is outside the immutable config commitment but owned by its UID;
+/// a second certification attempt aborts before any Catalog can escape.
+public(package) fun claim_product_release_catalog_v2(
+    config: &mut ProtocolConfigV8,
+    cap: &ProtocolAdminCapV8,
+    catalog_id: ID,
+) {
+    assert_protocol_admin_v8(config, cap);
+    assert_enabled_v8(config);
+    assert!(!dynamic_field::exists(
+        &config.id, ProductReleaseCatalogSlotKeyV2 {}),
+        ECatalogAlreadyCertified);
+    // Native Soul identity must be fixed before the irreversible Catalog claim:
+    // installation is deliberately forbidden once this slot exists.
+    let _ = borrow_soulidity_binding_v8(config);
+    dynamic_field::add(
+        &mut config.id,
+        ProductReleaseCatalogSlotKeyV2 {},
+        ProductReleaseCatalogSlotV2 { catalog_id },
+    );
+}
+
+/// Test fixtures predate the production slot; absence is accepted only for
+/// values that cannot be constructed in a production build. When present,
+/// every live check must match the one claimed Catalog exactly.
+public(package) fun assert_product_release_catalog_if_claimed_v2(
+    config: &ProtocolConfigV8,
+    catalog_id: ID,
+) {
+    if (dynamic_field::exists(
+        &config.id, ProductReleaseCatalogSlotKeyV2 {})) {
+        let slot = dynamic_field::borrow<ProductReleaseCatalogSlotKeyV2,
+            ProductReleaseCatalogSlotV2>(
+                &config.id, ProductReleaseCatalogSlotKeyV2 {});
+        assert!(slot.catalog_id == catalog_id, ECatalogMismatch);
+    };
+}
+
+#[test]
+#[expected_failure(abort_code = EConfigDrift)]
+fun fresh_catalog_rejects_native_binding_with_wrong_parent() {
+    let mut ctx = tx_context::dummy();
+    let (mut config, admin) = new_protocol_for_testing<u64>(true, &mut ctx);
+    attach_soulidity_binding_v8(&mut config, &admin,
+        type_name::with_original_ids<animacraft_v8_core::soul::Soul>(),
+        type_name::with_defining_ids<animacraft_v8_core::soul::Soul>(),
+        type_name::with_original_ids<animacraft_v8_core::animacraft_v8_binding::MintBindingWitnessV8>(),
+        type_name::with_defining_ids<animacraft_v8_core::animacraft_v8_binding::MintBindingWitnessV8>(),
+        type_name::with_original_ids<animacraft_v8_core::animacraft_v8_binding::SoulOwnerWitnessV8>(),
+        type_name::with_defining_ids<animacraft_v8_core::animacraft_v8_binding::SoulOwnerWitnessV8>());
+    let binding = dynamic_field::borrow_mut<SoulidityBindingSlotKeyV8, SoulidityBindingV8>(
+        &mut config.id, SoulidityBindingSlotKeyV8 {});
+    binding.config_id = object::id_from_address(@0x99);
+    claim_product_release_catalog_v2(&mut config, &admin, object::id_from_address(@0x42));
+    destroy_protocol_for_testing(config, admin);
+}
+
 fun assert_admin(config: &ProtocolConfigV8, cap: &ProtocolAdminCapV8) {
     assert_protocol_admin_v8(config, cap);
 }
 
 fun refresh_commitment(config: &mut ProtocolConfigV8) {
     config.commitment = hash::sha2_256(bcs::to_bytes(
-        &ProtocolConfigCommitmentInputV8 {
-            domain: b"animacraft-v8/protocol-config",
-            version: config.version,
+        &ProtocolConfigCommitmentInputV2 {
+            domain: b"animacraft-fresh-v8/core/protocol-config/v2".to_string(),
+            schema_revision: VERSION,
             config_id: object::id(config),
+            config_revision: config.revision,
+            enabled: config.enabled,
             core_original_package_id: config.core_original_package_id,
             core_callable_package_id: config.core_callable_package_id,
-            revision: config.revision,
             treasury_id: config.treasury_id,
             payment_coin_type: config.payment_coin_type,
             primary_content_fee_bps: config.primary_content_fee_bps,
             fixed_complete_fee_atomic: config.fixed_complete_fee_atomic,
             maker_market_fee_bps: config.maker_market_fee_bps,
             soul_market_fee_bps: config.soul_market_fee_bps,
-            enabled: config.enabled,
         },
     ));
 }
@@ -369,6 +497,7 @@ fun current_core_callable_package_id(): ID {
 }
 
 public fun config_id_v8(config: &ProtocolConfigV8): ID { object::id(config) }
+public fun config_enabled_v2(config: &ProtocolConfigV8): bool { config.enabled }
 public fun config_revision_v8(config: &ProtocolConfigV8): u64 { config.revision }
 public fun config_treasury_id_v8(config: &ProtocolConfigV8): &Option<ID> {
     &config.treasury_id
@@ -378,9 +507,6 @@ public fun config_core_original_package_id_v8(config: &ProtocolConfigV8): ID {
 }
 public fun config_core_callable_package_id_v8(config: &ProtocolConfigV8): ID {
     config.core_callable_package_id
-}
-public fun config_payment_coin_type_v8(config: &ProtocolConfigV8): &String {
-    &config.payment_coin_type
 }
 public fun config_primary_content_fee_bps_v8(config: &ProtocolConfigV8): u16 {
     config.primary_content_fee_bps
@@ -394,25 +520,13 @@ public fun config_maker_market_fee_bps_v8(config: &ProtocolConfigV8): u16 {
 public fun config_soul_market_fee_bps_v8(config: &ProtocolConfigV8): u16 {
     config.soul_market_fee_bps
 }
-public fun config_enabled_v8(config: &ProtocolConfigV8): bool { config.enabled }
 public fun config_commitment_v8(config: &ProtocolConfigV8): &vector<u8> {
     &config.commitment
 }
-public fun protocol_treasury_id_v8<PaymentCoin>(
-    treasury: &ProtocolTreasuryV8<PaymentCoin>,
-): ID { object::id(treasury) }
-public fun protocol_treasury_config_id_v8<PaymentCoin>(
-    treasury: &ProtocolTreasuryV8<PaymentCoin>,
-): ID { treasury.config_id }
-public fun protocol_treasury_balance_v8<PaymentCoin>(
+#[test_only]
+public fun protocol_treasury_balance_for_testing<PaymentCoin>(
     treasury: &ProtocolTreasuryV8<PaymentCoin>,
 ): u64 { treasury.revenue.value() }
-public fun protocol_treasury_total_collected_v8<PaymentCoin>(
-    treasury: &ProtocolTreasuryV8<PaymentCoin>,
-): u128 { treasury.total_collected }
-public fun protocol_treasury_total_withdrawn_v8<PaymentCoin>(
-    treasury: &ProtocolTreasuryV8<PaymentCoin>,
-): u128 { treasury.total_withdrawn }
 
 #[test_only]
 public fun new_protocol_for_testing<PaymentCoin>(
@@ -484,9 +598,19 @@ public fun new_protocol_with_treasury_for_testing<PaymentCoin>(
 
 #[test_only]
 public fun destroy_protocol_for_testing(
-    config: ProtocolConfigV8,
+    mut config: ProtocolConfigV8,
     cap: ProtocolAdminCapV8,
 ) {
+    if (dynamic_field::exists(&config.id, SoulidityBindingSlotKeyV8 {})) {
+        let _ = dynamic_field::remove<SoulidityBindingSlotKeyV8, SoulidityBindingV8>(&mut config.id, SoulidityBindingSlotKeyV8 {});
+    };
+    if (dynamic_field::exists(
+        &config.id, ProductReleaseCatalogSlotKeyV2 {})) {
+        let ProductReleaseCatalogSlotV2 { catalog_id: _ } =
+            dynamic_field::remove<ProductReleaseCatalogSlotKeyV2,
+                ProductReleaseCatalogSlotV2>(
+                    &mut config.id, ProductReleaseCatalogSlotKeyV2 {});
+    };
     let ProtocolConfigV8 {
         id: config_uid,
         version: _,
@@ -582,8 +706,8 @@ fun exact_protocol_treasury_collects_and_withdraws() {
         &mut ctx,
     );
     deposit_protocol_revenue_v8(&config, &mut treasury, payment);
-    assert!(protocol_treasury_balance_v8(&treasury) == 100, EInvalidAmount);
-    assert!(protocol_treasury_total_collected_v8(&treasury) == 100, EInvalidAmount);
+    assert!(treasury.revenue.value() == 100, EInvalidAmount);
+    assert!(treasury.total_collected == 100, EInvalidAmount);
     withdraw_protocol_revenue_v8(
         &config,
         &cap,
@@ -592,8 +716,8 @@ fun exact_protocol_treasury_collects_and_withdraws() {
         @0xB11,
         &mut ctx,
     );
-    assert!(protocol_treasury_balance_v8(&treasury) == 0, EInvalidAmount);
-    assert!(protocol_treasury_total_withdrawn_v8(&treasury) == 100, EInvalidAmount);
+    assert!(treasury.revenue.value() == 0, EInvalidAmount);
+    assert!(treasury.total_withdrawn == 100, EInvalidAmount);
     destroy_protocol_with_treasury_for_testing(config, treasury, cap);
 }
 
@@ -603,4 +727,15 @@ fun disabled_config_cannot_begin_a_draft() {
     let (config, cap) = new_protocol_for_testing<sui::sui::SUI>(false, &mut ctx);
     assert_enabled_for_coin_v8<sui::sui::SUI>(&config);
     destroy_protocol_for_testing(config, cap);
+}
+
+#[test]
+fun enabled_reader_reports_actual_config_state() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 82, 0, 0, 0);
+    let (enabled, enabled_cap) = new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let (disabled, disabled_cap) = new_protocol_for_testing<sui::sui::SUI>(false, &mut ctx);
+    assert!(config_enabled_v2(&enabled), EProtocolDisabled);
+    assert!(!config_enabled_v2(&disabled), EProtocolDisabled);
+    destroy_protocol_for_testing(enabled, enabled_cap);
+    destroy_protocol_for_testing(disabled, disabled_cap);
 }

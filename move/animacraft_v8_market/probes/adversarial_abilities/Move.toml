@@ -3,8 +3,9 @@ name = "market_adversarial_abilities"
 edition = "2024.beta"
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "722ac4fcf4841346c91775f596c4ce23fb7fbd0f" }
 animacraft_v8_market = { local = "../.." }
+animacraft_v8_release = { local = "../../../animacraft_v8_release" }
 
 [addresses]
 market_adversarial_abilities = "0x0"

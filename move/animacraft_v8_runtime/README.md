@@ -89,6 +89,16 @@ submit exactly one proof per present entry in increasing Part order.
 unrelated, reordered, paused, revoked, or unequipped sources and returns one
 no-ability `RuntimeLoadoutAuthorizationV8`.
 
+Every committed attached Pack additionally requires one no-ability
+`PackDefinitionProofV8`, ordered by its attachment index, even when it contributes
+no Parts or selected Styles. These proofs bind the same loadout ID, revision and
+commitment and reconstruct the exact Base-plus-Pack layout. Completion proofs
+require current access/admission and all rules/visibility. Equipment proofs
+check content and visibility without completion rules or renewed access;
+equipment-only proofs cannot authorize completion. Both final consumers require
+the complete proof vector. This does not open the still-guarded Pack publication
+or unsupported client readers.
+
 Output must consume that authorization against the same borrowed loadout. A
 same-transaction mutation after proof sealing invalidates revision and current
 commitment checks. Output receives ordered selection and pricing commitments;

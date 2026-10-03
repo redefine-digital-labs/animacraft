@@ -21,7 +21,7 @@ import {
   createFreshV8Controller,
   parseFreshV8Route,
   renderFreshV8App,
-} from '../app.js';
+} from '../maker-v8-market-controller.js';
 import { makerV8StableType } from '../maker-v8-runtime.js';
 import { MAKER_V8_TRANSACTION_ABSENCE_SCHEMA } from '../maker-v8-actions.js';
 import {
@@ -55,9 +55,10 @@ function absentTransactionResult(transactionDigest, watermarkEpoch = '100') {
     digest: transactionDigest,
     absence: {
       schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
-      kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
-      rpcCode: -32602,
-      rpcType: 'InvalidParams',
+      kind: 'SUI_GRPC_TRANSACTION_NOT_FOUND',
+      grpcCode: 'NOT_FOUND',
+      grpcService: 'sui.rpc.v2.LedgerService',
+      grpcMethod: 'GetTransaction',
       requestedDigest: transactionDigest,
       chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
       watermarkEpoch,

@@ -4,6 +4,7 @@ edition = "2024.beta"
 
 [dependencies]
 animacraft_v8_core = { local = "../.." }
+animacraft_v8_seal = { local = "../../../animacraft_v8_seal" }
 
 [addresses]
 animacraft_v8_core_adversarial_runtime = "0x0"
