@@ -4,6 +4,8 @@ import test from 'node:test';
 import { indexedDB, IDBFactory } from 'fake-indexeddb';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { toBase58, toBase64 } from '@mysten/sui/utils';
+import { bcs } from '@mysten/sui/bcs';
+import { blobIdToInt } from '@mysten/walrus';
 
 import {
   createMakerV8WalrusPersistenceV8,
@@ -20,7 +22,7 @@ const GAS = `0x${'44'.repeat(32)}`;
 const GAS_DIGEST = toBase58(new Uint8Array(32).fill(5));
 const ROOT_HASH = new Uint8Array(32).fill(7);
 const NONCE = new Uint8Array(32).fill(8);
-const BLOB_ID = 'A'.repeat(43);
+const BLOB_ID = 'cXS9BhbUGvvS9F8_gn8mU4Yq8AhXzd1yLoiZIkb2Pq0';
 const SIGNATURE = toBase64(new Uint8Array(97).fill(9));
 
 function tx(label) {
@@ -58,7 +60,7 @@ function memoryPersistence() {
   };
 }
 
-function harness(persistence = memoryPersistence()) {
+function harness(persistence = memoryPersistence(), clockStart = 100) {
   const bytes = new TextEncoder().encode('fresh-v8-manifest');
   const calls = [];
   const queries = [];
@@ -90,7 +92,7 @@ function harness(persistence = memoryPersistence()) {
     async getBlobObject() {
       return {
         id: OBJECT,
-        blob_id: BLOB_ID,
+        blob_id: bcs.u256().parse(bcs.u256().serialize(blobIdToInt(BLOB_ID)).toBytes()),
         size: String(bytes.length),
         deletable: false,
         certified_epoch: 10n,
@@ -151,10 +153,44 @@ function harness(persistence = memoryPersistence()) {
       allowWalletSignature: true, allowBroadcast: true,
     },
     fetcher: async () => ({ ok: true, async arrayBuffer() { return bytes.buffer.slice(0); } }),
-    now: (() => { let value = 100; return () => value++; })(),
+    now: (() => { let value = clockStart; return () => value++; })(),
   });
-  return { publisher, bytes, calls, queries };
+  return { publisher, bytes, calls, queries, walrusClient };
 }
+
+test('cold certified checkpoint validates SDK u256 identity and recovers without another payment', async () => {
+  const persistence = memoryPersistence(), setup = harness(persistence);
+  const uploadId = 'certified-readback';
+  await setup.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'application/json', bytesBase64: toBase64(setup.bytes) });
+  await setup.publisher.requestSignature(uploadId);
+  setup.queries.push('FINALIZED_SUCCESS');
+  await setup.publisher.resume(uploadId);
+  await setup.publisher.requestSignature(uploadId);
+  const checkpoint = await persistence.load(uploadId);
+  const cold = harness(persistence, 1000);
+  const exactBlob = await cold.walrusClient.getBlobObject();
+  assert.equal(exactBlob.blob_id, '78361367043362699497441434551893230522866857218300878006731490088621860287601');
+  for (const blob_id of ['1', '-1', (1n << 256n).toString(), 'not-an-integer', BLOB_ID, null]) {
+    cold.walrusClient.getBlobObject = async () => ({ ...exactBlob, blob_id });
+    cold.queries.push('FINALIZED_SUCCESS');
+    await assert.rejects(cold.publisher.resume(uploadId), { code: 'MAKER_V8_WALRUS_CERTIFICATION_INVALID' });
+    assert.deepEqual(await persistence.load(uploadId), checkpoint);
+  }
+  for (const patch of [{ id: OWNER }, { size: '1' }, { deletable: true }, { certified_epoch: null }]) {
+    cold.walrusClient.getBlobObject = async () => ({ ...exactBlob, ...patch });
+    cold.queries.push('FINALIZED_SUCCESS');
+    await assert.rejects(cold.publisher.resume(uploadId), { code: 'MAKER_V8_WALRUS_CERTIFICATION_INVALID' });
+    assert.deepEqual(await persistence.load(uploadId), checkpoint);
+  }
+  cold.walrusClient.getBlobObject = async () => exactBlob;
+  cold.walrusClient.getVerifiedBlobStatus = async () => ({ type: 'permanent', isCertified: false });
+  cold.queries.push('FINALIZED_SUCCESS');
+  await assert.rejects(cold.publisher.resume(uploadId), { code: 'MAKER_V8_WALRUS_CERTIFICATION_INVALID' });
+  cold.walrusClient.getVerifiedBlobStatus = async () => ({ type: 'permanent', isCertified: true });
+  cold.queries.push('FINALIZED_SUCCESS');
+  assert.equal((await cold.publisher.resume(uploadId)).status, 'COMPLETE');
+  assert.deepEqual(cold.calls.filter(([name]) => ['sign', 'broadcast', 'upload'].includes(name)), []);
+});
 
 test('publication review freezes one transaction; signing alone never broadcasts and rejects consumed review', async () => {
   const value = harness();
