@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { readApprovedUiDonor as donorFile } from './fixtures/approved-ui-donors/read-donor.mjs';
 
 import { createCharacterMakerV8Starter } from '../maker-v8-document.js';
 import { prepareCreatorColorChange } from '../maker-v8-creator-colors.js';
@@ -14,7 +13,6 @@ import {
   renderApprovedMakerV8Workspace,
 } from '../maker-workspace-v8-view.js';
 
-const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 
 test('external Product creation explains published-target prerequisites in every locale', () => {
   const document = createCharacterMakerV8Starter();
@@ -177,13 +175,6 @@ test('version history copy names the existing storage retention in every support
     assert.match(makerWorkspaceDictionary(locale).versionHistoryCopy, new RegExp(`\\b${limit}`), locale);
   }
 });
-
-function donorFile(path) {
-  return execFileSync('git', ['show', `aac90dbc:${path}`], {
-    cwd: repositoryRoot,
-    encoding: 'utf8',
-  });
-}
 
 const donorWorkspace = donorFile('maker-workspace.js');
 const donorDefinition = donorFile('maker-definition-editor.js');

@@ -27,6 +27,7 @@ jobs:
     env:
       SOULIDITY_COMMIT_SHA: ${{ inputs.soulidity_commit_sha || vars.SOULIDITY_COMMIT_SHA }}
       SOULIDITY_WORKSPACE: ${{ github.workspace }}/_paired/soulidity
+      MOVE_HOME: ${{ runner.temp }}/native-soul-external-sources
 
     steps:
       - name: Checkout
@@ -67,6 +68,9 @@ jobs:
           set -euo pipefail
           test "$(git -C _paired/soulidity rev-parse HEAD)" = "$SOULIDITY_COMMIT_SHA"
           test -f "$SOULIDITY_WORKSPACE/move/soulidity/sources/market.move"
+
+      - name: Prepare pinned external source prerequisites
+        run: node scripts/prepare-native-soul-external-sources.mjs "$MOVE_HOME"
 
       - name: Check production build
         run: npm run check

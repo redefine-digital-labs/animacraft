@@ -2244,6 +2244,14 @@ async function pressActualKey(cdp, key, code = key, modifiers = 0) {
 
 async function closeActualOverlays(cdp, count = 5) {
   for (let index = 0; index < count; index += 1) await pressActualKey(cdp, 'Escape', 'Escape');
+  // Player introduction deliberately closes through its actual Start making
+  // action. Escape alone leaves this modal over the diagnostic wallet button.
+  if (await evaluate(cdp, `Boolean(${visibleElementExpression('#makerV4PlayerMount #makerPlayerInfoDialog')})`)) {
+    await clickActual(cdp, '#makerV4PlayerMount [data-action="close-player-info"]');
+    await waitForExpression(cdp, `!Boolean(${visibleElementExpression('#makerV4PlayerMount #makerPlayerInfoDialog')})`, {
+      label: 'Player introduction closed through its real action',
+    });
+  }
 }
 
 async function typeActualText(cdp, selector, value) {
@@ -2753,6 +2761,33 @@ async function actualLocale(cdp, locale) {
 
 async function openActualPlayerIntro(cdp) {
   await ensureActualCreatorEditor(cdp);
+  if (process.env.ANIMACRAFT_BROWSER_DIAGNOSTIC_PLAYER_DECODE_DELAY_MS) {
+    const delay = Number(process.env.ANIMACRAFT_BROWSER_DIAGNOSTIC_PLAYER_DECODE_DELAY_MS);
+    await evaluate(cdp, `(() => {
+      const NativeImage = globalThis.Image;
+      const evidence = globalThis.__ANIMACRAFT_PLAYER_DECODE_DIAGNOSTIC__ = { delayMs: ${delay}, events: [] };
+      const sample = () => {
+        const canvas = document.querySelector('#makerV4PlayerCanvas');
+        return canvas ? { width: canvas.width, height: canvas.height,
+          rows: getComputedStyle(canvas.parentElement).gridTemplateRows,
+          render: document.querySelector('#v4PlayerRenderStatus')?.dataset.state } : null;
+      };
+      globalThis.Image = function(...args) {
+        const image = new NativeImage(...args);
+        let onload;
+        Object.defineProperty(image, 'onload', { get: () => onload, set: value => { onload = value; } });
+        image.addEventListener('load', event => {
+          evidence.events.push({ phase: 'decoded-before-canvas-write', canvas: sample() });
+          setTimeout(() => {
+            onload?.call(image, event);
+            queueMicrotask(() => evidence.events.push({ phase: 'after-canvas-write', canvas: sample() }));
+          }, ${delay});
+        });
+        return image;
+      };
+      globalThis.Image.prototype = NativeImage.prototype;
+    })()`);
+  }
   await clickActual(cdp, '#makerV4CreatorMount [data-action="open-player"]');
   await waitForExpression(cdp, `Boolean(${visibleElementExpression('#makerV4PlayerMount #makerPlayerInfoDialog')})`, {
     timeoutMs: 60_000,
@@ -2898,8 +2933,28 @@ async function captureProductState(cdp, state, result) {
 async function showProductState(cdp, state, locale, theme) {
   await cdp.send('Page.bringToFront');
   const result = await driveActualProductState(cdp, state, locale, theme);
+  if (state.id.startsWith('player:')) await waitForActualPlayerPreview(cdp);
   await waitForStableBrowserPaint(cdp);
   return captureProductState(cdp, state, result);
+}
+
+async function waitForActualPlayerPreview(cdp) {
+  const dimensions = await evaluate(cdp, `(() => {
+    const label = document.querySelector('#makerV4CreatorMount .v4-version-badge')?.textContent || '';
+    const match = /([0-9]+)×([0-9]+)/.exec(label);
+    return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+  })()`);
+  assert.ok(dimensions?.width > 0 && dimensions?.height > 0, 'Player capture requires the actual Creator document dimensions.');
+  // Dialog visibility and render=ready precede asynchronous PNG decode. Until
+  // drawCanonicalPng writes both attributes the new canvas is still 300×150,
+  // which changes mobile grid geometry when its real square image arrives.
+  // Wait for that actual draw, not arbitrary quiet time or a retried comparison.
+  await waitForExpression(cdp, `(() => {
+    const canvas = document.querySelector('#makerV4PlayerCanvas');
+    return document.querySelector('#v4PlayerRenderStatus')?.dataset.state === 'ready'
+      && canvas?.getAttribute('width') === ${JSON.stringify(String(dimensions.width))}
+      && canvas?.getAttribute('height') === ${JSON.stringify(String(dimensions.height))};
+  })()`, { timeoutMs: 30_000, label: 'Player canonical PNG decoded and drawn at the current document dimensions' });
 }
 
 async function waitForStableBrowserPaint(cdp) {
@@ -3686,6 +3741,11 @@ test('real Chromium validates current product states and handoff without write a
   timeout: 600_000,
 }, async (context) => {
   const diagnosticCase = process.env.ANIMACRAFT_BROWSER_DIAGNOSTIC_CASE;
+  const decodeDelay = process.env.ANIMACRAFT_BROWSER_DIAGNOSTIC_PLAYER_DECODE_DELAY_MS;
+  if (decodeDelay !== undefined) {
+    assert.ok(diagnosticCase?.endsWith('/player:intro'), 'Decode delay is only a Player intro diagnostic challenge.');
+    assert.match(decodeDelay, /^(?:[1-9][0-9]{0,2}|1000)$/, 'Decode delay must be 1–1000 milliseconds.');
+  }
   const validCases = manifest.initialMatrix.viewports.flatMap(viewport =>
     manifest.initialMatrix.locales.flatMap(locale => manifest.initialMatrix.themes.flatMap(theme =>
       manifest.states.map(state => `${viewport}/${locale}/${theme}/${state.id}`))));
@@ -3870,6 +3930,9 @@ test('real Chromium validates current product states and handoff without write a
     // Exercise the actual wallet disconnect, then inspect the surviving public
     // links and account-only fail-closed links on the current production page.
     await closeActualOverlays(candidateProduct.cdp);
+    if (decodeDelay) context.diagnostic(`Player decode timing evidence: ${JSON.stringify(await evaluate(
+      candidateProduct.cdp, 'globalThis.__ANIMACRAFT_PLAYER_DECODE_DIAGNOSTIC__',
+    ))}`);
     await clickActual(candidateProduct.cdp, '#walletButton');
     await waitForExpression(candidateProduct.cdp,
       `!document.querySelector('#walletButton')?.classList.contains('connected')`,

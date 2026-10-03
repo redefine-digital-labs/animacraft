@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { readApprovedUiDonor as donorFile } from './fixtures/approved-ui-donors/read-donor.mjs';
 
 import { createCharacterMakerV8Starter } from '../maker-v8-document.js';
 import { createMakerV8LocalPlayer } from '../maker-v8-local-player.js';
@@ -19,7 +18,6 @@ import {
   renderApprovedMakerV8Player,
 } from '../maker-player-v8-view.js';
 
-const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const viewSource = await readFile(new URL('../maker-player-v8-view.js', import.meta.url), 'utf8');
 
 function rulesPlayerFixture() {
@@ -287,13 +285,6 @@ test('local projection keeps all five locales and blocks remote asset/export URL
     assert.doesNotMatch(renderApprovedMakerV8Player(view), /https:\/\/example.com/);
   }
 });
-
-function donorFile(path, commit = 'aac90dbc') {
-  return execFileSync('git', ['show', `${commit}:${path}`], {
-    cwd: repositoryRoot,
-    encoding: 'utf8',
-  });
-}
 
 const donorWorkspace = donorFile('maker-workspace.js');
 const donorI18n = donorFile('maker-workspace-i18n.js');

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readApprovedUiDonor } from './fixtures/approved-ui-donors/read-donor.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -32,10 +33,9 @@ test('unchanged original pure-view sources remain byte locked to aac90dbc', () =
 
 test('workflow locale deltas preserve every other historical key and translation', async () => {
   const file = 'maker-workspace-i18n.js';
-  const result = spawnSync('git', ['show', `aac90dbc:${file}`], { cwd: ROOT, encoding: 'utf8' });
-  assert.equal(result.status, 0, 'Historical comparison source must be present.');
-  assert.equal(createHash('sha256').update(result.stdout).digest('hex'), ORIGINAL_PURE_VIEWS[file]);
-  const historicalSource = result.stdout.replace("'./expansion-pack-lifecycle-i18n.js'",
+  const source = readApprovedUiDonor(file);
+  assert.equal(createHash('sha256').update(source).digest('hex'), ORIGINAL_PURE_VIEWS[file]);
+  const historicalSource = source.replace("'./expansion-pack-lifecycle-i18n.js'",
     JSON.stringify(pathToFileURL(join(ROOT, 'expansion-pack-lifecycle-i18n.js')).href));
   const historical = await import(`data:text/javascript;base64,${Buffer.from(historicalSource).toString('base64')}`);
   const current = await import(pathToFileURL(join(ROOT, file)).href);

@@ -6466,6 +6466,34 @@ test('envelope rescue staging rejects late files/refreshes and invalidated walle
   });
 });
 
+async function waitForCompletionState(read, message) {
+  // WebCrypto runs outside the immediate queue. Wait for observable progress,
+  // not a fixed number of turns; a missing control must still fail promptly.
+  const deadline = Date.now() + 5000;
+  do {
+    const value = read();
+    if (value) return value;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  } while (Date.now() < deadline);
+  assert.fail(message);
+}
+
+async function waitForCompletionEvent(event) {
+  let timer;
+  try {
+    await Promise.race([waitForEvent(event), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Completion event did not finish within 5 seconds')), 5000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+function waitForJourneyConfirmation(mount, previousId = null) {
+  return waitForCompletionState(() => {
+    const id = mount.innerHTML.match(/data-action="player-confirm-journey-step" data-confirmation-id="([^"]+)"/)?.[1];
+    return id && id !== previousId ? id : null;
+  }, 'Expected a new visible journey confirmation');
+}
+
 test('post-mint envelope step uses the original confirmation for all or only remaining entries', async t => {
   for (const count of [1, 2, 3]) await t.test(`${count} envelopes`, async () => {
     const address = `0x${'85'.repeat(32)}`; const approvals = [];
@@ -6483,12 +6511,13 @@ test('post-mint envelope step uses the original confirmation for all or only rem
     const mount = harness.doc.getElementById('makerV4PlayerMount');
     const fire = (action, confirmationId) => {
       const target = new FakeTarget(harness.doc, { dataset: { action, confirmationId } });
-      target.parent = mount; mount.fire('click', { target });
+      target.parent = mount; return mount.fire('click', { target });
     };
-    fire('player-confirm-complete'); for (let i = 0; i < 10; i++) await settle();
+    const completion = fire('player-confirm-complete');
+    const confirmId = await waitForJourneyConfirmation(mount);
     assert.deepEqual(approvals, []); assert.match(mount.innerHTML, /50000000 MIST/);
-    const confirmId = mount.innerHTML.match(/data-action="player-confirm-journey-step" data-confirmation-id="([^"]+)"/)[1];
-    fire('player-confirm-journey-step', confirmId); for (let i = 0; i < 4; i++) await settle();
+    await waitForCompletionEvent(fire('player-confirm-journey-step', confirmId));
+    await waitForCompletionEvent(completion);
     assert.deepEqual(approvals, [true]); app.destroy();
   });
 });
@@ -6523,21 +6552,21 @@ test('upfront completion overview waits in original Export and continues without
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   const fire = (action, confirmationId) => {
     const control = new FakeTarget(harness.doc, { dataset: { action, confirmationId } });
-    control.parent = mount; mount.fire('click', { target: control }); return control;
+    control.parent = mount; return { control, event: mount.fire('click', { target: control }) };
   };
-  fire('player-confirm-complete');
-  for (let i = 0; i < 10; i++) await settle();
+  const completion = fire('player-confirm-complete').event;
+  const overviewId = await waitForJourneyConfirmation(mount);
   assert.deepEqual(approvals, []);
   assert.match(mount.innerHTML, /9007199254741000/);
   assert.match(mount.innerHTML, /id="makerPlayerExportDialog"/);
-  const overviewId = mount.innerHTML.match(/data-action="player-confirm-journey-step" data-confirmation-id="([^"]+)"/)[1];
   const stale = fire('player-confirm-journey-step', overviewId);
-  for (let i = 0; i < 4; i++) await settle();
+  await waitForCompletionEvent(stale.event);
+  await waitForJourneyConfirmation(mount, overviewId);
   assert.deepEqual(approvals, [['overview', true]]);
-  mount.fire('click', { target: stale }); await settle();
+  await waitForCompletionEvent(mount.fire('click', { target: stale.control }));
   assert.deepEqual(approvals, [['overview', true]]);
-  fire('close-player-export');
-  for (let i = 0; i < 4; i++) await settle();
+  await waitForCompletionEvent(fire('close-player-export').event);
+  await waitForCompletionEvent(completion);
   assert.deepEqual(approvals, [['overview', true], ['transaction', false]]);
   app.destroy();
 });
@@ -6565,23 +6594,21 @@ test('prepared journey steps wait for their own button and an old confirmation c
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   const fire = (action, confirmationId) => {
     const control = new FakeTarget(harness.doc, { dataset: { action, confirmationId } });
-    control.parent = mount; mount.fire('click', { target: control }); return control;
+    control.parent = mount; return { control, event: mount.fire('click', { target: control }) };
   };
-  fire('player-confirm-complete');
-  for (let i = 0; i < 10; i++) await settle();
+  const completion = fire('player-confirm-complete').event;
+  const firstId = await waitForJourneyConfirmation(mount);
   assert.deepEqual(approvals, []);
   assert.match(mount.innerHTML, /9007199254740993/);
-  const firstId = mount.innerHTML.match(/data-action="player-confirm-journey-step" data-confirmation-id="([^"]+)"/)[1];
   const oldButton = fire('player-confirm-journey-step', firstId);
-  for (let i = 0; i < 4; i++) await settle();
+  await waitForCompletionEvent(oldButton.event);
+  const nextId = await waitForJourneyConfirmation(mount, firstId);
   assert.deepEqual(approvals, [{ action: 'acquireMakerAccess', approved: true }]);
-  const nextId = mount.innerHTML.match(/data-action="player-confirm-journey-step" data-confirmation-id="([^"]+)"/)[1];
   assert.notEqual(nextId, firstId);
-  mount.fire('click', { target: oldButton });
-  await settle();
+  await waitForCompletionEvent(mount.fire('click', { target: oldButton.control }));
   assert.equal(approvals.length, 1);
-  fire('player-cancel-journey-step', nextId);
-  for (let i = 0; i < 4; i++) await settle();
+  await waitForCompletionEvent(fire('player-cancel-journey-step', nextId).event);
+  await waitForCompletionEvent(completion);
   assert.deepEqual(approvals[1], { action: 'commitLoadout', approved: false });
   assert.doesNotMatch(mount.innerHTML, /id="makerPlayerCompletionStep"/);
   app.destroy();
@@ -6606,17 +6633,18 @@ test('closing, leaving, editing, changing wallet or destroying rejects a visible
     const mount = harness.doc.getElementById('makerV4PlayerMount');
     const fire = (action, value) => {
       const control = new FakeTarget(harness.doc, { dataset: { action } });
-      control.parent = mount; control.value = value; mount.fire(action === 'player-profile-name' ? 'change' : 'click', { target: control });
+      control.parent = mount; control.value = value;
+      return mount.fire(action === 'player-profile-name' ? 'change' : 'click', { target: control });
     };
-    fire('player-confirm-complete');
-    for (let i = 0; i < 10; i++) await settle();
+    const completion = fire('player-confirm-complete');
+    await waitForJourneyConfirmation(mount);
     assert.match(mount.innerHTML, /id="makerPlayerCompletionStep"/, boundary);
-    if (boundary === 'close') fire('close-player-export');
+    if (boundary === 'close') await waitForCompletionEvent(fire('close-player-export'));
     if (boundary === 'navigate') app.navigate('templates');
-    if (boundary === 'edit') fire('player-profile-name', 'Changed during confirmation');
+    if (boundary === 'edit') await waitForCompletionEvent(fire('player-profile-name', 'Changed during confirmation'));
     if (boundary === 'wallet') await app.refreshConnection({ account: { address: ROOT_TWO, chains: ['sui:mainnet'] } });
     if (boundary === 'destroy') await app.destroy();
-    for (let i = 0; i < 5; i++) await settle();
+    await waitForCompletionEvent(completion);
     assert.deepEqual(approvals, [{ approved: false, aborted: true }], boundary);
     assert.doesNotMatch(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Ready for Soulidity/, boundary);
     await app.destroy();
@@ -6635,16 +6663,17 @@ test('closing after confirmation suppresses late success navigation and leaves c
   const app = createOriginalProductApp(harness); await app.ready; await app.openPlayer(ROOT_ONE);
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   const fire = action => { const control = new FakeTarget(harness.doc, { dataset: { action } });
-    control.parent = mount; mount.fire('click', { target: control }); };
-  fire('player-complete'); for (let i = 0; i < 6; i++) await settle();
-  fire('player-confirm-complete'); for (let i = 0; i < 8; i++) await settle();
+    control.parent = mount; return mount.fire('click', { target: control }); };
+  await waitForCompletionEvent(fire('player-complete'));
+  const completion = fire('player-confirm-complete');
+  await waitForCompletionState(() => harness.calls.completePlayerJourney.length, 'Expected the pending completion journey');
   assert.equal(harness.calls.completePlayerJourney.length, 1);
-  fire('close-player-export');
+  await waitForCompletionEvent(fire('close-player-export'));
   finished.resolve({ status: 'HANDOFF_READY', handoffUrl: 'https://www.soulidity.ai/my-souls' });
-  for (let i = 0; i < 8; i++) await settle();
+  await waitForCompletionEvent(completion);
   assert.deepEqual(navigations, []);
   assert.doesNotMatch(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Ready for Soulidity/);
-  fire('player-preview-export'); for (let i = 0; i < 6; i++) await settle();
+  await waitForCompletionEvent(fire('player-preview-export'));
   assert.match(mount.innerHTML, /data-action="player-download-png"[^>]*disabled/);
   app.destroy();
 });
@@ -6671,19 +6700,18 @@ test('recovered foreign-draft Soul does not unlock the current PNG and starting 
   const app = createOriginalProductApp(harness); await app.ready; await app.openPlayer(ROOT_ONE);
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   const fire = dataset => { const control = new FakeTarget(harness.doc, { dataset }); control.parent = mount;
-    mount.fire('click', { target: control }); };
-  fire({ action: 'player-complete' }); for (let i = 0; i < 6; i++) await settle();
-  fire({ action: 'player-confirm-complete' }); for (let i = 0; i < 10; i++) await settle();
+    return mount.fire('click', { target: control }); };
+  await waitForCompletionEvent(fire({ action: 'player-complete' }));
+  await waitForCompletionEvent(fire({ action: 'player-confirm-complete' }));
   assert.deepEqual(navigations, []);
   assert.match(mount.innerHTML, /data-action="player-start-new-completion"/);
   assert.match(mount.innerHTML, /data-action="player-download-png"[^>]*disabled/);
   assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /current draft has not been completed/);
-  fire({ action: 'player-start-new-completion', completedActionId: 'previous-action' });
-  for (let i = 0; i < 8; i++) await settle();
+  const completion = fire({ action: 'player-start-new-completion', completedActionId: 'previous-action' });
+  const confirmationId = await waitForJourneyConfirmation(mount);
   assert.deepEqual(approvals, []);
-  const confirmationId = mount.innerHTML.match(/data-action="player-confirm-journey-step" data-confirmation-id="([^"]+)"/)[1];
-  fire({ action: 'player-confirm-journey-step', confirmationId });
-  for (let i = 0; i < 8; i++) await settle();
+  await waitForCompletionEvent(fire({ action: 'player-confirm-journey-step', confirmationId }));
+  await waitForCompletionEvent(completion);
   assert.deepEqual(approvals, [true]);
   assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Ready for Soulidity/);
   app.destroy();
@@ -6711,26 +6739,17 @@ test('after starting another Soul, cancelling its next step permits ordinary sam
   const app = createOriginalProductApp(harness); await app.ready; await app.openPlayer(ROOT_ONE);
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   const fire = dataset => { const control = new FakeTarget(harness.doc, { dataset }); control.parent = mount;
-    mount.fire('click', { target: control }); };
-  const settleAll = async () => { for (let i = 0; i < 8; i++) await settle(); };
-  fire({ action: 'player-complete' }); await settleAll();
-  fire({ action: 'player-confirm-complete' }); await settleAll();
-  fire({ action: 'player-start-new-completion', completedActionId: 'prior-action' }); await settleAll();
-  const idFor = async action => {
-    const pattern = new RegExp(`data-action="${action}" data-confirmation-id="([^"]+)"`);
-    const deadline = Date.now() + 1000;
-    // Crypto/project preparation may take more than eight immediate callbacks
-    // when the other suites run concurrently. Wait for the actual control.
-    while (Date.now() < deadline) {
-      const match = mount.innerHTML.match(pattern);
-      if (match) return match[1];
-      await settle();
-    }
-    assert.fail(`Expected journey confirmation control: ${action}`);
-  };
-  fire({ action: 'player-confirm-journey-step', confirmationId: await idFor('player-confirm-journey-step') }); await settleAll();
-  fire({ action: 'player-cancel-journey-step', confirmationId: await idFor('player-cancel-journey-step') }); await settleAll();
-  fire({ action: 'player-confirm-complete' }); await settleAll();
+    return mount.fire('click', { target: control }); };
+  await waitForCompletionEvent(fire({ action: 'player-complete' }));
+  await waitForCompletionEvent(fire({ action: 'player-confirm-complete' }));
+  assert.match(mount.innerHTML, /data-action="player-start-new-completion"/);
+  const completion = fire({ action: 'player-start-new-completion', completedActionId: 'prior-action' });
+  const firstId = await waitForJourneyConfirmation(mount);
+  await waitForCompletionEvent(fire({ action: 'player-confirm-journey-step', confirmationId: firstId }));
+  const nextId = await waitForJourneyConfirmation(mount, firstId);
+  await waitForCompletionEvent(fire({ action: 'player-cancel-journey-step', confirmationId: nextId }));
+  await waitForCompletionEvent(completion);
+  await waitForCompletionEvent(fire({ action: 'player-confirm-complete' }));
   assert.deepEqual(starts, [false, true, false]);
   assert.doesNotMatch(mount.innerHTML, /data-action="player-start-new-completion"/);
   app.destroy();

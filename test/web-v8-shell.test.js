@@ -316,6 +316,11 @@ test('CI pins the verified Sui CLI and gates all fresh web and Move artifacts', 
   assert.match(workflow, /sui 1\.80\.1-671ba71e69c7/);
   assert.doesNotMatch(workflow, /releases\.sui\.io|SUI_BINARY_SHA256|1\.78\.1/);
   assert.match(workflow, /npm run check/);
+  const webJob = workflow.slice(workflow.indexOf('\n  web:'), workflow.indexOf('\n  move:'));
+  assert.match(webJob, /MOVE_HOME: \$\{\{ runner\.temp \}\}\/native-soul-external-sources/);
+  const prepareSources = webJob.indexOf('node scripts/prepare-native-soul-external-sources.mjs "$MOVE_HOME"');
+  assert.ok(prepareSources >= 0 && prepareSources < webJob.indexOf('run: npm run check'),
+    'Fresh Web runners must verify pinned external sources before the source/build-entry tests');
   assert.match(workflow, /npm run scan:fresh:source/);
   assert.match(workflow, /node scripts\/native-soul-test-graph\.mjs/);
   assert.match(workflow, /--soulidity-root "\$GITHUB_WORKSPACE\/_paired\/soulidity"/);
