@@ -7082,9 +7082,7 @@ test('current V1 Player completion fails closed until the bridge certifies livin
   assert.match(mount.innerHTML, /Certified living-content binding is unavailable/);
   const confirm = new FakeTarget(harness.doc, { dataset: { action: 'player-confirm-complete' } });
   confirm.parent = mount;
-  mount.fire('click', { target: confirm });
-  await settle();
-  await settle();
+  await waitForEvent(mount.fire('click', { target: confirm }));
   assert.equal(harness.calls.completePlayerJourney.length, 0);
   assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /living-content binding is unavailable/);
   app.destroy();
@@ -7102,15 +7100,13 @@ test('blocked reception popup stops completion before costs and permits retry in
   const app = createOriginalProductApp(harness); await app.ready; await app.openPlayer(ROOT_ONE);
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   const complete = new FakeTarget(harness.doc, { dataset: { action: 'player-complete' } }); complete.parent = mount;
-  mount.fire('click', { target: complete });
-  for (let i = 0; i < 6; i++) await settle();
+  await waitForEvent(mount.fire('click', { target: complete }));
   const confirm = new FakeTarget(harness.doc, { dataset: { action: 'player-confirm-complete' } }); confirm.parent = mount;
-  mount.fire('click', { target: confirm });
-  for (let i = 0; i < 6; i++) await settle();
+  await waitForEvent(mount.fire('click', { target: confirm }));
   assert.equal(harness.calls.completePlayerJourney.length, 0);
   assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Allow the Soulidity account window/);
-  blocked = false; mount.fire('click', { target: confirm });
-  for (let i = 0; i < 8; i++) await settle();
+  blocked = false;
+  await waitForEvent(mount.fire('click', { target: confirm }));
   assert.equal(harness.calls.completePlayerJourney.length, 1);
   app.destroy();
 });
@@ -7245,12 +7241,18 @@ test('late completion for Player A cannot mark newly opened Player B complete', 
   const first = certifiedMaker({ rootId: ROOT_ONE, title: 'Maker A' });
   const second = certifiedMaker({ rootId: ROOT_TWO, title: 'Maker B' });
   const completion = deferred();
+  const completionEntered = deferred();
+  const digestEntered = deferred();
+  const releaseDigest = deferred();
   const harness = browserHarness({
     connection: { account: { address, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [first, second], diagnostics: [] },
     playerSessionResult: (rootId) => playerSession(rootId, rootId === ROOT_ONE ? 'Maker A' : 'Maker B'),
     renderPlayerPreviewResult: canonicalPreview(),
-    completePlayerJourneyResult: () => completion.promise,
+    completePlayerJourneyResult: () => {
+      completionEntered.resolve();
+      return completion.promise;
+    },
     certifiedLivingContent: true,
   });
   const app = createOriginalProductApp(harness);
@@ -7259,25 +7261,41 @@ test('late completion for Player A cannot mark newly opened Player B complete', 
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   const complete = new FakeTarget(harness.doc, { dataset: { action: 'player-complete' } });
   complete.parent = mount;
-  mount.fire('click', { target: complete });
-  for (let index = 0; index < 5; index += 1) await settle();
+  await waitForEvent(mount.fire('click', { target: complete }));
+  // Hold the real project digest before bridge entry. This deliberately
+  // reproduces CI preparation spanning more than the former eight flushes.
+  const nativeDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+  let holdDigest = true;
+  harness.win.crypto = { subtle: { async digest(...args) {
+    if (holdDigest) {
+      holdDigest = false;
+      digestEntered.resolve();
+      await releaseDigest.promise;
+    }
+    return nativeDigest(...args);
+  } } };
   const confirm = new FakeTarget(harness.doc, { dataset: { action: 'player-confirm-complete' } });
   confirm.parent = mount;
-  mount.fire('click', { target: confirm });
-  for (let index = 0; index < 8 && harness.calls.completePlayerJourney.length === 0; index += 1) await settle();
+  const firstConfirmation = mount.fire('click', { target: confirm });
+  await digestEntered.promise;
+  for (let index = 0; index < 8; index += 1) await settle();
+  assert.equal(harness.calls.completePlayerJourney.length, 0,
+    'event-loop turns cannot finish an unresolved project digest');
+  releaseDigest.resolve();
+  await completionEntered.promise;
   assert.equal(harness.calls.completePlayerJourney.length, 1);
   assert.equal(harness.calls.completePlayerJourney[0].rootId, ROOT_ONE);
   await app.openPlayer(ROOT_TWO);
   completion.resolve({ status: 'HANDOFF_READY', handoffUrl: '' });
-  await settle();
-  await settle();
+  await waitForEvent(firstConfirmation);
   assert.equal(app.getState().playerRootId, ROOT_TWO);
   assert.match(mount.innerHTML, /Maker B/);
   assert.doesNotMatch(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Ready for Soulidity/);
   const completeB = new FakeTarget(harness.doc, { dataset: { action: 'player-complete' } });
   completeB.parent = mount;
-  mount.fire('click', { target: completeB });
-  for (let index = 0; index < 5; index += 1) await settle();
+  await waitForEvent(mount.fire('click', { target: completeB }));
+  assert.equal(harness.calls.completePlayerJourney.length, 1,
+    'opening Player B Export must not start another completion');
   assert.match(mount.innerHTML, /data-action="player-download-png"[^>]+disabled/);
   app.destroy();
 });
