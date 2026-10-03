@@ -85,6 +85,7 @@ import {
   buildSealPolicy,
   buildSourceArtifact,
   canonicalJson,
+  canonicalMainnetV8WalJson,
   computeAbiCommitment,
   computeExecutionPlanId,
   computePackageCommitment,
@@ -2418,11 +2419,15 @@ async function appendAndColdRead(paths, wal, event) {
   const cold = await readReleaseWal({ path: paths.wal });
   if (cold.revision !== appended.revision
     || cold.headEventSha256 !== appended.headEventSha256
-    || canonicalJson(cold) !== canonicalJson(appended)) {
+    || canonicalMainnetV8WalJson(cold) !== canonicalMainnetV8WalJson(appended)) {
     fail('MAINNET_V8_WAL_COLD_READ_DRIFT', 'Durable WAL cold read differs after append.');
   }
   return cold;
 }
+
+// The same durable append/cold-read boundary is independently testable without
+// authorizing a network read, signature or transaction submission.
+export { appendAndColdRead as appendMainnetV8WalAndColdRead };
 
 function packageIdsFromFinalManifest(wal) {
   if (!wal.finalManifest || wal.releaseId !== wal.finalManifest.releaseId) {

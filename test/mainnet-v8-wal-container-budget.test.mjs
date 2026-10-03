@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import * as L from '../scripts/mainnet-v8-release-lib.mjs';
+import { appendMainnetV8WalAndColdRead } from '../scripts/mainnet-v8-release.mjs';
 import { nativeSoulCompletedWalFixture } from './fixtures/native-soul-completed-wal-fixture.mjs';
 
 const f = await nativeSoulCompletedWalFixture();
@@ -69,10 +70,9 @@ test('valid >500k-node publication WAL appends initialization and a second event
     const first = clone(wal.events);
     for (const status of ['READY', 'SIGNED']) {
       const event = f.wal.events.find(row => row.ordinal === '8' && row.status === status);
-      wal = await L.appendReleaseWal({ path, expectedRevision: wal.revision,
-        expectedHeadEventSha256: wal.headEventSha256,
-        event: { ordinal: '8', attempt: '0', status, evidence: event.evidence,
-          recordedAt: new Date(Date.UTC(2026, 8, 9, 0, 0, Number(wal.revision))).toISOString() } });
+      wal = await appendMainnetV8WalAndColdRead({ wal: path }, wal,
+        { ordinal: '8', attempt: '0', status, evidence: event.evidence,
+          recordedAt: new Date(Date.UTC(2026, 8, 9, 0, 0, Number(wal.revision))).toISOString() });
       assert.deepEqual(wal.events.slice(0, first.length), first);
       assert.equal(await readFile(path, 'utf8'), `${referenceJson(wal)}\n`);
       assert.deepEqual(await L.readReleaseWal(path), wal);
