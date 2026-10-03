@@ -1,4 +1,4 @@
-import { WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG } from '@mysten/walrus';
+import { WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt } from '@mysten/walrus';
 import { bcs } from '@mysten/sui/bcs';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
@@ -715,9 +715,17 @@ export function createMakerV8WalrusPublisherV8({
     const certified = (status?.type === 'permanent' && status.isCertified === true)
       || (status?.type === 'deletable'
         && Number(status.deletableCounts?.count_deletable_certified ?? 0) > 0);
+    // getBlobObject decodes the on-chain u256 as decimal, while encoded IDs
+    // use base64url. Convert through the pinned SDK, retaining exact identity.
+    let objectBlobId = null;
+    try {
+      if (typeof blob?.blob_id === 'string' && UINT.test(blob.blob_id)) {
+        objectBlobId = blobIdFromInt(blob.blob_id);
+      }
+    } catch { /* Malformed/out-of-range u256 remains invalid certification. */ }
     if (!certified
       || String(blob?.id ?? '').toLowerCase() !== record.upload.blobObjectId
-      || blob?.blob_id !== record.encoded.blobId
+      || objectBlobId !== record.encoded.blobId
       || integer(blob?.size, 'Walrus blob size') !== String(record.byteLength)
       || blob?.deletable !== false
       || blob?.certified_epoch == null) {
