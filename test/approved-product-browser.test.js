@@ -2132,7 +2132,23 @@ async function elementInteractionPoint(cdp, expression, label, { requireEnabled 
     throw new Error(`Visible interaction target is missing: ${label}. ${JSON.stringify(debug)}`);
   }
   try {
-    await cdp.send('DOM.scrollIntoViewIfNeeded', { objectId });
+    try {
+      await cdp.send('DOM.scrollIntoViewIfNeeded', { objectId });
+    } catch (error) {
+      // CDP can prove detachment before the later RAF geometry check runs.
+      // No pointer is sent by this helper. Reacquire once, only for this exact
+      // pre-scroll rejection; the fresh target must pass every original check.
+      if (!allowDetachedRetry || error.message !== '-32000: Node is detached from document') throw error;
+      const fresh = await evaluate(cdp, `(() => {
+        const element = ${expression};
+        const rect = element?.getBoundingClientRect();
+        return Boolean(element?.isConnected && rect?.width > 0 && rect?.height > 0);
+      })()`);
+      if (!fresh) throw error;
+      prePointerReacquisitions.push({ label, oldConnected: false, beforePointer: true, phase: 'scroll' });
+      return await elementInteractionPoint(cdp, expression, label,
+        { requireEnabled, allowDetachedRetry: false });
+    }
     const position = await cdp.send('Runtime.callFunctionOn', {
       objectId,
       functionDeclaration: `async function() {
@@ -3544,6 +3560,52 @@ test('current browser manifest preserves functional coverage without historical 
   assert.ok(initialCartesianProduct > 0, 'The real-browser matrix may never be empty.');
   assert.equal(initialCartesianProduct, 36, 'The initial approved browser matrix must execute 36 states.');
   assert.equal(manifest.initialMatrix.expectedComparisons, initialCartesianProduct);
+});
+
+test('pointer helper reacquires only one explicitly detached pre-scroll target', async (context) => {
+  const diagnosticStart = prePointerReacquisitions.length;
+  context.after(() => { prePointerReacquisitions.length = diagnosticStart; });
+  const run = async ({ failures = 1, message = '-32000: Node is detached from document',
+    fresh = true, disabled = false, covered = false, pointerFailure = false } = {}) => {
+    const calls = [];
+    let handles = 0;
+    let scrolls = 0;
+    const cdp = { send: async (method, params = {}) => {
+      calls.push({ method, params });
+      if (method === 'Runtime.evaluate') return { result: params.returnByValue
+        ? { value: fresh } : { objectId: `target-${++handles}` } };
+      if (method === 'DOM.scrollIntoViewIfNeeded' && scrolls++ < failures) throw new Error(message);
+      if (method === 'Runtime.callFunctionOn') return { result: { value: {
+        connected: true, layoutStable: true, width: 10, height: 10, x: 5, y: 5,
+        disabled, hitIsTarget: !covered, text: 'target', hit: { tag: 'button' },
+      } } };
+      if (method === 'Input.dispatchMouseEvent' && pointerFailure) throw new Error(message);
+      return {};
+    } };
+    let error;
+    try { await clickActualExpression(cdp, 'document.querySelector("button")', 'regression target'); }
+    catch (caught) { error = caught; }
+    return { calls, handles, error };
+  };
+  const recovered = await run();
+  assert.equal(recovered.error, undefined);
+  assert.equal(recovered.handles, 2);
+  assert.equal(recovered.calls.filter(row => row.method === 'Runtime.releaseObject').length, 2);
+  assert.deepEqual(recovered.calls.filter(row => row.method === 'Input.dispatchMouseEvent')
+    .map(row => row.params.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
+  for (const options of [
+    { failures: 2 }, { message: '-32000: unrelated protocol error' }, { fresh: false },
+    { disabled: true }, { covered: true },
+  ]) {
+    const result = await run(options);
+    assert.ok(result.error, JSON.stringify(options));
+    assert.equal(result.calls.filter(row => row.method === 'Input.dispatchMouseEvent').length, 0);
+    assert.ok(result.handles <= 2);
+  }
+  const afterPointer = await run({ failures: 0, pointerFailure: true });
+  assert.match(afterPointer.error.message, /Node is detached/);
+  assert.equal(afterPointer.handles, 1, 'Never re-resolve or replay after pointer input starts.');
+  assert.equal(afterPointer.calls.filter(row => row.method === 'Input.dispatchMouseEvent').length, 1);
 });
 
 test('real Chromium dismisses Creator overlays across all ten tabs on desktop and mobile', {
