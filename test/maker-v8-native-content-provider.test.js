@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { IDBFactory } from 'fake-indexeddb';
 import { Transaction } from '@mysten/sui/transactions';
 import { toBase58, toBase64 } from '@mysten/sui/utils';
+import { blobIdToInt } from '@mysten/walrus';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { createMakerV8NativeContentProviderV8 } from '../maker-v8-native-content-provider.js';
 import { createMakerV8NativeContentStoreV8 } from '../maker-v8-native-content-store.js';
@@ -40,7 +41,7 @@ function harness() {
           async upload() { calls.push('upload'); return { blobId: info.blobId, blobObjectId: objectId, certificate: toBase64(new Uint8Array(80)) }; } };
       },
       certifyBlobTransaction() { return transaction('certify'); },
-      async getBlobObject(objectId) { const blobId = byObject.get(objectId); return { id: objectId, blob_id: blobId,
+      async getBlobObject(objectId) { const blobId = byObject.get(objectId); return { id: objectId, blob_id: String(blobIdToInt(blobId)),
         size: String(blobs.get(blobId).length), deletable: false, certified_epoch: 10n, storage: { end_epoch: 13n } }; },
       async getVerifiedBlobStatus() { return { type: 'permanent', isCertified: true, initialCertifiedEpoch: 10 }; },
     },
