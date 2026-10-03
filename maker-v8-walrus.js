@@ -16,6 +16,9 @@ import {
 export const MAKER_V8_WALRUS_SCHEMA = 'animacraft.maker-v8-walrus-upload.v1';
 export const MAKER_V8_WALRUS_STORE_SCHEMA = 'animacraft.maker-v8-walrus-store.v1';
 export const MAKER_V8_WALRUS_MAINNET_RELAY = 'https://upload-relay.mainnet.walrus.space';
+// Per-blob ceiling, not a fixed fee or the total publication budget. The SDK
+// quotes the relay dynamically; gas and WAL storage are separate costs.
+export const MAKER_V8_WALRUS_MAX_RELAY_TIP_MIST = 10_000_000;
 export const MAKER_V8_WALRUS_MAINNET_AGGREGATOR =
   'https://aggregator.walrus-mainnet.walrus.space';
 
@@ -813,7 +816,7 @@ export function createProductionMakerV8WalrusPublisherV8({
   const walrusClient = new WalrusClient({
     network: 'mainnet',
     suiClient: buildClient,
-    uploadRelay: { host: uploadRelay, sendTip: { max: 1_000_000 }, timeout: 600_000 },
+    uploadRelay: { host: uploadRelay, sendTip: { max: MAKER_V8_WALRUS_MAX_RELAY_TIP_MIST }, timeout: 600_000 },
   });
   const persistence = createMakerV8WalrusPersistenceV8(indexedDB, { storageManager });
   const publisher = createMakerV8WalrusPublisherV8({
