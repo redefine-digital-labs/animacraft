@@ -411,7 +411,7 @@ function exactPlayerSession(value, expectedRootId) {
   return value;
 }
 
-function creatorCapabilities({ versionHistory = false, localPlayer = false, projectExport = false, projectImport = false, styleAsset = false, recoveryCopy = false, importing = false, packCreate = false, packOpen = false } = {}) {
+function creatorCapabilities({ publication = false, versionHistory = false, localPlayer = false, projectExport = false, projectImport = false, styleAsset = false, recoveryCopy = false, importing = false, packCreate = false, packOpen = false } = {}) {
   if (importing) return { default: false, controls: {} };
   const enabled = [
     'creator-tab', 'close-tool', 'review-preflight', 'run-preflight', 'back-library', 'select-part', 'select-item',
@@ -440,6 +440,7 @@ function creatorCapabilities({ versionHistory = false, localPlayer = false, proj
     'open-version-history', 'retry-version-history', 'close-version-history',
     'restore-checkpoint',
   );
+  if (publication) enabled.push('publish');
   if (localPlayer) enabled.push('open-player');
   if (packCreate) enabled.push('add-expansion');
   if (packOpen) enabled.push('open-expansion-pack-studio');
@@ -928,6 +929,15 @@ export function createOriginalProductApp({
   let envelopeRecoveryStageGeneration = 0;
   let envelopeRecoveryScopeKey = '';
   const prepareLifecycleAction = optionalMethod(bridge, 'prepareLifecycleAction');
+  const prepareMakerPublication = optionalMethod(bridge, 'prepareMakerPublication');
+  const inspectMakerPublication = optionalMethod(bridge, 'inspectMakerPublication');
+  const signMakerPublication = optionalMethod(bridge, 'signMakerPublication');
+  const continueMakerPublication = optionalMethod(bridge, 'continueMakerPublication');
+  const cancelMakerPublicationReview = optionalMethod(bridge, 'cancelMakerPublicationReview');
+  const getPublishedMaker = optionalMethod(bridge, 'getPublishedMaker');
+  const publishedMakers = new Map();
+  let publicationFlight = null;
+  let publicationGeneration = 0;
   const requestLifecycleSignature = optionalMethod(bridge, 'requestLifecycleSignature');
   const recoverLifecycleAction = optionalMethod(bridge, 'recoverLifecycleAction');
   const cleanups = [];
@@ -1850,6 +1860,12 @@ export function createOriginalProductApp({
   function snapshotCreatorState() {
     return {
       ...state,
+      ...(publishedMaker(state.record) ? { lifecycle: { label: makerWorkspaceText(state.locale, 'publicationComplete'),
+        manageLabel: makerWorkspaceText(state.locale, 'publicationComplete'), badgeClass: 'active' } } : {}),
+      publicationSigningEnabled: state.bridgeState?.publication?.signingEnabled === true
+        && state.bridgeState?.publication?.broadcastEnabled === true,
+      publicationBroadcastEnabled: state.bridgeState?.publication?.signingEnabled === true
+        && state.bridgeState?.publication?.broadcastEnabled === true,
       composableInventory: state.composableInventory?.address === state.connection.address
         ? state.composableInventory : null,
       composableOperations: state.composableOperations?.address === state.connection.address
@@ -2112,6 +2128,8 @@ export function createOriginalProductApp({
         ? { ...state.record, document: state.creatorIntentDocument } : state.record,
       snapshotCreatorState(),
       creatorCapabilities({
+        publication: Boolean(prepareMakerPublication && inspectMakerPublication && signMakerPublication
+          && continueMakerPublication && state.connection.connected && !publicationFlight),
         versionHistory: Boolean(listDraftVersions && restoreDraftVersion),
         packCreate: Boolean(createPackDraft && listPackDrafts && !creatorPackFlight && state.connection.connected),
         packOpen: Boolean(loadPackDraft && savePackDraft && !creatorPackFlight && state.connection.connected),
@@ -4201,6 +4219,7 @@ export function createOriginalProductApp({
     const restartDraftRead = walletChanged && next.connected && state.draftListRequest > 0
       && (state.draftsStatus === 'loading' || state.drafts.some(row => row.document.metadata.coverAssetId));
     if (walletChanged) {
+      invalidatePublicationReview();
       cancelCreatorStyleInteraction();
       creatorConnectionGeneration += 1;
       state.draftListRequest += 1;
@@ -4226,6 +4245,7 @@ export function createOriginalProductApp({
   }
 
   function navigate(page, { replace = true, preserveStartupCreator = false } = {}) {
+    invalidatePublicationReview();
     cancelCreatorStyleInteraction();
     if (!preserveStartupCreator) startupCreatorRoute = false;
     const navigation = ++state.localNavigationRequest;
@@ -4326,6 +4346,7 @@ export function createOriginalProductApp({
     const errorMarkup = state.draftsError ? `<div class="empty-state" role="alert">${escapeHtml(state.draftsError)}</div>` : '';
     root.innerHTML = errorMarkup + (state.drafts.length ? state.drafts.map((record) => {
       const document = record.document;
+      const published = publishedMaker(record);
       const active = record.draftId === state.record?.draftId;
       const cover = state.draftCoverUrls.get(record.draftId);
       const coverUrl = cover?.revision === record.revision ? cover.url : '';
@@ -4336,12 +4357,13 @@ export function createOriginalProductApp({
           <div class="maker-cover-mini">${coverUrl ? `<img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(document.metadata.name)}" />` : '<span class="mini-face"></span>'}</div>
           <div class="maker-card-body">
             <div class="maker-tags">
-              <span class="maker-card-lifecycle draft">${escapeHtml(record.draftId.startsWith('maker-recovery-')
+              <span class="maker-card-lifecycle ${published ? 'active' : 'draft'}">${escapeHtml(published ? makerWorkspaceText(state.locale, 'publicationComplete') : record.draftId.startsWith('maker-recovery-')
     ? makerWorkspaceText(state.locale, 'localRecoveryCopy') : t('localDraft', 'Local draft'))}</span>
               <span>${escapeHtml(creatorDraftCanvasLabel(record))}</span>
               <span>${escapeHtml(t('freeCombine', 'Free combine'))}</span>
             </div>
             <h2>${escapeHtml(document.metadata.name)}</h2>
+            ${published ? `<p style="overflow-wrap:anywhere">${escapeHtml(makerWorkspaceText(state.locale, 'publicationComplete'))}: ${escapeHtml(published.rootId)} · ${escapeHtml(published.makerVersion)}</p>` : ''}
             <p>${escapeHtml(document.metadata.summary)}</p>
             ${document.metadata.creator ? `<p>${escapeHtml(t('byCreator', 'by {creator}', { creator: document.metadata.creator }))}</p>` : ''}
             ${document.metadata.style ? `<p>${escapeHtml(document.metadata.style)}</p>` : ''}
@@ -4399,6 +4421,7 @@ export function createOriginalProductApp({
         .sort((left, right) => right.updatedAt - left.updatedAt || left.draftId.localeCompare(right.draftId));
       state.draftsStatus = 'ready';
       renderCreatorLibrary();
+      for (const record of state.drafts) void readPublishedMaker(record);
       for (const [draftId, entry] of state.draftCoverUrls) {
         if (!state.drafts.some(row => row.draftId === draftId && row.revision === entry.revision)) {
           revokeObjectUrl(entry.url); state.draftCoverUrls.delete(draftId);
@@ -4668,6 +4691,7 @@ export function createOriginalProductApp({
   }
 
   function beginCreatorDraftGeneration() {
+    invalidatePublicationReview();
     state.packEditor = null;
     creatorPackRequest += 1;
     state.expansionPacks = [];
@@ -4707,6 +4731,7 @@ export function createOriginalProductApp({
     state.creatorRecordGeneration = state.creatorDraftGeneration;
     state.creatorIntentDocument = structuredClone(record.document);
     updateSavedCreatorLibraryRecord(record);
+    void readPublishedMaker(record);
     return record;
   }
 
@@ -4758,6 +4783,7 @@ export function createOriginalProductApp({
   }
 
   function queueCreatorWrite({ kind, payload, previous, targetDocument, remember = true }) {
+    invalidatePublicationReview();
     if (!state.record) return Promise.resolve(null);
     cancelCreatorStyleInteraction();
     const generation = state.creatorDraftGeneration;
@@ -5181,6 +5207,7 @@ export function createOriginalProductApp({
     const modal = byId('makerLifecycleManagerModal');
     if (!modal) return;
     const document = state.record?.document;
+    const published = publishedMaker(state.record);
     const controllerReady = Boolean(
       prepareLifecycleAction && requestLifecycleSignature && recoverLifecycleAction,
     );
@@ -5194,7 +5221,8 @@ export function createOriginalProductApp({
       deleteButton.disabled = Boolean(creatorDeleteFlight) || !state.connection.connected;
       deleteButton.textContent = (DRAFT_DELETE_COPY[state.locale] || DRAFT_DELETE_COPY.en).action;
     }
-    if (byId('makerLifecycleManagerBadge')) byId('makerLifecycleManagerBadge').textContent = 'Draft';
+    if (byId('makerLifecycleManagerBadge')) byId('makerLifecycleManagerBadge').textContent = published
+      ? makerWorkspaceText(state.locale, 'publicationComplete') : 'Draft';
     if (byId('makerLifecycleManagerName')) byId('makerLifecycleManagerName').textContent = document?.metadata?.name || 'Maker';
     if (byId('makerLifecycleManagerScope')) byId('makerLifecycleManagerScope').textContent = 'Fresh-v8 working version';
     if (byId('lifecycleWorkingVersionCard')) {
@@ -5202,7 +5230,9 @@ export function createOriginalProductApp({
         ? `${state.record.draftId} · revision ${state.record.revision}` : 'No draft selected';
     }
     if (byId('lifecyclePublishedVersionCard')) {
-      byId('lifecyclePublishedVersionCard').innerHTML = `<h3>${escapeHtml(t('makerLifecyclePublishedVersion', 'Published chain version'))}</h3><p>${escapeHtml(t('makerLifecycleNoPublishedVersion', 'No version has been published on Sui yet.'))}</p>`;
+      byId('lifecyclePublishedVersionCard').innerHTML = `<h3>${escapeHtml(t('makerLifecyclePublishedVersion', 'Published chain version'))}</h3><p style="overflow-wrap:anywhere">${published
+        ? `${escapeHtml(published.rootId)} · ${escapeHtml(published.makerVersion)}`
+        : escapeHtml(getPublishedMaker ? makerWorkspaceText(state.locale, 'publicationUnknown') : t('makerLifecycleNoPublishedVersion', 'No version has been published on Sui yet.'))}</p>`;
     }
     if (byId('makerLifecycleManagerActions')) {
       byId('makerLifecycleManagerActions').innerHTML = [
@@ -5213,7 +5243,9 @@ export function createOriginalProductApp({
       ].join('');
     }
     if (byId('makerLifecycleManagerStatus')) {
-      byId('makerLifecycleManagerStatus').textContent = controllerReady
+      byId('makerLifecycleManagerStatus').textContent = published
+        ? makerWorkspaceText(state.locale, 'publicationComplete') : getPublishedMaker
+          ? makerWorkspaceText(state.locale, 'publicationUnknown') : controllerReady
         ? t('makerLifecycleNoPublishedVersion', 'No version has been published on Sui yet.')
         : t('makerLifecycleActionUnavailable', 'This action is unavailable until the current operation finishes.');
     }
@@ -6620,8 +6652,106 @@ export function createOriginalProductApp({
     }
   }
 
+  function publishedMaker(record) {
+    return record && publishedMakers.get(JSON.stringify([state.connection.address, record.draftId]));
+  }
+
+  async function readPublishedMaker(record) {
+    if (!getPublishedMaker || !state.connection.connected) return;
+    const address = state.connection.address, connection = creatorConnectionGeneration;
+    try {
+      const result = await getPublishedMaker({ draftId: record.draftId });
+      if (state.destroyed || connection !== creatorConnectionGeneration || address !== state.connection.address) return;
+      if (result?.complete !== true || !result.rootId || result.scope?.signerAddress !== address
+        || result.scope?.draftId !== record.draftId || result.scope?.network !== 'mainnet') return;
+      publishedMakers.set(JSON.stringify([address, record.draftId]), result);
+      renderCreatorLibrary();
+      if (state.record?.draftId === record.draftId) {
+        renderCreator();
+        if (byId('makerLifecycleManagerModal')?.classList?.contains('active')) openLifecycleManager();
+      }
+    } catch { /* Certification is unknown until a subsequent successful read. */ }
+  }
+
+  function invalidatePublicationReview() {
+    publicationGeneration += 1;
+    state.publicationReview = null;
+    // This only invalidates the local review token; durable attempts stay intact.
+    cancelMakerPublicationReview?.();
+  }
+
+  async function runPublicationReview(action, reviewId) {
+    if (publicationFlight || !prepareMakerPublication || !inspectMakerPublication
+      || !state.record || !state.connection.connected || state.route !== 'creator') return;
+    const generation = state.creatorDraftGeneration, draftId = state.record.draftId;
+    const connection = creatorConnectionGeneration, address = state.connection.address;
+    const navigation = state.localNavigationRequest;
+    const current = () => creatorDraftCurrent(generation, draftId)
+      && connection === creatorConnectionGeneration && address === state.connection.address
+      && navigation === state.localNavigationRequest && state.route === 'creator';
+    const prior = state.publicationReview?.review;
+    const consequential = action === 'publication-sign' || action === 'publication-continue';
+    if (consequential && (!prior || prior.reviewId !== reviewId
+      || (prior.scope.currentSavedRevision ?? prior.scope.draftRevision) !== state.record.revision
+      || prior.nextAction !== (action === 'publication-sign' ? 'SIGN' : 'CONTINUE')
+      || creatorHasPendingChanges())) return;
+    if (consequential && !(state.bridgeState?.publication?.signingEnabled
+      && state.bridgeState?.publication?.broadcastEnabled)) return;
+    const flight = {}; publicationFlight = flight;
+    let request = publicationGeneration;
+    try {
+      if (!consequential) {
+        if (!await finishCreatorChanges() || !current()) return;
+        request = publicationGeneration;
+      }
+      if (!current() || request !== publicationGeneration) return;
+      const revision = state.record.revision;
+      state.publicationReview = { review: prior, busy: true, error: '' };
+      renderCreator();
+      const result = consequential
+        ? await (action === 'publication-sign' ? signMakerPublication : continueMakerPublication)({ reviewId })
+        : await (action === 'publication-refresh' ? inspectMakerPublication : prepareMakerPublication)({ draftId, expectedRevision: revision });
+      if (!current() || request !== publicationGeneration || state.record.revision !== revision) return;
+      if (result?.schemaVersion !== 'animacraft.maker-v8-publication-review.v1'
+        || result.scope?.draftId !== draftId || (result.scope?.currentSavedRevision ?? result.scope?.draftRevision) !== revision
+        || (result.scope.draftRevision !== revision && result.scope.publishingEarlierRevision !== true)
+        || result.scope?.signerAddress !== address || result.scope?.network !== 'mainnet') {
+        throw new TypeError(makerWorkspaceText(state.locale, 'publicationStale'));
+      }
+      state.publicationReview = { review: result, busy: false, error: '' };
+      // Discovery uses certified Root readback. Never fabricate a local template.
+      if (result.rootId && result.status === 'COMPLETE') {
+        publishedMakers.set(JSON.stringify([address, draftId]), { complete: true, rootId: result.rootId,
+          makerVersion: result.makerVersion, scope: result.scope });
+        renderCreatorLibrary();
+        void refreshTemplates().catch(() => {});
+      }
+    } catch (error) {
+      if (current() && request === publicationGeneration) {
+        state.publicationReview = { review: null, busy: false, error: String(error?.message || error) };
+      }
+    } finally {
+      if (publicationFlight === flight) publicationFlight = null;
+      if (current()) renderCreator();
+    }
+  }
+
   async function handleCreatorAction(action, control, eventTarget = control) {
     if (state.projectImportPending || creatorAssetFlight || creatorRecoveryFlight) return;
+    if (action === 'publication-close') { invalidatePublicationReview(); renderCreator(); return; }
+    if (action === 'publication-open') {
+      const review = state.publicationReview?.review;
+      if (control?.disabled || !review || review.status !== 'COMPLETE' || !review.rootId
+        || review.reviewId !== control.dataset.publicationReview || !state.connection.connected
+        || review.scope.signerAddress !== state.connection.address || review.scope.draftId !== state.record?.draftId) return;
+      return openTemplateDetail(review.rootId);
+    }
+    if (['publish', 'publication-refresh', 'publication-sign', 'publication-continue'].includes(action)) {
+      if (control?.disabled) return;
+      if (action === 'publish' && (control.dataset.reviewDraft !== state.record?.draftId
+        || Number(control.dataset.creatorGeneration) !== state.creatorDraftGeneration)) return;
+      return runPublicationReview(action, control?.dataset?.publicationReview);
+    }
     if (action === 'review-preflight' || action === 'run-preflight') {
       if (control?.disabled || !creatorRuleEventCurrent() || !state.connection.connected || !creatorEditorVisible()
         || control.dataset.reviewDraft !== state.record.draftId
@@ -6981,6 +7111,7 @@ export function createOriginalProductApp({
 
   async function handleCreatorChange(control, { input = false } = {}) {
     if (!state.record || control?.disabled || state.projectImportPending || creatorAssetFlight || creatorRecoveryFlight) return;
+    invalidatePublicationReview();
     const action = String(control.dataset.action || '');
     if (action === 'part-export-background') {
       if (input || !creatorRuleEventCurrent() || !state.connection.connected || !creatorEditorVisible()
@@ -7351,6 +7482,7 @@ export function createOriginalProductApp({
     // Follow the approved stacking order; one key must never dismiss both
     // a nested overlay and the surface beneath it.
     if (byId('makerLifecycleManagerModal')?.classList?.contains('active')) closeLifecycleManager();
+    else if (creatorVisible && state.publicationReview) { invalidatePublicationReview(); renderCreator(); }
     else if (creatorVisible && state.versionHistoryOpen) closeCreatorVersionHistory();
     else if (creatorVisible && state.creatorTab !== 'structure') closeCreatorTool();
     else if (themeMenuOpen()) closeTheme();
@@ -7669,6 +7801,7 @@ export function createOriginalProductApp({
       renderTemplateCards();
     }
     renderBridgeState();
+    if (state.publicationReview) renderCreator();
   });
   if (typeof unsubscribeBridge === 'function') cleanups.push(unsubscribeBridge);
 

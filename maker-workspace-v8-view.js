@@ -20,6 +20,7 @@ import {
 import {
   MAKER_WORKSPACE_LOCALES,
   makerWorkspaceText,
+  makerPublicationStageText,
 } from './maker-workspace-i18n.js';
 
 /**
@@ -695,6 +696,9 @@ export function projectMakerV8WorkspaceView(documentValue, stateValue = {}, capa
     expansionPacksError: String(state.expansionPacksError || state.expansionPackProjectsError || ''),
     expansionPackNotice: String(state.expansionPackNotice || state.expansionPackProjectNotice || ''),
     versionHistory: normalizeVersionHistory(state, locale),
+    publicationReview: state.publicationReview || null,
+    publicationSigningEnabled: state.publicationSigningEnabled === true,
+    publicationBroadcastEnabled: state.publicationBroadcastEnabled === true,
   });
 }
 
@@ -742,7 +746,7 @@ function toolbar(view) {
     <button type="button" data-action="export-project"${controlAttributes(view, 'export-project')}>${escapeHtml(tr(view, 'projectZip'))}</button>
     <label class="v4-file-button compact${disabledClass(view, 'import-project')}">${escapeHtml(tr(view, 'importZip'))}<input type="file" accept=".zip,application/zip" data-action="import-project"${controlAttributes(view, 'import-project')} /></label>
     <button type="button" data-action="open-player" title="${escapeHtml(tr(view, view.toolbar.previewAssetCount ? 'playerTestHint' : 'playerTestBlocked'))}"${controlAttributes(view, 'open-player')}>▶ ${escapeHtml(tr(view, 'playerTest'))}</button>
-    <button class="primary" type="button" data-action="${reviewAction}"${view.issues.length ? reviewIdentity(view) : ''}${controlAttributes(view, reviewAction)}>${escapeHtml(issueLabel)}</button>`;
+    <button class="primary" type="button" data-action="${reviewAction}"${reviewIdentity(view)}${controlAttributes(view, reviewAction, '', tr(view, 'publicationUnavailable'))}>${escapeHtml(issueLabel)}</button>`;
 }
 
 function renderParts(view) {
@@ -1588,6 +1592,35 @@ function overlay(view) {
   return `<div class="v4-tool-modal-backdrop" data-action="close-tool-backdrop"><section id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true" aria-labelledby="makerV4ToolTitle" tabindex="-1"><header class="v4-tool-context"><div><span>${escapeHtml(advancedTitle(view))}</span><strong id="makerV4ToolTitle">${escapeHtml(view.document.metadata.name)}</strong></div><button type="button" data-action="close-tool" aria-label="${escapeHtml(tr(view, 'close'))}"${controlAttributes(view, 'close-tool')}>×</button></header><div class="v4-tool-body">${advancedBody(view)}</div></section></div>`;
 }
 
+function publicationReview(view) {
+  const state = view.publicationReview;
+  if (!state) return '';
+  const review = state.review ? { ...state.review,
+    message: makerPublicationStageText(view.locale, state.review.status) } : null;
+  const value = input => escapeHtml(input === null || input === undefined ? tr(view, 'publicationUnknown') : String(input));
+  const row = (label, input) => `<p><strong>${escapeHtml(tr(view, label))}</strong><br><span style="overflow-wrap:anywhere">${value(input)}</span></p>`;
+  const step = review?.step;
+  const facts = review ? row('publicationWallet', review.scope.signerAddress)
+    + row('publicationStage', `${makerPublicationStageText(view.locale, review.stage)} / ${makerPublicationStageText(view.locale, review.status)}`)
+    + `<p>${value(review.frozenMakerName)}</p>`
+    + (review.scope.publishingEarlierRevision ? `<p role="alert">${escapeHtml(tr(view, 'publicationEarlier', { frozen: review.scope.draftRevision, current: review.scope.currentSavedRevision }))}</p>` : '')
+    + `<p style="overflow-wrap:anywhere">${value(review.scope.draftId)} · ${value(review.scope.draftRevision)}<br>${value(review.scope.contentSha256)}</p>`
+    + row('publicationAssets', review.assetCount)
+    + (step ? `<p style="overflow-wrap:anywhere">${value(step.id)} · ${value(step.revision)}<br>${value(step.digest)}</p>`
+      + row('publicationGas', step.gasBudgetMist)
+      + row('publicationGasPrice', step.gasPriceMist)
+      + row('publicationStorage', step.storageCostAtomic)
+      + row('publicationRelay', step.relayTipMist)
+      + row('publicationTerms', `${value(step.storageEpochs)} / ${value(step.deletable)}`) : '')
+    + (review.rootId && review.status === 'COMPLETE' ? row('publicationComplete', `${review.rootId} / ${review.makerVersion}`)
+      + `<button type="button" data-action="publication-open" data-publication-review="${escapeHtml(review.reviewId)}">${escapeHtml(tr(view, 'publicationOpen'))}</button>` : '') : '';
+  const action = review?.nextAction === 'SIGN' ? 'publication-sign' : review?.nextAction === 'CONTINUE' ? 'publication-continue' : null;
+  const actionDisabled = state.busy || (action === 'publication-sign' ? !view.publicationSigningEnabled : !view.publicationBroadcastEnabled)
+    ? ` disabled aria-disabled="true" title="${escapeHtml(tr(view, 'publicationUnavailable'))}"` : '';
+  const disabled = state.busy ? ' disabled aria-disabled="true"' : '';
+  return `<div class="v4-modal-backdrop v4-version-history-backdrop"><section class="v4-version-history-dialog" role="dialog" aria-modal="true" aria-labelledby="makerPublicationTitle"><header><div><h3 id="makerPublicationTitle">${escapeHtml(tr(view, 'publicationReview'))}</h3><p>${escapeHtml(tr(view, 'publicationCopy'))}</p></div><button type="button" data-action="publication-close" aria-label="${escapeHtml(tr(view, 'close'))}">×</button></header><div class="v4-version-history-content">${facts}<p role="status">${escapeHtml(state.error || (state.busy ? tr(view, 'publicationLoading') : review?.message || ''))}</p><button type="button" data-action="publication-refresh"${disabled}>${escapeHtml(tr(view, 'publicationRefresh'))}</button>${action ? `<button type="button" class="primary" data-action="${action}" data-publication-review="${escapeHtml(review.reviewId)}"${actionDisabled}>${escapeHtml(tr(view, action === 'publication-sign' ? 'publicationSign' : 'publicationContinue'))}</button>` : ''}</div></section></div>`;
+}
+
 function versionHistory(view) {
   const history = view.versionHistory;
   if (!history.open) return '';
@@ -1622,6 +1655,6 @@ export function renderApprovedMakerV8Workspace(view) {
     centerHtml: previewAndItems(view, part, item, style),
     rightHtml: `<div class="v4-panel-head v4-inspector-context"><div><span>${escapeHtml(tr(view, 'currentStyle'))}</span><strong>${escapeHtml([part?.label || '—', item?.label || '—', style?.label || '—'].join(' › '))}</strong></div></div>${inspector(view, part, item, style)}`,
     overlayHtml: overlay(view),
-    afterHtml: versionHistory(view),
+    afterHtml: versionHistory(view) + publicationReview(view),
   }, view);
 }

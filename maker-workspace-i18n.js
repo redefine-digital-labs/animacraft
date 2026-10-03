@@ -3783,7 +3783,39 @@ Object.entries({
   vi: 'Cửa sổ này chưa xác nhận kết quả khôi phục. Hãy thử lại cùng bản sao; bản gốc không thay đổi.',
 }).forEach(([locale, message]) => { dictionaries[locale].recoveryCopyRetry = message; });
 
+const publicationKeys = ['publicationReview', 'publicationCopy', 'publicationSign', 'publicationContinue', 'publicationRefresh', 'publicationUnknown', 'publicationGas', 'publicationStorage', 'publicationRelay', 'publicationTerms', 'publicationWallet', 'publicationStage', 'publicationAssets', 'publicationStale', 'publicationUnavailable', 'publicationComplete', 'publicationLoading'];
+Object.entries({
+  en: ['Review publication', 'Review each transaction before opening your wallet. Gas is a budget limit, not the final cost. Storage and relay costs may be additional.', 'Review in wallet', 'Continue upload / broadcast', 'Refresh status', 'Unknown', 'Gas budget (MIST)', 'Storage cost (atomic units)', 'Relay tip (MIST)', 'Storage terms (epochs / deletable)', 'Wallet · Mainnet', 'Stage / status', 'Assets', 'This review is stale. Review the saved draft again.', 'Publication is unavailable until the wallet and publication service are ready.', 'Published Root / version', 'Preparing review…'],
+  zh: ['发布确认', '每笔交易均须查看后再打开钱包。Gas 是预算上限，并非实际总费用；存储和中继可能另行收费。', '在钱包中确认', '继续上传 / 广播', '刷新状态', '未知', 'Gas 预算（MIST）', '存储费用（最小单位）', '中继费用（MIST）', '存储条件（周期 / 可删除）', '钱包 · 主网', '阶段 / 状态', '素材', '此确认已过期，请重新查看已保存的草稿。', '钱包和发布服务就绪后才可发布。', '已发布 Root / 版本', '正在准备确认…'],
+  ja: ['公開内容を確認', '取引ごとに内容を確認してからウォレットを開きます。Gas は予算上限で、最終費用ではありません。保存と中継の費用が別途発生する場合があります。', 'ウォレットで確認', 'アップロード / 送信を続行', '状態を更新', '不明', 'Gas 予算（MIST）', '保存費用（最小単位）', '中継費用（MIST）', '保存条件（期間 / 削除可能）', 'ウォレット · Mainnet', '段階 / 状態', '素材', '確認内容が古くなりました。保存済み下書きを再確認してください。', 'ウォレットと公開サービスの準備が必要です。', '公開済み Root / バージョン', '確認を準備中…'],
+  ko: ['게시 검토', '각 거래를 검토한 뒤 지갑을 여세요. Gas는 예산 한도이며 최종 비용이 아닙니다. 저장 및 중계 비용이 추가될 수 있습니다.', '지갑에서 확인', '업로드 / 전송 계속', '상태 새로고침', '알 수 없음', 'Gas 예산 (MIST)', '저장 비용 (최소 단위)', '중계 비용 (MIST)', '저장 조건 (기간 / 삭제 가능)', '지갑 · Mainnet', '단계 / 상태', '이미지', '검토가 만료되었습니다. 저장된 초안을 다시 검토하세요.', '지갑과 게시 서비스가 준비되어야 합니다.', '게시된 Root / 버전', '검토 준비 중…'],
+  vi: ['Xem lại xuất bản', 'Xem từng giao dịch trước khi mở ví. Gas là giới hạn ngân sách, không phải chi phí cuối cùng. Phí lưu trữ và chuyển tiếp có thể được tính thêm.', 'Xem trong ví', 'Tiếp tục tải lên / phát giao dịch', 'Làm mới trạng thái', 'Chưa rõ', 'Ngân sách Gas (MIST)', 'Phí lưu trữ (đơn vị nhỏ nhất)', 'Phí chuyển tiếp (MIST)', 'Điều kiện lưu trữ (kỳ / có thể xóa)', 'Ví · Mainnet', 'Giai đoạn / trạng thái', 'Tài nguyên', 'Nội dung xem lại đã cũ. Hãy xem lại bản nháp đã lưu.', 'Ví và dịch vụ xuất bản cần sẵn sàng.', 'Root / phiên bản đã xuất bản', 'Đang chuẩn bị xem lại…'],
+}).forEach(([locale, values]) => Object.assign(dictionaries[locale], Object.fromEntries(publicationKeys.map((key, index) => [key, values[index]]))));
+
+Object.entries({
+  en: ['Continue publishing frozen revision {frozen}. The latest saved revision {current} is preserved and is not included in this publication.', 'Gas price (MIST)'],
+  zh: ['继续发布冻结版本 {frozen}。最新保存版本 {current} 将保留，不包含在本次发布中。', 'Gas 单价（MIST）'],
+  ja: ['固定されたリビジョン {frozen} の公開を続行します。最新の保存済みリビジョン {current} は保持され、今回の公開には含まれません。', 'Gas 単価（MIST）'],
+  ko: ['고정된 리비전 {frozen} 게시를 계속합니다. 최신 저장 리비전 {current}은 보존되며 이번 게시에 포함되지 않습니다.', 'Gas 단가 (MIST)'],
+  vi: ['Tiếp tục xuất bản bản cố định {frozen}. Bản đã lưu mới nhất {current} được giữ lại và không nằm trong lần xuất bản này.', 'Giá Gas (MIST)'],
+}).forEach(([locale, values]) => Object.assign(dictionaries[locale], { publicationEarlier: values[0], publicationGasPrice: values[1] }));
+
 export const MAKER_WORKSPACE_LOCALES = Object.freeze(Object.keys(dictionaries));
+Object.entries({ en: 'View published Maker', zh: '查看已发布 Maker', ja: '公開済み Maker を表示', ko: '게시된 Maker 보기', vi: 'Xem Maker đã xuất bản' })
+  .forEach(([locale, text]) => { dictionaries[locale].publicationOpen = text; });
+
+const publicationStages = ['LIVING_CONTENT', 'ASSET', 'MANIFEST', 'SCAFFOLD', 'BASE_CHUNK', 'COMPANION_OBJECTS', 'ACTIVATION_CHUNK', 'COMPLETE', 'TRANSPORT_SIGNATURE_REQUIRED', 'TRANSPORT_RECOVERY_REQUIRED', 'FAILED', 'READY', 'SIGNED', 'OUTCOME_PENDING', 'OUTCOME_UNKNOWN', 'PUBLICATION'];
+const publicationStageLabels = {
+  en: ['Living content', 'Assets', 'Manifest', 'Maker structure', 'Maker content', 'Associated objects', 'Activation', 'Complete', 'Storage signature required', 'Storage continuation required', 'Failed', 'Ready', 'Signed', 'Awaiting result', 'Result unknown', 'Publication'],
+  zh: ['灵魂内容', '素材', '清单', 'Maker 结构', 'Maker 内容', '关联对象', '激活', '完成', '等待存储交易签名', '等待继续存储', '失败', '就绪', '已签名', '等待结果', '结果未知', '发布'],
+  ja: ['ソウル内容', '素材', 'マニフェスト', 'Maker 構造', 'Maker 内容', '関連オブジェクト', '有効化', '完了', '保存取引の署名が必要', '保存の続行が必要', '失敗', '準備完了', '署名済み', '結果待ち', '結果不明', '公開'],
+  ko: ['소울 콘텐츠', '이미지', '매니페스트', 'Maker 구조', 'Maker 콘텐츠', '연결 객체', '활성화', '완료', '저장 거래 서명 필요', '저장 계속 필요', '실패', '준비됨', '서명됨', '결과 대기', '결과 알 수 없음', '게시'],
+  vi: ['Nội dung Soul', 'Tài nguyên', 'Bản kê', 'Cấu trúc Maker', 'Nội dung Maker', 'Đối tượng liên quan', 'Kích hoạt', 'Hoàn tất', 'Cần ký giao dịch lưu trữ', 'Cần tiếp tục lưu trữ', 'Thất bại', 'Sẵn sàng', 'Đã ký', 'Đang chờ kết quả', 'Chưa rõ kết quả', 'Xuất bản'],
+};
+export function makerPublicationStageText(locale, stage) {
+  const index = publicationStages.indexOf(stage);
+  return index < 0 ? String(stage ?? '') : (publicationStageLabels[locale] || publicationStageLabels.en)[index];
+}
 export const MAKER_WORKSPACE_KEYS = Object.freeze(Object.keys(en));
 
 export function makerWorkspaceDictionary(locale) {

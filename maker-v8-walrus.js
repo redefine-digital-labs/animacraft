@@ -20,8 +20,9 @@ export const MAKER_V8_WALRUS_MAINNET_AGGREGATOR =
   'https://aggregator.walrus-mainnet.walrus.space';
 
 const DB_NAME = 'animacraft-maker-v8-walrus-v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = 'uploads';
+const BINDING_STORE = 'publication-bindings';
 const ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const SUI_ID = /^0x[0-9a-f]{64}$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -157,8 +158,23 @@ async function openDatabase(indexedDB) {
   request.onupgradeneeded = () => {
     const database = request.result;
     if (!database.objectStoreNames.contains(STORE)) database.createObjectStore(STORE, { keyPath: 'uploadId' });
+    if (!database.objectStoreNames.contains(BINDING_STORE)) database.createObjectStore(BINDING_STORE, { keyPath: 'key' });
   };
-  return requestResult(request);
+  return new Promise((resolve, reject) => {
+    let blocked = false;
+    request.onblocked = () => {
+      blocked = true;
+      reject(new MakerV8WalrusError('MAKER_V8_WALRUS_DATABASE_BLOCKED',
+        'Close other Animacraft tabs using the older storage connection, then retry. Saved uploads are preserved.', 'PERSISTENCE'));
+    };
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
+    request.onsuccess = () => {
+      const database = request.result;
+      database.onversionchange = () => database.close();
+      if (blocked) database.close();
+      else resolve(database);
+    };
+  });
 }
 
 function recordView(record) {
@@ -231,7 +247,13 @@ export function createMakerV8WalrusPersistenceV8(indexedDB = globalThis.indexedD
   storageManager = globalThis.navigator?.storage,
 } = {}) {
   let databasePromise = null;
-  const database = () => (databasePromise ??= openDatabase(indexedDB));
+  const database = () => (databasePromise ??= openDatabase(indexedDB).then(db => {
+    db.onversionchange = () => { db.close(); databasePromise = null; };
+    return db;
+  }).catch(error => {
+    databasePromise = null;
+    throw error;
+  }));
   const persistent = async () => {
     if (typeof storageManager?.persisted !== 'function' || typeof storageManager?.persist !== 'function') {
       fail('MAKER_V8_WALRUS_PERSISTENCE_REQUIRED', 'Persistent browser storage is required before a wallet prompt.', 'PERSISTENCE');
@@ -276,6 +298,27 @@ export function createMakerV8WalrusPersistenceV8(indexedDB = globalThis.indexedD
     create: (record) => write('create', null, record),
     load: read,
     compareAndSwap: (current, next) => write('cas', current, next),
+    async loadPublicationBinding(key) {
+      const db = await database();
+      const tx = db.transaction(BINDING_STORE, 'readonly');
+      const result = await requestResult(tx.objectStore(BINDING_STORE).get(key));
+      await transactionDone(tx);
+      return result ?? null;
+    },
+    async savePublicationBinding(key, expectedRevision, value) {
+      await persistent();
+      const db = await database();
+      const tx = db.transaction(BINDING_STORE, 'readwrite', { durability: 'strict' });
+      const store = tx.objectStore(BINDING_STORE);
+      const current = await requestResult(store.get(key));
+      if ((current?.revision ?? null) !== expectedRevision) {
+        fail('MAKER_V8_WALRUS_CAS_MISMATCH', 'Publication binding changed in another tab.', 'PERSISTENCE');
+      }
+      const next = { ...clone(value), key, revision: (expectedRevision ?? 0) + 1 };
+      store.put(next);
+      await transactionDone(tx);
+      return freeze(next);
+    },
     async close() { (await databasePromise)?.close(); databasePromise = null; },
   });
 }
@@ -610,8 +653,42 @@ export function createMakerV8WalrusPublisherV8({
     fail('MAKER_V8_WALRUS_STATE_INVALID', 'Finality cannot settle the current Walrus stage.', 'RECOVERY');
   };
 
+  const reviews = new Map();
   const api = {
     schemaVersion: MAKER_V8_WALRUS_SCHEMA,
+    loadPublicationBinding: (...args) => {
+      requireMethod(persistence, 'loadPublicationBinding', 'persistence');
+      return persistence.loadPublicationBinding(...args);
+    },
+    savePublicationBinding: (...args) => {
+      requireMethod(persistence, 'savePublicationBinding', 'persistence');
+      return persistence.savePublicationBinding(...args);
+    },
+
+    async prepareReview(uploadId) {
+      const record = await persistence.load(id(uploadId));
+      if (!record || !['ENCODED', 'UPLOADED'].includes(record.status)) return null;
+      const build = record.status === 'ENCODED' ? await buildRegister(record) : await buildCertify(record);
+      assertExpectedUpload(await persistence.load(uploadId), { ...recordView(record), status: publicStatus(record) });
+      const data = bcs.TransactionData.parse(fromBase64(build.bytes)).V1;
+      const review = freeze({ id: uploadId, revision: record.revision, stage: build.stage,
+        status: 'SIGNATURE_REQUIRED', digest: build.digest,
+        gasBudgetMist: String(data.gasData.budget), gasPriceMist: String(data.gasData.price),
+        storageEpochs: record.epochs, deletable: record.deletable,
+        storageCostAtomic: null, relayTipMist: null });
+      reviews.set(uploadId, { review, build });
+      return review;
+    },
+
+    async signReviewed(uploadId, review, assertCurrent = async () => {}) {
+      const frozen = reviews.get(uploadId);
+      if (!frozen || canonical(frozen.review) !== canonical(review)) {
+        fail('MAKER_V8_WALRUS_REVIEW_STALE', 'Review this exact upload transaction again.', 'CONTEXT');
+      }
+      reviews.delete(uploadId);
+      await assertCurrent();
+      return api.requestSignature(uploadId, review, { build: frozen.build, signOnly: true, assertCurrent });
+    },
 
     async prepare({ uploadId, owner, mediaType, bytesBase64, epochs = 3 } = {}) {
       await persistence.requirePersistentStorage();
@@ -652,16 +729,16 @@ export function createMakerV8WalrusPublisherV8({
       return recordView(await persistence.create(record));
     },
 
-    async requestSignature(uploadId, expected) {
+    async requestSignature(uploadId, expected, reviewed = null) {
       await persistence.requirePersistentStorage();
       let record = await persistence.load(id(uploadId));
       if (!record) fail('MAKER_V8_WALRUS_NOT_FOUND', 'Walrus upload was not found.', 'PERSISTENCE');
       assertExpectedUpload(record, expected);
       if (record.status.endsWith('_SIGNED')) return api.resume(uploadId);
       if (record.status === 'COMPLETE' || record.status === 'FAILED') return recordView(record);
-      const build = record.status === 'ENCODED'
+      const build = reviewed?.build ?? (record.status === 'ENCODED'
         ? await buildRegister(record)
-        : record.status === 'UPLOADED' ? await buildCertify(record) : null;
+        : record.status === 'UPLOADED' ? await buildCertify(record) : null);
       if (!build) fail('MAKER_V8_WALRUS_SIGNATURE_STATE_INVALID', 'Walrus upload is not ready for a signature.', 'SIGNING');
       await assertPinned();
       const account = await wallet.getCurrentAccount();
@@ -669,6 +746,7 @@ export function createMakerV8WalrusPublisherV8({
         fail('MAKER_V8_WALRUS_ACCOUNT_DRIFT', 'Current wallet differs from the Walrus owner.', 'CONTEXT');
       }
       if (expected) assertExpectedUpload(await persistence.load(record.uploadId), expected);
+      await reviewed?.assertCurrent?.();
       const signed = await wallet.signExactTransaction({
         bytes: build.bytes, digest: build.digest, signer: record.owner,
       });
@@ -689,6 +767,7 @@ export function createMakerV8WalrusPublisherV8({
       // Cold durable reread precedes the first exact-digest query/broadcast.
       record = await persistence.load(record.uploadId);
       await verifySigned(record);
+      if (reviewed?.signOnly) return freeze({ ...recordView(record), status: publicStatus(record) });
       return api.resume(uploadId);
     },
 

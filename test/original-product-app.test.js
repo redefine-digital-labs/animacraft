@@ -44,6 +44,139 @@ function draftRecord({ revision = 1, updatedAt = 1_700_000_000_000 } = {}) {
 
 const ROOT_ONE = `0x${'31'.repeat(32)}`;
 
+test('ordinary publication opens exact saved review without signing and rejects duplicate clicks', async () => {
+  const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const gate = deferred(); const calls = [];
+  h.bridge.prepareMakerPublication = async input => { calls.push(input); return gate.promise; };
+  h.bridge.inspectMakerPublication = h.bridge.prepareMakerPublication;
+  h.bridge.signMakerPublication = async () => { throw Error('unexpected signature'); };
+  h.bridge.continueMakerPublication = async () => { throw Error('unexpected broadcast'); };
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft('approved-maker');
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const click = () => { const control = new FakeTarget(h.doc, { dataset: { action: 'publish', reviewDraft: 'approved-maker', creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } }); control.parent = mount; mount.fire('click', { target: control }); };
+    click(); click(); await settle(); await settle();
+    assert.deepEqual(calls, [{ draftId: 'approved-maker', expectedRevision: 1 }]);
+    gate.resolve({ schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'review-one', scope: { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' }, stage: 'LIVING_CONTENT', status: 'PREPARED', nextAction: 'SIGN', step: { id: 'step-one', gasBudgetMist: '123456', gasPriceMist: '1000', storageCostAtomic: null }, assetCount: 1 });
+    await settle(); await settle();
+    assert.match(mount.innerHTML, /123456/);
+    assert.match(mount.innerHTML, /data-action="publication-sign"/);
+    assert.match(mount.innerHTML, /Unknown/);
+  } finally { app.destroy(); }
+});
+
+test('publication review fences late results on route, wallet, close and reopened draft', async t => {
+  for (const mode of ['route', 'wallet', 'close', 'reopen']) await t.test(mode, async () => {
+    const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+    const gate = deferred(); let entered = false;
+    h.bridge.prepareMakerPublication = async () => { entered = true; return gate.promise; };
+    h.bridge.inspectMakerPublication = h.bridge.prepareMakerPublication;
+    h.bridge.signMakerPublication = async () => assert.fail('signature');
+    h.bridge.continueMakerPublication = async () => assert.fail('broadcast');
+    const app = createOriginalProductApp(h);
+    try {
+      await app.ready; app.navigate('creator'); await app.openDraft('approved-maker');
+      const mount = h.doc.getElementById('makerV4CreatorMount');
+      const fire = action => { const target = new FakeTarget(h.doc, { dataset: { action, reviewDraft: 'approved-maker', creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } }); target.parent = mount; mount.fire('click', { target }); };
+      fire('publish'); await settle(); assert.equal(entered, true);
+      if (mode === 'route') app.navigate('templates');
+      if (mode === 'wallet') app.refreshConnection(null);
+      if (mode === 'close') fire('publication-close');
+      if (mode === 'reopen') await app.openDraft('approved-maker');
+      gate.resolve({ schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'late-review', scope: { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' }, stage: 'DONE', status: 'COMPLETE', rootId: 'late-root' });
+      await settle(); await settle();
+      assert.doesNotMatch(mount.innerHTML, /late-root|late-review/);
+    } finally { app.destroy(); }
+  });
+});
+
+test('publication uses explicit single-step signatures, rejection clears authority, refresh never continues', async () => {
+  const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const scope = { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' };
+  const review = { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'r1', scope, stage: 'LIVING_CONTENT', status: 'PREPARED', nextAction: 'SIGN', step: { gasBudgetMist: '100' } };
+  const calls = []; let reject = true;
+  h.bridge.prepareMakerPublication = async () => structuredClone(review);
+  h.bridge.inspectMakerPublication = async input => { calls.push(['inspect', input]); return structuredClone(review); };
+  h.bridge.signMakerPublication = async input => { calls.push(['sign', input]); if (reject) throw Error('Wallet rejected'); return { ...review, reviewId: 'r2', nextAction: 'CONTINUE' }; };
+  h.bridge.continueMakerPublication = async input => { calls.push(['continue', input]); return { ...review, reviewId: 'r3', stage: 'ASSETS' }; };
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft('approved-maker');
+    h.emitBridge({ publication: { signingEnabled: true, broadcastEnabled: true } });
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const fire = async (action, publicationReview) => { const target = new FakeTarget(h.doc, { dataset: { action, publicationReview, reviewDraft: 'approved-maker', creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } }); target.parent = mount; mount.fire('click', { target }); await settle(); await settle(); };
+    await fire('publish'); await fire('publication-sign', 'wrong'); assert.equal(calls.length, 0);
+    await fire('publication-sign', 'r1'); assert.match(mount.innerHTML, /Wallet rejected/);
+    await fire('publication-sign', 'r1'); assert.equal(calls.length, 1);
+    await fire('publication-refresh'); assert.equal(calls[1][0], 'inspect');
+    reject = false; await fire('publication-sign', 'r1');
+    assert.match(mount.innerHTML, /data-action="publication-continue"/);
+    assert.equal(calls.filter(x => x[0] === 'continue').length, 0);
+    await fire('publication-continue', 'r2'); assert.equal(calls.at(-1)[0], 'continue');
+    assert.match(mount.innerHTML, /ASSETS/); assert.match(mount.innerHTML, /data-publication-review="r3"/);
+    h.emitBridge({ publication: { signingEnabled: false, broadcastEnabled: false } });
+    await fire('publication-sign', 'r3'); assert.equal(calls.length, 4);
+  } finally { app.destroy(); }
+});
+
+test('publication drains a pending saved revision and rejects mismatched wallet or revision review', async t => {
+  for (const mismatch of ['none', 'wallet', 'revision']) await t.test(mismatch, async () => {
+    const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+    const gate = deferred(), writes = []; const dispatch = h.bridge.dispatchDraftCommand;
+    h.bridge.dispatchDraftCommand = async input => { await gate.promise; return dispatch(input); };
+    h.bridge.prepareMakerPublication = async input => {
+      writes.push(input);
+      return { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'new-review', scope: { draftId: 'approved-maker', draftRevision: mismatch === 'revision' ? 1 : 2, signerAddress: mismatch === 'wallet' ? '0x123' : ROOT_ONE, network: 'mainnet' }, stage: 'ASSETS', nextAction: 'SIGN', step: { gasBudgetMist: '99' } };
+    };
+    h.bridge.inspectMakerPublication = h.bridge.prepareMakerPublication;
+    h.bridge.signMakerPublication = async () => assert.fail('signature');
+    h.bridge.continueMakerPublication = async () => assert.fail('broadcast');
+    const app = createOriginalProductApp(h);
+    try {
+      await app.ready; app.navigate('creator'); await app.openDraft('approved-maker');
+      const mount = h.doc.getElementById('makerV4CreatorMount');
+      const fire = (action, event = 'click', value) => { const target = new FakeTarget(h.doc, { dataset: { action, reviewDraft: 'approved-maker', creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } }); target.parent = mount; target.value = value; mount.fire(event, { target }); };
+      fire('maker-name', 'change', 'Saved before publication'); await settle();
+      fire('publish'); await settle(); assert.deepEqual(writes, []);
+      gate.resolve(); await settle(); await settle();
+      assert.deepEqual(writes, [{ draftId: 'approved-maker', expectedRevision: 2 }]);
+      if (mismatch === 'none') assert.match(mount.innerHTML, /data-publication-review="new-review"/);
+      else { assert.match(mount.innerHTML, /review is stale/); assert.doesNotMatch(mount.innerHTML, /data-action="publication-sign"/); }
+    } finally { app.destroy(); }
+  });
+});
+
+test('publication explicitly reviews an earlier frozen revision and restores only certified Library identity', async () => {
+  const record = draftRecord({ revision: 2 });
+  const h = browserHarness({ record, draftsResult: [record], connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const scope = { draftId: record.draftId, draftRevision: 1, currentSavedRevision: 2, publishingEarlierRevision: true, signerAddress: ROOT_ONE, network: 'mainnet', contentSha256: 'frozen-content-hash' };
+  const review = { schemaVersion: 'animacraft.maker-v8-publication-review.v1', scope, reviewId: 'frozen-review', frozenMakerName: 'Frozen Maker name', stage: 'MANIFEST', status: 'READY', nextAction: 'SIGN', step: { gasBudgetMist: '500' } };
+  let signs = 0, reads = 0;
+  h.bridge.getPublishedMaker = async () => { reads++; return { complete: true, scope, rootId: ROOT_ONE, makerVersion: 1 }; };
+  h.bridge.prepareMakerPublication = async () => review;
+  h.bridge.inspectMakerPublication = async () => review;
+  h.bridge.signMakerPublication = async () => { signs++; return { ...review, nextAction: 'CONTINUE' }; };
+  h.bridge.continueMakerPublication = async () => assert.fail('broadcast');
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft(record.draftId); await settle();
+    h.emitBridge({ publication: { signingEnabled: true, broadcastEnabled: true } });
+    assert.ok(reads > 0); assert.equal(signs, 0);
+    assert.match(h.doc.getElementById('imageMakerList').innerHTML, /Published Root \/ version/);
+    assert.match(h.doc.getElementById('imageMakerList').innerHTML, new RegExp(ROOT_ONE));
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const fire = async (action, publicationReview) => { const target = new FakeTarget(h.doc, { dataset: { action, publicationReview, reviewDraft: record.draftId, creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } }); target.parent = mount; mount.fire('click', { target }); await settle(); };
+    await fire('manage-lifecycle');
+    assert.match(h.doc.getElementById('lifecyclePublishedVersionCard').innerHTML, new RegExp(ROOT_ONE));
+    assert.doesNotMatch(h.doc.getElementById('makerLifecycleManagerStatus').textContent, /No version/);
+    await fire('publish');
+    assert.match(mount.innerHTML, /frozen revision 1/); assert.match(mount.innerHTML, /saved revision 2/);
+    assert.match(mount.innerHTML, /Frozen Maker name|frozen-content-hash/);
+    await fire('publication-sign', 'frozen-review'); assert.equal(signs, 1);
+  } finally { app.destroy(); }
+});
+
 test('local Player return reuses its existing control outside the hidden retired editor', async () => {
   const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
   assert.equal([...html.matchAll(/id="backToCreatorPreview"/g)].length, 1);

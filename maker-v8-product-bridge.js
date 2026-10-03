@@ -24,6 +24,8 @@ import { exactMakerV8ExportOptions, makerV8ExportSizes } from './maker-v8-render
 import { makerV8DraftAuthorUpgrade } from './maker-v8-draft-store.js';
 import { creatorStyleEditorState, exactCreatorTransform } from './maker-v8-creator-style.js';
 import { createCreatorCharacterStarter } from './maker-v8-creator-structure.js';
+import { assertMakerV8Runtime } from './maker-v8-runtime.js';
+import { isDefinitiveWalletStandardRejectionV8 } from './maker-v8-browser.js';
 
 export const MAKER_V8_PRODUCT_BRIDGE_SCHEMA = 'animacraft.maker-v8-product-bridge.v1';
 export const MAKER_V8_PRODUCT_PLAYER_SESSION_SCHEMA = 'animacraft.maker-v8-player-session.v1';
@@ -31,6 +33,21 @@ export const MAKER_V8_PRODUCT_PLAYER_SESSION_SCHEMA = 'animacraft.maker-v8-playe
 const SAFE_DRAFT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const EXACT_ID = /^0x[0-9a-f]{64}$/;
 const EXACT_HASH = /^[0-9a-f]{64}$/;
+const publicationFlights = new Map();
+const publicationLock = (key, operation) => {
+  if (globalThis.navigator?.locks?.request) {
+    return globalThis.navigator.locks.request(`maker-publication:${key}`, operation);
+  }
+  // Browsers must provide the origin-wide lock; Node's shared map is used by
+  // injected local tests only, never as a cross-tab production substitute.
+  if (typeof window !== 'undefined') {
+    fail('MAKER_V8_PUBLICATION_LOCK_UNAVAILABLE', 'This browser cannot safely coordinate publication across tabs.', 'PERSISTENCE');
+  }
+  const prior = publicationFlights.get(key) ?? Promise.resolve();
+  const result = prior.catch(() => {}).then(operation);
+  publicationFlights.set(key, result);
+  return result.finally(() => { if (publicationFlights.get(key) === result) publicationFlights.delete(key); });
+};
 const PRODUCT_STARTING_STRUCTURES = new Set(['blank', 'character']);
 const RENDERABLE_MEDIA_TYPES = new Set([
   'image/avif',
@@ -432,7 +449,9 @@ export function createMakerV8ProductBridge({
   let wallet = walletSnapshot(null);
   let templates = null;
   let activePublicationAttemptId = null;
-  let activeTransportInput = null;
+  let publicationGeneration = 0;
+  let publicationReview = null;
+  const invalidatePublicationReview = () => { publicationGeneration += 1; publicationReview = null; };
   let route = null;
   let issue = null;
   let walletInitialized = false;
@@ -489,6 +508,7 @@ export function createMakerV8ProductBridge({
     return true;
   };
   const invalidateDraftPreviews = () => {
+    invalidatePublicationReview();
     draftRenderGeneration += 1;
     invalidateLocalPlayer();
   };
@@ -501,7 +521,7 @@ export function createMakerV8ProductBridge({
     const changed = walletInitialized && walletIdentity(wallet) !== walletIdentity(nextWallet);
     walletInitialized = true;
     wallet = nextWallet;
-    if (changed) invalidatePlayerSession();
+    if (changed) { invalidatePlayerSession(); invalidatePublicationReview(); }
     return wallet;
   };
   const assertPlayerSessionCurrent = (generation, expectedWalletIdentity = null) => {
@@ -757,6 +777,7 @@ export function createMakerV8ProductBridge({
       return () => listeners.delete(listener);
     },
     navigate(nextRoute) {
+      invalidatePublicationReview();
       route = plain(nextRoute) ? freeze(structuredClone(nextRoute)) : null;
       emit();
       return route;
@@ -1408,156 +1429,188 @@ export function createMakerV8ProductBridge({
   }
 
   if (publication) {
-    const preparePublication = method(publication, 'prepare', 'publication');
-    const resumePublication = method(publication, 'resume', 'publication');
-    const requestSignature = method(publication, 'requestSignature', 'publication');
-    const recoverOutcome = method(publication, 'recoverOutcome', 'publication');
-    const replayExact = method(publication, 'replayExact', 'publication', { optional: true });
-    const prepareTransport = publicationTransport
-      ? method(publicationTransport, 'prepare', 'publicationTransport') : null;
-    const signTransport = publicationTransport
-      ? method(publicationTransport, 'requestSignature', 'publicationTransport') : null;
-    const recoverTransport = publicationTransport
-      ? method(publicationTransport, 'recover', 'publicationTransport') : null;
-    const transportResult = (result) => {
-      const plan = result?.plan;
-      activePublicationAttemptId = activeAttemptId(plan);
+    const hash = value => [...sha256(new TextEncoder().encode(canonicalMakerV8Json(value)))]
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const releaseIdentity = hash(assertMakerV8Runtime(productRuntime.runtime, { requireEnabled: true }));
+    const stale = () => fail('MAKER_V8_PRODUCT_PUBLICATION_STALE',
+      'The Maker, wallet or reviewed step changed. Open publication review again.', 'PUBLICATION');
+    const checkGeneration = generation => { if (disposed || generation !== publicationGeneration) stale(); };
+    const loadLive = async (draftId, expectedRevision) => {
+      const account = await requireConnected();
+      const record = await loadDraftRecord(exactDraftId(draftId));
+      if (!record || record.revision !== expectedRevision) stale();
+      const input = await transportInputForDraft(record, account.address);
+      const reread = await loadDraftRecord(draftId);
+      if (!reread || reread.revision !== record.revision
+        || canonicalMakerV8Json(reread.document) !== canonicalMakerV8Json(record.document)) stale();
+      return { account, record, input, contentSha256: hash(input) };
+    };
+    const bindingKey = (draftId, signer) => hash({ draftId, signer, releaseIdentity, network: 'mainnet' });
+    // Upload IDs are wallet/content scoped across releases. Both old/new tabs
+    // must share this lock even though their source bindings stay release-bound.
+    const lockKey = signer => hash({ signer, network: 'mainnet' });
+    const assertBinding = (binding, key) => {
+      if (!binding || binding.key !== key || binding.scope.releaseIdentity !== releaseIdentity
+        || binding.scope.contentSha256 !== hash(binding.input)
+        || binding.input.signerAddress !== binding.scope.signerAddress
+        || binding.input.attemptNonce !== `product-${binding.scope.draftId}-r${binding.scope.draftRevision}`) stale();
+    };
+    const assertLive = async review => {
+      checkGeneration(review.generation);
+      const live = await loadLive(review.dto.scope.draftId, review.currentSavedRevision);
+      checkGeneration(review.generation);
+      if (live.account.address !== review.dto.scope.signerAddress
+        || live.contentSha256 !== review.currentContentSha256) stale();
+      return live;
+    };
+    const projectReview = async (binding, live, generation) => {
+      let transport = null, plan = null, identity = null, step = null;
+      if (binding.attemptId) {
+        ({ plan, identity } = await method(publication, 'inspect', 'publication')(binding.attemptId));
+      } else {
+        transport = await method(publicationTransport, 'prepareReview', 'publicationTransport')(binding.input);
+        plan = transport.plan ?? null;
+        if (plan) {
+          binding = await publicationTransport.saveBinding(binding.key, binding.revision, { ...binding, attemptId: plan.attemptId });
+          ({ plan, identity } = await method(publication, 'inspect', 'publication')(plan.attemptId));
+        }
+      }
+      let status, stage, nextAction = null;
+      if (plan) {
+        if (plan.immutable?.signerAddress !== binding.scope.signerAddress) stale();
+        status = plan.status === 'ACTIVE' ? plan.current?.outcome?.status ?? 'READY' : plan.status;
+        stage = plan.current?.kind ?? (plan.status === 'COMPLETE' ? 'COMPLETE' : 'PUBLICATION');
+        if (status === 'READY') {
+          step = await method(publication, 'prepareReview', 'publication')(plan.attemptId);
+          nextAction = step ? 'SIGN' : null;
+        } else if (['SIGNED', 'OUTCOME_PENDING', 'OUTCOME_UNKNOWN'].includes(status)) {
+          step = { id: plan.attemptId, revision: plan.revision, digest: plan.current.outcome.digest,
+            stage, gasBudgetMist: null, gasPriceMist: null, storageEpochs: null,
+            deletable: null, storageCostAtomic: null, relayTipMist: null };
+          nextAction = 'CONTINUE';
+        }
+      } else {
+        status = transport.status; stage = transport.stage;
+        step = transport.step ?? null;
+        if (status === 'TRANSPORT_SIGNATURE_REQUIRED' && step) nextAction = 'SIGN';
+        if (status === 'TRANSPORT_RECOVERY_REQUIRED') {
+          step = { id: transport.upload.uploadId, revision: transport.upload.revision,
+            status: transport.upload.status, stage: transport.upload.stage,
+            digest: transport.upload.transactionDigest, gasBudgetMist: null, gasPriceMist: null,
+            storageEpochs: transport.upload.epochs, deletable: transport.upload.deletable,
+            storageCostAtomic: null, relayTipMist: null };
+          nextAction = 'CONTINUE';
+        }
+      }
+      checkGeneration(generation);
+      const scope = { ...binding.scope, currentSavedRevision: live.record.revision,
+        publishingEarlierRevision: binding.scope.draftRevision !== live.record.revision };
+      const reviewId = hash({ scope, generation, bindingRevision: binding.revision, step, status });
+      const dto = freeze({ schemaVersion: 'animacraft.maker-v8-publication-review.v1',
+        reviewId, scope, status, stage, nextAction, step, attemptId: plan?.attemptId ?? null,
+        rootId: plan?.status === 'COMPLETE' && identity?.complete === true ? identity.rootId : null,
+        makerVersion: identity?.makerVersion ?? binding.input.document.lineage.version,
+        frozenMakerName: binding.input.document.metadata.name,
+        assetCount: binding.input.assets.length,
+        message: status === 'COMPLETE' ? 'Maker publication is certified complete.'
+          : scope.publishingEarlierRevision ? 'Continue the previously reviewed saved version. Your newer draft is preserved.'
+            : nextAction === 'SIGN' ? 'Review this exact transaction before opening the wallet.'
+              : nextAction === 'CONTINUE' ? 'Continue the existing signed transaction. This can broadcast or upload its exact saved bytes.'
+                : 'Publication requires review.' });
+      const review = { dto, binding, generation, currentSavedRevision: live.record.revision,
+        currentContentSha256: live.contentSha256, plan };
+      await assertLive(review);
+      publicationReview = review;
+      activePublicationAttemptId = dto.attemptId;
       emit();
-      return freeze({
-        attemptId: activePublicationAttemptId,
-        status: result.status,
-        message: result.message,
-        transport: result,
-        plan,
+      return dto;
+    };
+    const prepareMakerPublication = async ({ draftId, expectedRevision } = {}) => {
+      invalidatePublicationReview();
+      const generation = publicationGeneration;
+      const live = await loadLive(draftId, expectedRevision);
+      checkGeneration(generation);
+      const key = bindingKey(draftId, live.account.address);
+      return publicationLock(lockKey(live.account.address), async () => {
+        checkGeneration(generation);
+        let binding = await method(publicationTransport, 'loadBinding', 'publicationTransport')(key);
+        if (!binding || (!binding.started && binding.scope.contentSha256 !== live.contentSha256)) {
+          if (binding?.attemptId) await method(publication, 'discardUnsigned', 'publication')(binding.attemptId);
+          binding = await method(publicationTransport, 'saveBinding', 'publicationTransport')(key, binding?.revision ?? null, {
+            scope: { draftId, draftRevision: live.record.revision, signerAddress: live.account.address,
+              network: 'mainnet', releaseIdentity, contentSha256: live.contentSha256 },
+            input: live.input, started: false, attemptId: null,
+          });
+        }
+        assertBinding(binding, key);
+        if (binding.scope.signerAddress !== live.account.address) stale();
+        return projectReview(binding, live, generation);
       });
     };
-    const restoreTransportInput = async (input = {}) => {
-      if (!publicationTransport || activeTransportInput) return activeTransportInput;
-      const account = await requireConnected();
-      const draftId = input?.draft?.makerId ?? input?.makerId ?? input?.draftId;
-      if (typeof draftId !== 'string') return null;
-      const record = await loadDraftRecord(draftId);
-      if (record) activeTransportInput = await transportInputForDraft(record, account.address);
-      return activeTransportInput;
+    const act = async (input, action) => {
+      if (!gates.allowWalletSignature || !gates.allowBroadcast) {
+        fail('MAKER_V8_PRODUCT_EXECUTION_DISABLED', 'Publication signing and broadcast are disabled.', 'PUBLICATION');
+      }
+      const review = publicationReview;
+      if (!review || input?.reviewId !== review.dto.reviewId || review.dto.nextAction !== action) stale();
+      publicationReview = null;
+      return publicationLock(lockKey(review.dto.scope.signerAddress), async () => {
+        const live = await assertLive(review);
+        let binding = await publicationTransport.loadBinding(review.binding.key);
+        assertBinding(binding, review.binding.key);
+        if (!binding || binding.revision !== review.binding.revision) stale();
+        // Claim the exact source snapshot before prompting, so a crash/reload or
+        // a later edit cannot start a replacement Maker from a newer revision.
+        if (!binding.started) binding = await publicationTransport.saveBinding(binding.key, binding.revision,
+          { ...binding, started: true });
+        const check = async () => { await assertLive(review); };
+        if (action === 'SIGN') {
+          try {
+            const result = review.plan
+              ? await method(publication, 'signReviewed', 'publication')(review.dto.attemptId, review.dto.step, check)
+              : await method(publicationTransport, 'signReviewed', 'publicationTransport')(review.dto.step, check);
+            if (!review.binding.started && result?.current?.outcome?.status === 'READY') {
+              binding = await publicationTransport.saveBinding(binding.key, binding.revision, { ...binding, started: false });
+            }
+          } catch (error) {
+            const rejected = error?.definitiveRejection === true && error?.signedArtifactCreated === false
+              || isDefinitiveWalletStandardRejectionV8(error);
+            // Only a proven first-prompt rejection releases the unsigned source
+            // binding. Unknown failures and any earlier signature stay pinned.
+            if (!review.binding.started && rejected) {
+              await publicationTransport.saveBinding(binding.key, binding.revision, { ...binding, started: false });
+            }
+            throw error;
+          }
+        } else if (review.plan) {
+          const current = await method(publication, 'inspect', 'publication')(review.dto.attemptId);
+          if (current.plan.revision !== review.dto.step.revision) stale();
+          await check();
+          await method(publication, 'replayExact', 'publication')(review.dto.attemptId);
+        } else {
+          await check();
+          await method(publicationTransport, 'continueReviewed', 'publicationTransport')(review.dto.step);
+        }
+        checkGeneration(review.generation);
+        return projectReview(binding, live, review.generation);
+      });
     };
     Object.assign(bridge, {
-      async preparePublication(input) {
-        if (input?.kind === 'pack') {
-          if (!pack) fail('MAKER_V8_PRODUCT_PACK_UNAVAILABLE', 'Pack publication is unavailable.', 'PACK');
-          return method(pack, 'preparePublication', 'pack')(input);
-        }
+      prepareMakerPublication,
+      inspectMakerPublication: prepareMakerPublication,
+      signMakerPublication: input => act(input, 'SIGN'),
+      continueMakerPublication: input => act(input, 'CONTINUE'),
+      cancelMakerPublicationReview: invalidatePublicationReview,
+      async getPublishedMaker({ draftId } = {}) {
         const account = await requireConnected();
-        if (publicationTransport) {
-          const saved = await persistProductDraft(input?.draft ?? input);
-          activeTransportInput = await transportInputForDraft(saved, account.address);
-          return transportResult(await prepareTransport(activeTransportInput));
-        }
-        const document = makerV8DocumentFromProductDraft(input?.draft ?? input, { now });
-        const plan = await preparePublication({ document, signerAddress: account.address });
-        activePublicationAttemptId = activeAttemptId(plan);
-        emit();
-        return freeze({
-          attemptId: activePublicationAttemptId,
-          status: plan.status,
-          message: 'Exact Maker v8 publication plan is durable and ready for signature review.',
-          plan,
-        });
-      },
-      async resumePublication(input = {}) {
-        if (publicationTransport && !activePublicationAttemptId) {
-          await restoreTransportInput(input);
-          if (activeTransportInput) return transportResult(await recoverTransport(activeTransportInput));
-        }
-        const attemptId = input.attemptId ?? activePublicationAttemptId;
-        if (!attemptId) fail('MAKER_V8_PRODUCT_PUBLICATION_NOT_FOUND', 'No active publication attempt is selected.', 'PUBLICATION');
-        const plan = await resumePublication(attemptId);
-        activePublicationAttemptId = activeAttemptId(plan) ?? attemptId;
-        emit();
-        return freeze({ attemptId, status: plan.status, message: `Publication is ${plan.status}.`, plan });
-      },
-      async requestPublicationSignature(input = {}) {
-        if (!gates.allowWalletSignature || !gates.allowBroadcast) {
-          fail('MAKER_V8_PRODUCT_EXECUTION_DISABLED', 'Publication signing and broadcast are disabled.', 'PUBLICATION');
-        }
-        await requireConnected();
-        await restoreTransportInput(input);
-        if (publicationTransport && activeTransportInput && !activePublicationAttemptId) {
-          return transportResult(await signTransport(activeTransportInput));
-        }
-        const attemptId = input.attemptId ?? activePublicationAttemptId;
-        if (!attemptId) fail('MAKER_V8_PRODUCT_PUBLICATION_NOT_FOUND', 'No publication attempt is selected.', 'PUBLICATION');
-        return requestSignature(attemptId);
-      },
-      async recoverPublication(input = {}) {
-        await restoreTransportInput(input);
-        if (publicationTransport && activeTransportInput && !activePublicationAttemptId) {
-          return transportResult(await recoverTransport(activeTransportInput));
-        }
-        const attemptId = input.attemptId ?? activePublicationAttemptId;
-        if (!attemptId) fail('MAKER_V8_PRODUCT_PUBLICATION_NOT_FOUND', 'No publication attempt is selected.', 'PUBLICATION');
-        return recoverOutcome(attemptId);
-      },
-      async continueMakerPublication(input = {}) {
-        if (!gates.allowWalletSignature || !gates.allowBroadcast) {
-          fail('MAKER_V8_PRODUCT_EXECUTION_DISABLED', 'Maker publishing is not enabled for this release.', 'PUBLICATION');
-        }
-        const account = await requireConnected();
-        const draftId = exactDraftId(input.draftId ?? input.makerId ?? input.draft?.makerId);
-        const record = await loadDraftRecord(draftId);
-        if (!record) {
-          fail('MAKER_V8_PRODUCT_DRAFT_NOT_FOUND', 'Open and save this Maker before publishing.', 'DRAFT');
-        }
-
-        if (publicationTransport && !activePublicationAttemptId) {
-          activeTransportInput = await transportInputForDraft(record, account.address);
-          let transported = await prepareTransport(activeTransportInput);
-          if (transported.status === 'TRANSPORT_SIGNATURE_REQUIRED') {
-            transported = await signTransport(activeTransportInput);
-          }
-          if (transported.status === 'TRANSPORT_RECOVERY_REQUIRED') {
-            transported = await recoverTransport(activeTransportInput);
-          }
-          const view = transportResult(transported);
-          if (!activePublicationAttemptId) return view;
-        }
-
-        if (!activePublicationAttemptId) {
-          const prepared = await preparePublication({
-            document: structuredClone(record.document),
-            signerAddress: account.address,
-          });
-          activePublicationAttemptId = activeAttemptId(prepared);
-          emit();
-        }
-        let plan = await resumePublication(activePublicationAttemptId);
-        if (plan.status !== 'ACTIVE') {
-          return freeze({
-            attemptId: activePublicationAttemptId,
-            status: plan.status,
-            message: plan.status === 'COMPLETE' ? 'Maker published.' : 'Maker publication stopped.',
-            plan,
-          });
-        }
-        if (plan.current?.outcome?.status === 'READY') {
-          plan = await requestSignature(activePublicationAttemptId);
-        }
-        if (plan.status === 'ACTIVE'
-          && ['SIGNED', 'OUTCOME_PENDING', 'OUTCOME_UNKNOWN'].includes(plan.current?.outcome?.status)) {
-          plan = await resumePublication(activePublicationAttemptId);
-        }
-        if (plan.status === 'ACTIVE'
-          && plan.current?.outcome?.status === 'OUTCOME_PENDING'
-          && replayExact) {
-          plan = await replayExact(activePublicationAttemptId);
-        }
-        return freeze({
-          attemptId: activePublicationAttemptId,
-          status: plan.status === 'COMPLETE' ? 'COMPLETE' : plan.current?.outcome?.status ?? plan.status,
-          message: plan.status === 'COMPLETE'
-            ? 'Maker published.'
-            : 'Publication progress was saved. Continue here after the transaction settles.',
-          plan,
-        });
+        const key = bindingKey(exactDraftId(draftId), account.address);
+        const binding = await method(publicationTransport, 'loadBinding', 'publicationTransport')(key);
+        if (!binding?.attemptId) return null;
+        assertBinding(binding, key);
+        const identity = await method(publication, 'lookupFinalized', 'publication')(binding.attemptId);
+        const confirmed = await requireConnected();
+        if (confirmed.address !== account.address) stale();
+        return identity?.complete ? freeze({ ...identity, scope: binding.scope }) : null;
       },
     });
   }

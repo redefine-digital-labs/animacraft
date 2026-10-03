@@ -160,6 +160,29 @@ function harness({ protectedAsset = false } = {}) {
   };
 }
 
+test('scoped review signs only its frozen upload and read-only inspection preserves crash recovery', async () => {
+  const value = harness();
+  value.publisher.prepareReview = async uploadId => ({ id: uploadId, revision: 1, digest: 'frozen', stage: 'REGISTER' });
+  value.publisher.signReviewed = async (uploadId, review, check) => {
+    await check();
+    value.calls.push(['reviewed-sign', uploadId]);
+    assert.equal(uploadId, review.id);
+    return { status: 'RECOVERY_REQUIRED' };
+  };
+  const review = await value.transport.prepareReview(input());
+  assert.equal(review.stage, 'LIVING_CONTENT');
+  assert.equal(value.calls.some(([kind]) => kind === 'sign' || kind === 'recover'), false);
+  await value.transport.signReviewed(review.step, async () => {});
+  assert.equal(value.calls.filter(([kind]) => kind === 'reviewed-sign').length, 1);
+  assert.equal(value.calls.filter(([kind]) => kind === 'prepare').length, 1, 'signing one upload does not prepare or sign later stages');
+  const upload = value.uploads.get(review.step.id);
+  value.uploads.set(review.step.id, { ...upload, status: 'REGISTER_FINALIZED', stage: 'UPLOAD' });
+  const interrupted = await value.transport.prepareReview(input());
+  assert.equal(interrupted.status, 'TRANSPORT_RECOVERY_REQUIRED');
+  assert.equal(interrupted.upload.status, 'REGISTER_FINALIZED');
+  assert.equal(interrupted.step, null);
+});
+
 function input() {
   return {
     document: createCharacterMakerV8Starter({ makerKey: 'fresh', name: 'Fresh' }),
