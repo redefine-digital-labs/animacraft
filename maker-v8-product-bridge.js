@@ -968,6 +968,7 @@ export function createMakerV8ProductBridge({
         getSnapshot() { current(); return session.getSnapshot(); },
         setRecipe(recipe, revision) { current(); return session.setRecipe(recipe, revision); },
         setPersonalization(input, revision) { current(); return session.setPersonalization(input, revision); },
+        setImageExport(input, revision) { current(); return session.setImageExport(input, revision); },
         exportCheckpoint: exportLocalCheckpoint,
         async loadCheckpoint() {
           if (typeof localPlayerStore?.load !== 'function') fail('LOCAL_PLAYER_STORE_UNAVAILABLE', 'Local checkpoint storage is unavailable.', 'DRAFT');

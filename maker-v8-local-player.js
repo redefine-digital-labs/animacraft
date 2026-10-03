@@ -1,5 +1,6 @@
 import { assertMakerV8Document, compareMakerV8ProtocolText } from './maker-v8-document.js';
 import { makerV8LocalRecipeTransitionIssue } from './maker-v8-recipe-constraints.js';
+import { exactMakerV8ExportOptions } from './maker-v8-render-core.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 
 const HISTORY_LIMIT = 100;
@@ -114,10 +115,15 @@ export function createMakerV8LocalPlayer(input = {}) {
     }
     return { profile, soulDocuments };
   };
+  const normalizeImageExport = (input) => {
+    exactFields(input, ['sizeMode', 'transparent'], 'Local image export');
+    return exactMakerV8ExportOptions(source.canvas, input);
+  };
   const initial = freeze({
     recipe: normalize({ ...source.defaultRecipe, outputKey: source.outputs[0]?.key }, source.defaultRecipe.selections),
     profile: { name: '', world: '', description: '', tags: '' },
     soulDocuments: Object.fromEntries(SOUL_KEYS.map(key => [key, source.livingContent[key]])),
+    imageExport: { sizeMode: 'standard', transparent: false },
   });
   let content = initial;
   const check = () => {
@@ -168,7 +174,11 @@ export function createMakerV8LocalPlayer(input = {}) {
     },
     setPersonalization(input, expectedRevision) {
       checkRevision(expectedRevision);
-      return change({ recipe: content.recipe, ...normalizePersonalization(input) }, expectedRevision);
+      return change({ ...content, ...normalizePersonalization(input) }, expectedRevision);
+    },
+    setImageExport(input, expectedRevision) {
+      checkRevision(expectedRevision);
+      return change({ ...content, imageExport: normalizeImageExport(input) }, expectedRevision);
     },
     exportCheckpoint() {
       check();
@@ -184,7 +194,8 @@ export function createMakerV8LocalPlayer(input = {}) {
       }
       let value;
       try { value = JSON.parse(serialized); } catch { fail('MAKER_V8_LOCAL_PLAYER_CHECKPOINT_INVALID', 'Local checkpoint JSON is invalid.'); }
-      exactFields(value, ['schemaVersion', 'draftId', 'draftRevision', 'documentHash', 'recipe', 'profile', 'soulDocuments'], 'Local checkpoint');
+      exactFields(value, ['schemaVersion', 'draftId', 'draftRevision', 'documentHash', 'recipe', 'profile', 'soulDocuments',
+        ...(value && Object.hasOwn(value, 'imageExport') ? ['imageExport'] : [])], 'Local checkpoint');
       if (value.schemaVersion !== CHECKPOINT_SCHEMA || value.draftId !== draftId
         || value.draftRevision !== draftRevision || value.documentHash !== documentHash
         || canonical(value) !== serialized) {
@@ -195,7 +206,9 @@ export function createMakerV8LocalPlayer(input = {}) {
       // failures, just as Reset/Undo can. It never gains publication authority.
       const recipe = normalize(value.recipe, initial.recipe.selections);
       const personalization = normalizePersonalization({ profile: value.profile, soulDocuments: value.soulDocuments });
-      return change({ recipe, ...personalization }, expectedRevision);
+      const imageExport = Object.hasOwn(value, 'imageExport')
+        ? normalizeImageExport(value.imageExport) : initial.imageExport;
+      return change({ recipe, ...personalization, imageExport }, expectedRevision);
     },
     reset: (expectedRevision) => change(initial, expectedRevision),
     undo: (expectedRevision) => moveHistory('undo', expectedRevision),

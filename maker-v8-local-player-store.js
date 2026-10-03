@@ -42,12 +42,19 @@ function payloadBinding(checkpoint) {
     fail('LOCAL_PLAYER_STORE_INVALID', 'Local checkpoint JSON is invalid.');
   }
   exact(outer, ['schemaVersion', 'assetHash', 'checkpoint']);
-  exact(inner, ['schemaVersion', 'draftId', 'draftRevision', 'documentHash', 'recipe', 'profile', 'soulDocuments']);
+  exact(inner, ['schemaVersion', 'draftId', 'draftRevision', 'documentHash', 'recipe', 'profile', 'soulDocuments',
+    ...(inner && Object.hasOwn(inner, 'imageExport') ? ['imageExport'] : [])]);
   if (outer.schemaVersion !== 'animacraft.maker-v8-local-player-bundle-checkpoint.v1'
     || inner.schemaVersion !== 'animacraft.maker-v8-local-player-checkpoint.v1'
     || typeof outer.checkpoint !== 'string' || encoder.encode(outer.checkpoint).length > 16 * 1024 * 1024
     || canonical(outer) !== checkpoint || canonical(inner) !== outer.checkpoint) {
     fail('LOCAL_PLAYER_STORE_INVALID', 'Only local bundle checkpoints may be stored.');
+  }
+  if (Object.hasOwn(inner, 'imageExport')) {
+    exact(inner.imageExport, ['sizeMode', 'transparent']);
+    if (!['standard', 'original'].includes(inner.imageExport.sizeMode) || typeof inner.imageExport.transparent !== 'boolean') {
+      fail('LOCAL_PLAYER_STORE_INVALID', 'Invalid local image export preference.');
+    }
   }
   return { draftId: inner.draftId, draftRevision: inner.draftRevision,
     documentHash: inner.documentHash, assetHash: outer.assetHash };

@@ -3,6 +3,8 @@ import test from 'node:test';
 import { createCharacterMakerV8Starter } from '../maker-v8-document.js';
 import { createMakerV8LocalPlayer } from '../maker-v8-local-player.js';
 import { createMakerV8LocalPlayerControls } from '../maker-v8-local-player-controls.js';
+import { IDBFactory } from 'fake-indexeddb';
+import { createMakerV8LocalPlayerStore } from '../maker-v8-local-player-store.js';
 
 function documentFixture() {
   const document = structuredClone(createCharacterMakerV8Starter({ makerKey: 'local' }));
@@ -192,7 +194,8 @@ test('export size/background changes are isolated from the editing preview and e
   assert.deepEqual(requests, [null, { sizeMode: 'standard', transparent: false },
     { sizeMode: 'original', transparent: false }, { sizeMode: 'original', transparent: true }]);
   assert.equal(h.controller.getRenderRecord(), preview);
-  assert.deepEqual(h.model.getSnapshot(), snapshot);
+  assert.deepEqual(h.model.getSnapshot(), { ...snapshot, revision: 2, undoDepth: 2,
+    imageExport: { sizeMode: 'original', transparent: true } });
   assert.deepEqual(revoked, ['blob:export-1', 'blob:export-2']);
   const count = requests.length;
   await assert.rejects(h.controller.dispatch('player-export-size', { sizeMode: 'giant' }));
@@ -237,8 +240,117 @@ test('wrong renderer dimensions reject before URL creation and retry retains exa
   await h.controller.dispatch('player-export-retry');
   assert.deepEqual(requests.at(-1), { sizeMode: 'standard', transparent: true });
   assert.equal(h.controller.getView().export.state, 'ready');
-  assert.equal(h.model.getSnapshot().revision, 0);
+  assert.equal(h.model.getSnapshot().revision, 1);
   h.controller.dispose();
+});
+
+function durableExportHarness(document, store, render, save = input => store.save(input)) {
+  const model = createMakerV8LocalPlayer({ draftId: 'local', draftRevision: 1, document });
+  const binding = { draftId: 'local', draftRevision: 1,
+    documentHash: JSON.parse(model.exportCheckpoint()).documentHash, assetHash: 'aa'.repeat(32) };
+  const session = { ...model, renderPreview: render,
+    loadCheckpoint: () => store.load(binding),
+    restoreCheckpoint: (checkpoint, revision) => model.restoreCheckpoint(JSON.parse(checkpoint).checkpoint, revision),
+    captureCheckpointSave() {
+      const checkpoint = JSON.stringify({ assetHash: binding.assetHash, checkpoint: model.exportCheckpoint(),
+        schemaVersion: 'animacraft.maker-v8-local-player-bundle-checkpoint.v1' });
+      return { revision: model.getSnapshot().revision, commit: expected => save({ binding, checkpoint, expected }) };
+    },
+  };
+  const urls = [];
+  const controller = createMakerV8LocalPlayerControls({ session, pngExport: {
+    createUrl: () => { urls.push('blob:export'); return urls.at(-1); }, revokeUrl() {}, download() {},
+  } });
+  return { model, controller, binding, urls };
+}
+
+test('preference changes replace a pending main preview without accepting its stale result or clearing the export lane', async () => {
+  const pending = [];
+  const h = harness({ render: (snapshot, options) => new Promise((resolve, reject) => pending.push({ snapshot, options, resolve, reject })),
+    pngExport: { createUrl: () => 'blob:exact', revokeUrl() {}, download() {} } });
+  const preview = h.controller.refresh();
+  const exporting = h.controller.dispatch('player-preview-export');
+  const changing = h.controller.dispatch('player-export-size', { sizeMode: 'original' });
+  assert.equal(pending.length, 4);
+  assert.equal(pending[2].options, null);
+  assert.equal(pending[2].snapshot.revision, 1);
+  pending[0].reject(Object.assign(new Error('stale preview'), { code: 'STALE_LOCAL_PLAYER' }));
+  await preview;
+  assert.equal(h.controller.getView().render.state, 'pending');
+  assert.equal(h.controller.getRenderRecord(), null);
+  pending[2].resolve({ width: 800, height: 600, revision: 1 });
+  pending[3].resolve({ width: 800, height: 600 });
+  await changing;
+  pending[1].resolve({ width: 800, height: 600 });
+  await exporting;
+  assert.equal(h.controller.getView().render.state, 'ready');
+  assert.equal(h.controller.getRenderRecord().revision, 1);
+  assert.equal(h.controller.getView().export.state, 'ready');
+  assert.equal(h.controller.getView().export.sizeMode, 'original');
+  await h.controller.dispatch('player-download-png');
+  h.controller.dispose();
+});
+
+test('export intent cold-restores independently and together at equal and different output dimensions', async t => {
+  for (const width of [800, 2048]) for (const imageExport of [
+    { sizeMode: 'original', transparent: false }, { sizeMode: 'standard', transparent: true },
+    { sizeMode: 'original', transparent: true },
+  ]) await t.test(`${width}/${imageExport.sizeMode}/${imageExport.transparent}`, async () => {
+    const document = documentFixture(); document.canvas.width = width;
+    const store = createMakerV8LocalPlayerStore(new IDBFactory());
+    const render = async options => ({ width: options.sizeMode === 'standard' && width > 1024 ? 1024 : width,
+      height: options.sizeMode === 'standard' && width > 1024 ? 300 : 600 });
+    const first = durableExportHarness(document, store, render);
+    await first.controller.initialize();
+    await first.controller.dispatch('player-preview-export');
+    await first.controller.dispatch('player-export-size', { sizeMode: imageExport.sizeMode });
+    await first.controller.dispatch('player-export-background', { transparent: String(imageExport.transparent) });
+    await first.controller.dispatch('close-player-export');
+    await first.controller.flush(); await first.controller.dispose();
+    const cold = durableExportHarness(document, store, render);
+    await cold.controller.initialize();
+    assert.deepEqual(cold.model.getSnapshot().imageExport, imageExport);
+    assert.equal(cold.controller.getView().export.sizeMode, imageExport.sizeMode);
+    await assert.rejects(cold.controller.dispatch('player-download-png'), { code: 'MAKER_V8_LOCAL_PLAYER_EXPORT_NOT_READY' });
+    await cold.controller.dispatch('player-preview-export');
+    assert.equal(cold.controller.getView().export.transparent, imageExport.transparent);
+    await cold.controller.dispatch('player-download-png');
+    await cold.controller.dispose(); store.close();
+  });
+});
+
+test('failed and held renders persist latest intent through save retry, close and disposal without stale URLs', async () => {
+  const store = createMakerV8LocalPlayerStore(new IDBFactory());
+  let failSave = true;
+  const pending = [], writes = [];
+  const h = durableExportHarness(documentFixture(), store, () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
+    async input => { writes.push(input); if (failSave) throw new Error('quota'); return store.save(input); });
+  await h.controller.initialize();
+  const original = h.controller.dispatch('player-preview-export');
+  const size = h.controller.dispatch('player-export-size', { sizeMode: 'original' });
+  const background = h.controller.dispatch('player-export-background', { transparent: 'true' });
+  await assert.rejects(h.controller.flush(), /quota/);
+  assert.equal(h.controller.getView().save.state, 'error');
+  pending[2].reject(new Error('render failed'));
+  await assert.rejects(background, /render failed/);
+  await assert.rejects(h.controller.dispatch('player-download-png'), { code: 'MAKER_V8_LOCAL_PLAYER_EXPORT_NOT_READY' });
+  await h.controller.dispatch('close-player-export');
+  failSave = false;
+  await h.controller.dispatch('player-retry-save');
+  assert.deepEqual(writes.at(-1).expected, null);
+  const durable = await store.load(h.binding);
+  assert.deepEqual(JSON.parse(JSON.parse(durable.checkpoint).checkpoint).imageExport, { sizeMode: 'original', transparent: true });
+  const reopened = h.controller.dispatch('player-preview-export');
+  const newest = h.controller.dispatch('player-export-background', { transparent: 'false' });
+  await h.controller.dispose();
+  for (const job of pending) job.resolve({ width: 800, height: 600 });
+  await Promise.all([original, size, reopened, newest]);
+  assert.deepEqual(h.urls, []);
+  const latest = await store.load(h.binding);
+  assert.equal(latest.revision, durable.revision + 1);
+  assert.deepEqual(JSON.parse(JSON.parse(latest.checkpoint).checkpoint).imageExport, { sizeMode: 'original', transparent: false });
+  assert.deepEqual(writes.at(-1).expected, { revision: durable.revision, contentHash: durable.contentHash });
+  store.close();
 });
 
 test('local export close, newer render and disposal fence late URL creation', async (t) => {
