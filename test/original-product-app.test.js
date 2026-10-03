@@ -58,7 +58,7 @@ test('ordinary publication opens exact saved review without signing and rejects 
     const click = () => { const control = new FakeTarget(h.doc, { dataset: { action: 'publish', reviewDraft: 'approved-maker', creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } }); control.parent = mount; mount.fire('click', { target: control }); };
     click(); click(); await settle(); await settle();
     assert.deepEqual(calls, [{ draftId: 'approved-maker', expectedRevision: 1 }]);
-    gate.resolve({ schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'review-one', scope: { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' }, stage: 'LIVING_CONTENT', status: 'PREPARED', nextAction: 'SIGN', step: { id: 'step-one', gasBudgetMist: '123456', gasPriceMist: '1000', storageCostAtomic: null }, assetCount: 1 });
+    gate.resolve({ schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'review-one', scope: { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' }, stage: 'LIVING_CONTENT', status: 'TRANSPORT_SIGNATURE_REQUIRED', nextAction: 'SIGN', step: { id: 'step-one', stage: 'REGISTER', gasBudgetMist: '123456', gasPriceMist: '1000', storageCostAtomic: null }, assetCount: 1 });
     await settle(); await settle();
     assert.match(mount.innerHTML, /123456/);
     assert.match(mount.innerHTML, /data-action="publication-sign"/);
@@ -82,7 +82,13 @@ test('publication review fences late results on route, wallet, close and reopene
       fire('publish'); await settle(); assert.equal(entered, true);
       if (mode === 'route') app.navigate('templates');
       if (mode === 'wallet') app.refreshConnection(null);
-      if (mode === 'close') fire('publication-close');
+      if (mode === 'close') {
+        fire('publication-close');
+        await settle();
+        assert.match(mount.innerHTML, /makerCreatorPublishCloseConfirm/);
+        fire('publication-force-close');
+        await settle();
+      }
       if (mode === 'reopen') await app.openDraft('approved-maker');
       gate.resolve({ schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'late-review', scope: { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' }, stage: 'DONE', status: 'COMPLETE', rootId: 'late-root' });
       await settle(); await settle();
@@ -94,11 +100,11 @@ test('publication review fences late results on route, wallet, close and reopene
 test('publication uses explicit single-step signatures, rejection clears authority, refresh never continues', async () => {
   const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
   const scope = { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' };
-  const review = { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'r1', scope, stage: 'LIVING_CONTENT', status: 'PREPARED', nextAction: 'SIGN', step: { gasBudgetMist: '100' } };
+  const review = { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'r1', scope, stage: 'LIVING_CONTENT', status: 'TRANSPORT_SIGNATURE_REQUIRED', nextAction: 'SIGN', step: { stage: 'REGISTER', gasBudgetMist: '100' } };
   const calls = []; let reject = true;
   h.bridge.prepareMakerPublication = async () => structuredClone(review);
   h.bridge.inspectMakerPublication = async input => { calls.push(['inspect', input]); return structuredClone(review); };
-  h.bridge.signMakerPublication = async input => { calls.push(['sign', input]); if (reject) throw Error('Wallet rejected'); return { ...review, reviewId: 'r2', nextAction: 'CONTINUE' }; };
+  h.bridge.signMakerPublication = async input => { calls.push(['sign', input]); if (reject) throw Error('Wallet rejected'); return { ...review, reviewId: 'r2', status: 'TRANSPORT_RECOVERY_REQUIRED', nextAction: 'CONTINUE' }; };
   h.bridge.continueMakerPublication = async input => { calls.push(['continue', input]); return { ...review, reviewId: 'r3', stage: 'ASSETS' }; };
   const app = createOriginalProductApp(h);
   try {
@@ -127,7 +133,7 @@ test('publication drains a pending saved revision and rejects mismatched wallet 
     h.bridge.dispatchDraftCommand = async input => { await gate.promise; return dispatch(input); };
     h.bridge.prepareMakerPublication = async input => {
       writes.push(input);
-      return { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'new-review', scope: { draftId: 'approved-maker', draftRevision: mismatch === 'revision' ? 1 : 2, signerAddress: mismatch === 'wallet' ? '0x123' : ROOT_ONE, network: 'mainnet' }, stage: 'ASSETS', nextAction: 'SIGN', step: { gasBudgetMist: '99' } };
+      return { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'new-review', scope: { draftId: 'approved-maker', draftRevision: mismatch === 'revision' ? 1 : 2, signerAddress: mismatch === 'wallet' ? '0x123' : ROOT_ONE, network: 'mainnet' }, stage: 'ASSETS', status: 'TRANSPORT_SIGNATURE_REQUIRED', nextAction: 'SIGN', step: { stage: 'REGISTER', gasBudgetMist: '99' } };
     };
     h.bridge.inspectMakerPublication = h.bridge.prepareMakerPublication;
     h.bridge.signMakerPublication = async () => assert.fail('signature');
@@ -175,6 +181,108 @@ test('publication explicitly reviews an earlier frozen revision and restores onl
     assert.match(mount.innerHTML, /Frozen Maker name|frozen-content-hash/);
     await fire('publication-sign', 'frozen-review'); assert.equal(signs, 1);
   } finally { app.destroy(); }
+});
+
+test('publication busy close warns, keeps its flight, reopens without duplicate work and never resurrects a hidden dialog', async () => {
+  const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const gate = deferred(); let prepares = 0;
+  h.bridge.prepareMakerPublication = async () => { prepares++; return gate.promise; };
+  h.bridge.inspectMakerPublication = h.bridge.prepareMakerPublication;
+  h.bridge.signMakerPublication = async () => assert.fail('signature');
+  h.bridge.continueMakerPublication = async () => assert.fail('broadcast');
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft('approved-maker');
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const fire = async action => {
+      const target = new FakeTarget(h.doc, { dataset: { action, reviewDraft: 'approved-maker', creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } });
+      target.parent = mount; mount.fire('click', { target }); await settle();
+    };
+    await fire('publish'); await fire('publication-close');
+    assert.match(mount.innerHTML, /role="alertdialog"/);
+    await fire('publication-keep-open'); assert.doesNotMatch(mount.innerHTML, /role="alertdialog"/);
+    await fire('publication-close'); await fire('publication-force-close');
+    assert.doesNotMatch(mount.innerHTML, /id="makerCreatorPublishDialog"/);
+    await fire('publish'); assert.equal(prepares, 1);
+    assert.match(mount.innerHTML, /id="makerCreatorPublishDialog"/);
+    assert.match(mount.innerHTML, /aria-busy="true"/);
+    await fire('publication-close'); await fire('publication-force-close');
+    gate.resolve({ schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'same-flight',
+      scope: { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' },
+      status: 'TRANSPORT_SIGNATURE_REQUIRED', stage: 'LIVING_CONTENT', nextAction: 'SIGN', step: { stage: 'REGISTER' } });
+    await settle(); await settle();
+    assert.doesNotMatch(mount.innerHTML, /id="makerCreatorPublishDialog"/);
+    await fire('publish'); assert.equal(prepares, 2, 'idle reopen re-reviews durable state');
+  } finally { app.destroy(); }
+});
+
+test('publication errors preserve context, copy diagnostics and require inspection before another signature', async () => {
+  const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const review = { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'review',
+    frozenMakerName: 'Frozen author work', scope: { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' },
+    status: 'TRANSPORT_SIGNATURE_REQUIRED', stage: 'LIVING_CONTENT', nextAction: 'SIGN', step: { stage: 'REGISTER' } };
+  const diagnostics = []; let signs = 0, inspections = 0;
+  h.win.navigator.clipboard = { async writeText(text) { diagnostics.push(text); } };
+  h.bridge.prepareMakerPublication = async () => review;
+  h.bridge.inspectMakerPublication = async () => { inspections++; return review; };
+  h.bridge.signMakerPublication = async () => { signs++; throw Object.assign(new Error('Transaction outcome unknown'), { code: 'OUTCOME_UNKNOWN' }); };
+  h.bridge.continueMakerPublication = async () => assert.fail('broadcast');
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft('approved-maker');
+    h.emitBridge({ publication: { signingEnabled: true, broadcastEnabled: true } });
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const fire = async action => {
+      const target = new FakeTarget(h.doc, { dataset: { action, publicationReview: 'review', reviewDraft: 'approved-maker', creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } });
+      target.parent = mount; mount.fire('click', { target }); await settle(); await settle();
+    };
+    await fire('publish'); await fire('publication-sign');
+    assert.match(mount.innerHTML, /Frozen author work/);
+    assert.match(mount.innerHTML, /TRANSACTION_OUTCOME_PENDING/);
+    assert.doesNotMatch(mount.innerHTML, /data-action="publication-sign"/);
+    await fire('publication-sign'); assert.equal(signs, 1);
+    await fire('publication-copy-error'); assert.deepEqual(diagnostics, ['Transaction outcome unknown']);
+    assert.match(mount.innerHTML, /Details copied/);
+    await fire('publication-refresh'); assert.equal(inspections, 1); assert.equal(signs, 1);
+  } finally { app.destroy(); }
+});
+
+test('publication hides and reopens a pending signature without a second prompt; hidden failures re-review safely', async t => {
+  for (const fails of [false, true]) await t.test(fails ? 'unknown outcome' : 'signed bytes', async () => {
+    const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+    const pending = deferred(); let prepares = 0, signs = 0, continued = 0, durable = false;
+    const review = { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'sign-review',
+      scope: { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' },
+      status: 'TRANSPORT_SIGNATURE_REQUIRED', stage: 'ASSET', nextAction: 'SIGN', step: { stage: 'REGISTER', digest: 'same-digest' } };
+    const resumed = { ...review, reviewId: 'signed-review', status: 'TRANSPORT_RECOVERY_REQUIRED', nextAction: 'CONTINUE' };
+    h.bridge.prepareMakerPublication = async () => { prepares++; return durable ? resumed : review; };
+    h.bridge.inspectMakerPublication = h.bridge.prepareMakerPublication;
+    h.bridge.signMakerPublication = async () => { signs++; await pending.promise; durable = true;
+      if (fails) throw new Error('Transaction outcome unknown'); return resumed; };
+    h.bridge.continueMakerPublication = async ({ reviewId }) => { assert.equal(reviewId, 'signed-review'); continued++; return resumed; };
+    const app = createOriginalProductApp(h);
+    try {
+      await app.ready; app.navigate('creator'); await app.openDraft('approved-maker');
+      h.emitBridge({ publication: { signingEnabled: true, broadcastEnabled: true } });
+      const mount = h.doc.getElementById('makerV4CreatorMount');
+      const fire = async (action, publicationReview = 'sign-review') => {
+        const target = new FakeTarget(h.doc, { dataset: { action, publicationReview, reviewDraft: 'approved-maker', creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } });
+        target.parent = mount; mount.fire('click', { target }); await settle();
+      };
+      await fire('publish'); await fire('publication-sign'); await fire('publication-close');
+      assert.match(mount.innerHTML, /role="alertdialog"/);
+      await fire('publication-force-close'); await fire('publish');
+      assert.equal(prepares, 1); assert.equal(signs, 1);
+      await fire('publication-close'); await fire('publication-force-close');
+      pending.resolve(); await settle(); await settle();
+      assert.doesNotMatch(mount.innerHTML, /id="makerCreatorPublishDialog"/);
+      await fire('publication-sign'); assert.equal(signs, 1);
+      await fire('publish'); assert.equal(prepares, 2);
+      assert.match(mount.innerHTML, /same-digest/);
+      assert.doesNotMatch(mount.innerHTML, /data-action="publication-sign"/);
+      await fire('publication-continue', 'signed-review'); assert.equal(continued, 1);
+    } finally { app.destroy(); }
+  });
 });
 
 test('local Player return reuses its existing control outside the hidden retired editor', async () => {

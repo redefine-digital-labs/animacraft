@@ -1860,6 +1860,7 @@ export function createOriginalProductApp({
   function snapshotCreatorState() {
     return {
       ...state,
+      publicationReview: state.publicationHidden ? null : state.publicationReview,
       ...(publishedMaker(state.record) ? { lifecycle: { label: makerWorkspaceText(state.locale, 'publicationComplete'),
         manageLabel: makerWorkspaceText(state.locale, 'publicationComplete'), badgeClass: 'active' } } : {}),
       publicationSigningEnabled: state.bridgeState?.publication?.signingEnabled === true
@@ -2129,7 +2130,7 @@ export function createOriginalProductApp({
       snapshotCreatorState(),
       creatorCapabilities({
         publication: Boolean(prepareMakerPublication && inspectMakerPublication && signMakerPublication
-          && continueMakerPublication && state.connection.connected && !publicationFlight),
+          && continueMakerPublication && state.connection.connected),
         versionHistory: Boolean(listDraftVersions && restoreDraftVersion),
         packCreate: Boolean(createPackDraft && listPackDrafts && !creatorPackFlight && state.connection.connected),
         packOpen: Boolean(loadPackDraft && savePackDraft && !creatorPackFlight && state.connection.connected),
@@ -6676,8 +6677,43 @@ export function createOriginalProductApp({
   function invalidatePublicationReview() {
     publicationGeneration += 1;
     state.publicationReview = null;
+    state.publicationHidden = false;
     // This only invalidates the local review token; durable attempts stay intact.
     cancelMakerPublicationReview?.();
+  }
+
+  function focusPublication(selector = '#makerCreatorPublishDialog') {
+    if (!state.publicationHidden) byId('makerV4CreatorMount')?.querySelector?.(selector)?.focus?.({ preventScroll: true });
+  }
+
+  function closePublication(force = false) {
+    if (publicationFlight && !force) {
+      if (state.publicationReview) state.publicationReview = { ...state.publicationReview, closeConfirm: true };
+      renderCreator(); focusPublication('[data-action="publication-keep-open"]');
+      return;
+    }
+    if (publicationFlight) {
+      // Hiding the dialog does not cancel a wallet/network request or discard
+      // its outcome. Keep the same in-flight state available on reopening.
+      state.publicationHidden = true;
+      if (state.publicationReview) state.publicationReview = { ...state.publicationReview, closeConfirm: false };
+    } else invalidatePublicationReview();
+    renderCreator();
+    byId('makerV4CreatorMount')?.querySelector?.('[data-action="publish"]')?.focus?.({ preventScroll: true });
+  }
+
+  function publicationErrorInfo(error, consequential) {
+    const diagnostic = String(error?.message || error);
+    const rawCode = String(error?.code || 'CHAIN_ACTION_FAILED');
+    const text = `${rawCode} ${diagnostic}`;
+    let code = rawCode;
+    if (/reject|denied by user|user cancel/i.test(text)) code = 'WALLET_REJECTED';
+    else if (/tip.*(?:high|maximum|exceed)|TIP_TOO_HIGH/i.test(text)) code = 'TIP_TOO_HIGH';
+    else if (/insufficient.*wal\b/i.test(text)) code = 'INSUFFICIENT_WAL_BALANCE';
+    else if (/insufficient.*(?:gas|sui)|INSUFFICIENT_GAS/i.test(text)) code = 'INSUFFICIENT_GAS';
+    else if (/network|fetch failed|failed to fetch|unavailable|timeout/i.test(text)) code = 'NETWORK_UNAVAILABLE';
+    else if (/pending|unknown.*(?:result|outcome)|OUTCOME_UNKNOWN/i.test(text)) code = 'TRANSACTION_OUTCOME_PENDING';
+    return { code, message: diagnostic, diagnostic, recoveryOnly: consequential };
   }
 
   async function runPublicationReview(action, reviewId) {
@@ -6691,7 +6727,8 @@ export function createOriginalProductApp({
       && navigation === state.localNavigationRequest && state.route === 'creator';
     const prior = state.publicationReview?.review;
     const consequential = action === 'publication-sign' || action === 'publication-continue';
-    if (consequential && (!prior || prior.reviewId !== reviewId
+    if (consequential && (state.publicationReview?.errorInfo || state.publicationHidden
+      || !prior || prior.reviewId !== reviewId
       || (prior.scope.currentSavedRevision ?? prior.scope.draftRevision) !== state.record.revision
       || prior.nextAction !== (action === 'publication-sign' ? 'SIGN' : 'CONTINUE')
       || creatorHasPendingChanges())) return;
@@ -6706,8 +6743,10 @@ export function createOriginalProductApp({
       }
       if (!current() || request !== publicationGeneration) return;
       const revision = state.record.revision;
-      state.publicationReview = { review: prior, busy: true, error: '' };
+      state.publicationHidden = false;
+      state.publicationReview = { review: prior, busy: true, error: '', errorInfo: null, closeConfirm: false };
       renderCreator();
+      focusPublication();
       const result = consequential
         ? await (action === 'publication-sign' ? signMakerPublication : continueMakerPublication)({ reviewId })
         : await (action === 'publication-refresh' ? inspectMakerPublication : prepareMakerPublication)({ draftId, expectedRevision: revision });
@@ -6718,7 +6757,7 @@ export function createOriginalProductApp({
         || result.scope?.signerAddress !== address || result.scope?.network !== 'mainnet') {
         throw new TypeError(makerWorkspaceText(state.locale, 'publicationStale'));
       }
-      state.publicationReview = { review: result, busy: false, error: '' };
+      state.publicationReview = { review: result, busy: false, error: '', errorInfo: null, closeConfirm: false };
       // Discovery uses certified Root readback. Never fabricate a local template.
       if (result.rootId && result.status === 'COMPLETE') {
         publishedMakers.set(JSON.stringify([address, draftId]), { complete: true, rootId: result.rootId,
@@ -6728,7 +6767,9 @@ export function createOriginalProductApp({
       }
     } catch (error) {
       if (current() && request === publicationGeneration) {
-        state.publicationReview = { review: null, busy: false, error: String(error?.message || error) };
+        state.publicationReview = { review: prior ? { ...prior, nextAction: null, reviewId: '' } : null,
+          busy: false, error: String(error?.message || error),
+          errorInfo: publicationErrorInfo(error, consequential), closeConfirm: false };
       }
     } finally {
       if (publicationFlight === flight) publicationFlight = null;
@@ -6738,7 +6779,27 @@ export function createOriginalProductApp({
 
   async function handleCreatorAction(action, control, eventTarget = control) {
     if (state.projectImportPending || creatorAssetFlight || creatorRecoveryFlight) return;
-    if (action === 'publication-close') { invalidatePublicationReview(); renderCreator(); return; }
+    if (action === 'publication-close') { closePublication(); return; }
+    if (action === 'publication-force-close') { closePublication(true); return; }
+    if (action === 'publication-keep-open') {
+      if (state.publicationReview) state.publicationReview = { ...state.publicationReview, closeConfirm: false };
+      renderCreator(); focusPublication(); return;
+    }
+    if (action === 'publication-copy-error') {
+      const current = state.publicationReview;
+      if (!current?.errorInfo?.diagnostic || state.publicationHidden) return;
+      let copyState;
+      try {
+        if (!win?.navigator?.clipboard?.writeText) throw new Error('Clipboard unavailable');
+        await win.navigator.clipboard.writeText(current.errorInfo.diagnostic);
+        copyState = 'copied';
+      } catch { copyState = 'error'; }
+      if (state.publicationReview === current) {
+        state.publicationReview = { ...current, copyState };
+        renderCreator(); focusPublication('[data-action="publication-copy-error"]');
+      }
+      return;
+    }
     if (action === 'publication-open') {
       const review = state.publicationReview?.review;
       if (control?.disabled || !review || review.status !== 'COMPLETE' || !review.rootId
@@ -6750,6 +6811,11 @@ export function createOriginalProductApp({
       if (control?.disabled) return;
       if (action === 'publish' && (control.dataset.reviewDraft !== state.record?.draftId
         || Number(control.dataset.creatorGeneration) !== state.creatorDraftGeneration)) return;
+      if (action === 'publish' && publicationFlight && state.publicationReview) {
+        state.publicationHidden = false;
+        state.publicationReview = { ...state.publicationReview, closeConfirm: false };
+        renderCreator(); focusPublication(); return;
+      }
       return runPublicationReview(action, control?.dataset?.publicationReview);
     }
     if (action === 'review-preflight' || action === 'run-preflight') {
@@ -7482,7 +7548,7 @@ export function createOriginalProductApp({
     // Follow the approved stacking order; one key must never dismiss both
     // a nested overlay and the surface beneath it.
     if (byId('makerLifecycleManagerModal')?.classList?.contains('active')) closeLifecycleManager();
-    else if (creatorVisible && state.publicationReview) { invalidatePublicationReview(); renderCreator(); }
+    else if (creatorVisible && state.publicationReview && !state.publicationHidden) closePublication();
     else if (creatorVisible && state.versionHistoryOpen) closeCreatorVersionHistory();
     else if (creatorVisible && state.creatorTab !== 'structure') closeCreatorTool();
     else if (themeMenuOpen()) closeTheme();

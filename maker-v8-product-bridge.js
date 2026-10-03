@@ -1,6 +1,7 @@
 import {
   assertMakerV8Document,
   createMakerV8Document,
+  projectPublicMakerV8Document,
 } from './maker-v8-document.js';
 import {
   applyMakerV8WorkspaceCommand,
@@ -1505,13 +1506,22 @@ export function createMakerV8ProductBridge({
       checkGeneration(generation);
       const scope = { ...binding.scope, currentSavedRevision: live.record.revision,
         publishingEarlierRevision: binding.scope.draftRevision !== live.record.revision };
+      const publicAssets = projectPublicMakerV8Document(binding.input.document).assets;
+      const totalResources = publicAssets.length + 2; // Living Content + assets + Manifest.
+      const completedResources = plan ? totalResources : stage === 'LIVING_CONTENT' ? 0
+        : stage === 'MANIFEST' ? totalResources - 1
+          : stage === 'ASSET' && Number.isSafeInteger(transport.completedAssets)
+            ? Math.min(totalResources - 1, 1 + Math.max(0, transport.completedAssets)) : null;
+      const progress = { completed: completedResources, total: totalResources,
+        currentKind: plan ? 'PUBLICATION' : stage, currentLabel: transport?.assetId ?? '' };
       const reviewId = hash({ scope, generation, bindingRevision: binding.revision, step, status });
       const dto = freeze({ schemaVersion: 'animacraft.maker-v8-publication-review.v1',
         reviewId, scope, status, stage, nextAction, step, attemptId: plan?.attemptId ?? null,
         rootId: plan?.status === 'COMPLETE' && identity?.complete === true ? identity.rootId : null,
         makerVersion: identity?.makerVersion ?? binding.input.document.lineage.version,
         frozenMakerName: binding.input.document.metadata.name,
-        assetCount: binding.input.assets.length,
+        assetCount: publicAssets.length,
+        progress,
         message: status === 'COMPLETE' ? 'Maker publication is certified complete.'
           : scope.publishingEarlierRevision ? 'Continue the previously reviewed saved version. Your newer draft is preserved.'
             : nextAction === 'SIGN' ? 'Review this exact transaction before opening the wallet.'

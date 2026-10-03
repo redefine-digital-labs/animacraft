@@ -1595,30 +1595,120 @@ function overlay(view) {
 function publicationReview(view) {
   const state = view.publicationReview;
   if (!state) return '';
-  const review = state.review ? { ...state.review,
-    message: makerPublicationStageText(view.locale, state.review.status) } : null;
-  const value = input => escapeHtml(input === null || input === undefined ? tr(view, 'publicationUnknown') : String(input));
-  const row = (label, input) => `<p><strong>${escapeHtml(tr(view, label))}</strong><br><span style="overflow-wrap:anywhere">${value(input)}</span></p>`;
-  const step = review?.step;
-  const facts = review ? row('publicationWallet', review.scope.signerAddress)
-    + row('publicationStage', `${makerPublicationStageText(view.locale, review.stage)} / ${makerPublicationStageText(view.locale, review.status)}`)
-    + `<p>${value(review.frozenMakerName)}</p>`
-    + (review.scope.publishingEarlierRevision ? `<p role="alert">${escapeHtml(tr(view, 'publicationEarlier', { frozen: review.scope.draftRevision, current: review.scope.currentSavedRevision }))}</p>` : '')
-    + `<p style="overflow-wrap:anywhere">${value(review.scope.draftId)} · ${value(review.scope.draftRevision)}<br>${value(review.scope.contentSha256)}</p>`
-    + row('publicationAssets', review.assetCount)
-    + (step ? `<p style="overflow-wrap:anywhere">${value(step.id)} · ${value(step.revision)}<br>${value(step.digest)}</p>`
-      + row('publicationGas', step.gasBudgetMist)
+  const review = state.review, step = review?.step;
+  const scope = review?.scope || {};
+  const value = input => escapeHtml(input == null ? tr(view, 'publicationUnknown') : String(input));
+  const row = (label, input) => '<p><strong>' + escapeHtml(tr(view, label)) + '</strong><br><span style="overflow-wrap:anywhere">' + value(input) + '</span></p>';
+  const complete = review?.status === 'COMPLETE' && Boolean(review.rootId);
+  const progress = review?.progress;
+  const exactProgress = Number.isSafeInteger(progress?.completed) && Number.isSafeInteger(progress?.total)
+    && progress.total > 0 && progress.completed >= 0 && progress.completed <= progress.total;
+  const storageComplete = complete || (exactProgress && progress.completed === progress.total);
+  const onchain = ['SCAFFOLD', 'BASE_CHUNK', 'COMPANION_OBJECTS', 'ACTIVATION_CHUNK'].includes(review?.stage);
+  const phase = complete || onchain ? 4 : step?.stage === 'CERTIFY' ? 3
+    : ['REGISTER', 'UPLOAD'].includes(step?.stage) ? 2 : 1;
+  const stages = ['prepareFiles', 'registerAndUpload', 'certifyWalrus', 'publishOnSui'].map((key, index) => {
+    const number = index + 1;
+    const done = complete || (number === 1 && phase > 1) || (number < 4 && storageComplete);
+    const current = !complete && number === phase;
+    const inProgress = !done && !current && number < phase;
+    return '<li class="' + (done ? 'completed' : current ? 'current' : 'pending') + '" data-publication-stage="' + number + '"'
+      + (current ? ' aria-current="step"' : '') + '><span>' + number + '</span><strong>' + escapeHtml(tr(view, key))
+      + '</strong><small>' + escapeHtml(tr(view, done ? 'publishStepCompleted' : current ? 'publishStepCurrent'
+        : inProgress ? 'publicationInProgress' : 'publishStepPending')) + '</small></li>';
+  }).join('');
+  const quote = step?.quote?.verified === true ? step.quote : null;
+  const amount = (input, atomicUnit, tokenUnit) => {
+    if (!quote || (typeof input !== 'string' && !Number.isSafeInteger(input))
+      || !/^(0|[1-9]\d*)$/.test(String(input ?? ''))) return '<strong>' + escapeHtml(tr(view, 'publishQuoteUnavailable')) + '</strong>';
+    const atomic = BigInt(input), fraction = (atomic % 1000000000n).toString().padStart(9, '0').replace(/0+$/, '');
+    const token = (atomic / 1000000000n).toString() + (fraction ? '.' + fraction : '');
+    return '<strong>' + atomic + ' ' + atomicUnit + '</strong><small>' + token + ' ' + tokenUnit + '</small>';
+  };
+  const date = quote?.quotedAt == null ? null : new Date(quote.quotedAt);
+  const quoteTime = date && Number.isFinite(date.getTime())
+    ? '<time datetime="' + escapeHtml(date.toISOString()) + '">' + escapeHtml(tr(view, 'publishQuoteAt', {
+      time: new Intl.DateTimeFormat(view.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date),
+    })) + '</time>' : '';
+  const quoteRows = [
+    ['relayTipEstimate', 'relayTipMist', 'MIST', 'SUI'],
+    ['walrusStorageEstimate', 'walrusStorageCostFrost', 'FROST', 'WAL'],
+    ['walrusWriteEstimate', 'walrusWriteCostFrost', 'FROST', 'WAL'],
+    ['walrusTotalEstimate', 'walrusTotalCostFrost', 'FROST', 'WAL'],
+  ].map(([label, field, atomic, token], index) => '<div' + (index === 3 ? ' class="total"' : '') + '><dt>'
+    + escapeHtml(tr(view, label)) + '</dt><dd>' + amount(quote?.[field], atomic, token) + '</dd></div>').join('');
+  const gasPanel = !complete && step && onchain ? '<aside class="v4-chain-fee">' + row('publicationGas', step.gasBudgetMist)
+    + '<p class="v4-chain-fee-warning">' + escapeHtml(tr(view, 'publicationCopy')) + '</p></aside>' : '';
+  const quotePanel = !complete && step && !onchain ? '<aside class="v4-chain-fee" aria-labelledby="makerCreatorPublishQuoteTitle">'
+    + '<div class="v4-chain-fee-heading"><span id="makerCreatorPublishQuoteTitle">' + escapeHtml(tr(view, 'publishQuoteTitle'))
+    + '</span><small>' + escapeHtml(tr(view, 'publicationQuoteScope')) + '</small>' + quoteTime + '</div><dl>' + quoteRows
+    + '</dl>' + row('publicationGas', step.gasBudgetMist) + '<p class="v4-chain-fee-warning">'
+    + escapeHtml(tr(view, 'publishQuoteGasWarning')) + '</p></aside>' : '';
+  const info = state.errorInfo || (state.error ? { message: state.error } : null);
+  const errorTitles = {
+    TIP_TOO_HIGH: 'publishErrorTipTitle', WALLET_REJECTED: 'publishErrorRejectedTitle',
+    INSUFFICIENT_GAS: 'publishErrorGasTitle', INSUFFICIENT_WAL_BALANCE: 'publishErrorWalBalanceTitle',
+    INSUFFICIENT_SUI_BALANCE: 'publishErrorSuiBalanceTitle', NETWORK_UNAVAILABLE: 'publishErrorNetworkTitle',
+    UPLOAD_QUOTE_CHANGED: 'publishErrorQuoteChangedTitle', WALRUS_QUOTE_EXPIRED: 'publishErrorQuoteChangedTitle',
+    WALRUS_CERTIFICATION_NOT_VISIBLE: 'publishErrorCertificationSyncTitle',
+    TRANSACTION_OUTCOME_PENDING: 'publishErrorPendingTitle', UPLOAD_RECOVERY_MISMATCH: 'publishErrorRecoveryMismatchTitle',
+  };
+  const copyLabel = state.copyState === 'copied' ? 'errorDetailsCopied' : state.copyState === 'error' ? 'errorDetailsCopyFailed' : 'copyErrorDetails';
+  const errorPanel = info ? '<aside class="v4-chain-error" role="alert" aria-live="assertive"><div><span>' + value(info.code || 'CHAIN_ACTION_FAILED')
+    + '</span><strong>' + escapeHtml(tr(view, errorTitles[info.code] || 'publishErrorTitle')) + '</strong></div><p>'
+    + escapeHtml(tr(view, 'publicationRecoveryCopy')) + '</p><details><summary>' + escapeHtml(tr(view, 'technicalDetails'))
+    + '</summary><pre>' + value([...new Set([info.message, info.diagnostic].filter(Boolean))].join('\n')) + '</pre></details>'
+    + '<div class="v4-chain-error-actions"><button type="button" data-action="publication-copy-error">' + escapeHtml(tr(view, copyLabel)) + '</button></div></aside>' : '';
+  const technical = review ? '<details><summary>' + escapeHtml(tr(view, 'technicalDetails')) + '</summary>'
+    + row('publicationWallet', scope.signerAddress) + row('publicationStage', makerPublicationStageText(view.locale, review.stage)
+      + ' / ' + makerPublicationStageText(view.locale, review.status))
+    + '<p style="overflow-wrap:anywhere">' + value(scope.draftId) + ' · ' + value(scope.draftRevision) + '<br>'
+    + value(scope.contentSha256) + '</p>' + row('publicationAssets', review.assetCount)
+    + (step ? '<p style="overflow-wrap:anywhere">' + value(step.id) + ' · ' + value(step.revision) + '<br>' + value(step.digest) + '</p>'
       + row('publicationGasPrice', step.gasPriceMist)
-      + row('publicationStorage', step.storageCostAtomic)
-      + row('publicationRelay', step.relayTipMist)
-      + row('publicationTerms', `${value(step.storageEpochs)} / ${value(step.deletable)}`) : '')
-    + (review.rootId && review.status === 'COMPLETE' ? row('publicationComplete', `${review.rootId} / ${review.makerVersion}`)
-      + `<button type="button" data-action="publication-open" data-publication-review="${escapeHtml(review.reviewId)}">${escapeHtml(tr(view, 'publicationOpen'))}</button>` : '') : '';
-  const action = review?.nextAction === 'SIGN' ? 'publication-sign' : review?.nextAction === 'CONTINUE' ? 'publication-continue' : null;
-  const actionDisabled = state.busy || (action === 'publication-sign' ? !view.publicationSigningEnabled : !view.publicationBroadcastEnabled)
-    ? ` disabled aria-disabled="true" title="${escapeHtml(tr(view, 'publicationUnavailable'))}"` : '';
+      + row('publicationTerms', [step.storageEpochs ?? tr(view, 'publicationUnknown'), step.deletable ?? tr(view, 'publicationUnknown')].join(' / ')) : '') + '</details>' : '';
+  const resourceKind = makerPublicationStageText(view.locale, progress?.currentKind || review?.stage);
+  const resource = progress?.currentLabel ? resourceKind + ' · ' + progress.currentLabel : resourceKind;
+  const resourceProgress = review && !complete ? '<p style="overflow-wrap:anywhere">' + value(resource) + '</p><p>'
+    + escapeHtml(tr(view, 'publicationResourceProgress', { completed: exactProgress ? progress.completed : tr(view, 'publicationUnknown'),
+      total: exactProgress ? progress.total : tr(view, 'publicationUnknown') })) + '</p>' : '';
   const disabled = state.busy ? ' disabled aria-disabled="true"' : '';
-  return `<div class="v4-modal-backdrop v4-version-history-backdrop"><section class="v4-version-history-dialog" role="dialog" aria-modal="true" aria-labelledby="makerPublicationTitle"><header><div><h3 id="makerPublicationTitle">${escapeHtml(tr(view, 'publicationReview'))}</h3><p>${escapeHtml(tr(view, 'publicationCopy'))}</p></div><button type="button" data-action="publication-close" aria-label="${escapeHtml(tr(view, 'close'))}">×</button></header><div class="v4-version-history-content">${facts}<p role="status">${escapeHtml(state.error || (state.busy ? tr(view, 'publicationLoading') : review?.message || ''))}</p><button type="button" data-action="publication-refresh"${disabled}>${escapeHtml(tr(view, 'publicationRefresh'))}</button>${action ? `<button type="button" class="primary" data-action="${action}" data-publication-review="${escapeHtml(review.reviewId)}"${actionDisabled}>${escapeHtml(tr(view, action === 'publication-sign' ? 'publicationSign' : 'publicationContinue'))}</button>` : ''}</div></section></div>`;
+  const signable = ['READY', 'TRANSPORT_SIGNATURE_REQUIRED'].includes(review?.status);
+  const action = !info && !complete && (review?.nextAction === 'SIGN' && signable ? 'publication-sign' : review?.nextAction === 'CONTINUE' ? 'publication-continue' : null);
+  const actionLabel = action === 'publication-continue' ? 'publicationContinue'
+    : onchain ? 'publishMakerStepButton' : step?.stage === 'CERTIFY' ? 'certifyStep'
+      : step?.stage === 'REGISTER' ? quote ? 'confirmRegisterUploadStep' : 'registerUploadStep' : 'publicationSign';
+  const actionDisabled = state.busy || (action === 'publication-sign' ? !view.publicationSigningEnabled : !view.publicationBroadcastEnabled)
+    ? ' disabled aria-disabled="true" title="' + escapeHtml(tr(view, 'publicationUnavailable')) + '"' : '';
+  const success = complete ? '<strong class="v4-chain-published">' + escapeHtml(tr(view, 'publishedDone')) + '</strong>'
+    + row('publicationComplete', review.rootId + ' / ' + review.makerVersion)
+    + '<button type="button" data-action="publication-open" data-publication-review="' + value(review.reviewId) + '">' + escapeHtml(tr(view, 'publicationOpen')) + '</button>' : '';
+  const confirmId = 'makerCreatorPublishCloseConfirm';
+  const close = state.closeConfirm ? '<aside id="' + confirmId + '" class="v4-chain-close-confirm" role="alertdialog" aria-labelledby="'
+    + confirmId + 'Title" aria-describedby="' + confirmId + 'Copy" tabindex="-1"><strong id="' + confirmId + 'Title">'
+    + escapeHtml(tr(view, 'publishCloseConfirmTitle')) + '</strong><p id="' + confirmId + 'Copy">' + escapeHtml(tr(view, 'publishCloseConfirmCopy'))
+    + '</p><div><button class="primary" type="button" data-action="publication-keep-open">' + escapeHtml(tr(view, 'keepPublishOpen'))
+    + '</button><button type="button" data-action="publication-force-close">' + escapeHtml(tr(view, 'closePublishAnyway')) + '</button></div></aside>' : '';
+  return '<div class="v4-modal-backdrop v4-chain-flow-backdrop"><section id="makerCreatorPublishDialog" class="v4-chain-flow creator" role="dialog" aria-modal="true" aria-labelledby="'
+    + (state.closeConfirm ? confirmId + 'Title' : 'makerCreatorPublishTitle') + '" aria-describedby="'
+    + (state.closeConfirm ? confirmId + 'Copy' : 'makerCreatorPublishCopy') + '" aria-busy="' + Boolean(state.busy) + '" tabindex="-1">'
+    + '<div class="v4-chain-flow-content"' + (state.closeConfirm ? ' inert aria-hidden="true"' : '') + '><header><div><span class="v4-eyebrow">'
+    + escapeHtml(tr(view, 'creatorReleaseEyebrow')) + '</span><h3 id="makerCreatorPublishTitle">' + escapeHtml(tr(view, 'publishMakerStep', { step: phase }))
+    + '</h3><p id="makerCreatorPublishCopy">' + escapeHtml(tr(view, 'publicationFlowCopy')) + '</p><p>'
+    + escapeHtml(tr(view, 'publishDialogCopy')) + '</p></div><button type="button" data-action="publication-close" aria-label="'
+    + escapeHtml(tr(view, 'close')) + '">×</button></header><ol>' + stages + '</ol>'
+    + (review ? '<p style="overflow-wrap:anywhere"><strong>' + value(review.frozenMakerName) + '</strong></p>' : '')
+    + (scope.publishingEarlierRevision ? '<p role="alert">' + escapeHtml(tr(view, 'publicationEarlier', { frozen: scope.draftRevision, current: scope.currentSavedRevision })) + '</p>' : '')
+    + resourceProgress + quotePanel + gasPanel + '<div class="v4-chain-status' + (state.busy ? ' busy' : '') + '" role="status" aria-live="polite">'
+    + (state.busy ? '<i aria-hidden="true"></i>' : '') + '<span>' + escapeHtml(state.busy ? tr(view, 'publicationLoading')
+      : makerPublicationStageText(view.locale, review?.status)) + '</span>'
+    + (state.busy ? '<small>' + escapeHtml(tr(view, 'publishWorking')) + '</small>' : '') + '</div>'
+    + errorPanel + technical + '<footer><button type="button" data-action="publication-refresh"' + disabled + '>'
+    + escapeHtml(tr(view, 'publicationRefresh')) + '</button>' + (action ? '<button type="button" class="primary" data-action="' + action
+      + '" data-publication-review="' + value(review.reviewId) + '"' + actionDisabled + '>'
+      + escapeHtml(tr(view, actionLabel)) + '</button>'
+      + (action === 'publication-sign' ? '<small>' + escapeHtml(tr(view, 'publicationSign')) + '</small>' : '') : '')
+    + success + '</footer></div>' + close + '</section></div>';
 }
 
 function versionHistory(view) {
