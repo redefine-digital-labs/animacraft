@@ -317,7 +317,13 @@ test('CI pins the verified Sui CLI and gates all fresh web and Move artifacts', 
   assert.doesNotMatch(workflow, /releases\.sui\.io|SUI_BINARY_SHA256|1\.78\.1/);
   assert.match(workflow, /npm run check/);
   const webJob = workflow.slice(workflow.indexOf('\n  web:'), workflow.indexOf('\n  move:'));
-  assert.match(webJob, /MOVE_HOME: \$\{\{ runner\.temp \}\}\/native-soul-external-sources/);
+  assert.doesNotMatch(webJob.slice(0, webJob.indexOf('\n    steps:')), /\$\{\{\s*runner\./,
+    'GitHub cannot resolve runner context at job-level env before assigning a runner');
+  for (const name of ['Prepare pinned external source prerequisites', 'Check production build']) {
+    const step = webJob.slice(webJob.indexOf(`- name: ${name}`)).split('\n      - name:')[0];
+    assert.match(step, /env:\n\s+MOVE_HOME: \$\{\{ runner\.temp \}\}\/native-soul-external-sources/,
+      'Source preparation and tests must use the same dedicated runner cache at step scope');
+  }
   const prepareSources = webJob.indexOf('node scripts/prepare-native-soul-external-sources.mjs "$MOVE_HOME"');
   assert.ok(prepareSources >= 0 && prepareSources < webJob.indexOf('run: npm run check'),
     'Fresh Web runners must verify pinned external sources before the source/build-entry tests');
