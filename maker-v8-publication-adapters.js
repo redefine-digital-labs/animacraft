@@ -1577,6 +1577,15 @@ export function createMakerV8PublicationCompilerAdapterV8({
     rehydrate,
     certifyFinalized,
     prepareSuccessor,
+    async describeFinalized(plan, head) {
+      // Recompile durable commitments and recertify every milestone before
+      // projecting the Root identity. A scaffold alone never means COMPLETE.
+      const state = await compilerState(plan, head, false);
+      if (!state.scaffold) return null;
+      return freeze({ rootId: state.scaffold.root.reference.objectId,
+        makerVersion: state.publication.document.lineage.version,
+        complete: plan.status === 'COMPLETE' && state.capsule?.kind === 'ACTIVATION_CHUNK' });
+    },
   });
 }
 

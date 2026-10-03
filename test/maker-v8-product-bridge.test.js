@@ -26,6 +26,9 @@ import {
 } from '../maker-v8-player-controller.js';
 
 const address = `0x${'12'.repeat(32)}`;
+const publicationConfigContext = { window: {} };
+runInNewContext(await readFile(new URL('../public-v8/config.js', import.meta.url), 'utf8'), publicationConfigContext);
+const publicationRuntime = JSON.parse(JSON.stringify(publicationConfigContext.window.SoulidityMakerV8));
 
 test('real author projection recovers old local checkpoints without weakening identity or CAS', async () => {
   const idb = new IDBFactory();
@@ -407,6 +410,7 @@ function runtimeHarness({ connected = false, contextualChoices = null, lineage =
   const walletListeners = new Set();
   const calls = { ready: 0, plaza: 0, player: 0, reconnect: 0, asset: 0 };
   const productRuntime = {
+    runtime: publicationRuntime,
     capabilities: { transport: 'SUI_GRPC_GRAPHQL' },
     async ready() { calls.ready += 1; return true; },
     catalog: {
@@ -1388,7 +1392,7 @@ test('explicitly disabled execution rejects publication before wallet or runtime
     },
   });
   try {
-    await assert.rejects(bridge.requestPublicationSignature({ attemptId: 'historical-attempt' }),
+    await assert.rejects(bridge.signMakerPublication({ attemptId: 'historical-attempt' }),
       { code: 'MAKER_V8_PRODUCT_EXECUTION_DISABLED' });
     await assert.rejects(bridge.continueMakerPublication({ draftId: 'historical-draft' }),
       { code: 'MAKER_V8_PRODUCT_EXECUTION_DISABLED' });
@@ -1398,82 +1402,229 @@ test('explicitly disabled execution rejects publication before wallet or runtime
   } finally { bridge.dispose(); }
 });
 
-test('publication writes are explicit, gated, and never triggered by prepare reads', async () => {
+test('exact saved Maker review never saves a projection and rejects stale drafts before signing', async () => {
   const { productRuntime } = runtimeHarness({ connected: true });
-  const { drafts } = draftHarness();
-  const calls = { prepare: 0, sign: 0 };
-  const publication = {
-    async prepare(input) {
-      calls.prepare += 1;
-      assert.equal(input.signerAddress, address);
-      assertMakerV8Document(input.document, { mode: 'draft' });
-      return { attemptId: 'attempt-1', status: 'ACTIVE' };
-    },
-    async resume(attemptId) { return { attemptId, status: 'ACTIVE' }; },
-    async requestSignature(attemptId) { calls.sign += 1; return { attemptId, status: 'SIGNED' }; },
-    async recoverOutcome(attemptId) { return { attemptId, status: 'OUTCOME_PENDING' }; },
-  };
-  const bridge = createMakerV8ProductBridge({
-    productRuntime,
-    drafts,
-    publication,
-    execution: { allowWalletSignature: true, allowBroadcast: true },
-  });
-  const prepared = await bridge.preparePublication({
-    kind: 'maker',
-    draft: { makerId: 'publish-me', name: 'Publish Me', canvas: '1024×1024' },
-  });
-  assert.equal(prepared.attemptId, 'attempt-1');
-  assert.equal(calls.prepare, 1);
-  assert.equal(calls.sign, 0, 'preparing never opens a wallet prompt');
-  await bridge.requestPublicationSignature();
-  assert.equal(calls.sign, 1);
-  assert.equal(Object.hasOwn(bridge, 'performMarketAction'), false);
+  const source = draftHarness();
+  await seedMinimalArtworkDraft(source.drafts, { draftId: 'review-maker', name: 'Original' });
+  const bindings = new Map();
+  let signs = 0;
+  const step = { id: 'upload-one', revision: 1, digest: 'digest-one', stage: 'REGISTER', gasBudgetMist: '1000' };
+  const bridge = createMakerV8ProductBridge({ productRuntime, drafts: source.drafts,
+    publication: {}, publicationTransport: {
+      async loadBinding(key) { return bindings.get(key) ?? null; },
+      async saveBinding(key, expected, value) { const result = { ...value, key, revision: (expected ?? 0) + 1 }; bindings.set(key, result); return result; },
+      async prepareReview() { return { status: 'TRANSPORT_SIGNATURE_REQUIRED', stage: 'ASSET', upload: { uploadId: step.id }, step, plan: null }; },
+      async signReviewed() { signs += 1; },
+    }, execution: { allowWalletSignature: true, allowBroadcast: true } });
+  const view = await bridge.prepareMakerPublication({ draftId: 'review-maker', expectedRevision: 1 });
+  assert.equal(view.scope.draftRevision, 1);
+  assert.equal(view.nextAction, 'SIGN');
+  assert.equal(source.calls.cas, 0);
+  source.mutateDraft('review-maker', { revision: 2 });
+  await assert.rejects(bridge.signMakerPublication({ reviewId: view.reviewId }), { code: 'MAKER_V8_PRODUCT_PUBLICATION_STALE' });
+  assert.equal(signs, 0);
+  for (const name of ['preparePublication', 'resumePublication', 'recoverPublication', 'requestPublicationSignature']) {
+    assert.equal(Object.hasOwn(bridge, name), false, 'retired unscoped publication API is removed');
+  }
+  bridge.dispose();
 });
 
-test('Creator publication certifies durable asset and Manifest transport before chain publication', async () => {
-  const { productRuntime } = runtimeHarness({ connected: true });
-  const { drafts } = draftHarness();
+function publicationReviewHarness() {
+  const runtime = runtimeHarness({ connected: true });
+  const source = draftHarness();
+  const bindings = new Map();
+  let uploadRevision = 1, signed = false, complete = false, pauseSign = null, pausePrepare = null, prepares = 0;
   const calls = [];
+  const transport = {
+    async loadBinding(key) { return structuredClone(bindings.get(key) ?? null); },
+    async saveBinding(key, expected, value) {
+      assert.equal(bindings.get(key)?.revision ?? null, expected);
+      const result = { ...structuredClone(value), key, revision: (expected ?? 0) + 1 };
+      bindings.set(key, result); return structuredClone(result);
+    },
+    async prepareReview(input) {
+      prepares += 1;
+      if (pausePrepare) await pausePrepare();
+      calls.push(['prepare', input.attemptNonce]);
+      if (complete) return { plan: { attemptId: 'exact-attempt' } };
+      const upload = { uploadId: 'exact-upload', revision: uploadRevision, stage: 'REGISTER',
+        epochs: 3, deletable: false,
+        status: signed ? 'RECOVERY_REQUIRED' : 'SIGNATURE_REQUIRED', transactionDigest: signed ? 'exact-digest' : null };
+      return { status: signed ? 'TRANSPORT_RECOVERY_REQUIRED' : 'TRANSPORT_SIGNATURE_REQUIRED',
+        stage: 'ASSET', upload, plan: null,
+        step: signed ? null : { id: upload.uploadId, revision: uploadRevision, stage: 'REGISTER',
+          status: 'SIGNATURE_REQUIRED', digest: 'exact-digest', gasBudgetMist: '10000000', gasPriceMist: '1000',
+          storageEpochs: 3, deletable: false, storageCostAtomic: null, relayTipMist: null } };
+    },
+    async signReviewed(step, check) {
+      assert.equal(step.revision, uploadRevision);
+      await check();
+      if (pauseSign) await pauseSign();
+      calls.push(['sign', step.digest]); signed = true; uploadRevision += 1;
+    },
+    async continueReviewed(step) {
+      assert.equal(step.revision, uploadRevision);
+      calls.push(['continue', step.digest]); complete = true; uploadRevision += 1;
+    },
+  };
+  const rootId = `0x${'34'.repeat(32)}`;
   const publication = {
-    async prepare() { throw new Error('transport owns initial prepare'); },
-    async resume(attemptId) { return { attemptId, status: 'ACTIVE' }; },
-    async requestSignature(attemptId) { return { attemptId, status: 'SIGNED' }; },
-    async recoverOutcome(attemptId) { return { attemptId, status: 'OUTCOME_PENDING' }; },
+    async inspect() { return { plan: { attemptId: 'exact-attempt', status: 'COMPLETE', immutable: { signerAddress: address } },
+      identity: { rootId, makerVersion: 1, complete: true } }; },
+    async lookupFinalized() { return { rootId, makerVersion: 1, complete: true }; },
   };
-  const publicationTransport = {
-    async prepare(input) {
-      calls.push(['prepare', input.assets.length, input.assets[0].byteLength]);
-      return { status: 'TRANSPORT_SIGNATURE_REQUIRED', message: 'asset signature', plan: null };
-    },
-    async requestSignature(input) {
-      calls.push(['sign', input.attemptNonce]);
-      return { status: 'TRANSPORT_RECOVERY_REQUIRED', message: 'asset recovery', plan: null };
-    },
-    async recover(input) {
-      calls.push(['recover', input.assets[0].assetId]);
-      return {
-        status: 'PUBLICATION_READY', message: 'ready',
-        plan: { attemptId: 'transport-attempt', status: 'ACTIVE' },
-      };
-    },
-  };
-  const bridge = createMakerV8ProductBridge({
-    productRuntime,
-    drafts,
-    publication,
-    publicationTransport,
-    execution: { allowWalletSignature: true, allowBroadcast: true },
-  });
-  const input = { makerId: 'transport-maker', name: 'Transport Maker', canvas: '1024×1024' };
-  await seedMinimalArtworkDraft(drafts, { draftId: input.makerId, name: input.name });
-  const prepared = await bridge.preparePublication({ kind: 'maker', draft: input });
-  assert.equal(prepared.status, 'TRANSPORT_SIGNATURE_REQUIRED');
-  const signed = await bridge.requestPublicationSignature({ draft: input });
-  assert.equal(signed.status, 'TRANSPORT_RECOVERY_REQUIRED');
-  const recovered = await bridge.recoverPublication({ draft: input });
-  assert.equal(recovered.attemptId, 'transport-attempt');
-  assert.deepEqual(calls.map(([name]) => name), ['prepare', 'sign', 'recover']);
+  const makeBridge = (runtimeConfig = runtime.productRuntime.runtime) => createMakerV8ProductBridge({
+    productRuntime: { ...runtime.productRuntime, runtime: runtimeConfig }, drafts: source.drafts,
+    publication, publicationTransport: transport, execution: { allowWalletSignature: true, allowBroadcast: true } });
+  return { ...runtime, ...source, calls, bindings, rootId, makeBridge, publication,
+    pauseSign(value) { pauseSign = value; }, pausePrepare(value) { pausePrepare = value; },
+    get prepares() { return prepares; } };
+}
+
+test('Creator publication reviews one step, signs only it, and explicit continuation cold-recovers certified Root', async () => {
+  const value = publicationReviewHarness();
+  await seedMinimalArtworkDraft(value.drafts, { draftId: 'publish-maker', name: 'Frozen Original' });
+  const bridge = value.makeBridge();
+  const prepared = await bridge.prepareMakerPublication({ draftId: 'publish-maker', expectedRevision: 1 });
+  assert.equal(prepared.nextAction, 'SIGN');
+  assert.equal(prepared.frozenMakerName, 'Frozen Original');
+  assert.equal(value.calls.some(([kind]) => ['sign', 'continue'].includes(kind)), false);
+  const signed = await bridge.signMakerPublication({ reviewId: prepared.reviewId });
+  assert.equal(signed.nextAction, 'CONTINUE');
+  assert.equal(value.calls.filter(([kind]) => kind === 'sign').length, 1);
+  assert.equal(value.calls.filter(([kind]) => kind === 'continue').length, 0);
+  bridge.dispose();
+  const restored = value.makeBridge();
+  const recovered = await restored.inspectMakerPublication({ draftId: 'publish-maker', expectedRevision: 1 });
+  assert.equal(recovered.nextAction, 'CONTINUE');
+  assert.equal(value.calls.filter(([kind]) => kind === 'continue').length, 0);
+  const done = await restored.continueMakerPublication({ reviewId: recovered.reviewId });
+  assert.equal(done.status, 'COMPLETE');
+  assert.equal(done.rootId, value.rootId);
+  const before = value.prepares;
+  assert.equal((await restored.getPublishedMaker({ draftId: 'publish-maker' })).rootId, value.rootId);
+  assert.equal(value.prepares, before, 'catalog lookup must not create a new publication');
+  restored.dispose();
+});
+
+test('signed publication keeps its original snapshot after edits and two bridge instances cannot prompt twice', async () => {
+  const value = publicationReviewHarness();
+  await seedMinimalArtworkDraft(value.drafts, { draftId: 'publish-maker', name: 'Frozen Original' });
+  const first = value.makeBridge(), second = value.makeBridge();
+  const a = await first.prepareMakerPublication({ draftId: 'publish-maker', expectedRevision: 1 });
+  const b = await second.prepareMakerPublication({ draftId: 'publish-maker', expectedRevision: 1 });
+  let release;
+  value.pauseSign(() => new Promise(resolve => { release = resolve; }));
+  const signing = first.signMakerPublication({ reviewId: a.reviewId });
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  const competing = second.signMakerPublication({ reviewId: b.reviewId });
+  release();
+  await signing;
+  await assert.rejects(competing, { code: 'MAKER_V8_PRODUCT_PUBLICATION_STALE' });
+  assert.equal(value.calls.filter(([kind]) => kind === 'sign').length, 1);
+  const record = await value.drafts.load('publish-maker');
+  value.mutateDraft('publish-maker', { revision: 2, document: { ...record.document,
+    metadata: { ...record.document.metadata, name: 'New unsent work' } } });
+  const old = await second.prepareMakerPublication({ draftId: 'publish-maker', expectedRevision: 2 });
+  assert.equal(old.scope.draftRevision, 1);
+  assert.equal(old.scope.currentSavedRevision, 2);
+  assert.equal(old.scope.publishingEarlierRevision, true);
+  assert.equal(old.frozenMakerName, 'Frozen Original');
+  assert.equal(old.nextAction, 'CONTINUE');
+  assert.equal((await value.drafts.load('publish-maker')).document.metadata.name, 'New unsent work');
+  first.dispose(); second.dispose();
+});
+
+test('wallet changes and route cancellation cannot authorize stale publication', async () => {
+  for (const change of ['wallet', 'route', 'cancel']) {
+    const value = publicationReviewHarness();
+    await seedMinimalArtworkDraft(value.drafts, { draftId: 'publish-maker', name: 'Original' });
+    const bridge = value.makeBridge();
+    const review = await bridge.prepareMakerPublication({ draftId: 'publish-maker', expectedRevision: 1 });
+    if (change === 'wallet') value.setAccount({ address: `0x${'56'.repeat(32)}`, network: 'mainnet' });
+    else if (change === 'route') bridge.navigate({ name: 'plaza' });
+    else bridge.cancelMakerPublicationReview();
+    await assert.rejects(bridge.signMakerPublication({ reviewId: review.reviewId }), { code: 'MAKER_V8_PRODUCT_PUBLICATION_STALE' });
+    assert.equal(value.calls.some(([kind]) => kind === 'sign'), false);
+    bridge.dispose();
+  }
+});
+
+test('first definitive rejection permits edited re-review while unknown signing retains the frozen source', async () => {
+  for (const rejected of [true, false]) {
+    const value = publicationReviewHarness();
+    await seedMinimalArtworkDraft(value.drafts, { draftId: 'rejected-maker', name: 'Original' });
+    const bridge = value.makeBridge();
+    const review = await bridge.prepareMakerPublication({ draftId: 'rejected-maker', expectedRevision: 1 });
+    value.pauseSign(async () => { throw Object.assign(new Error('wallet outcome'), rejected
+      ? { definitiveRejection: true, signedArtifactCreated: false } : { code: 'UNKNOWN_WALLET_RESULT' }); });
+    await assert.rejects(bridge.signMakerPublication({ reviewId: review.reviewId }));
+    const record = await value.drafts.load('rejected-maker');
+    value.mutateDraft('rejected-maker', { revision: 2, document: { ...record.document,
+      metadata: { ...record.document.metadata, name: 'Corrected' } } });
+    const next = await bridge.prepareMakerPublication({ draftId: 'rejected-maker', expectedRevision: 2 });
+    assert.equal(next.scope.draftRevision, rejected ? 2 : 1);
+    assert.equal(next.frozenMakerName, rejected ? 'Corrected' : 'Original');
+    assert.equal(value.calls.some(([kind]) => kind === 'sign'), false);
+    bridge.dispose();
+  }
+});
+
+test('different drafts sharing one Walrus upload serialize wallet prompts and late preparation stays cancelled', async () => {
+  const value = publicationReviewHarness();
+  await seedMinimalArtworkDraft(value.drafts, { draftId: 'first-maker', name: 'First' });
+  await seedMinimalArtworkDraft(value.drafts, { draftId: 'second-maker', name: 'Second' });
+  const first = value.makeBridge(), second = value.makeBridge();
+  const a = await first.prepareMakerPublication({ draftId: 'first-maker', expectedRevision: 1 });
+  const b = await second.prepareMakerPublication({ draftId: 'second-maker', expectedRevision: 1 });
+  let release;
+  value.pauseSign(() => new Promise(resolve => { release = resolve; }));
+  const signing = first.signMakerPublication({ reviewId: a.reviewId });
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  const rejected = assert.rejects(second.signMakerPublication({ reviewId: b.reviewId }));
+  release(); await signing; await rejected;
+  assert.equal(value.calls.filter(([kind]) => kind === 'sign').length, 1);
+  let releasePrepare;
+  value.pausePrepare(() => new Promise(resolve => { releasePrepare = resolve; }));
+  const late = first.prepareMakerPublication({ draftId: 'first-maker', expectedRevision: 1 });
+  while (!releasePrepare) await new Promise(resolve => setImmediate(resolve));
+  first.cancelMakerPublicationReview(); releasePrepare();
+  await assert.rejects(late, { code: 'MAKER_V8_PRODUCT_PUBLICATION_STALE' });
+  first.dispose(); second.dispose();
+});
+
+test('different releases retain distinct bindings but share the wallet lock for content-deduplicated uploads', async () => {
+  const value = publicationReviewHarness();
+  await seedMinimalArtworkDraft(value.drafts, { draftId: 'cross-release', name: 'Same source' });
+  const first = value.makeBridge();
+  const second = value.makeBridge({ ...publicationRuntime, catalogId: `0x${'77'.repeat(32)}` });
+  const a = await first.prepareMakerPublication({ draftId: 'cross-release', expectedRevision: 1 });
+  const b = await second.prepareMakerPublication({ draftId: 'cross-release', expectedRevision: 1 });
+  assert.notEqual(a.scope.releaseIdentity, b.scope.releaseIdentity);
+  assert.equal(a.step.id, b.step.id);
+  let release;
+  value.pauseSign(() => new Promise(resolve => { release = resolve; }));
+  const signing = first.signMakerPublication({ reviewId: a.reviewId });
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  const rejected = assert.rejects(second.signMakerPublication({ reviewId: b.reviewId }));
+  release(); await signing; await rejected;
+  assert.equal(value.calls.filter(([kind]) => kind === 'sign').length, 1);
+  first.dispose(); second.dispose();
+});
+
+test('an authenticated scaffold Root is withheld until final activation is certified complete', async () => {
+  const value = publicationReviewHarness();
+  await seedMinimalArtworkDraft(value.drafts, { draftId: 'partial-maker', name: 'Partial' });
+  const bridge = value.makeBridge();
+  let review = await bridge.prepareMakerPublication({ draftId: 'partial-maker', expectedRevision: 1 });
+  review = await bridge.signMakerPublication({ reviewId: review.reviewId });
+  value.publication.inspect = async () => ({ plan: { attemptId: 'exact-attempt', revision: 3,
+    status: 'ACTIVE', immutable: { signerAddress: address },
+    current: { kind: 'BASE_CHUNK', outcome: { status: 'OUTCOME_PENDING', digest: 'exact-digest' } } },
+    identity: { rootId: value.rootId, makerVersion: 1, complete: false } });
+  const partial = await bridge.continueMakerPublication({ reviewId: review.reviewId });
+  assert.equal(partial.rootId, null);
+  assert.equal(partial.status, 'OUTCOME_PENDING');
   bridge.dispose();
 });
 

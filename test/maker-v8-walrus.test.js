@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { indexedDB } from 'fake-indexeddb';
+import { indexedDB, IDBFactory } from 'fake-indexeddb';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { toBase58, toBase64 } from '@mysten/sui/utils';
 
@@ -149,6 +149,50 @@ function harness(persistence = memoryPersistence()) {
   });
   return { publisher, bytes, calls, queries };
 }
+
+test('publication review freezes one transaction; signing alone never broadcasts and rejects consumed review', async () => {
+  const value = harness();
+  const uploadId = 'review-upload';
+  await value.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'application/json', bytesBase64: toBase64(value.bytes) });
+  const review = await value.publisher.prepareReview(uploadId);
+  assert.equal(review.gasBudgetMist, '10000000');
+  assert.equal(review.gasPriceMist, '1000');
+  assert.equal(review.storageCostAtomic, null);
+  assert.equal(value.calls.some(([name]) => ['sign', 'broadcast', 'upload'].includes(name)), false);
+  const signed = await value.publisher.signReviewed(uploadId, review);
+  assert.equal(signed.status, 'RECOVERY_REQUIRED');
+  assert.deepEqual(value.calls.filter(([name]) => ['sign', 'broadcast', 'upload'].includes(name)), [['sign', review.digest]]);
+  await assert.rejects(value.publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REVIEW_STALE' });
+});
+
+test('existing signed v1 uploads survive binding-store upgrade; blocked older tabs fail visibly and retry', async () => {
+  const memory = memoryPersistence(), value = harness(memory);
+  await value.publisher.prepare({ uploadId: 'old-signed', owner: OWNER,
+    mediaType: 'application/json', bytesBase64: toBase64(value.bytes) });
+  await value.publisher.signReviewed('old-signed', await value.publisher.prepareReview('old-signed'));
+  const signed = await memory.load('old-signed');
+  const indexedDB = new IDBFactory();
+  const old = await new Promise((resolve, reject) => {
+    const request = indexedDB.open('animacraft-maker-v8-walrus-v1', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('uploads', { keyPath: 'uploadId' });
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  await new Promise((resolve, reject) => {
+    const tx = old.transaction('uploads', 'readwrite'); tx.objectStore('uploads').put(signed);
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+  });
+  const store = createMakerV8WalrusPersistenceV8(indexedDB, {
+    storageManager: { async persisted() { return true; }, async persist() { return true; } },
+  });
+  await assert.rejects(store.load('old-signed'), { code: 'MAKER_V8_WALRUS_DATABASE_BLOCKED' });
+  old.close();
+  assert.deepEqual(await store.load('old-signed'), signed);
+  const binding = await store.savePublicationBinding('draft-scope', null, { started: true, input: { marker: 'exact' } });
+  assert.equal(binding.revision, 1);
+  await assert.rejects(store.savePublicationBinding('draft-scope', null, { started: false }), { code: 'MAKER_V8_WALRUS_CAS_MISMATCH' });
+  assert.deepEqual(await store.loadPublicationBinding('draft-scope'), binding);
+  await store.close();
+});
 
 test('Mainnet Walrus upload is two-signature, durable, query-first, and byte-certified', async () => {
   const value = harness();

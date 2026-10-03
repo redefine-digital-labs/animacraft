@@ -14,6 +14,27 @@ import {
 } from '../maker-workspace-v8-view.js';
 
 
+test('publication review exposes certified completion only and renders exact costs in every locale', () => {
+  const document = createCharacterMakerV8Starter();
+  for (const locale of MAKER_WORKSPACE_LOCALES) {
+    const dictionary = makerWorkspaceDictionary(locale);
+    const review = { reviewId: 'exact-step', scope: { draftId: 'draft', draftRevision: 1, signerAddress: 'wallet', contentSha256: 'hash' }, stage: 'SCAFFOLD', status: 'READY', nextAction: 'SIGN', rootId: 'unfinalized-root', makerVersion: 1,
+      step: { gasBudgetMist: '123456789012345678', gasPriceMist: '1000', storageCostAtomic: null, relayTipMist: null, storageEpochs: 5, deletable: false } };
+    const render = delta => renderApprovedMakerV8Workspace(projectMakerV8WorkspaceView(document,
+      { locale, publicationSigningEnabled: true, publicationBroadcastEnabled: true,
+        publicationReview: { review: { ...review, ...delta }, busy: false } }, { default: true }));
+    const html = render({});
+    assert.ok(html.includes(dictionary.publicationUnknown));
+    assert.ok(html.includes(dictionary.publicationGas));
+    assert.match(html, /123456789012345678/);
+    assert.doesNotMatch(html, /unfinalized-root|data-action="publication-open"/);
+    assert.ok(!html.includes(dictionary.publicationComplete));
+    const complete = render({ status: 'COMPLETE', nextAction: null });
+    assert.match(complete, /unfinalized-root|data-action="publication-open"/);
+    assert.ok(complete.includes(dictionary.publicationComplete));
+  }
+});
+
 test('external Product creation explains published-target prerequisites in every locale', () => {
   const document = createCharacterMakerV8Starter();
   for (const locale of MAKER_WORKSPACE_LOCALES) {
@@ -670,6 +691,12 @@ test('view imports only current authority and hash-exact approved pure donor hel
     'playerOverviewContinue', 'playerOverviewCopy', 'playerOverviewRightsCopy', 'playerSlotCapacityFull',
     'saveRecoveryCopy', 'saveRecoveryCopyHint', 'savingRecoveryCopy', 'localRecoveryCopy',
     'recoveryCopyRetry', 'playerOutputSelection',
+    'publicationReview', 'publicationCopy', 'publicationSign', 'publicationContinue', 'publicationRefresh',
+    'publicationUnknown', 'publicationGas', 'publicationStorage', 'publicationRelay', 'publicationTerms',
+    'publicationWallet', 'publicationStage', 'publicationAssets', 'publicationStale', 'publicationUnavailable',
+    'publicationComplete', 'publicationLoading',
+    'publicationEarlier', 'publicationGasPrice',
+    'publicationOpen',
   ].sort();
   assert.deepEqual(MAKER_WORKSPACE_LOCALES, donorI18n.MAKER_WORKSPACE_LOCALES);
   for (const locale of MAKER_WORKSPACE_LOCALES) {

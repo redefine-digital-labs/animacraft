@@ -183,7 +183,8 @@ function stageView(kind, upload, details = {}) {
   const label = kind === 'ASSET' ? 'asset' : kind === 'LIVING_CONTENT' ? 'Soul documents' : 'Manifest';
   const signatureRequired = upload.status === 'SIGNATURE_REQUIRED';
   const recoveryRequired = upload.status === 'RECOVERY_REQUIRED';
-  if (!signatureRequired && !recoveryRequired && upload.status !== 'FAILED') {
+  if (!signatureRequired && !recoveryRequired && upload.status !== 'FAILED'
+    && upload.status !== 'REGISTER_FINALIZED') {
     fail('MAKER_V8_TRANSPORT_UPLOAD_STATE_INVALID', 'Walrus upload has an unsupported durable state.');
   }
   return freeze({
@@ -230,6 +231,7 @@ export function createMakerV8PublicationTransportV8({
     if (!view) {
       try {
         view = await publisher.prepare({ uploadId, owner: checkedOwner, mediaType, bytesBase64, epochs: 3 });
+        view = await publisher.load(uploadId);
       } catch (error) {
         if (error?.code !== 'MAKER_V8_WALRUS_UPLOAD_EXISTS'
           || mediaType === MAKER_V8_SEAL_CIPHERTEXT_MEDIA_TYPE) throw error;
@@ -469,7 +471,17 @@ export function createMakerV8PublicationTransportV8({
   return freeze({
     schemaVersion: MAKER_V8_PUBLICATION_TRANSPORT_SCHEMA,
     prepare: (input) => inspect(input, 'INSPECT'),
+    loadBinding: (...args) => publisher.loadPublicationBinding(...args),
+    saveBinding: (...args) => publisher.savePublicationBinding(...args),
     requestSignature: (input) => inspect(input, 'SIGN'),
     recover: (input) => inspect(input, 'RECOVER'),
+    prepareReview: async (input) => {
+      const view = await inspect(input, 'INSPECT');
+      const step = view.status === 'TRANSPORT_SIGNATURE_REQUIRED'
+        ? await publisher.prepareReview(view.upload.uploadId) : null;
+      return freeze({ ...view, step });
+    },
+    signReviewed: (step, assertCurrent) => publisher.signReviewed(step.id, step, assertCurrent),
+    continueReviewed: (step) => publisher.resume(step.id, step),
   });
 }

@@ -823,8 +823,61 @@ export function createMakerV8PublicationControllerV8({
     return authorized.plan;
   };
 
-  return Object.freeze({
+  const reviews = new Map();
+  const api = {
     schemaVersion: MAKER_V8_PUBLICATION_CONTROLLER_SCHEMA,
+
+    async lookupFinalized(attemptId) {
+      const plan = await persistence.loadPlan(attemptId);
+      if (!plan?.head || plan.status !== 'COMPLETE' || typeof compiler.describeFinalized !== 'function') return null;
+      const head = await persistence.loadHead(attemptId);
+      return compiler.describeFinalized(clone(plan), clone(head));
+    },
+
+    async inspect(attemptId) {
+      let plan = await persistence.loadPlan(attemptId);
+      if (!plan) fail('MAKER_V8_PUBLICATION_NOT_FOUND', 'Publication attempt was not found.');
+      if (plan.status === 'ACTIVE' && !plan.current && plan.nextPreparation?.status === 'REQUIRED') {
+        plan = await prepareSuccessor(plan);
+      }
+      const head = plan.head ? await persistence.loadHead(attemptId) : null;
+      const identity = head && typeof compiler.describeFinalized === 'function'
+        ? await compiler.describeFinalized(clone(plan), clone(head)) : null;
+      return { plan, identity };
+    },
+
+    async prepareReview(attemptId) {
+      const { plan, attested } = await coldAuthorize(attemptId, 'REVIEW', true);
+      if (plan.status !== 'ACTIVE' || plan.current?.outcome.status !== 'READY') return null;
+      const built = await boundary.buildExactTransaction({ transaction: attested.transaction,
+        sender: plan.immutable.signerAddress, expectedKindBytes: attested.transactionKindBytes });
+      const proof = transactionDataProof(built.bytes ?? built.transactionBytes, {
+        signer: plan.immutable.signerAddress, kindBytes: attested.transactionKindBytes,
+        digest: built.digest ?? built.transactionDigest });
+      const dryRun = await boundary.dryRunExactTransaction({ bytes: proof.base64,
+        transactionBytes: proof.base64, digest: proof.digest, signer: plan.immutable.signerAddress,
+        expectedKindBytes: attested.transactionKindBytes, transaction: attested.transaction });
+      if (dryRun?.status !== 'SUCCESS') fail('MAKER_V8_PUBLICATION_DRY_RUN_FAILED', 'Exact publication review simulation failed.');
+      const reread = await persistence.loadPlan(attemptId);
+      if (reread.revision !== plan.revision) fail('MAKER_V8_PUBLICATION_REVIEW_STALE', 'Publication changed during review.');
+      const data = bcs.TransactionData.parse(fromBase64(proof.base64)).V1;
+      const review = Object.freeze({ id: attemptId, revision: plan.revision,
+        stage: plan.current.kind, digest: proof.digest,
+        gasBudgetMist: String(data.gasData.budget), gasPriceMist: String(data.gasData.price),
+        storageEpochs: null, deletable: null, storageCostAtomic: null, relayTipMist: null });
+      reviews.set(attemptId, { review, built });
+      return review;
+    },
+
+    async signReviewed(attemptId, review, assertCurrent = async () => {}) {
+      const frozen = reviews.get(attemptId);
+      if (!frozen || canonical(frozen.review) !== canonical(review)) {
+        fail('MAKER_V8_PUBLICATION_REVIEW_STALE', 'Review this exact publication transaction again.');
+      }
+      reviews.delete(attemptId);
+      await assertCurrent();
+      return api.requestSignature(attemptId, { ...frozen, assertCurrent });
+    },
 
     subscribe(listener) {
       if (typeof listener !== 'function') {
@@ -873,6 +926,7 @@ export function createMakerV8PublicationControllerV8({
             'The deterministic publication attempt ID is already bound to another plan.',
           );
         }
+        if (!existing.current) return (await api.inspect(existing.attemptId)).plan;
         const authorizedExisting = await coldAuthorize(
           existing.attemptId,
           'PREPARE_IDEMPOTENT_REREAD',
@@ -909,7 +963,7 @@ export function createMakerV8PublicationControllerV8({
       return authorized.plan;
     },
 
-    async requestSignature(attemptId) {
+    async requestSignature(attemptId, reviewed = null) {
       if (!gates.allowWalletSignature || !gates.allowBroadcast) {
         fail(
           'MAKER_V8_PUBLICATION_EXECUTION_DISABLED',
@@ -919,13 +973,16 @@ export function createMakerV8PublicationControllerV8({
       await requireDurability();
       const authorized = await coldAuthorize(attemptId, 'REQUEST_SIGNATURE', true);
       const { plan, attested } = authorized;
+      if (reviewed && reviewed.review.revision !== plan.revision) {
+        fail('MAKER_V8_PUBLICATION_REVIEW_STALE', 'Publication changed after review.');
+      }
       if (plan.status !== 'ACTIVE' || plan.current?.outcome.status !== 'READY') {
         fail(
           'MAKER_V8_PUBLICATION_NOT_READY',
           'Only an exact ACTIVE READY cursor may request a wallet signature.',
         );
       }
-      const built = await boundary.buildExactTransaction({
+      const built = reviewed?.built ?? await boundary.buildExactTransaction({
         transaction: attested.transaction,
         sender: plan.immutable.signerAddress,
         expectedKindBytes: attested.transactionKindBytes,
@@ -955,6 +1012,7 @@ export function createMakerV8PublicationControllerV8({
 
       let signed;
       try {
+        await reviewed?.assertCurrent?.();
         signed = await wallet.signExactTransaction({
           bytes: proof.base64,
           digest: proof.digest,
@@ -1118,5 +1176,6 @@ export function createMakerV8PublicationControllerV8({
       publish('DISCARDED_UNSIGNED', null);
       return true;
     },
-  });
+  };
+  return Object.freeze(api);
 }

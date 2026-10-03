@@ -825,6 +825,10 @@ test('finalized browser readback produces a fixed milestone capsule and O(1) suc
   successorPlan.current = null;
   successorPlan.nextPreparation = { status: 'REQUIRED', ordinal: 1, reason: null };
   await assertMakerV8PublicationPlanIdentityV8(successorPlan);
+  const identity = await value.adapter.describeFinalized(successorPlan, head);
+  assert.equal(identity.rootId, capsule.milestones.scaffold.readback.root.reference.objectId);
+  assert.equal(identity.makerVersion, value.document.lineage.version);
+  assert.equal(identity.complete, false, 'certified scaffold is not a complete published Maker');
   value.calls.getBlob = 0;
   const successor = await value.adapter.prepareSuccessor({
     plan: successorPlan,
@@ -838,6 +842,7 @@ test('finalized browser readback produces a fixed milestone capsule and O(1) suc
 
   const tamperedHead = clone(head);
   tamperedHead.readback.compiler.milestones.scaffold.readback.transactionKindSha256 = 'ff'.repeat(32);
+  await assert.rejects(value.adapter.describeFinalized(successorPlan, tamperedHead));
   await assert.rejects(
     value.adapter.prepareSuccessor({
       plan: successorPlan,

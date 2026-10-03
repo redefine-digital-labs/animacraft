@@ -439,6 +439,18 @@ async function preparedAndSigned(value) {
   return { prepared, signed };
 }
 
+test('review builds exact bytes before wallet and sign consumes one unchanged digest', async () => {
+  const value = await harness('review');
+  const plan = await value.controller.prepare({});
+  const review = await value.controller.prepareReview(plan.attemptId);
+  assert.ok(review.digest);
+  assert.match(review.gasBudgetMist, /^\d+$/);
+  const signed = await value.controller.signReviewed(plan.attemptId, review);
+  assert.equal(signed.current.outcome.digest, review.digest);
+  assert.equal(signed.current.outcome.status, 'SIGNED');
+  await assert.rejects(value.controller.signReviewed(plan.attemptId, review), { code: 'MAKER_V8_PUBLICATION_REVIEW_STALE' });
+});
+
 test('prepare is idempotent after a strict create committed but the caller lost its response', async () => {
   const value = await harness('prepare-idempotent');
   const first = await value.controller.prepare({});
@@ -519,6 +531,8 @@ test('a crash after finality query but before checkpoint CAS resumes the same di
   const finalizedPlan = await controller.recoverOutcome(signed.attemptId);
   assert.equal(finalizedPlan.current, null);
   assert.equal(finalizedPlan.nextPreparation.status, 'REQUIRED');
+  await assert.rejects(controller.inspect(signed.attemptId), { code: 'TEST_SUCCESSOR_NOT_CONFIGURED' },
+    'read-only review must request the next deterministic compiler cursor after finality');
   const head = await value.store.loadHead(signed.attemptId);
   assert.equal(head.digest, signed.current.outcome.digest);
   assert.equal(head.transactionKindSha256, signed.current.transactionKindSha256);
