@@ -1,6 +1,6 @@
 (() => {
-  // Certified release 841ef068a4be52cd3b1dfc2ff2a04d65adb30f302ba141dd044dad889630c01b.
-  // Runtime identity comes from the completed chain release, not a latest lookup.
+  // Certified target release 8dd402857b952c8a3e71ccb8ea56a032316109d92165265608c269625b2b60a7.
+  // Runtime identity comes from completed chain readback, not a latest lookup.
   const freeze = (value) => {
     if (value && typeof value === 'object') {
       Object.values(value).forEach(freeze);
@@ -14,75 +14,75 @@
   });
 
   window.SoulidityMakerV8 = freeze({
-  "catalogId": "0x633c79e2885145c118d6f5d0fc55e2d0dc42a7669b49b54720c59080b32d3a9e",
+  "catalogId": "0x230dcd68e5215a995b7b7014540773739778eb6eba74bc43943b2af8ebc00609",
   "clockObjectId": "0x0000000000000000000000000000000000000000000000000000000000000006",
   "enabled": true,
   "makerBindings": [],
   "nativeSoulIntegration": {
     "expectedNativeBinding": {
-      "mintWitnessDefiningType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::animacraft_v8_binding::MintBindingWitnessV8",
-      "mintWitnessOriginalType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::animacraft_v8_binding::MintBindingWitnessV8",
-      "ownerWitnessDefiningType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::animacraft_v8_binding::SoulOwnerWitnessV8",
-      "ownerWitnessOriginalType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::animacraft_v8_binding::SoulOwnerWitnessV8",
-      "soulDefiningType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::soul::Soul",
-      "soulOriginalType": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41::soul::Soul"
+      "mintWitnessDefiningType": "0x5e3e75de3e1f661ffcad9bd0d53f3ea97e2e48f0765d2b2d9532256806409bb9::animacraft_v8_binding::MintBindingWitnessV8",
+      "mintWitnessOriginalType": "0x5e3e75de3e1f661ffcad9bd0d53f3ea97e2e48f0765d2b2d9532256806409bb9::animacraft_v8_binding::MintBindingWitnessV8",
+      "ownerWitnessDefiningType": "0x5e3e75de3e1f661ffcad9bd0d53f3ea97e2e48f0765d2b2d9532256806409bb9::animacraft_v8_binding::SoulOwnerWitnessV8",
+      "ownerWitnessOriginalType": "0x5e3e75de3e1f661ffcad9bd0d53f3ea97e2e48f0765d2b2d9532256806409bb9::animacraft_v8_binding::SoulOwnerWitnessV8",
+      "soulDefiningType": "0x5e3e75de3e1f661ffcad9bd0d53f3ea97e2e48f0765d2b2d9532256806409bb9::soul::Soul",
+      "soulOriginalType": "0x5e3e75de3e1f661ffcad9bd0d53f3ea97e2e48f0765d2b2d9532256806409bb9::soul::Soul"
     },
-    "kindRegistryId": "0xd439d16b69f7ccf215cc0eaeccf0b15ab0516291e2a2b658ee8a30164dc0c757",
+    "kindRegistryId": "0x1e28e87799374b8a24a6c5a9cffbb2a104fe76b5185f9aba224cf45d6059d9ad",
     "kioskPackageId": "0xdfb4f1d4e43e0c3ad834dcd369f0d39005c872e118c9dc1c5da9765bb93ee5f3",
-    "kioskRegistryId": "0x8d1824f776f559364d28349a64e47a40281ccf47c3e7806f6827607621592d7e",
-    "marketConfigV2Id": "0x5dee51db7db7ac34a20d97108296b00f0a06800c904d439bd72e6e62fe6ef117",
-    "soulTransferPolicyId": "0x90ccf7778737306a3c27f13bd4d52f5e910d906ff25c9abd7f42f6846795f27a",
-    "soulidityCallableDigest": "2anrfAx5byCFio61gQPToTd9cey389kQYzvoL4UwrEbx",
-    "soulidityCallablePackageId": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41",
-    "soulidityOriginalPackageId": "0xe870d11e9922fa2f047bd5c1710401b5421a97c4b2100090bb1c762636c2fc41",
+    "kioskRegistryId": "0xebf7ec52fd0201a0b3dac3e6ef6b05a2d11493e1a67170c7262b02aa71a34952",
+    "marketConfigV2Id": "0x2171d5268a6af1ca7efbc53eaa5bc4a80ab94733f0fadd8da4486bc9bec50f3c",
+    "soulTransferPolicyId": "0x9966a75237e341ce6914c261e72a07ba811809f9583c56c0c9152483e0aa747a",
+    "soulidityCallableDigest": "mk1CWsGozyihrJAraCQR8UU4QytchQH756TGePRZZWh",
+    "soulidityCallablePackageId": "0x5e3e75de3e1f661ffcad9bd0d53f3ea97e2e48f0765d2b2d9532256806409bb9",
+    "soulidityOriginalPackageId": "0x5e3e75de3e1f661ffcad9bd0d53f3ea97e2e48f0765d2b2d9532256806409bb9",
     "walrusPackageId": "0xfa65cb2d62f4d39e60346fb7d501c12538ca2bbc646eaa37ece2aec5f897814e"
   },
   "paymentCoinType": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
-  "protocolConfigId": "0x07e44857d9e88108d25aefe2bc15421cf1086846be370f6afa8f79d481368aa7",
-  "protocolTreasuryId": "0x2ee02c442e42f8f55515b02f194e8b645c94a4214bf2710eef9b14753cdc74fd",
+  "protocolConfigId": "0x315cfb721a93e70a8f78732d6ebcae90ea3ba1fce829194a55cfbb46f3f465f2",
+  "protocolTreasuryId": "0x6cc5fb46e1e8f0220679e746c8a59fec3e2c3d27a04c3a8e0f57e6d939d3780f",
   "protocolVersion": 8,
   "roleConfigIds": {
-    "market": "0x948a6e52770e0424c6f15d30f0ee9964662babcbc886b5bda832238a968a3476",
-    "output": "0x52a55f9f49911e0160ed809b42ace478ee35dfe58b7eb3bd71b62e4802c4b6c1",
-    "physical": "0x4d097348bd030b1344c5a745659d07fed23d97be7235fa5243d7dcb279924bf9",
-    "release": "0x60ada183eb73f3e97b809a1e87d7081e3e2f0bd5b36f98d1703347f6bb91e3b1",
-    "runtime": "0x581c205bbc9659790432899ab0d63f4b7db4040d0b5a5b695933308dc1ad906a",
-    "seal": "0x59baab9432aa5c6831683316316675c9f7f8ba3a53fa0811d100af79ca1249e1"
+    "market": "0xf843e785a29510f6c7178a8dd29d3ed93176fbe20c090b826470ec5b828fab6f",
+    "output": "0xd29bc74fc6f3bd9e80cfcfed5c9b6b45fdd1d05340f6c5546d18313dff564940",
+    "physical": "0x21ae176d18cd81691462638885ebf818a61526287adfaa718fb54f578cc2f9c4",
+    "release": "0xf009a5ffb468bc6b708e51f398c9fe3ce9e3d2c1b328031c7eba313865a835d5",
+    "runtime": "0x0b76268cfd72ff32f4cc54454678328a0e9d5b6d1a8d99717d22ff0c497d656c",
+    "seal": "0xb63a9a5d412d6749253731d1ec26d7cfb78142b09c1ffb8b76313fbfb16e97c2"
   },
   "roles": {
     "core": {
-      "callablePackageId": "0xce6a5fa79a4583951a381484ba2b6c4f82746d6570183e3540a108d988d98902",
-      "typeOriginPackageId": "0xce6a5fa79a4583951a381484ba2b6c4f82746d6570183e3540a108d988d98902"
+      "callablePackageId": "0xe1e6857ccabcfb36c2e4cd1cf2a6d8babad7fb457106e4b4108f310528645b5f",
+      "typeOriginPackageId": "0xe1e6857ccabcfb36c2e4cd1cf2a6d8babad7fb457106e4b4108f310528645b5f"
     },
     "market": {
-      "callablePackageId": "0x3f4148b6c75e2db1daebbbadeb37666ec32bb8b38ebc0f93a2cbde07f9acae7e",
-      "typeOriginPackageId": "0x3f4148b6c75e2db1daebbbadeb37666ec32bb8b38ebc0f93a2cbde07f9acae7e"
+      "callablePackageId": "0x955041f6ba843a8f211b6d95497811e66cc41829335b28d2377c6a2d88cbbfdd",
+      "typeOriginPackageId": "0x955041f6ba843a8f211b6d95497811e66cc41829335b28d2377c6a2d88cbbfdd"
     },
     "output": {
-      "callablePackageId": "0xe3a54b021cba35c1221cc0fb5cf347ea8805da61f000fa5bfa5f5e4812fe5f0b",
-      "typeOriginPackageId": "0xe3a54b021cba35c1221cc0fb5cf347ea8805da61f000fa5bfa5f5e4812fe5f0b"
+      "callablePackageId": "0x4a10df716f3c2c451e1a8130c40dce8231778d230e4513eecd2f3a1feb5b80d7",
+      "typeOriginPackageId": "0x4a10df716f3c2c451e1a8130c40dce8231778d230e4513eecd2f3a1feb5b80d7"
     },
     "physical": {
-      "callablePackageId": "0x0a07de1e7e9b2e4b089e78cd6eeefccc47c5a3257c88109520cfafadc7b171ed",
-      "typeOriginPackageId": "0x0a07de1e7e9b2e4b089e78cd6eeefccc47c5a3257c88109520cfafadc7b171ed"
+      "callablePackageId": "0x7b6eadf98f43031c7e90b9096085334f785d50163d2c8c9f93e2f23877fe55bc",
+      "typeOriginPackageId": "0x7b6eadf98f43031c7e90b9096085334f785d50163d2c8c9f93e2f23877fe55bc"
     },
     "release": {
-      "callablePackageId": "0x9f6078e49e87d885c91bdba99e90ecf93c1d85682be34e390667832f143e85bb",
-      "typeOriginPackageId": "0x9f6078e49e87d885c91bdba99e90ecf93c1d85682be34e390667832f143e85bb"
+      "callablePackageId": "0x9a20a0aad304d6e3e87830aa27ed3601cb8e48189a618f441aa5a1c5602bdc9d",
+      "typeOriginPackageId": "0x9a20a0aad304d6e3e87830aa27ed3601cb8e48189a618f441aa5a1c5602bdc9d"
     },
     "runtime": {
-      "callablePackageId": "0x9c88bca9969c4d7cadfb5ad491c0828acc2781efaff93b724e91104b15720b00",
-      "typeOriginPackageId": "0x9c88bca9969c4d7cadfb5ad491c0828acc2781efaff93b724e91104b15720b00"
+      "callablePackageId": "0x3c2dede0657ddbfba3a7dc39db5782530e4ea9dab666ec4f7bbeb99c09a83710",
+      "typeOriginPackageId": "0x3c2dede0657ddbfba3a7dc39db5782530e4ea9dab666ec4f7bbeb99c09a83710"
     },
     "seal": {
-      "callablePackageId": "0x12504100e9b3315562d84b874034b805ad1be2fd7472ccf40506f489e45855f2",
-      "typeOriginPackageId": "0x12504100e9b3315562d84b874034b805ad1be2fd7472ccf40506f489e45855f2"
+      "callablePackageId": "0xc744d735be1fd46d200ea946b3308728f3ccb238f0cb9c4c46d1a1f4b75a4a1f",
+      "typeOriginPackageId": "0xc744d735be1fd46d200ea946b3308728f3ccb238f0cb9c4c46d1a1f4b75a4a1f"
     }
   },
   "schemaVersion": "animacraft.maker-v8-runtime.v8"
 });
 
-  // User-authorized current deployment. Wallet confirmation remains mandatory.
+  // User-authorized release rollout; each user still confirms in their wallet.
   window.SoulidityV8Execution = Object.freeze({
     schemaVersion: 'animacraft.web-execution.v8',
     network: 'mainnet',
@@ -91,9 +91,10 @@
     allowBroadcast: true,
   });
 
-  // Protected-content acceptance still requires the production Seal API key.
+  // Public two-of-two Seal path. Real authorized decryption is a separate test,
+  // not a readiness claim made by this product-operation switch.
   window.AnimacraftV8Protection = Object.freeze({
     schemaVersion: 'animacraft.protected-execution.v1',
-    allowProtectedContent: false,
+    allowProtectedContent: true,
   });
 })();

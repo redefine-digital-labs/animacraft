@@ -70,29 +70,33 @@ Effects-certified finality is not a claim of checkpoint inclusion. A future
 release may add independently bound checkpoint receipts as an auditability
 enhancement.
 
-## Safe release lock
+## Release identity and execution
 
-This client-cutover phase does not deploy, publish packages, sign, broadcast,
-push, or touch Mainnet. The checked-in runtime uses placeholder identities and
-keeps release/signature/broadcast policy disabled. A later, separately audited
-release phase must replace every placeholder with chain readback evidence,
-verify the seven package digests and configs, and only then enable execution.
+The fresh release contains eight packages: seven Animacraft roles plus Soulidity.
+Its public runtime and Soulidity SDK manifest must come from the same completed
+release's chain readback, including bootstrap and Market activation. Do not reuse
+placeholder IDs, an old deployment tuple or a partially published release.
+The approved production configuration enables wallet requests and broadcasts;
+each user still confirms their own operation in their wallet, and the client
+attests the exact package/config identity and access policy before writing.
+Unknown transaction outcomes require query-first recovery, never a replacement
+signature. Frontend rollback does not undo chain transactions.
 
 ## Local verification
 
 The protected-content browser path has no owned rendering/key proxy and needs
 no private server environment key. Runtime configuration remains public in
 `public-v8/config.js`; every protected operation still attests chain policy.
-The currently deployed credential-requiring Seal committee is not usable by
-this no-secret path. The fresh release entry now requires the pinned Overclock
+The fresh release entry requires the pinned Overclock
 and Studio Mirai independent servers (weight 1 each, threshold 2), before prepare,
 publication signatures and setup. It checks raw on-chain identity, SDK PoP,
 both sites' service/POST CORS and browser-visible service version headers.
 Run `node scripts/probe-browser-seal-topology.mjs` for the read-only endpoint
 checks. Either provider being unavailable blocks this two-of-two topology;
-there is no automatic provider/threshold fallback. A full fresh policy release
-and real wallet-authorized decryption acceptance remain required; prerequisite
-checks alone do not satisfy that acceptance.
+there is no automatic provider/threshold fallback. Real wallet-authorized
+decryption acceptance is separate from deployment: the certified export retains
+`protectedDecryptionReady: false` until that journey is actually verified.
+Endpoint prerequisite checks alone do not satisfy that acceptance.
 
 Every `npm run build` checks browser source, imported application modules and
 emitted assets for the retired protected APIs, Node crypto and server-only
