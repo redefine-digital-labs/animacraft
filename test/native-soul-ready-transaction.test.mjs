@@ -6,8 +6,7 @@ import { buildNativeSoulBootstrapTransaction } from '../scripts/native-soul-boot
 import { buildMainnetV8ReadyTransaction, inspectMainnetV8Transaction, buildMainnetV8InitTransaction } from '../scripts/mainnet-v8-release.mjs';
 import {
   MAINNET_V8_RELEASE_STEPS, MAINNET_V8_RELEASE_SIGNER, MAINNET_V8_CHAIN_IDENTIFIER,
-  MAINNET_V8_DEFAULT_COMMITTEE, MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
-  MAINNET_V8_DEFAULT_COMMITTEE_OWNER, MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
+  MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_KEY_SERVER_TYPE,
 } from '../scripts/mainnet-v8-release-lib.mjs';
 
 const ctx = { sender: MAINNET_V8_RELEASE_SIGNER, gasPrice: '100', gasBudget: '100000000',
@@ -16,11 +15,10 @@ const digest = toBase58(new Uint8Array(32).fill(8));
 function artifact(stage) {
   const { input } = nativeSoulBootstrapFixture(stage);
   const stageData = structuredClone(input);
-  if (stage === 'SETUP_RELEASE') stageData.keyServerCertificates = [{
-    objectId: MAINNET_V8_DEFAULT_COMMITTEE, type: MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
-    owner: MAINNET_V8_DEFAULT_COMMITTEE_OWNER, contentSha256: MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
+  if (stage === 'SETUP_RELEASE') stageData.keyServerCertificates = MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId, owner, contentSha256 }) => ({
+    objectId, owner, contentSha256, type: MAINNET_V8_BROWSER_KEY_SERVER_TYPE,
     version: '1', digest, previousTransaction: digest,
-  }];
+  }));
   return { kind: stage, stageData };
 }
 // Offline actual runner compilation. No RPC, wallet, simulation or finality.

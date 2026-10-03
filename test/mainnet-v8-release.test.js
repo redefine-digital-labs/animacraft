@@ -55,7 +55,7 @@ import {
 } from '../scripts/mainnet-v8-release-lib.mjs';
 import {
   MAINNET_V8_PLAN_FILENAME,
-  MAINNET_V8_DEFAULT_COMMITTEE,
+  MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_SEAL_THRESHOLD,
   MAINNET_V8_RELEASE_TOOLCHAIN,
   MAINNET_V8_RELEASE_SIGNER,
   MAINNET_V8_RELEASE_RUNNER_SCHEMA,
@@ -130,8 +130,7 @@ const COMMITMENTS = Object.freeze(Object.fromEntries(
   })]),
 ));
 const SEAL_POLICY_TEMPLATE = buildSealPolicy({
-  keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }],
-  threshold: '1',
+  keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD,
 });
 const SEAL_POLICY = buildMainnetV8FinalSealPolicy({
   template: SEAL_POLICY_TEMPLATE,

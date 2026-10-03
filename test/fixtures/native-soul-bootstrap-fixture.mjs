@@ -3,7 +3,7 @@ import { MAINNET_WALRUS_PACKAGE_CONFIG } from '@mysten/walrus';
 import { bcs } from '@mysten/sui/bcs';
 import { createHash } from 'node:crypto';
 import { NativeSoulBootstrapBcs as B, NATIVE_SOUL_BOOTSTRAP_USDC_TYPE as USDC } from '../../scripts/native-soul-bootstrap-readback.mjs';
-import { buildMainnetV8SealPolicyTemplate, buildMainnetV8FinalSealPolicy, MAINNET_V8_DEFAULT_COMMITTEE } from '../../scripts/mainnet-v8-release-lib.mjs';
+import { buildMainnetV8SealPolicyTemplate, buildMainnetV8FinalSealPolicy, MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_SEAL_THRESHOLD } from '../../scripts/mainnet-v8-release-lib.mjs';
 import { MAKER_V8_SEAL_ENCRYPTION_PROFILE as PROFILE } from '../../maker-v8-seal-profile.js';
 import { makerV8WalrusExecutionFixture } from './walrus-execution-fixture.js';
 
@@ -102,7 +102,7 @@ export function nativeSoulBootstrapFixture(stage, { commitments: suppliedCommitm
   const commitments = suppliedCommitments ? structuredClone(suppliedCommitments) : Object.fromEntries(roles.map((r, i) => [r, Object.fromEntries(
     ['source', 'package', 'abi'].map((k, j) => [k, Buffer.from(hash(i * 3 + j + 1)).toString('hex')]))]));
   const sealPolicy = buildMainnetV8FinalSealPolicy({ template: buildMainnetV8SealPolicyTemplate({
-    keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }], threshold: '1' }),
+    keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD }),
     sealPackageCommitment: commitments.seal.package, sealAbiCommitment: commitments.seal.abi });
   if (stage === 'SETUP_RELEASE') Object.assign(input, { commitments, sealPolicy,
     walrusSystem: shared(MAINNET_WALRUS_PACKAGE_CONFIG.systemObjectId),

@@ -68,7 +68,7 @@ const mutations = {
   'wrong protocol': p => p.protocolProfile.protocolVersion = '134',
   'wrong approved compiler': p => p.toolchain.suiBinarySha256 = '0'.repeat(64),
   'wrong payment type': p => p.paymentCoinType = '0x2::sui::SUI',
-  'wrong Seal threshold': p => p.sealPolicy.threshold = '2',
+  'wrong Seal threshold': p => p.sealPolicy.threshold = '1',
   'extra plan field': p => p.enabled = true,
 };
 for (const [name, change] of Object.entries(mutations)) {

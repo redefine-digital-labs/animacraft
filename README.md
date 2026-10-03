@@ -84,8 +84,14 @@ The protected-content browser path has no owned rendering/key proxy and needs
 no private server environment key. Runtime configuration remains public in
 `public-v8/config.js`; every protected operation still attests chain policy.
 The currently deployed credential-requiring Seal committee is not usable by
-this no-secret path. A new independently verified policy release and real
-wallet-authorized decryption acceptance remain required; candidate PoP/CORS
+this no-secret path. The fresh release entry now requires the pinned Overclock
+and Studio Mirai independent servers (weight 1 each, threshold 2), before prepare,
+publication signatures and setup. It checks raw on-chain identity, SDK PoP,
+both sites' service/POST CORS and browser-visible service version headers.
+Run `node scripts/probe-browser-seal-topology.mjs` for the read-only endpoint
+checks. Either provider being unavailable blocks this two-of-two topology;
+there is no automatic provider/threshold fallback. A full fresh policy release
+and real wallet-authorized decryption acceptance remain required; prerequisite
 checks alone do not satisfy that acceptance.
 
 Every `npm run build` checks browser source, imported application modules and

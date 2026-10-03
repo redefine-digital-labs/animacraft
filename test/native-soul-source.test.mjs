@@ -15,7 +15,7 @@ import { prepareMainnetV8Source, inspectMainnetV8FreshSourceArchive, inspectMain
 import { MAINNET_V8_SUI_VERSION, MAINNET_V8_SUI_VERSION_OUTPUT, MAINNET_V8_SUI_SOURCE_COMMIT,
   MAINNET_V8_SUI_BINARY_SHA256, MAINNET_V8_FRAMEWORK_REVISION, MAINNET_V8_RELEASE_SIGNER,
   assertMainnetV8SourceArtifact, assertMainnetV8SourcePlan, buildMainnetV8ReleasePlan,
-  buildMainnetV8SealPolicyTemplate, MAINNET_V8_DEFAULT_COMMITTEE, MAINNET_V8_ROLE_ORDER, renderPublishedToml } from '../scripts/mainnet-v8-release-lib.mjs';
+  buildMainnetV8SealPolicyTemplate, MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_SEAL_THRESHOLD, MAINNET_V8_ROLE_ORDER, renderPublishedToml } from '../scripts/mainnet-v8-release-lib.mjs';
 
 const exec = promisify(execFile);
 const TOOLCHAIN = { suiVersion: MAINNET_V8_SUI_VERSION, suiVersionOutput: MAINNET_V8_SUI_VERSION_OUTPUT,
@@ -57,7 +57,9 @@ async function fixture(t) {
 }
 
 // Build-entry tests require the same pre-fetched pinned external Git sources as
-// an approved build. No network fetch and no production validator bypass.
+// an approved build. Prepare an explicit dedicated MOVE_HOME with
+// scripts/prepare-native-soul-external-sources.mjs before the test process.
+// The test itself performs no network fetch or production validator bypass.
 async function buildFixture(t) {
   const f = await fixture(t), pins = NATIVE_SOUL_EXTERNAL_PUBLICATIONS;
   const circle = pins.filter(p => ['usdc', 'stablecoin', 'sui_extensions'].includes(p.packageName));
@@ -125,18 +127,20 @@ test('dirty changes and untracked Move source change identity without claiming a
 test('public release plan retains all eight source packages and rejects seven', async t => {
   const f = await fixture(t), source = await prepareMainnetV8Source(f.args);
   const plan = buildMainnetV8ReleasePlan({ ...source, sender: MAINNET_V8_RELEASE_SIGNER,
-    sealPolicy: buildMainnetV8SealPolicyTemplate({ keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }], threshold: '1' }) });
+    sealPolicy: buildMainnetV8SealPolicyTemplate({ keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD }) });
   assert.equal(plan.packages.length, 8);
   assert.equal(plan.steps.length, 14);
   assert.throws(() => assertMainnetV8SourcePlan({ ...source, packages: source.packages.slice(0, 7) }));
 });
 test('original prepare rejects a missing compiler before RPC or READY', async t => {
   const f = await fixture(t); let called = false;
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('No network expected'); });
   const client = new Proxy({}, { get() { called = true; throw new Error('No network expected'); } });
   await assert.rejects(prepareMainnetV8Release({ repositoryRoot: f.roots.animacraft, soulidityRoot: f.roots.soulidity,
     stateDir: join(f.temp, 'release-state'), suiBinary: join(f.temp, 'missing-sui'), sender: MAINNET_V8_RELEASE_SIGNER,
-    sealPolicy: buildMainnetV8SealPolicyTemplate({ keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }], threshold: '1' }), client }),
+    sealPolicy: buildMainnetV8SealPolicyTemplate({ keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD }), client }),
   { code: 'ENOENT' });
+  assert.equal(fetch.mock.callCount(), 0);
   assert.equal(called, false); assert.equal((await readdir(f.temp)).some(name => name.startsWith('release-state')), false);
 });
 for (const problem of ['old-schema', 'seven-packages', 'source-hash', 'original-hash', 'source-path', 'source-address', 'repository']) {

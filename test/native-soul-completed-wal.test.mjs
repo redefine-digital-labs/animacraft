@@ -64,6 +64,7 @@ test('same completed history exports exact paired configs without enabling produ
   const receive = JSON.parse(f.config.soulidityEnvironment.NEXT_PUBLIC_ANIMACRAFT_V8_RECEIVE_TARGET_JSON);
   assert.equal(receive.equipmentWritesEnabled, false); assert.equal(receive.marketWritesEnabled, false);
   assert.equal(f.config.protectedDecryptionReady, false);
+  assert.equal(f.config.protectedDecryptionBlocker.code, 'AUTHORIZED_BROWSER_DECRYPT_NOT_VERIFIED');
   assert.equal(f.config.marketActivation.primaryEnabled, true);
   assert.equal(f.config.marketActivation.secondaryEnabled, true);
   assert.equal(f.config.packageIds.soulidity, f.config.soulidityEnvironment.NEXT_PUBLIC_SOULIDITY_CALLABLE_PACKAGE_ID);

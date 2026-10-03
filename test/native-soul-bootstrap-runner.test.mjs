@@ -6,8 +6,7 @@ import { bootstrapHistoryFixture } from './fixtures/native-soul-bootstrap-histor
 import { bootstrapStages } from './fixtures/native-soul-bootstrap-fixture.mjs';
 import { bootstrapFinalityEvents } from './fixtures/native-soul-bootstrap-events-fixture.mjs';
 import { certifyMainnetV8NativeBootstrap, nativeSoulBootstrapPriorObjectsFromWal, certifyOrdinalReadback } from '../scripts/mainnet-v8-release.mjs';
-import { MAINNET_V8_DEFAULT_COMMITTEE, MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
-  MAINNET_V8_DEFAULT_COMMITTEE_OWNER, MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256 } from '../scripts/mainnet-v8-release-lib.mjs';
+import { MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_KEY_SERVER_TYPE } from '../scripts/mainnet-v8-release-lib.mjs';
 import { validateNativeSoulBootstrapHistory } from '../scripts/native-soul-bootstrap-history.mjs';
 
 function owner(value) {
@@ -72,11 +71,10 @@ for (const [i, stage] of bootstrapStages.entries()) {
       schema: 'native-soul-bootstrap-history-v1', stage: bootstrapStages[previous], objects: f.priorObjects,
     }));
     const stageData = structuredClone(f.input);
-    if (stage === 'SETUP_RELEASE') stageData.keyServerCertificates = [{
-      objectId: MAINNET_V8_DEFAULT_COMMITTEE, type: MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
-      owner: MAINNET_V8_DEFAULT_COMMITTEE_OWNER, contentSha256: MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
+    if (stage === 'SETUP_RELEASE') stageData.keyServerCertificates = MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId, owner, contentSha256 }) => ({
+      objectId, owner, contentSha256, type: MAINNET_V8_BROWSER_KEY_SERVER_TYPE,
       version: '1', digest: args.finalityEvidence.digest, previousTransaction: args.finalityEvidence.digest,
-    }];
+    }));
     const ready = { readyArtifact: { kind: stage, stageData } };
     const result = await certifyOrdinalReadback({ ordinal: i + 8, wal, ready,
       transport: args.transport, finalityEvidence: args.finalityEvidence });

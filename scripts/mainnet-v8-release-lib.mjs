@@ -46,10 +46,24 @@ export const MAINNET_V8_SUI_SOURCE_COMMIT = '671ba71e69c711ded76a11ef90297c4f2d5
 export const MAINNET_V8_SUI_BINARY_SHA256 = '1d7baa7c7314113671415acfa20279b1eedb6ae6d04f286988a00da285e769c3';
 export const MAINNET_V8_FRAMEWORK_REVISION = '722ac4fcf4841346c91775f596c4ce23fb7fbd0f';
 export const MAINNET_V8_RELEASE_SIGNER = '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f';
-export const MAINNET_V8_DEFAULT_COMMITTEE = '0x686098f1439237fff9f36b99c7329683c22979d2005c2465cb891acb012a7595';
-export const MAINNET_V8_DEFAULT_COMMITTEE_TYPE = '0x9636e0c761e7476b8579cb13d543838e3732ca482dc0a64f086f57b60c024e23::key_server::KeyServer';
-export const MAINNET_V8_DEFAULT_COMMITTEE_OWNER = '0x9606ed8c994ac43bc9bf03378e5cbec269050311a47699121245e829f688bfae';
-export const MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256 = '8573bed5b646dab4f03b12c212eab74ad02cd1bd4d4996191ac9c815fccc8203';
+export const MAINNET_V8_BROWSER_KEY_SERVER_TYPE = '0x9636e0c761e7476b8579cb13d543838e3732ca482dc0a64f086f57b60c024e23::key_server::KeyServer';
+// Public Mainnet identity pins, independently read from raw BCS. This is the
+// sole new-release topology; it grants no application access permissions.
+export const MAINNET_V8_BROWSER_KEY_SERVERS = Object.freeze([
+  Object.freeze({
+    objectId: '0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6',
+    owner: '0x02189430bd03a05813f0b5998dd6e400d21e831d31f609bb0142b869e0fa020b',
+    contentSha256: '0e67a28214d9fb8efda434666a9c1d32f92c885f5df8b75e32c4377e45c8354a',
+    url: 'https://seal-mainnet-open.overclock.run',
+  }),
+  Object.freeze({
+    objectId: '0xe0eb52eba9261b96e895bbb4deca10dcd64fbc626a1133017adcd5131353fd10',
+    owner: '0x13cdcfab1a3db17a9723c165fefa68d44066f8f846b06c8045d6c86353b7c2b0',
+    contentSha256: 'ea78f93d1f18b83d4524e21fb25e4f0ea9e2cfbf2b9777f9af3119fda4a46aa8',
+    url: 'https://open.key-server.mainnet.seal.mirai.cloud',
+  }),
+]);
+export const MAINNET_V8_BROWSER_SEAL_THRESHOLD = '2';
 export const MAINNET_V8_PROTOCOL_PROFILE = Object.freeze({
   protocolVersion: '137',
   objectRuntimeMaxNumCachedObjects: '1000',
@@ -1023,10 +1037,10 @@ function assertKeyServerSetArtifact(artifact) {
   });
   const threshold = assertMainnetV8Decimal(artifact.threshold, 'Seal threshold', { positive: true, maximum: 65_535n });
   if (threshold > total) fail('MAINNET_V8_SEAL_POLICY_INVALID', 'Seal threshold exceeds total key-server weight.');
-  const approved = [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }];
+  const approved = MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' }));
   if (canonicalMainnetV8Json(artifact.keyServers) !== canonicalMainnetV8Json(approved)
-    || artifact.threshold !== '1') {
-    fail('MAINNET_V8_SEAL_POLICY_INVALID', 'Seal policy is outside the only reviewed Mainnet committee snapshot.');
+    || artifact.threshold !== MAINNET_V8_BROWSER_SEAL_THRESHOLD) {
+    fail('MAINNET_V8_SEAL_POLICY_INVALID', 'Seal policy differs from the reviewed two-of-two no-secret Mainnet topology.');
   }
   return artifact;
 }
@@ -1804,11 +1818,12 @@ function assertSetupKeyServerCertificates(stageData) {
   }
   stageData.keyServerCertificates.forEach((certificate, index) => {
     exactFields(certificate, KEY_SERVER_CERTIFICATE_FIELDS, `${label}.keyServerCertificates[${index}]`);
+    const approved = MAINNET_V8_BROWSER_KEY_SERVERS[index];
     if (certificate.objectId !== stageData.sealPolicy.keyServers[index].objectId
-      || certificate.objectId !== MAINNET_V8_DEFAULT_COMMITTEE
-      || certificate.type !== MAINNET_V8_DEFAULT_COMMITTEE_TYPE
-      || certificate.owner !== MAINNET_V8_DEFAULT_COMMITTEE_OWNER
-      || certificate.contentSha256 !== MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256) {
+      || !approved || certificate.objectId !== approved.objectId
+      || certificate.type !== MAINNET_V8_BROWSER_KEY_SERVER_TYPE
+      || certificate.owner !== approved.owner
+      || certificate.contentSha256 !== approved.contentSha256) {
       fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} key-server certificate identity drifted.`);
     }
     assertMainnetV8Decimal(certificate.version, `${label}.keyServerCertificates[${index}].version`, {

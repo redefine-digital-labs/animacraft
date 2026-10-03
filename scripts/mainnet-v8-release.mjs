@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import packageMetadata from '../package.json' with { type: 'json' };
 
 import { bcs } from '@mysten/sui/bcs';
 import { GrpcTypes, SuiGrpcClient } from '@mysten/sui/grpc';
@@ -36,6 +37,7 @@ import { buildNativeSoulBootstrapTransaction, NATIVE_SOUL_BOOTSTRAP_STAGES } fro
 import { certifyNativeSoulBootstrapHistory, nativeSoulBootstrapPriorKinds } from './native-soul-bootstrap-loader.mjs';
 import { deriveNativeSoulBootstrapStageData, deriveNativeSoulFinalBootstrapObjects } from './native-soul-bootstrap-context.mjs';
 import { assertMakerV8Runtime } from '../maker-v8-runtime.js';
+import { createMakerV8BrowserSealClient } from '../maker-v8-seal-browser.js';
 import { deriveMakerV8ProtocolConfigCommitment } from '../maker-v8-protocol-commitment.js';
 import { decodeNativeSoulBootstrapHistoryObject } from './native-soul-bootstrap-history.mjs';
 import { buildNativeSoulMarketActivationTransaction, nativeSoulMarketActivationOutputReferences,
@@ -57,10 +59,9 @@ import {
   nativeSoulBootstrapInputFromStageData,
   nativeSoulMarketActivationInputFromStageData,
   deriveMainnetV8MarketActivationWalContext,
-  MAINNET_V8_DEFAULT_COMMITTEE,
-  MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
-  MAINNET_V8_DEFAULT_COMMITTEE_OWNER,
-  MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
+  MAINNET_V8_BROWSER_KEY_SERVERS,
+  MAINNET_V8_BROWSER_KEY_SERVER_TYPE,
+  MAINNET_V8_BROWSER_SEAL_THRESHOLD,
   MAINNET_V8_RELEASE_SIGNER,
   MAINNET_V8_SUI_BINARY_SHA256,
   appendReleaseWal,
@@ -111,14 +112,11 @@ export const MAINNET_V8_RELEASE_TOOLCHAIN = Object.freeze({
 export const MAINNET_V8_USDC_TYPE =
   '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 export {
-  MAINNET_V8_DEFAULT_COMMITTEE,
-  MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
-  MAINNET_V8_DEFAULT_COMMITTEE_OWNER,
-  MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
+  MAINNET_V8_BROWSER_KEY_SERVERS,
+  MAINNET_V8_BROWSER_KEY_SERVER_TYPE,
+  MAINNET_V8_BROWSER_SEAL_THRESHOLD,
   MAINNET_V8_RELEASE_SIGNER,
 };
-export const MAINNET_V8_DEFAULT_AGGREGATOR =
-  'https://seal-aggregator-mainnet.mystenlabs.com';
 export const MAINNET_V8_MAX_TRANSACTION_BYTES = 128 * 1024;
 export const MAINNET_V8_PRELIMINARY_GAS_BUDGET = 2_000_000_000n;
 export const MAINNET_V8_MINIMUM_GAS_CUSHION = 100_000_000n;
@@ -2198,11 +2196,8 @@ async function loadSealPolicy(options) {
     );
   }
   return await buildSealPolicy({
-    keyServers: [{
-      objectId: MAINNET_V8_DEFAULT_COMMITTEE,
-      weight: '1',
-    }],
-    threshold: '1',
+    keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })),
+    threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD,
   });
 }
 
@@ -2255,10 +2250,13 @@ export async function prepareMainnetV8Release({
   // The actual binary is checked below before any build/RPC/READY is allowed.
   const toolchain = MAINNET_V8_RELEASE_TOOLCHAIN;
   const sealPolicy = assertMainnetV8SealPolicyTemplate(sealPolicyInput);
+  await inspectMainnetV8Toolchain({ suiBinary });
+  // Fail before any build/READY/publication if the real browser cannot use the
+  // exact configured topology without credentials. No application decrypt claim.
+  await certifyMainnetV8SealKeyServers({ transport, sealPolicy });
   const checkoutRoot = path.join(stagingState, 'source');
   const sourcePlan = await prepareMainnetV8Source({ repositoryRoot, soulidityRoot,
     storePath: path.join(stagingState, 'source-cas'), checkoutRoot, toolchain });
-  await inspectMainnetV8Toolchain({ suiBinary });
   const profile = await assertMainnetV8ProtocolProfile(client);
   // Resolve and execute the live external version before publishing anything.
   // Static dependency metadata alone does not prove compatibility with System.
@@ -3083,29 +3081,90 @@ export async function prepareMainnetV8StageReady({ paths, wal, stage, client, tr
   });
 }
 
-async function certifyMainnetV8SealKeyServers({ transport, sealPolicy }) {
+export async function preflightMainnetV8BrowserSeal({ sealPolicy,
+  createClient = createMakerV8BrowserSealClient, fetcher = globalThis.fetch,
+}) {
+  // Final policy includes package binding; validate the shared key-set through
+  // the same strict template builder rather than silently accepting other IDs.
+  buildSealPolicy({ keyServers: sealPolicy.keyServers, threshold: sealPolicy.threshold });
+  const client = await createClient({ serverConfigs: sealPolicy.keyServers.map(row => ({
+    objectId: row.objectId, weight: Number(row.weight),
+  })) });
+  const servers = await client.getKeyServers();
+  if (servers.size !== MAINNET_V8_BROWSER_KEY_SERVERS.length) {
+    fail('MAINNET_V8_BROWSER_SEAL_UNAVAILABLE', 'Seal topology cardinality drifted.');
+  }
+  const requestedHeaders = ['content-type', 'request-id', 'client-sdk-type', 'client-sdk-version'];
+  const results = [];
+  for (const pin of MAINNET_V8_BROWSER_KEY_SERVERS) {
+    const server = servers.get(pin.objectId);
+    if (!server || server.objectId !== pin.objectId || server.serverType !== 'Independent'
+      || server.url !== pin.url) {
+      fail('MAINNET_V8_BROWSER_SEAL_UNAVAILABLE', 'Verified Seal endpoint differs from the public Mainnet pin.');
+    }
+    for (const origin of ['https://animacraft.soulidity.ai', 'https://www.soulidity.ai']) {
+      const serviceUrl = `${pin.url}/v1/service?service_id=${pin.objectId}`;
+      for (const [url, method] of [[serviceUrl, 'GET'], [`${pin.url}/v1/fetch_key`, 'POST']]) {
+        const response = await fetcher(url, {
+          method: 'OPTIONS', credentials: 'omit', redirect: 'error', cache: 'no-store',
+          signal: AbortSignal.timeout(10_000),
+          headers: { Origin: origin, 'Access-Control-Request-Method': method,
+            'Access-Control-Request-Headers': requestedHeaders.join(',') },
+        });
+        const allowOrigin = response.headers.get('access-control-allow-origin');
+        const methods = (response.headers.get('access-control-allow-methods') ?? '').split(',').map(x => x.trim());
+        const headers = (response.headers.get('access-control-allow-headers') ?? '').toLowerCase().split(',').map(x => x.trim());
+        if (!response.ok || !['*', origin].includes(allowOrigin)
+          || !(methods.includes('*') || methods.includes(method))
+          || !(headers.includes('*') || requestedHeaders.every(x => headers.includes(x)))) {
+          fail('MAINNET_V8_BROWSER_SEAL_UNAVAILABLE', 'Seal endpoint does not permit no-secret requests from both production sites.');
+        }
+        results.push(Object.freeze({ objectId: pin.objectId, origin, method, status: response.status }));
+      }
+      // Node's SDK verifies PoP, but unlike a browser it ignores response CORS.
+      // Check the actual service response and visibility of the SDK's version
+      // header as well. Key-share POST responses require S13 authorized tests.
+      const service = await fetcher(serviceUrl, { method: 'GET',
+        headers: { Origin: origin, 'Content-Type': 'application/json',
+          'Request-Id': randomUUID(), 'Client-Sdk-Type': 'typescript',
+          'Client-Sdk-Version': packageMetadata.dependencies['@mysten/seal'] },
+        credentials: 'omit', redirect: 'error',
+        cache: 'no-store', signal: AbortSignal.timeout(10_000) });
+      const exposed = (service.headers.get('access-control-expose-headers') ?? '')
+        .toLowerCase().split(',').map(x => x.trim());
+      if (!service.ok || !['*', origin].includes(service.headers.get('access-control-allow-origin'))
+        || !service.headers.get('x-keyserver-version')
+        || !(exposed.includes('*') || exposed.includes('x-keyserver-version'))) {
+        fail('MAINNET_V8_BROWSER_SEAL_UNAVAILABLE', 'Seal service response is not browser-readable with its SDK version header.');
+      }
+      await service.body?.cancel();
+    }
+  }
+  return Object.freeze({ kind: 'BROWSER_SEAL_TOPOLOGY_VERIFIED',
+    authorizedDecryptionTested: false, cors: Object.freeze(results) });
+}
+
+export async function certifyMainnetV8SealKeyServers({ transport, sealPolicy,
+  createClient, fetcher,
+}) {
+  await preflightMainnetV8BrowserSeal({ sealPolicy, createClient, fetcher });
   const certificates = [];
   for (const server of sealPolicy.keyServers) {
-    if (server.objectId !== MAINNET_V8_DEFAULT_COMMITTEE) {
-      fail('MAINNET_V8_SEAL_KEY_SERVER_NOT_APPROVED', 'This Mainnet release only approves the reviewed Mysten decentralized committee.', {
-        expected: MAINNET_V8_DEFAULT_COMMITTEE,
-        observed: server.objectId,
-      });
-    }
+    const pin = MAINNET_V8_BROWSER_KEY_SERVERS.find(row => row.objectId === server.objectId);
     const response = await transport.getObject({
       id: server.objectId,
       options: { showContent: true, showBcs: true, showOwner: true },
     });
     const data = response?.data;
     if (!data || data.objectId !== server.objectId
-      || data.type !== MAINNET_V8_DEFAULT_COMMITTEE_TYPE
+      || data.type !== MAINNET_V8_BROWSER_KEY_SERVER_TYPE
       || data.content?.dataType !== 'moveObject'
-      || data.content?.type !== MAINNET_V8_DEFAULT_COMMITTEE_TYPE
+      || data.content?.type !== MAINNET_V8_BROWSER_KEY_SERVER_TYPE
       || data.bcs?.dataType !== 'moveObject'
-      || data.bcs?.type !== MAINNET_V8_DEFAULT_COMMITTEE_TYPE
+      || data.bcs?.type !== MAINNET_V8_BROWSER_KEY_SERVER_TYPE
       || String(data.bcs?.version) !== String(data.version)
       || !plain(data.owner)
-      || data.owner.ObjectOwner !== MAINNET_V8_DEFAULT_COMMITTEE_OWNER) {
+      || Object.keys(data.owner).length !== 1 || data.owner.AddressOwner !== pin.owner) {
       fail('MAINNET_V8_SEAL_KEY_SERVER_INVALID', 'Seal key server is absent or has an unapproved Mainnet shape.', {
         objectId: server.objectId,
       });
@@ -3115,15 +3174,15 @@ async function certifyMainnetV8SealKeyServers({ transport, sealPolicy }) {
     const roundtrip = SEAL_KEY_SERVER_OBJECT_BCS.serialize(parsed).toBytes();
     if (!sameBytes(objectBytes, roundtrip)
       || address(parsed.id, 'Seal key server BCS id') !== server.objectId
-      || decimal(String(parsed.first_version), 'Seal key server first_version') !== '2'
-      || decimal(String(parsed.last_version), 'Seal key server last_version') !== '2'
+      || decimal(String(parsed.first_version), 'Seal key server first_version') !== '1'
+      || decimal(String(parsed.last_version), 'Seal key server last_version') !== '1'
       || canonicalJson(data.content.fields) !== canonicalJson({
         id: server.objectId,
-        first_version: '2',
-        last_version: '2',
+        first_version: '1',
+        last_version: '1',
       })
-      || sha256Hex(objectBytes) !== MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256) {
-      fail('MAINNET_V8_SEAL_KEY_SERVER_INVALID', 'Seal key server raw BCS differs from the reviewed Mainnet committee snapshot.', {
+      || sha256Hex(objectBytes) !== pin.contentSha256) {
+      fail('MAINNET_V8_SEAL_KEY_SERVER_INVALID', 'Seal key server raw BCS differs from the reviewed Mainnet independent-server snapshot.', {
         objectId: server.objectId,
       });
     }
@@ -3132,7 +3191,7 @@ async function certifyMainnetV8SealKeyServers({ transport, sealPolicy }) {
       type: data.type,
       version: decimal(String(data.version), 'Seal key server version'),
       digest: digest(data.digest, 'Seal key server digest'),
-      owner: address(data.owner.ObjectOwner, 'Seal key server owner'),
+      owner: address(data.owner.AddressOwner, 'Seal key server owner'),
       previousTransaction: digest(data.previousTransaction, 'Seal key server previousTransaction'),
       contentSha256: sha256Hex(objectBytes),
     }));
@@ -3171,6 +3230,9 @@ export async function assertMainnetV8StageReadyAuthority({ wal, event, transport
   const step = MAINNET_V8_RELEASE_STEPS.find(entry => entry.ordinal === event.ordinal);
   if (!step) fail('MAINNET_V8_STAGE_AUTHORITY_DRIFT', 'Unknown READY authority ordinal.');
   if (step.kind === 'PUBLISH' || step.kind === 'VERIFY_AND_EXPORT') {
+    if (step.kind === 'PUBLISH') {
+      await certifyMainnetV8SealKeyServers({ transport, sealPolicy: wal.plan.sealPolicy });
+    }
     return Object.freeze({ kind: 'NON_BOOTSTRAP', ordinal: event.ordinal });
   }
   const readyArtifact = event.evidence.readyArtifact;
@@ -3386,8 +3448,8 @@ export function buildMainnetV8PairedConfig({ wal, packageVerification }) {
       readbackSha256: activation.readbackSha256, primaryEnabled: true, secondaryEnabled: true }),
     packageIds: packageIdsFromFinalManifest(wal), finalManifest: structuredClone(wal.finalManifest),
     packageVerification: structuredClone(packageVerification), protectedDecryptionReady: false,
-    protectedDecryptionBlocker: Object.freeze({ code: 'ENOKI_SEAL_API_KEY_REQUIRED',
-      aggregator: MAINNET_V8_DEFAULT_AGGREGATOR, secretStoredInArtifact: false }),
+    protectedDecryptionBlocker: Object.freeze({ code: 'AUTHORIZED_BROWSER_DECRYPT_NOT_VERIFIED',
+      secretStoredInArtifact: false }),
   });
 }
 

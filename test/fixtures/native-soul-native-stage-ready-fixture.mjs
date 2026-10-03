@@ -4,8 +4,7 @@ import { deriveDynamicFieldID, toBase64, toBase58 } from '@mysten/sui/utils';
 import {
   MAINNET_V8_CHAIN_IDENTIFIER, MAINNET_V8_RELEASE_SIGNER, MAINNET_V8_RELEASE_STEPS,
   MAINNET_V8_PROTOCOL_PROFILE,
-  MAINNET_V8_DEFAULT_COMMITTEE, MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
-  MAINNET_V8_DEFAULT_COMMITTEE_OWNER, MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
+  MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_KEY_SERVER_TYPE,
   nativeSoulBootstrapInputFromStageData as extract, mainnetV8TypedDigest,
   nativeSoulMarketActivationInputFromStageData,
   sha256MainnetV8Bytes as hash, sha256MainnetV8Json as jsonHash,
@@ -26,11 +25,10 @@ const kindBytes = (stage, input) => TransactionDataBuilder.restore(build(stage, 
 // synthetic. These fixtures neither sign nor prove a complete connected WAL.
 export function nativeSoulStageDataFixture(stage) {
   const input = structuredClone(nativeSoulBootstrapFixture(stage).input);
-  if (stage === 'SETUP_RELEASE') input.keyServerCertificates = [{
-    objectId: MAINNET_V8_DEFAULT_COMMITTEE, type: MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
-    owner: MAINNET_V8_DEFAULT_COMMITTEE_OWNER, contentSha256: MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
+  if (stage === 'SETUP_RELEASE') input.keyServerCertificates = MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId, owner, contentSha256 }) => ({
+    objectId, owner, contentSha256, type: MAINNET_V8_BROWSER_KEY_SERVER_TYPE,
     version: '1', digest, previousTransaction: digest,
-  }];
+  }));
   return input;
 }
 

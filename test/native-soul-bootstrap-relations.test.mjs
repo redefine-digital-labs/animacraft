@@ -83,7 +83,7 @@ for (const key of ['source', 'package', 'abi']) reject('SETUP_RELEASE', 'catalog
 });
 for (const [key, value] of Object.entries({ protocol_config_id: id(999), protocol_config_revision: '1',
   seal_original_package_id: id(999), seal_callable_package_id: id(999), seal_authority_id: id(999), role: 0,
-  finalized: false, threshold: 2, cipher_suite: 'other', key_derivation: 'other', ciphertext_format: 'other',
+  finalized: false, threshold: 3, cipher_suite: 'other', key_derivation: 'other', ciphertext_format: 'other',
   max_plaintext_bytes: '3145729', seal_binding_commitment: hash(99), call_cap_set_commitment: hash(99),
   key_server_set_commitment: hash(0), encryption_policy_commitment: hash(0), commitment: hash(0) }))
   reject('SETUP_RELEASE', 'sealConfig', key, s => { s[key] = value; });

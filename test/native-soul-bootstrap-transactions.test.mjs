@@ -5,7 +5,7 @@ import { bcs } from '@mysten/sui/bcs';
 import { toBase58, fromBase64 } from '@mysten/sui/utils';
 import { MAINNET_WALRUS_PACKAGE_CONFIG } from '@mysten/walrus';
 import { buildNativeSoulBootstrapTransaction as build } from '../scripts/native-soul-bootstrap-transactions.mjs';
-import { buildMainnetV8SealPolicyTemplate, buildMainnetV8FinalSealPolicy, MAINNET_V8_PAYMENT_COIN_TYPE, MAINNET_V8_DEFAULT_COMMITTEE } from '../scripts/mainnet-v8-release-lib.mjs';
+import { buildMainnetV8SealPolicyTemplate, buildMainnetV8FinalSealPolicy, MAINNET_V8_PAYMENT_COIN_TYPE, MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_SEAL_THRESHOLD } from '../scripts/mainnet-v8-release-lib.mjs';
 import { MAKER_V8_SEAL_ENCRYPTION_PROFILE } from '../maker-v8-seal-profile.js';
 import { makerV8WalrusExecutionFixture } from './fixtures/walrus-execution-fixture.js';
 
@@ -22,7 +22,7 @@ function input(stage) {
     base.commitments = Object.fromEntries(roles.slice(0, 7).map((role, i) => [role,
       { source: hx(i * 3 + 1), package: hx(i * 3 + 2), abi: hx(i * 3 + 3) }]));
     base.sealPolicy = buildMainnetV8FinalSealPolicy({
-      template: buildMainnetV8SealPolicyTemplate({ keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }], threshold: '1' }),
+      template: buildMainnetV8SealPolicyTemplate({ keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD }),
       sealPackageCommitment: base.commitments.seal.package, sealAbiCommitment: base.commitments.seal.abi });
     base.walrusSystem = { objectId: MAINNET_WALRUS_PACKAGE_CONFIG.systemObjectId, initialSharedVersion: '1' };
     base.walrusExecution = makerV8WalrusExecutionFixture();
@@ -119,9 +119,9 @@ test('SETUP follows actual seven-role constructors with 14 exact marker types an
 test('Seal constructor serializes eleven explicit inputs, real strings, bounds and weighted servers', async () => {
   const g = await decoded('SETUP_RELEASE'); const seal = calls(g)[10];
   assert.equal(seal.arguments.length, 11);
-  assert.deepEqual(pure(g, seal.arguments[4], bcs.vector(bcs.Address)), [MAINNET_V8_DEFAULT_COMMITTEE]);
-  assert.deepEqual(pure(g, seal.arguments[5], bcs.vector(bcs.U16)), [1]);
-  assert.equal(pure(g, seal.arguments[6], bcs.U16), 1);
+  assert.deepEqual(pure(g, seal.arguments[4], bcs.vector(bcs.Address)), MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => objectId));
+  assert.deepEqual(pure(g, seal.arguments[5], bcs.vector(bcs.U16)), [1, 1]);
+  assert.equal(pure(g, seal.arguments[6], bcs.U16), 2);
   assert.deepEqual(seal.arguments.slice(7, 10).map(a => pure(g, a, bcs.String)),
     Object.values(MAKER_V8_SEAL_ENCRYPTION_PROFILE));
   assert.equal(pure(g, seal.arguments[10], bcs.U64), '3145728');

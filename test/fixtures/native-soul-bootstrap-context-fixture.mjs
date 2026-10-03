@@ -33,7 +33,7 @@ export function contextFixture(stage) {
     chain: { network: 'mainnet', chainIdentifier: L.MAINNET_V8_CHAIN_IDENTIFIER, legacyChainIdentifier: L.MAINNET_V8_LEGACY_CHAIN_IDENTIFIER },
     sender: L.MAINNET_V8_RELEASE_SIGNER, protocolProfile: structuredClone(L.MAINNET_V8_PROTOCOL_PROFILE),
     paymentCoinType: L.MAINNET_V8_PAYMENT_COIN_TYPE, steps: structuredClone(L.MAINNET_V8_RELEASE_STEPS),
-    sealPolicy: L.buildMainnetV8SealPolicyTemplate({ keyServers: [{ objectId: L.MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }], threshold: '1' }),
+    sealPolicy: L.buildMainnetV8SealPolicyTemplate({ keyServers: L.MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: L.MAINNET_V8_BROWSER_SEAL_THRESHOLD }),
     packages: sourceRevision.packages.map(source => {
       const sourceArtifact = L.buildMainnetV8SourceArtifact({ ...source, toolchain,
         release: { snapshotSha256: sourceRevision.snapshotSha256, repository: source.repository,
@@ -87,10 +87,9 @@ export function contextFixture(stage) {
   }
   const args = { stage, manifest, plan, priorReadbacks };
   if (stage === 'SETUP_RELEASE') Object.assign(args, { walrusSystem: setup.input.walrusSystem,
-    walrusExecution: setup.input.walrusExecution, keyServerCertificates: [{
-    objectId: L.MAINNET_V8_DEFAULT_COMMITTEE, type: L.MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
-    owner: L.MAINNET_V8_DEFAULT_COMMITTEE_OWNER, contentSha256: L.MAINNET_V8_DEFAULT_COMMITTEE_CONTENT_SHA256,
+    walrusExecution: setup.input.walrusExecution, keyServerCertificates: L.MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId, owner, contentSha256 }) => ({
+    objectId, owner, contentSha256, type: L.MAINNET_V8_BROWSER_KEY_SERVER_TYPE,
     version: '1', digest: digest(80), previousTransaction: digest(81),
-  }] });
+  })) });
   return structuredClone(args);
 }

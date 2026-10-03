@@ -20,8 +20,7 @@ import {
   MAINNET_V8_PUBLISH_ORDER,
   MAINNET_V8_PUBLISH_PACKAGE_NAMES,
   MAINNET_V8_PAYMENT_COIN_TYPE,
-  MAINNET_V8_DEFAULT_COMMITTEE,
-  MAINNET_V8_DEFAULT_COMMITTEE_TYPE,
+  MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_SEAL_THRESHOLD,
   MAINNET_V8_RELEASE_SIGNER,
   MAINNET_V8_SUI_BINARY_SHA256,
   MAINNET_V8_RELEASE_STEPS,
@@ -337,11 +336,8 @@ function fixturePlan() {
     sourceRevision,
     toolchain,
     sealPolicy: buildMainnetV8SealPolicy({
-      keyServers: [{
-        objectId: MAINNET_V8_DEFAULT_COMMITTEE,
-        weight: 1,
-      }],
-      threshold: 1,
+      keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })),
+      threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD,
     }),
     packages: MAINNET_V8_PUBLISH_ORDER.map((role) => ({ role, sourceArtifact: sourceArtifactFor(role) })),
   });
@@ -864,16 +860,15 @@ test('ABI artifacts strip docs/source locations, decimalize integers, and canoni
   assert.throws(() => assertMainnetV8AbiArtifact(docTamper), expectCode('MAINNET_V8_ABI_INVALID'));
 });
 
-test('Seal policy commitments bind the reviewed Mainnet committee and final artifact policy', () => {
+test('Seal policy commitments bind the two reviewed no-secret Mainnet services and final artifact policy', () => {
   const template = buildMainnetV8SealPolicy({
-    keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: 1 }],
-    threshold: 1,
+    keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD,
   });
   assert.equal(template.keyServerSetArtifact.domain, MAINNET_V8_KEY_SERVER_SET_DOMAIN);
   assert.equal(template.keyServerSetArtifact.chainIdentifier, MAINNET_V8_CHAIN_IDENTIFIER);
-  assert.deepEqual(template.keyServers.map(({ objectId }) => objectId), [MAINNET_V8_DEFAULT_COMMITTEE]);
-  assert.deepEqual(template.keyServers.map(({ weight }) => weight), ['1']);
-  assert.equal(template.threshold, '1');
+  assert.deepEqual(template.keyServers.map(({ objectId }) => objectId), MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => objectId));
+  assert.deepEqual(template.keyServers.map(({ weight }) => weight), ['1', '1']);
+  assert.equal(template.threshold, '2');
   assert.equal(template.keyServerSetCommitment, sha256MainnetV8Json(template.keyServerSetArtifact));
   assert.equal(Object.hasOwn(template, 'encryptionPolicyArtifact'), false);
   assert.equal(canonicalMainnetV8Json(template).includes('apiKey'), false);
@@ -897,6 +892,16 @@ test('Seal policy commitments bind the reviewed Mainnet committee and final arti
   assert.doesNotThrow(() => assertMainnetV8FinalSealPolicy(finalPolicy, template));
 
   assert.throws(() => buildMainnetV8SealPolicy({ keyServers: [], threshold: 1 }), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
+  // Historical credential-only committee remains explicitly rejected, not a
+  // fallback or a compatible publication target for this fresh browser release.
+  assert.throws(() => buildMainnetV8SealPolicy({
+    keyServers: [{ objectId: '0x686098f1439237fff9f36b99c7329683c22979d2005c2465cb891acb012a7595', weight: '1' }],
+    threshold: '1',
+  }), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
+  assert.throws(() => buildMainnetV8SealPolicy({
+    keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })),
+    threshold: '1',
+  }), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
   assert.throws(() => buildMainnetV8SealPolicy({
     keyServers: [{ objectId: '0x1', weight: 1 }], threshold: 2,
   }), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
@@ -1366,7 +1371,7 @@ for (const [name, stage, kind, mutate] of [
   ['protocol commitment substitution', 'INITIALIZE_PROTOCOL', 'protocol', x => { x.commitment = Array(32).fill(77); }],
   ['fresh treasury schema drift', 'INITIALIZE_PROTOCOL', 'protocolTreasury', x => { x.version = '3'; }],
   ['Seal package commitment drift', 'SETUP_RELEASE', 'catalog', x => { x.binding.bindings[1].package_commitment = Array(32).fill(77); }],
-  ['Seal threshold drift', 'SETUP_RELEASE', 'sealConfig', x => { x.threshold = 2; }],
+  ['Seal threshold drift', 'SETUP_RELEASE', 'sealConfig', x => { x.threshold = 3; }],
   // The retired native_capability_mask field is not in CatalogV2. Complete
   // seven-role inventory and FINAL's two actual installation bits replace it.
   ['missing Catalog role', 'SETUP_RELEASE', 'catalog', x => { x.binding.bindings.pop(); }],

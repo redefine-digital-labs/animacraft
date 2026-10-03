@@ -8,7 +8,7 @@ import {
   MAINNET_V8_CHAIN_IDENTIFIER, MAINNET_V8_LEGACY_CHAIN_IDENTIFIER, MAINNET_V8_RELEASE_SIGNER,
   MAINNET_V8_PAYMENT_COIN_TYPE, MAINNET_V8_SUI_VERSION, MAINNET_V8_SUI_VERSION_OUTPUT,
   MAINNET_V8_SUI_SOURCE_COMMIT, MAINNET_V8_SUI_BINARY_SHA256, MAINNET_V8_FRAMEWORK_REVISION,
-  MAINNET_V8_DEFAULT_COMMITTEE, buildMainnetV8SourceArtifact, mainnetV8SourceCommitment,
+  MAINNET_V8_BROWSER_KEY_SERVERS, MAINNET_V8_BROWSER_SEAL_THRESHOLD, buildMainnetV8SourceArtifact, mainnetV8SourceCommitment,
   buildMainnetV8SealPolicyTemplate, assertMainnetV8SourcePlan,
   buildMainnetV8FinalManifestContents, assertMainnetV8FinalManifestContents,
   buildMainnetV8FinalManifest, assertMainnetV8FinalManifest,
@@ -43,7 +43,7 @@ function fixture() {
     chain: { network: 'mainnet', chainIdentifier: MAINNET_V8_CHAIN_IDENTIFIER, legacyChainIdentifier: MAINNET_V8_LEGACY_CHAIN_IDENTIFIER },
     sender: MAINNET_V8_RELEASE_SIGNER, protocolProfile: structuredClone(MAINNET_V8_PROTOCOL_PROFILE),
     paymentCoinType: MAINNET_V8_PAYMENT_COIN_TYPE, steps: structuredClone(MAINNET_V8_RELEASE_STEPS),
-    sealPolicy: buildMainnetV8SealPolicyTemplate({ keyServers: [{ objectId: MAINNET_V8_DEFAULT_COMMITTEE, weight: '1' }], threshold: '1' }),
+    sealPolicy: buildMainnetV8SealPolicyTemplate({ keyServers: MAINNET_V8_BROWSER_KEY_SERVERS.map(({ objectId }) => ({ objectId, weight: '1' })), threshold: MAINNET_V8_BROWSER_SEAL_THRESHOLD }),
     packages: sourceRevision.packages.map(source => {
       const sourceArtifact = buildMainnetV8SourceArtifact({ ...source, toolchain,
         release: { snapshotSha256: sourceRevision.snapshotSha256, repository: source.repository,
