@@ -1303,13 +1303,26 @@ test('Creator PNG replacement saves bytes and Undo/Redo restores complete snapsh
     await settle(); await settle();
     const after = h.saved(); assert.equal(h.writes.length, 1);
     assert.notEqual(after.assets[0].bytesBase64, before.assets[0].bytesBase64);
-    assert.deepEqual(after.draft.document.parts, before.draft.document.parts, 'coordinates and selection are preserved');
+    const expectedAfter = structuredClone(before);
+    const replacement = Buffer.from(await h.file.arrayBuffer());
+    expectedAfter.draft.revision += 1;
+    expectedAfter.draft.document.assets[0].byteLength = replacement.length;
+    const replacedStyle = expectedAfter.draft.document.parts[0].items[0].styles[0];
+    replacedStyle.transform = { x: 512, y: 512, scale: 1, rotation: 0 };
+    replacedStyle.payload.animacraftEditor = { positionConfirmed: false };
+    Object.assign(expectedAfter.assets[0], { expectedRevision: before.assets[0].revision,
+      revision: before.assets[0].revision + 1, byteLength: replacement.length,
+      bytesBase64: replacement.toString('base64') });
+    assert.deepEqual(after, expectedAfter, 'unlocked replacement centers the full 1×1 PNG and changes no unrelated snapshot fields');
     h.fire('undo'); await settle();
+    assert.deepEqual(h.saved(), { ...before, draft: { ...before.draft, revision: after.draft.revision + 1 } });
     assert.deepEqual(h.saved().assets, before.assets);
     h.fire('redo'); await settle();
+    assert.deepEqual(h.saved(), { ...expectedAfter, draft: { ...expectedAfter.draft, revision: after.draft.revision + 2 } });
     assert.deepEqual(h.saved().assets, after.assets);
     await app.openDraft('approved-maker');
     assert.equal(app.getState().revision, 4);
+    assert.deepEqual(h.saved(), { ...expectedAfter, draft: { ...expectedAfter.draft, revision: 4 } });
   } finally { app.destroy(); }
 });
 
