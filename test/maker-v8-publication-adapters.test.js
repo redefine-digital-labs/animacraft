@@ -963,7 +963,11 @@ test('gRPC boundary binds canonical sender/kind/digest/signature and never broad
     sender: signer,
     expectedKindBytes,
   });
-  assert.deepEqual(duplicateBuilt, built, 'equal compiler bytes from distinct Transaction instances share one proof');
+  assert.equal(Transaction.from(Buffer.from(duplicateBuilt.bytes, 'base64')).getData().expiration.ValidDuring.maxEpoch, '20');
+  const expiration = Transaction.from(Buffer.from(built.bytes, 'base64')).getData().expiration.ValidDuring;
+  assert.equal(expiration.minEpoch, '19');
+  assert.equal(expiration.maxEpoch, '20');
+  assert.equal(expiration.chain, MAKER_V8_SUI_MAINNET_GENESIS_DIGEST);
   assert.equal(calls.execute, 0);
   const dryRun = await boundary.dryRunExactTransaction({
     bytes: built.bytes,

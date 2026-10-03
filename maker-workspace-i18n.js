@@ -3805,6 +3805,14 @@ Object.entries({ en: 'View published Maker', zh: '查看已发布 Maker', ja: '�
   .forEach(([locale, text]) => { dictionaries[locale].publicationOpen = text; });
 
 const publicationStages = ['LIVING_CONTENT', 'ASSET', 'MANIFEST', 'SCAFFOLD', 'BASE_CHUNK', 'COMPANION_OBJECTS', 'ACTIVATION_CHUNK', 'COMPLETE', 'TRANSPORT_SIGNATURE_REQUIRED', 'TRANSPORT_RECOVERY_REQUIRED', 'FAILED', 'READY', 'SIGNED', 'OUTCOME_PENDING', 'OUTCOME_UNKNOWN', 'PUBLICATION'];
+const publicationWizardKeys = ['publicationFlowCopy', 'publicationResourceProgress', 'publicationQuoteScope', 'publicationRecoveryCopy', 'publicationInProgress'];
+Object.entries({
+  en: ['These four stages may require multiple transactions. Each resource is uploaded and certified before the Maker can finish publishing.', '{completed} / {total} resources certified', 'Quote for this resource and its storage period. Other resources and transactions are quoted separately.', 'Saved progress is preserved. Refresh the status and review the current step before requesting another signature.', 'In progress'],
+  zh: ['这四个流程阶段可能需要多笔交易。每份资源均须上传并认证后，Maker 才能完成发布。', '已认证资源：{completed} / {total}', '本报价仅适用于当前资源及其存储周期；其他资源和交易分别报价。', '已保存的进度会保留。请刷新状态并重新查看当前步骤，再请求新的签名。', '进行中'],
+  ja: ['この4段階には複数の取引が必要な場合があります。各リソースのアップロードと認証を完了してから Maker を公開します。', '認証済みリソース：{completed} / {total}', '現在のリソースと保存期間の見積もりです。他のリソースと取引は別途見積もります。', '保存済みの進捗は保持されます。再度署名する前に状態を更新し、現在の手順を確認してください。', '進行中'],
+  ko: ['이 네 단계에는 여러 거래가 필요할 수 있습니다. 각 리소스를 업로드하고 인증해야 Maker 게시가 완료됩니다.', '인증된 리소스: {completed} / {total}', '현재 리소스와 저장 기간의 견적입니다. 다른 리소스와 거래는 별도로 견적을 확인합니다.', '저장된 진행 상태는 유지됩니다. 새 서명을 요청하기 전에 상태를 새로고침하고 현재 단계를 검토하세요.', '진행 중'],
+  vi: ['Bốn giai đoạn này có thể cần nhiều giao dịch. Mỗi tài nguyên phải được tải lên và chứng nhận trước khi Maker hoàn tất xuất bản.', 'Tài nguyên đã chứng nhận: {completed} / {total}', 'Báo giá cho tài nguyên hiện tại và thời hạn lưu trữ. Tài nguyên và giao dịch khác được báo giá riêng.', 'Tiến độ đã lưu được giữ nguyên. Làm mới trạng thái và xem lại bước hiện tại trước khi yêu cầu chữ ký mới.', 'Đang thực hiện'],
+}).forEach(([locale, values]) => Object.assign(dictionaries[locale], Object.fromEntries(publicationWizardKeys.map((key, index) => [key, values[index]]))));
 const publicationStageLabels = {
   en: ['Living content', 'Assets', 'Manifest', 'Maker structure', 'Maker content', 'Associated objects', 'Activation', 'Complete', 'Storage signature required', 'Storage continuation required', 'Failed', 'Ready', 'Signed', 'Awaiting result', 'Result unknown', 'Publication'],
   zh: ['灵魂内容', '素材', '清单', 'Maker 结构', 'Maker 内容', '关联对象', '激活', '完成', '等待存储交易签名', '等待继续存储', '失败', '就绪', '已签名', '等待结果', '结果未知', '发布'],

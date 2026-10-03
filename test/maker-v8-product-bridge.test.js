@@ -1451,7 +1451,7 @@ function publicationReviewHarness() {
         epochs: 3, deletable: false,
         status: signed ? 'RECOVERY_REQUIRED' : 'SIGNATURE_REQUIRED', transactionDigest: signed ? 'exact-digest' : null };
       return { status: signed ? 'TRANSPORT_RECOVERY_REQUIRED' : 'TRANSPORT_SIGNATURE_REQUIRED',
-        stage: 'ASSET', upload, plan: null,
+        stage: 'ASSET', upload, plan: null, completedAssets: 0, assetId: input.assets[0]?.assetId,
         step: signed ? null : { id: upload.uploadId, revision: uploadRevision, stage: 'REGISTER',
           status: 'SIGNATURE_REQUIRED', digest: 'exact-digest', gasBudgetMist: '10000000', gasPriceMist: '1000',
           storageEpochs: 3, deletable: false, storageCostAtomic: null, relayTipMist: null } };
@@ -1488,6 +1488,8 @@ test('Creator publication reviews one step, signs only it, and explicit continua
   const prepared = await bridge.prepareMakerPublication({ draftId: 'publish-maker', expectedRevision: 1 });
   assert.equal(prepared.nextAction, 'SIGN');
   assert.equal(prepared.frozenMakerName, 'Frozen Original');
+  assert.deepEqual(prepared.progress, { completed: 1, total: prepared.assetCount + 2,
+    currentKind: 'ASSET', currentLabel: (await value.drafts.listAssets('publish-maker'))[0].assetId });
   assert.equal(value.calls.some(([kind]) => ['sign', 'continue'].includes(kind)), false);
   const signed = await bridge.signMakerPublication({ reviewId: prepared.reviewId });
   assert.equal(signed.nextAction, 'CONTINUE');
@@ -1501,6 +1503,7 @@ test('Creator publication reviews one step, signs only it, and explicit continua
   const done = await restored.continueMakerPublication({ reviewId: recovered.reviewId });
   assert.equal(done.status, 'COMPLETE');
   assert.equal(done.rootId, value.rootId);
+  assert.equal(done.progress.completed, done.progress.total);
   const before = value.prepares;
   assert.equal((await restored.getPublishedMaker({ draftId: 'publish-maker' })).rootId, value.rootId);
   assert.equal(value.prepares, before, 'catalog lookup must not create a new publication');

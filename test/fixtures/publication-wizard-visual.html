@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Controlled publication presentation</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>#controls{position:relative;z-index:100000;background:#fff4ce;color:#222;padding:10px}#controls button{margin:4px;padding:5px}</style>
+<aside id="controls">LOCAL CONTROLLED UI — no wallet, storage, upload or transaction.
+<button>Prepare</button><button>Register</button><button>Certify</button><button>Publish</button><button>Error</button><button>Close warning</button><button>Complete</button>
+</aside>
+<main id="mount" class="maker-v4-mount"></main>
+<script type="module">
+import { createCharacterMakerV8Starter } from '../../maker-v8-document.js';
+import { projectMakerV8WorkspaceView, renderApprovedMakerV8Workspace } from '../../maker-workspace-v8-view.js';
+if (!['localhost','127.0.0.1'].includes(location.hostname)) throw new Error('Loopback only');
+const doc = createCharacterMakerV8Starter({makerKey:'visual-only',name:'Publication visual fixture'});
+function show(name) {
+  const review = { reviewId:'controlled-review', frozenMakerName:'Publication visual fixture', scope:{draftId:'visual-only',draftRevision:1,signerAddress:'0x'+'11'.repeat(32),contentSha256:'22'.repeat(32)},
+    stage:'ASSET',status:'TRANSPORT_SIGNATURE_REQUIRED',nextAction:'SIGN',progress:{completed:1,total:5,currentLabel:'Illustration.png'},
+    step:{stage:name === 'Certify' ? 'CERTIFY':'REGISTER',gasBudgetMist:'50000000',gasPriceMist:'1000',storageEpochs:5,
+      quote:{verified:true,quotedAt:'2026-10-03T19:00:00.000Z',walrusStorageCostFrost:'123456',walrusWriteCostFrost:'7890',walrusTotalCostFrost:'131346',relayTipMist:'2579480'}}};
+  let state = {review};
+  if(name === 'Prepare') state = {busy:true};
+  if(name === 'Publish') Object.assign(review,{stage:'SCAFFOLD',status:'READY',progress:{completed:5,total:5},step:{gasBudgetMist:'50000000'}});
+  if(name === 'Error') state.errorInfo = {code:'WALLET_REJECTED',message:'Wallet request rejected',diagnostic:'CONTROLLED: wallet request rejected'};
+  if(name === 'Close warning') Object.assign(state,{busy:true,closeConfirm:true});
+  if(name === 'Complete') Object.assign(review,{stage:'COMPLETE',status:'COMPLETE',nextAction:null,rootId:'0x'+'33'.repeat(32),makerVersion:1,progress:{completed:5,total:5}});
+  document.querySelector('#mount').innerHTML = renderApprovedMakerV8Workspace(projectMakerV8WorkspaceView(doc,{publicationSigningEnabled:true,publicationBroadcastEnabled:true,publicationReview:state},{default:true}));
+}
+document.querySelector('#controls').addEventListener('click',event=>{if(event.target.tagName === 'BUTTON') show(event.target.textContent)});
+show('Register');
+</script>
+</html>

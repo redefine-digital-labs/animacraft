@@ -10,6 +10,7 @@ import {
 } from '@mysten/sui/utils';
 import { isValidTransactionSignature } from '@mysten/sui/verify';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 import { bindMakerV8SourceAssets } from './maker-v8-source-asset.js';
 
 import {
@@ -1663,7 +1664,7 @@ export function createMakerV8PublicationBoundaryAdapterV8({
     if (typeof epoch !== 'string' || !UINT.test(epoch)) {
       fail('MAKER_V8_PUBLICATION_EPOCH_INVALID', 'Sui gRPC current epoch is unavailable.');
     }
-    input.transaction.setExpiration({ Epoch: (BigInt(epoch) + 1n).toString() });
+    input.transaction.setExpiration(makerV8PublicationExpiration(epoch));
     const raw = await input.transaction.build({ client });
     await assertPinned();
     const after = transactionKindProof(

@@ -1,9 +1,10 @@
-import { WalrusClient } from '@mysten/walrus';
+import { WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG } from '@mysten/walrus';
 import { bcs } from '@mysten/sui/bcs';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
-import { fromBase64, toBase64 } from '@mysten/sui/utils';
+import { fromBase64, toBase64, normalizeStructTag } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
@@ -349,6 +350,129 @@ function transactionProof(bytesBase64, expected) {
   return freeze({ bytes, digest, kindSha256 });
 }
 
+const FRAMEWORK = `0x${'0'.repeat(63)}2`;
+const SUI_TYPE = `${FRAMEWORK}::sui::SUI`;
+const unknownQuote = quotedAt => ({ quotedAt, walrusStorageCostFrost: null,
+  walrusWriteCostFrost: null, walrusTotalCostFrost: null, relayTipMist: null, verified: false });
+
+/** Quote the payments in these exact TransactionData bytes, never coin balances
+ * or withdrawal reservation maxima. Unknown SDK shapes deliberately stay unknown.
+ * Authority is read by the same SDK/client that built the transaction. */
+export function makerV8WalrusTransactionQuote({ bytesBase64, stage, authority, owner,
+  epochs, byteLength, blobObjectId = null, quotedAt }) {
+  const unknown = freeze(unknownQuote(quotedAt));
+  try {
+    const parsed = bcs.TransactionData.parse(fromBase64(bytesBase64));
+    if (toBase64(bcs.TransactionData.serialize(parsed).toBytes()) !== bytesBase64) return unknown;
+    const data = parsed.V1;
+    if (data.sender !== owner || data.gasData.owner !== owner
+      || authority?.system?.id !== MAINNET_WALRUS_PACKAGE_CONFIG.systemObjectId
+      || !SUI_ID.test(authority.system.package_id)) return unknown;
+    const { inputs, commands } = data.kind.ProgrammableTransaction;
+    const pkg = authority.system.package_id;
+    const require = condition => { if (!condition) throw new Error('unproven payment'); };
+    const pure = (arg, codec) => {
+      const bytes = fromBase64(inputs[arg?.Input]?.Pure?.bytes ?? '');
+      const value = codec.parse(bytes);
+      require(toBase64(codec.serialize(value).toBytes()) === toBase64(bytes));
+      return value;
+    };
+    const objectId = arg => {
+      const object = inputs[arg?.Input]?.Object;
+      return object?.SharedObject?.objectId ?? object?.ImmOrOwnedObject?.objectId ?? null;
+    };
+    const ref = arg => arg?.NestedResult ?? (Number.isInteger(arg?.Result) ? [arg.Result, 0] : null);
+    const same = (a, b) => {
+      const ar = ref(a), br = ref(b);
+      return ar && br ? ar[0] === br[0] && ar[1] === br[1] : canonical(a) === canonical(b);
+    };
+    const type = call => call?.typeArguments?.length === 1
+      ? normalizeStructTag(call.typeArguments[0]) : null;
+    const isFramework = (call, fn) => call?.package === FRAMEWORK && call.module === 'coin' && call.function === fn;
+    const args = command => command.MoveCall?.arguments ?? command.TransferObjects?.objects
+      ?? (command.SplitCoins ? [command.SplitCoins.coin] : command.MergeCoins
+        ? [command.MergeCoins.destination, ...command.MergeCoins.sources] : []);
+    const origin = arg => { const r = ref(arg); return r ? commands[r[0]] : null; };
+    const coinType = arg => {
+      if (arg?.GasCoin) return SUI_TYPE;
+      const call = origin(arg)?.MoveCall;
+      return isFramework(call, 'redeem_funds') || isFramework(call, 'zero') ? type(call) : null;
+    };
+    const amount = (arg, at, expectedType, destroyed) => {
+      const r = ref(arg); require(r && r[0] < at);
+      const source = commands[r[0]];
+      let value;
+      if (source.SplitCoins) {
+        require(r[1] < source.SplitCoins.amounts.length);
+        value = BigInt(pure(source.SplitCoins.amounts[r[1]], bcs.u64()));
+        if (expectedType === SUI_TYPE) require(coinType(source.SplitCoins.coin) === SUI_TYPE);
+      } else {
+        require(isFramework(source.MoveCall, 'zero') && type(source.MoveCall) === expectedType);
+        value = 0n;
+      }
+      const uses = commands.flatMap((command, index) => args(command).filter(a => same(a, arg)).map(() => index));
+      if (destroyed) {
+        const drops = uses.filter(index => index > at && isFramework(commands[index].MoveCall, 'destroy_zero')
+          && type(commands[index].MoveCall) === expectedType);
+        require(uses.length === 2 && uses.includes(at) && drops.length === 1);
+      } else require(uses.length === 1 && uses[0] === at);
+      return value;
+    };
+    const systemCalls = commands.flatMap((command, index) => command.MoveCall?.package === pkg
+      && command.MoveCall.module === 'system' ? [{ call: command.MoveCall, index }] : []);
+    for (const { call } of systemCalls) require(objectId(call.arguments[0]) === authority.system.id);
+    const recognized = new Set(['reserve_space', 'register_blob', 'certify_blob']);
+    for (const command of commands) {
+      if (command.MoveCall) {
+        const call = command.MoveCall;
+        require((call.package === pkg && ((call.module === 'system' && recognized.has(call.function))
+          || (call.module === 'metadata' && call.function === 'new')
+          || (call.module === 'blob' && ['add_metadata', 'insert_or_update_metadata_pair'].includes(call.function))))
+          || (call.package === FRAMEWORK && call.module === 'coin'
+            && ['redeem_funds', 'zero', 'destroy_zero', 'send_funds'].includes(call.function)));
+        if (isFramework(call, 'send_funds')) require(pure(call.arguments[1], bcs.Address) === owner);
+      } else require(Boolean(command.SplitCoins || command.MergeCoins || command.TransferObjects));
+    }
+    if (stage === 'CERTIFY') {
+      require(commands.length === 1 && systemCalls.length === 1
+        && systemCalls[0].call.function === 'certify_blob'
+        && objectId(systemCalls[0].call.arguments[1]) === blobObjectId);
+      return freeze({ quotedAt, walrusStorageCostFrost: '0', walrusWriteCostFrost: '0',
+        walrusTotalCostFrost: '0', relayTipMist: '0', verified: true });
+    }
+    require(stage === 'REGISTER' && systemCalls.length === 2);
+    const storage = systemCalls.find(({ call }) => call.function === 'reserve_space');
+    const register = systemCalls.find(({ call }) => call.function === 'register_blob');
+    require(storage && register && storage.index < register.index
+      && same(register.call.arguments[1], { Result: storage.index })
+      && String(pure(storage.call.arguments[2], bcs.u32())) === String(epochs)
+      && String(pure(register.call.arguments[4], bcs.u64())) === String(byteLength)
+      && pure(register.call.arguments[6], bcs.bool()) === false);
+    const walType = normalizeStructTag(authority.walCoinType);
+    require(walType !== SUI_TYPE);
+    const storageCost = amount(storage.call.arguments[3], storage.index, walType, true);
+    const writeCost = amount(register.call.arguments[7], register.index, walType, true);
+    require(!same(storage.call.arguments[3], register.call.arguments[7]));
+    let relayTip = 0n, tips = 0, blobs = 0;
+    for (const [index, command] of commands.entries()) {
+      if (!command.TransferObjects) continue;
+      const transfer = command.TransferObjects;
+      require(transfer.objects.length === 1);
+      if (same(transfer.objects[0], { Result: register.index })) {
+        require(pure(transfer.address, bcs.Address) === owner); blobs += 1;
+      } else {
+        require(SUI_ID.test(authority.relayAddress ?? '')
+          && pure(transfer.address, bcs.Address) === authority.relayAddress);
+        relayTip += amount(transfer.objects[0], index, SUI_TYPE, false); tips += 1;
+      }
+    }
+    require(blobs === 1 && (authority.relayAddress === null ? tips === 0 : tips === 1));
+    return freeze({ quotedAt, walrusStorageCostFrost: storageCost.toString(),
+      walrusWriteCostFrost: writeCost.toString(), walrusTotalCostFrost: (storageCost + writeCost).toString(),
+      relayTipMist: relayTip.toString(), verified: true });
+  } catch { return unknown; }
+}
+
 function signedTransaction(record, stage, bytes, signature, at) {
   const proof = transactionProof(bytes, { owner: record.owner });
   canonicalBase64(signature, 'Walrus signature');
@@ -400,6 +524,7 @@ export function createMakerV8WalrusPublisherV8({
   fetcher = globalThis.fetch,
   aggregator = MAKER_V8_WALRUS_MAINNET_AGGREGATOR,
   now = () => Date.now(),
+  quoteAuthority = null,
 } = {}) {
   for (const method of [
     'computeBlobMetadata', 'writeBlobFlow', 'certifyBlobTransaction',
@@ -447,7 +572,7 @@ export function createMakerV8WalrusPublisherV8({
   const expiration = async (transaction, owner) => {
     const epoch = integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch');
     transaction.setSenderIfNotSet(owner);
-    transaction.setExpiration({ Epoch: (BigInt(epoch) + 1n).toString() });
+    transaction.setExpiration(makerV8PublicationExpiration(String(epoch)));
     return epoch;
   };
 
@@ -674,11 +799,20 @@ export function createMakerV8WalrusPublisherV8({
       const build = record.status === 'ENCODED' ? await buildRegister(record) : await buildCertify(record);
       assertExpectedUpload(await persistence.load(uploadId), { ...recordView(record), status: publicStatus(record) });
       const data = bcs.TransactionData.parse(fromBase64(build.bytes)).V1;
+      const quotedAt = new Date(clock(record.updatedAt)).toISOString();
+      let quote = freeze(unknownQuote(quotedAt));
+      if (typeof quoteAuthority === 'function') {
+        try {
+          quote = makerV8WalrusTransactionQuote({ bytesBase64: build.bytes, stage: build.stage,
+            authority: await quoteAuthority(build.stage), owner: record.owner, epochs: record.epochs,
+            byteLength: record.byteLength, blobObjectId: record.upload?.blobObjectId ?? null, quotedAt });
+        } catch { /* A missing read is unknown, never an invented zero price. */ }
+      }
       const review = freeze({ id: uploadId, revision: record.revision, stage: build.stage,
         status: 'SIGNATURE_REQUIRED', digest: build.digest,
         gasBudgetMist: String(data.gasData.budget), gasPriceMist: String(data.gasData.price),
         storageEpochs: record.epochs, deletable: record.deletable,
-        storageCostAtomic: null, relayTipMist: null });
+        storageCostAtomic: quote.walrusStorageCostFrost, relayTipMist: quote.relayTipMist, quote });
       reviews.set(uploadId, { review, build });
       return review;
     },
@@ -813,14 +947,38 @@ export function createProductionMakerV8WalrusPublisherV8({
   aggregator = MAKER_V8_WALRUS_MAINNET_AGGREGATOR,
 } = {}) {
   const buildClient = new SuiGrpcClient({ network: 'mainnet', baseUrl: grpcEndpoint });
+  let relayAddress;
+  const quoteFetch = async (url, options) => {
+    const response = await fetcher(url, options);
+    // Capture the payee from the very response consumed by this SDK build.
+    // Do not issue an independent price request or substitute its amount.
+    if (String(url) === `${uploadRelay}/v1/tip-config` && options?.method === 'GET' && response.ok) {
+      try {
+        const config = await response.clone().json();
+        relayAddress = typeof config === 'string' ? null : suiId(config.send_tip?.address, 'relay payee');
+      } catch { relayAddress = undefined; }
+    }
+    return response;
+  };
   const walrusClient = new WalrusClient({
     network: 'mainnet',
     suiClient: buildClient,
-    uploadRelay: { host: uploadRelay, sendTip: { max: MAKER_V8_WALRUS_MAX_RELAY_TIP_MIST }, timeout: 600_000 },
+    uploadRelay: { host: uploadRelay, sendTip: { max: MAKER_V8_WALRUS_MAX_RELAY_TIP_MIST }, timeout: 600_000, fetch: quoteFetch },
   });
   const persistence = createMakerV8WalrusPersistenceV8(indexedDB, { storageManager });
   const publisher = createMakerV8WalrusPublisherV8({
     walrusClient, buildClient, rpc, wallet, persistence, execution, fetcher, aggregator,
+    async quoteAuthority(stage) {
+      const system = await walrusClient.systemObject();
+      if (stage === 'CERTIFY') return { system };
+      // The SDK derives WAL's type from this same on-chain staking parameter.
+      const originalPackage = (await walrusClient.getBlobType()).split('::')[0];
+      const parameter = (await buildClient.core.getMoveFunction({ packageId: originalPackage,
+        moduleName: 'staking', name: 'stake_with_pool' })).function.parameters[1];
+      const coin = parameter.body?.datatype;
+      const walCoinType = coin?.typeParameters?.[0]?.datatype?.typeName;
+      return { system, walCoinType, relayAddress };
+    },
   });
   return freeze({
     schemaVersion: MAKER_V8_WALRUS_SCHEMA,

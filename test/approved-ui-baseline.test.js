@@ -24,7 +24,7 @@ const [
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
-test('unchanged UI baseline is byte locked outside explicit feature, retired collection and error wrapping deltas', () => {
+test('unchanged UI baseline is byte locked outside explicit feature, retired collection, error wrapping and publication scrolling deltas', () => {
   const back = '<button id="backToCreatorPreview" class="secondary" type="button" hidden>Back to Creator Studio</button>';
   const deletion = '<button id="deleteMakerDraft" class="danger-button" type="button" data-lifecycle-action="delete-draft" hidden>Delete local draft</button>';
   const collectionShortcut = '        <button data-page="collection"><strong data-i18n="myOcs">My Souls</strong><span data-i18n="myOcsCopy">Soulidity-owned characters</span></button>\n';
@@ -154,7 +154,16 @@ test('unchanged UI baseline is byte locked outside explicit feature, retired col
 `;
   assert.equal(approvedStyles.split(networkErrorWrapping).length, 2);
   assert.doesNotMatch(approvedStyles, /\.collection-(?:status|grid)|\.owned-oc-/);
+  // F02-D: the original modal grid otherwise clips its bottom action at390x844.
+  // Require this exact scoped repair while retaining the original whole-CSS hash.
+  const publicationGrid = `.v4-chain-flow-backdrop .v4-chain-flow {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+`;
+  assert.equal(approvedStyles.split(publicationGrid).length, 2);
   const baselineStyles = approvedStyles.replace(networkErrorWrapping, '')
+    .replace(publicationGrid, publicationGrid.replace('  grid-template-rows: minmax(0, 1fr);\n', ''))
     .replace('.badge-row,\n.template-footer,', `${collectionStyles}.badge-row,\n.template-footer,`);
   assert.equal(sha256(baselineStyles.replace(completionStyles, '')), '22f486c0fdc3e109703602ed27574300f1c2c8bf41f185a8b514beb46674d46d');
   assert.equal(sha256(editorShell), 'b01b9084154d6b14e2017340122cbbd7cac4b8e5cebfeb6435d05a36064ba6bb');
