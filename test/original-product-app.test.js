@@ -7119,13 +7119,17 @@ test('Player completion is single-flight and an edit invalidates the frozen proj
   const address = `0x${'89'.repeat(32)}`;
   const maker = certifiedMaker();
   const completion = deferred();
+  const completionEntered = deferred();
   const receptions = [];
   const harness = browserHarness({
     connection: { account: { address, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [maker], diagnostics: [] },
     playerSessionResult: playerSession(ROOT_ONE),
     renderPlayerPreviewResult: canonicalPreview(),
-    completePlayerJourneyResult: () => completion.promise,
+    completePlayerJourneyResult: () => {
+      completionEntered.resolve();
+      return completion.promise;
+    },
     openPlayerReception: input => receptions.push(input),
     certifiedLivingContent: true,
   });
@@ -7135,19 +7139,18 @@ test('Player completion is single-flight and an edit invalidates the frozen proj
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   const complete = new FakeTarget(harness.doc, { dataset: { action: 'player-complete' } });
   complete.parent = mount;
-  mount.fire('click', { target: complete });
-  for (let index = 0; index < 6; index += 1) await settle();
+  await waitForEvent(mount.fire('click', { target: complete }));
   assert.equal(harness.calls.completePlayerJourney.length, 0, 'the first donor action opens Export only');
   assert.deepEqual(receptions, [], 'Opening Export must not open the account popup');
   const confirm = new FakeTarget(harness.doc, { dataset: { action: 'player-confirm-complete' } });
   confirm.parent = mount;
-  mount.fire('click', { target: confirm });
+  const firstConfirmation = mount.fire('click', { target: confirm });
   assert.deepEqual(receptions, [{ rootId: ROOT_ONE }], 'Reception opens synchronously before user activation expires');
-  mount.fire('click', { target: confirm });
+  const duplicateConfirmation = mount.fire('click', { target: confirm });
   assert.equal(receptions.length, 1, 'Double confirmation shares one account popup flight');
-  for (let index = 0; index < 8 && harness.calls.completePlayerJourney.length === 0; index += 1) {
-    await settle();
-  }
+  // Hashing and durable project save precede bridge entry. Event-loop turn
+  // counts do not establish that boundary, especially on a busy CI worker.
+  await completionEntered.promise;
   assert.equal(harness.calls.completePlayerJourney.length, 1, 'double confirmation shares one exact flight');
   assert.match(harness.calls.completePlayerJourney[0].projectHash, /^[0-9a-f]{64}$/);
   assert.deepEqual(
@@ -7161,12 +7164,11 @@ test('Player completion is single-flight and an edit invalidates the frozen proj
   const profile = new FakeTarget(harness.doc, { dataset: { action: 'player-profile-name' } });
   profile.parent = mount;
   profile.value = 'New project B';
-  mount.fire('change', { target: profile });
-  await settle();
+  await waitForEvent(mount.fire('change', { target: profile }));
   assert.doesNotMatch(mount.innerHTML, /Preview ready/);
   completion.resolve({ status: 'HANDOFF_READY', handoffUrl: '' });
-  await settle();
-  await settle();
+  await Promise.all([waitForEvent(firstConfirmation), waitForEvent(duplicateConfirmation)]);
+  assert.equal(harness.calls.completePlayerJourney.length, 1);
   assert.doesNotMatch(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Ready for Soulidity/);
   assert.match(mount.innerHTML, /data-action="player-download-png"[^>]+disabled/);
   app.destroy();

@@ -2844,6 +2844,7 @@ async function driveActualProductState(cdp, state, locale, theme) {
       )?.getAttribute('aria-selected') === 'true'`, {
         label: 'approved Creator expansions tab before Pack Studio',
       });
+      await waitForActualExpansionPacks(cdp);
       const packSelector = '#makerV4CreatorMount [data-action="open-expansion-pack-studio"]';
       const previousPackKeys = await evaluate(cdp, `Array.from(document.querySelectorAll(${JSON.stringify(packSelector)}),
         node => node.dataset.packProjectKey)`);
@@ -2875,6 +2876,7 @@ async function driveActualProductState(cdp, state, locale, theme) {
       await waitForExpression(cdp, `document.querySelector(
         ${JSON.stringify(`#makerV4CreatorMount [data-tab="${tab}"]`)}
       )?.getAttribute('aria-selected') === 'true'`, { label: `approved Creator ${tab} tab` });
+      if (tab === 'expansions') await waitForActualExpansionPacks(cdp);
     }
   } else if (state.id === 'player:intro') {
     await openActualPlayerIntro(cdp);
@@ -2892,6 +2894,17 @@ async function driveActualProductState(cdp, state, locale, theme) {
     throw new Error(`Unknown approved product state: ${state.id}.`);
   }
   return readProductStateIdentity(cdp, state);
+}
+
+async function waitForActualExpansionPacks(cdp) {
+  // Tab selection precedes listPackDrafts. The direct loading/wallet placeholder
+  // disappears only after discovery settles; an empty result inside the list
+  // is valid. Never capture that transient placeholder or accept a load error.
+  await waitForExpression(cdp, `(() => {
+    const body = document.querySelector('#makerV4ToolDialog .v4-tool-body');
+    return Boolean(body?.querySelector(':scope > [data-pack-project-list]'))
+      && !body.querySelector(':scope > .v4-inline-empty, :scope > [role="alert"]');
+  })()`, { timeoutMs: 30_000, label: 'Creator Expansion Packs discovery completed without an error' });
 }
 
 async function readProductStateIdentity(cdp, state) {
