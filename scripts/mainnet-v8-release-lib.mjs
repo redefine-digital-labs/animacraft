@@ -123,11 +123,12 @@ const FULL_ID = /^0x[0-9a-f]{64}$/;
 const GIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const MODULE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-// A complete ten-ordinal release intentionally retains every READY artifact,
-// package ABI certificate, and its immediate predecessor certificate.  The
-// seven package boundary can therefore exceed 200k nodes while remaining
-// bounded by the fixed release topology and the per-artifact limits below.
+// Individual artifacts and each complete WAL event retain the generic budget.
+// The fourteen-stage WAL also retains repeated READY/predecessor certificates;
+// its container gets one generic budget per stage plus two for root/history
+// overhead. This does not enlarge any individual event or metadata budget.
 const MAX_JSON_NODES = 500_000;
+const MAX_WAL_JSON_NODES = MAX_JSON_NODES * (MAINNET_V8_RELEASE_STEPS.length + 2);
 const MAX_JSON_DEPTH = 128;
 const MAX_CANONICAL_BYTES = 128 * 1024 * 1024;
 const ZERO_HASH = '0'.repeat(64);
@@ -450,12 +451,12 @@ export function compareMainnetV8Text(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-export function assertMainnetV8DeterministicJson(value, label = 'Value') {
+function assertDeterministicJson(value, label, maxNodes) {
   const seen = new WeakSet();
   let nodes = 0;
   const visit = (entry, path, depth) => {
     nodes += 1;
-    if (nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH) {
+    if (nodes > maxNodes || depth > MAX_JSON_DEPTH) {
       fail('MAINNET_V8_JSON_DOMAIN_INVALID', `${label} exceeds the deterministic JSON budget.`, { path });
     }
     if (entry === null || typeof entry === 'string' || typeof entry === 'boolean') return;
@@ -511,6 +512,10 @@ export function assertMainnetV8DeterministicJson(value, label = 'Value') {
   return value;
 }
 
+export function assertMainnetV8DeterministicJson(value, label = 'Value') {
+  return assertDeterministicJson(value, label, MAX_JSON_NODES);
+}
+
 function canonicalJsonUnchecked(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJsonUnchecked).join(',')}]`;
@@ -520,11 +525,43 @@ function canonicalJsonUnchecked(value) {
 
 export function canonicalMainnetV8Json(value) {
   assertMainnetV8DeterministicJson(value, 'Canonical JSON value');
+  return boundedCanonicalJson(value);
+}
+
+function boundedCanonicalJson(value) {
   const canonical = canonicalJsonUnchecked(value);
   if (encoder.encode(canonical).length > MAX_CANONICAL_BYTES) {
     fail('MAINNET_V8_CANONICAL_BYTES_EXCEEDED', 'Canonical JSON exceeds its byte budget.');
   }
   return canonical;
+}
+
+function canonicalWalJson(wal, omitEnvelopeHash = false) {
+  // Validate descriptors before inspecting fields: getters, hidden properties,
+  // cycles and non-plain objects remain forbidden even in the larger container.
+  assertDeterministicJson(wal, 'Release WAL', MAX_WAL_JSON_NODES);
+  exactFields(wal, omitEnvelopeHash ? WAL_FIELDS.filter(key => key !== 'walSha256') : WAL_FIELDS, 'Release WAL');
+  if (wal.schemaVersion !== MAINNET_V8_RELEASE_WAL_SCHEMA || !Array.isArray(wal.events)) {
+    fail('MAINNET_V8_WAL_INVALID', 'Release WAL representation is invalid.');
+  }
+  const metadata = { ...wal };
+  delete metadata.events;
+  assertMainnetV8DeterministicJson(metadata, 'Release WAL root metadata');
+  wal.events.forEach((event, index) => {
+    assertMainnetV8DeterministicJson(event, `Release WAL event ${index}`);
+  });
+  return boundedCanonicalJson(wal);
+}
+
+/** Canonical WAL representation only, not evidence/transition acceptance or
+ * execution authority. Identical encoding to canonicalMainnetV8Json, with a
+ * bounded history container and unchanged per-event/root-metadata limits. */
+export function canonicalMainnetV8WalJson(wal) {
+  return canonicalWalJson(wal);
+}
+
+function cloneWalJson(wal) {
+  return JSON.parse(canonicalMainnetV8WalJson(wal));
 }
 
 function asBytes(value, label = 'Bytes') {
@@ -3650,7 +3687,7 @@ function eventHash(event) {
 function walHash(wal) {
   const payload = { ...wal };
   delete payload.walSha256;
-  return sha256MainnetV8Json(payload);
+  return sha256MainnetV8Bytes(canonicalWalJson(payload, true));
 }
 
 function assertRecordedAt(value) {
@@ -4014,7 +4051,7 @@ export function assertMainnetV8ReleaseWal(wal) {
 }
 
 function assertMainnetV8WalHeader(wal) {
-  assertMainnetV8DeterministicJson(wal, 'Release WAL');
+  canonicalMainnetV8WalJson(wal);
   assertNoSecretFields(wal, 'Release WAL');
   exactFields(wal, WAL_FIELDS, 'Release WAL');
   if (wal.schemaVersion !== MAINNET_V8_RELEASE_WAL_SCHEMA) fail('MAINNET_V8_WAL_INVALID', 'Release WAL schema is invalid.');
@@ -4428,7 +4465,24 @@ async function readWalFile(path) {
     if (!info.isFile() || info.nlink !== 1) {
       fail('MAINNET_V8_WAL_PATH_INVALID', 'WAL cold read requires a single-link regular file.', { path });
     }
-    text = await handle.readFile('utf8');
+    // The persisted form permits exactly one trailing newline beyond the
+    // canonical budget. Check before allocation, then bound reads as well so
+    // a file growing after stat cannot make readFile allocate without limit.
+    if (info.size > MAX_CANONICAL_BYTES + 1) {
+      fail('MAINNET_V8_CANONICAL_BYTES_EXCEEDED', 'Release WAL exceeds its byte budget.');
+    }
+    const bytes = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const result = await handle.read(bytes, offset, bytes.length - offset, null);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    const probe = await handle.read(Buffer.alloc(1), 0, 1, null);
+    if (offset !== bytes.length || probe.bytesRead !== 0) {
+      fail('MAINNET_V8_WAL_INVALID', 'Release WAL size changed during cold read.');
+    }
+    text = bytes.toString('utf8');
   } catch (error) {
     readFailed = true;
     readError = error?.code === 'ENOENT'
@@ -4445,14 +4499,14 @@ async function readWalFile(path) {
   let wal;
   try { wal = JSON.parse(text); } catch { fail('MAINNET_V8_WAL_INVALID', 'Release WAL is not JSON.'); }
   assertMainnetV8ReleaseWal(wal);
-  if (`${canonicalMainnetV8Json(wal)}\n` !== text) fail('MAINNET_V8_WAL_INVALID', 'Release WAL bytes are not canonical.');
+  if (`${canonicalMainnetV8WalJson(wal)}\n` !== text) fail('MAINNET_V8_WAL_INVALID', 'Release WAL bytes are not canonical.');
   return wal;
 }
 
 async function writeAndVerifyWal(path, wal) {
-  await writeMainnetV8AtomicFile(path, `${canonicalMainnetV8Json(wal)}\n`);
+  await writeMainnetV8AtomicFile(path, `${canonicalMainnetV8WalJson(wal)}\n`);
   const durable = await readWalFile(path);
-  if (canonicalMainnetV8Json(durable) !== canonicalMainnetV8Json(wal)) {
+  if (canonicalMainnetV8WalJson(durable) !== canonicalMainnetV8WalJson(wal)) {
     fail('MAINNET_V8_WAL_INVALID', 'Release WAL cold read differs after atomic replacement.', { path });
   }
   return deepFreeze(durable);
@@ -4526,15 +4580,16 @@ export function appendMainnetV8WalContents(current, input) {
     recordedAt: input.recordedAt,
     previousEventSha256: current.headEventSha256,
   });
+  const snapshot = cloneWalJson(current);
   const wal = {
-    ...cloneJson(current),
+    ...snapshot,
     releaseId: input.status === 'FINAL_MANIFEST_SEALED'
       ? input.evidence.releaseId : current.releaseId,
     finalManifest: input.status === 'FINAL_MANIFEST_SEALED'
       ? cloneJson(input.evidence.finalManifest) : cloneJson(current.finalManifest),
     revision: event.revision,
     headEventSha256: event.eventSha256,
-    events: [...current.events.map(cloneJson), event],
+    events: [...snapshot.events, event],
   };
   delete wal.walSha256;
   wal.walSha256 = walHash(wal);

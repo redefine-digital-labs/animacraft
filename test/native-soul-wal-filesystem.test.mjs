@@ -393,7 +393,7 @@ test('cold-read and handle-close errors are both retained, with the actual descr
     const handle = await originalOpen(...args);
     if (args[0] === path && typeof args[1] === 'number') {
       const actualClose = handle.close.bind(handle);
-      t.mock.method(handle, 'readFile', async () => { throw failures[0]; });
+      t.mock.method(handle, 'read', async () => { throw failures[0]; });
       t.mock.method(handle, 'close', async () => { await actualClose(); closed = true; throw failures[1]; });
     }
     return handle;
@@ -403,6 +403,40 @@ test('cold-read and handle-close errors are both retained, with the actual descr
     await assert.rejects(L.readMainnetV8ReleaseWal(path), error => error instanceof AggregateError
       && error.errors[0] === failures[0] && error.errors[1] === failures[1]);
     assert.equal(closed, true);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const changed of ['{', '{} ']) test(`cold-read rejects stat/read size drift to ${changed.length} bytes with bounded reads`, async t => {
+  const root = await rootFor(), path = join(root, 'wal.json');
+  await replace(path, '{}');
+  const originalOpen = filesystem.open;
+  let injected = false, closed = false, requested = 0;
+  t.mock.method(filesystem, 'open', async (...args) => {
+    const handle = await originalOpen(...args);
+    if (args[0] === path && typeof args[1] === 'number') {
+      const actualStat = handle.stat.bind(handle), actualRead = handle.read.bind(handle);
+      const actualClose = handle.close.bind(handle);
+      t.mock.method(handle, 'stat', async () => {
+        const before = await actualStat();
+        await filesystem.writeFile(path, changed);
+        injected = true;
+        return before;
+      });
+      t.mock.method(handle, 'read', async (...readArgs) => {
+        requested += readArgs[2];
+        return actualRead(...readArgs);
+      });
+      t.mock.method(handle, 'close', async () => { await actualClose(); closed = true; });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(L.readMainnetV8ReleaseWal(path), error => error.code === 'MAINNET_V8_WAL_INVALID'
+      && error.message.includes('size changed'));
+    assert.equal(injected, true); assert.equal(closed, true);
+    // Two initial bytes, at most one short-read retry, and one extra-byte probe.
+    assert.ok(requested <= 4);
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
