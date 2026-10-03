@@ -9,11 +9,11 @@ export const WALRUS_MINIMUM_DEPENDENCY_FIXTURE = Object.freeze({ originalPackage
 export const WALRUS_V3_PACKAGE_FIXTURE = '0x98da433aa0139512c210597b1c5e3df6cd121d8d77f8652691bb66fadfc8aa1b';
 // Synthetic module identity tables only. These fixtures establish cold evidence
 // parsing, not a verified executable package or real Mainnet authorization.
-function moduleBytes(name) {
+export function moveModuleIdentityBytesFixture(name, originalId = ORIGINAL) {
   const names = new TextEncoder().encode(name);
   return Uint8Array.from([0xa1,0x1c,0xeb,0x0b,6,0,0,0,3,
     1,0,2,7,2,names.length+1,8,names.length+3,32,
-    0,0,names.length,...names,...fromHex(ORIGINAL),0]);
+    0,0,names.length,...names,...fromHex(originalId),0]);
 }
 export function walrusExecutionObjectFixture(object) {
   const bytes = bcs.Object.serialize(object).toBytes();
@@ -34,7 +34,7 @@ export function makerV8WalrusExecutionFixture({ systemVersion = '3', systemObjec
   } }, owner: { Shared: { initialSharedVersion } }, ...metadata };
   const modules = [['blob','Blob'],['system','System'],['system_state_inner','SystemStateInnerV1']];
   const packageObject = { data: { Package: {
-    id: packageId, version: systemVersion, moduleMap: new Map(modules.map(([name]) => [name, moduleBytes(name)])),
+    id: packageId, version: systemVersion, moduleMap: new Map(modules.map(([name]) => [name, moveModuleIdentityBytesFixture(name)])),
     typeOriginTable: modules.map(([moduleName, datatypeName]) => ({ moduleName, datatypeName, package: ORIGINAL })), linkageTable: new Map(),
   } }, owner: { Immutable: true }, ...metadata };
   return { schemaVersion: MAKER_V8_WALRUS_EXECUTION_SCHEMA,

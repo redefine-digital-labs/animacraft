@@ -47,6 +47,7 @@ import {
 import { currentRuntimeAuthorityFixture } from './fixtures/maker-v8-current-runtime-authority.js';
 import { CORE_BASE_REGISTRY_MODULE_BASE64 } from './fixtures/maker-v8-runtime-attestation.js';
 import { nativeBindingFixture as createNativeBindingFixture, nativeIntegrationFixture as createNativeIntegrationFixture } from './fixtures/maker-v8-native-integration.js';
+import { moveModuleIdentityBytesFixture } from './fixtures/walrus-execution-fixture.js';
 
 const sid = (number) => `0x${number.toString(16).padStart(64, '0')}`;
 const txDigest = (character = '4') => character.repeat(44);
@@ -78,6 +79,155 @@ test('optional native integration validates exact package introduction tables, d
   assert.equal(isMakerV8NativeSoulIntegrationAttested(evidence, otherRuntime), false);
   await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, otherRuntime));
   assert.equal(isMakerV8NativeSoulIntegrationAttested(evidence, { ...f.config, nativeSoulIntegration: { ...f.pin, marketConfigV2Id: sid(999) } }), false);
+});
+
+test('upgraded Core artifact normalizes its pinned original self address, never the callable address', async () => {
+  const config = runtime();
+  config.roles.core.callablePackageId = sid(999);
+  const f = createNativeIntegrationFixture(config);
+  const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+  assert.equal(makerV8AttestedCoreArtifact(attested).baseRegistryModuleSha256, MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256);
+  assert.equal(isMakerV8NativeSoulIntegrationAttested(await attestMakerV8NativeSoulIntegration(f.rpc, attested), attested), true);
+  const getObject = f.rpc.getObject;
+  for (const wrongAddress of [sid(999), sid(998)]) {
+    const rpc = { ...f.rpc, getObject: async input => {
+      const response = structuredClone(await getObject(input));
+      if (input.id === config.roles.core.callablePackageId) {
+        const bytes = fromBase64(response.data.bcs.moduleMap.base_registry_v8);
+        bytes.set(fromHex(wrongAddress), 10408);
+        response.data.bcs.moduleMap.base_registry_v8 = toBase64(bytes);
+      }
+      return response;
+    } };
+    await assert.rejects(attestMakerV8Runtime(rpc, f.config), { code: 'MAKER_V8_CORE_ARTIFACT_UNMEASURED' });
+  }
+});
+
+test('native integration and recovery derive lineage with null or omitted gRPC originalId', async t => {
+  for (const shape of ['null', 'omitted', 'matching']) await t.test(shape, async () => {
+    const f = nativeIntegrationFixture();
+    const getObject = f.rpc.getObject;
+    f.rpc.getObject = async input => {
+      const response = await getObject(input);
+      if (response.data?.bcs?.dataType === 'package') {
+        if (shape === 'omitted') delete response.data.bcs.originalId;
+        if (shape === 'matching') response.data.bcs.originalId = input.id === sid(80) ? sid(71)
+          : input.id === sid(81) ? sid(74) : input.id === sid(82) ? sid(75)
+          : Object.values(f.config.roles).find(role => role.callablePackageId === input.id).typeOriginPackageId;
+      }
+      return response;
+    };
+    const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+    const evidence = await attestMakerV8NativeSoulIntegration(f.rpc, attested);
+    assert.equal(evidence.packageEvidence.originalId, sid(71));
+    assert.equal(evidence.kioskEvidence.originalId, sid(74));
+    assert.equal(evidence.packageEvidence.walrusPackage.originalId, sid(75));
+    const recovery = await attestMakerV8NativeSoulCompletionRecovery(f.rpc, attested);
+    assert.equal(isMakerV8NativeSoulCompletionRecoveryAttested(recovery, attested), true);
+  });
+});
+
+test('native integration and recovery reject module identity drift including modules without TypeOrigins', async t => {
+  for (const target of ['soul', 'kiosk', 'walrus', 'core', 'output', 'runtime']) {
+    for (const drift of ['self', 'name', 'metadata', 'empty', 'extra', 'noncanonical', 'malformed']) await t.test(`${target}/${drift}`, async () => {
+      const f = nativeIntegrationFixture();
+      const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+      const targetId = { soul: sid(80), kiosk: sid(81), walrus: sid(82) }[target] ?? f.config.roles[target].callablePackageId;
+      const original = { soul: sid(71), kiosk: sid(74), walrus: sid(75) }[target] ?? f.config.roles[target].typeOriginPackageId;
+      const getObject = f.rpc.getObject;
+      f.rpc.getObject = async input => {
+        const response = structuredClone(await getObject(input));
+        if (input.id === targetId) {
+          const pkg = response.data.bcs, name = Object.keys(pkg.moduleMap)[0];
+          if (drift === 'self') pkg.moduleMap[name] = toBase64(moveModuleIdentityBytesFixture(name, sid(999)));
+          if (drift === 'name') pkg.moduleMap[name] = toBase64(moveModuleIdentityBytesFixture('wrong_name', original));
+          if (drift === 'metadata') pkg.originalId = sid(999);
+          if (drift === 'empty') pkg.moduleMap = {};
+          if (drift === 'extra') pkg.moduleMap.extra = toBase64(moveModuleIdentityBytesFixture('extra', sid(999)));
+          if (drift === 'noncanonical') pkg.moduleMap[name] += '\n';
+          if (drift === 'malformed') pkg.moduleMap[name] = toBase64(new Uint8Array([0xa1, 0x1c, 0xeb, 0x0b, 7, 0, 0, 5]));
+        }
+        return response;
+      };
+      await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, attested), { code: 'MAKER_V8_RUNTIME_AUTHORITY_MISMATCH' });
+      if (!['kiosk', 'walrus'].includes(target)) await assert.rejects(attestMakerV8NativeSoulCompletionRecovery(f.rpc, attested), { code: 'MAKER_V8_RUNTIME_AUTHORITY_MISMATCH' });
+    });
+  }
+});
+
+test('native transfer policy accepts only the exact canonical u64 scalar Balance projection', async t => {
+  for (const value of ['0', '18446744073709551615']) await t.test(`accept ${value}`, async () => {
+    const f = nativeIntegrationFixture();
+    const data = f.objects.get(sid(93)).data;
+    data.content.fields.balance = value;
+    data.bcs.bcsBytes = toBase64(bcs.struct('Policy', { id: bcs.Address,
+      balance: bcs.struct('Balance', { value: bcs.u64() }),
+      rules: bcs.struct('VecSet', { contents: bcs.vector(bcs.struct('TypeName', { name: bcs.string() })) }),
+    }).serialize({ ...data.content.fields, balance: { value }, rules: { contents: data.content.fields.rules.contents.map(name => ({ name })) } }).toBytes());
+    const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+    await attestMakerV8NativeSoulIntegration(f.rpc, attested);
+  });
+  for (const balance of ['00', '01', '-1', '+0', ' 0', '0 ', '18446744073709551616', '1', 0, { value: '0', extra: true }]) {
+    await t.test(`reject ${JSON.stringify(balance)}`, async () => {
+      const f = nativeIntegrationFixture();
+      f.objects.get(sid(93)).data.content.fields.balance = balance;
+      const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+      await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, attested));
+    });
+  }
+  await t.test('unrelated struct stays strict', async () => {
+    const f = nativeIntegrationFixture();
+    f.objects.get(sid(91)).data.content.fields.kinds = '0';
+    const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+    await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, attested));
+  });
+});
+
+test('native transfer policy TypeName projection preserves exact rule bytes, order and shape', async t => {
+  for (const mutate of [
+    rules => { rules[0] += ' '; },
+    rules => { rules.reverse(); },
+    rules => { rules.pop(); },
+    rules => { rules[0] = 0; },
+    rules => { rules[0] = { name: rules[0], extra: true }; },
+    rules => { rules[1] = rules[0]; },
+  ]) await t.test(String(mutate), async () => {
+    const f = nativeIntegrationFixture();
+    mutate(f.objects.get(sid(93)).data.content.fields.rules.contents);
+    const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+    await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, attested));
+  });
+});
+
+test('fresh market zero legacy reference is exact and does not relax other IDs', async t => {
+  const f = nativeIntegrationFixture();
+  const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+  const evidence = await attestMakerV8NativeSoulIntegration(f.rpc, attested);
+  assert.equal(evidence.objects.marketConfig.fields.legacy_config_id, sid(0));
+  for (const legacy of [sid(1), '0x0', `0X${'0'.repeat(64)}`, ` ${sid(0)}`, { id: sid(0) }]) await t.test(JSON.stringify(legacy), async () => {
+    const other = nativeIntegrationFixture();
+    other.objects.get(sid(90)).data.content.fields.legacy_config_id = legacy;
+    const { runtime } = await attestMakerV8Runtime(other.rpc, other.config);
+    await assert.rejects(attestMakerV8NativeSoulIntegration(other.rpc, runtime));
+  });
+  await t.test('zero fee recipient remains invalid even when BCS matches', async () => {
+    const other = nativeIntegrationFixture(), data = other.objects.get(sid(90)).data;
+    data.content.fields.fee_recipient = sid(0);
+    data.bcs.bcsBytes = toBase64(bcs.struct('Market', { id: bcs.Address, version: bcs.u64(),
+      legacy_config_id: bcs.Address, fee_recipient: bcs.Address, platform_fee_bps: bcs.u16(),
+      primary_enabled: bcs.bool(), secondary_enabled: bcs.bool(),
+    }).serialize(data.content.fields).toBytes());
+    const { runtime } = await attestMakerV8Runtime(other.rpc, other.config);
+    await assert.rejects(attestMakerV8NativeSoulIntegration(other.rpc, runtime), /fee_recipient/);
+  });
+});
+
+test('native modules cannot derive the zero package address', async () => {
+  const f = nativeIntegrationFixture();
+  const pkg = f.objects.get(sid(81)).data.bcs;
+  pkg.moduleMap.personal_kiosk = toBase64(moveModuleIdentityBytesFixture('personal_kiosk', sid(0)));
+  const { runtime: attested } = await attestMakerV8Runtime(f.rpc, f.config);
+  await assert.rejects(attestMakerV8NativeSoulIntegration(f.rpc, attested), /Native package originalId/);
 });
 
 test('native integration refuses missing pins, metadata substitution, package drift and malformed live configs', async t => {

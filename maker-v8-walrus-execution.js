@@ -56,7 +56,7 @@ function fullObject(value) {
 
 // Bounded Move binary header/table reader, matching MovePackage's self handle
 // identity rule. This is not a replacement for the chain bytecode verifier.
-function moduleIdentity(bytes) {
+export function readMakerV8MoveModuleIdentity(bytes) {
   const invalid = () => check(false, 'Move module identity');
   if (!(bytes instanceof Uint8Array) || bytes.length < 12 || bytes.length > 16 * 1024 * 1024
     || ![0xa1, 0x1c, 0xeb, 0x0b].every((v, i) => bytes[i] === v)) invalid();
@@ -143,7 +143,7 @@ export function assertMakerV8WalrusExecutionV1(evidence, { minimumDependency } =
       && (pkg.version !== minimum.version || pkg.id === minimum.publishedAt), 'effective package/version minimum');
     check(pkg.moduleMap.size > 0, 'package modules');
     for (const [name, bytes] of pkg.moduleMap) {
-      const identity = moduleIdentity(bytes);
+      const identity = readMakerV8MoveModuleIdentity(bytes);
       check(identity.originalId === minimum.originalPackageId && identity.moduleName === name, 'package original/self identity');
     }
     for (const [module, name] of [['system', 'System'], ['blob', 'Blob'], ['system_state_inner', 'SystemStateInnerV1']]) {
