@@ -52,7 +52,11 @@ test('workflow locale deltas preserve every other historical key and translation
     playerOverviewTitle playerOverviewEntry playerOverviewComplete playerOverviewTotal playerOverviewEntryNeeded
     playerOverviewEntryHeld playerOverviewContinue playerOverviewCopy playerOverviewRightsCopy
     saveRecoveryCopy savingRecoveryCopy localRecoveryCopy saveRecoveryCopyHint recoveryCopyRetry
-    playerSlotCapacityFull`.trim().split(/\s+/).sort();
+    playerSlotCapacityFull
+    publicationReview publicationCopy publicationSign publicationContinue publicationRefresh
+    publicationUnknown publicationGas publicationStorage publicationRelay publicationTerms
+    publicationWallet publicationStage publicationAssets publicationStale publicationUnavailable
+    publicationComplete publicationLoading publicationEarlier publicationGasPrice publicationOpen`.trim().split(/\s+/).sort();
   assert.deepEqual(current.MAKER_WORKSPACE_LOCALES, historical.MAKER_WORKSPACE_LOCALES);
   const placeholders = text => [...text.matchAll(/\{([^}]+)\}/g)].map(match => match[1]).sort();
   for (const locale of historical.MAKER_WORKSPACE_LOCALES) {
