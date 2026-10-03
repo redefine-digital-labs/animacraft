@@ -214,12 +214,13 @@ jobs:
           for package in core seal runtime output physical market release; do
             test -f "move/animacraft_v8_${package}/Move.toml"
           done
-          test -f test/harness/animacraft_v8_seal_cap_harness/Move.toml
+          test ! -e test/harness/animacraft_v8_seal_cap_harness/Move.toml
           test -f test/harness/animacraft_v8_seal_cap_harness/README.md
           test -f test/harness/animacraft_v8_seal_cap_harness/fixture/slim-core/Move.toml
           test -f test/harness/animacraft_v8_seal_cap_harness/fixture/slim-core/sources/base_registry_v8.move
           test -f test/harness/animacraft_v8_seal_cap_harness/evidence/manifest.json
           test -f test/harness/animacraft_v8_seal_cap_harness/scripts/run_localnet_replay.mjs
+          test -f test/harness/animacraft_v8_seal_cap_harness/scripts/verify_reproducibility.mjs
 
       - name: Verify fresh-only delivery surface
         run: npm run scan:fresh:source

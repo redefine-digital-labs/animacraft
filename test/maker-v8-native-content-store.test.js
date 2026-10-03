@@ -13,7 +13,7 @@ function setup(indexedDB = new IDBFactory()) {
 
 test('private native content survives a fresh store without plaintext/DEK in database record bytes', async () => {
   const { indexedDB, store } = setup();
-  const data = { text: '私密 Soul 内容', material: { dek: 'SENSITIVE_SECRET_KEY' } };
+  const data = { text: '私密 Soul 内容', material: { dek: 'TEST_ONLY_PRIVATE_MATERIAL_SENTINEL' } };
   assert.equal(await store.load('scope/test'), null);
   const saved = await store.create('scope/test', data);
   assert.deepEqual(saved, { revision: 1, data });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { nativeGraphChecks, nativeGraphReleaseChecks, TEST_ADDRESSES } from '../../../scripts/native-soul-test-graph.mjs';
 
@@ -71,6 +71,38 @@ for (const failure of ['missing-module', 'empty-module', 'wrong-module', 'no-str
     assert.match(result.stderr, /No disassembled modules|Invalid disassembled module|No Move structs|inventory mismatch/);
   });
 }
+
+test('required-file CI shell accepts the current harness and rejects retired or incomplete layouts', t => {
+  const workflow = readFileSync(new URL('.github/workflows/repository-hygiene.yml', root), 'utf8');
+  const block = workflow.match(/      - name: Verify required files\n        run: \|\n([\s\S]*?)(?=\n      - name:)/);
+  assert.ok(block, 'required-file CI shell must exist');
+  const shell = block[1].split('\n').map(line => line.replace(/^          /, '')).join('\n');
+  const run = cwd => spawnSync('bash', ['-e', '-c', shell], { cwd, encoding: 'utf8' });
+  assert.equal(run(root).status, 0, 'the actual checkout must satisfy the exact CI shell');
+  const directory = mkdtempSync(join(tmpdir(), 'paired-required-files-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const put = path => {
+    const target = join(directory, path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, 'required-file fixture');
+  };
+  for (const [, path] of shell.matchAll(/^test -f ([^\s"$]+)$/gm)) put(path);
+  for (const role of ['core', 'seal', 'runtime', 'output', 'physical', 'market', 'release']) {
+    put(`move/animacraft_v8_${role}/Move.toml`);
+  }
+  assert.equal(run(directory).status, 0);
+  const harness = 'test/harness/animacraft_v8_seal_cap_harness';
+  put(`${harness}/Move.toml`);
+  assert.notEqual(run(directory).status, 0, 'the retired companion package must be rejected');
+  rmSync(join(directory, harness, 'Move.toml'));
+  for (const required of ['fixture/slim-core/Move.toml', 'fixture/slim-core/sources/base_registry_v8.move',
+    'scripts/verify_reproducibility.mjs']) {
+    rmSync(join(directory, harness, required));
+    assert.notEqual(run(directory).status, 0, `${required} must remain required`);
+    put(`${harness}/${required}`);
+  }
+  assert.equal(run(directory).status, 0);
+});
 
 test('Animacraft web CI verifies the exact paired source before cross-product JS checks', () => {
   const workflow = readFileSync(new URL('.github/workflows/repository-hygiene.yml', root), 'utf8');
