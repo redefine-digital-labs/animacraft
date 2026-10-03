@@ -11,6 +11,7 @@ import {
   makerV8WalrusUploadIdV8,
 } from '../maker-v8-walrus.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
+import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from '../maker-v8-sui-grpc.js';
 
 const OWNER = `0x${'11'.repeat(32)}`;
 const OBJECT = `0x${'22'.repeat(32)}`;
@@ -126,6 +127,11 @@ function harness(persistence = memoryPersistence()) {
   const wallet = {
     async getCurrentAccount() { return { address: OWNER, network: 'mainnet' }; },
     async signExactTransaction({ bytes: transactionBytes, digest, signer }) {
+      const expiration = Transaction.from(Buffer.from(transactionBytes, 'base64')).getData().expiration.ValidDuring;
+      assert.equal(expiration.minEpoch, '10');
+      assert.equal(expiration.maxEpoch, '11');
+      assert.equal(expiration.chain, MAKER_V8_SUI_MAINNET_GENESIS_DIGEST);
+      assert.ok(Number.isInteger(expiration.nonce) && expiration.nonce >= 0 && expiration.nonce <= 0xffff_ffff);
       calls.push(['sign', digest]);
       return { bytes: transactionBytes, digest, signer, signature: SIGNATURE };
     },

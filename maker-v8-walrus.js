@@ -4,6 +4,7 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
@@ -447,7 +448,7 @@ export function createMakerV8WalrusPublisherV8({
   const expiration = async (transaction, owner) => {
     const epoch = integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch');
     transaction.setSenderIfNotSet(owner);
-    transaction.setExpiration({ Epoch: (BigInt(epoch) + 1n).toString() });
+    transaction.setExpiration(makerV8PublicationExpiration(String(epoch)));
     return epoch;
   };
 
