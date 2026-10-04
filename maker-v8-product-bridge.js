@@ -1259,15 +1259,39 @@ export function createMakerV8ProductBridge({
         ? [...document.lineage.changelog, `Version ${version} from archived Root ${predecessor.rootId}.`]
         : `${String(document.lineage.changelog || '').trim()}\nVersion ${version} from archived Root ${predecessor.rootId}.`.trim();
       assertMakerV8Document(document, { mode: 'draft' });
-      const suffix = `${version}-${Number(now()).toString(36)}`;
-      const successorDraftId = `${source.document.lineage.makerKey.slice(0, Math.max(1, 126 - suffix.length))}-v${suffix}`;
-      return createSuccessorDraftRecord({
+      const successorDraftId = `maker-successor-${rootId.slice(2)}`;
+      const currentAccount = await requireConnected();
+      if (currentAccount.address !== account.address) fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed during successor preparation.', 'WALLET');
+      const resume = async () => {
+        const existing = await loadDraftRecord(successorDraftId);
+        if (!existing) return null;
+        if (canonicalMakerV8Json(existing.document) !== canonicalMakerV8Json(document)) {
+          fail('MAKER_V8_PRODUCT_SUCCESSOR_EXISTS', `A successor draft already exists: ${successorDraftId}. Open it from Library; the current draft is preserved.`, 'DRAFT');
+        }
+        const fresh = await loadDraftRecord(sourceDraftId);
+        if (!fresh || fresh.revision !== expectedRevision) fail('MAKER_V8_PRODUCT_DRAFT_CAS_MISMATCH', 'Source draft changed in another tab.', 'DRAFT');
+        const assets = listDraftAssets ? await listDraftAssets(successorDraftId) : [];
+        const sourceAssets = listDraftAssets ? await listDraftAssets(sourceDraftId) : [];
+        const identity = rows => rows.map(({ draftId, revision, createdAt, updatedAt, ...asset }) => asset)
+          .sort((a, b) => a.assetId.localeCompare(b.assetId));
+        if (canonicalMakerV8Json(identity(assets)) !== canonicalMakerV8Json(identity(sourceAssets))) {
+          fail('MAKER_V8_PRODUCT_SUCCESSOR_EXISTS', `Successor assets differ: open ${successorDraftId} from Library. No draft was overwritten.`, 'DRAFT');
+        }
+        if ((await requireConnected()).address !== account.address) fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed during successor preparation.', 'WALLET');
+        return freeze({ draft: existing, assets });
+      };
+      const existing = await resume();
+      if (existing) return existing;
+      try { return await createSuccessorDraftRecord({
         sourceDraftId,
         sourceExpectedRevision: expectedRevision,
         draftId: successorDraftId,
         document,
         createdAt: Number(now()),
-      });
+      }); } catch (error) {
+        if (error?.code !== 'MAKER_V8_DRAFT_EXISTS') throw error;
+        return await resume();
+      }
     },
     async restoreDraftVersion({ draftId, expectedRevision, revision } = {}) {
       invalidateDraftPreviews();
@@ -1430,6 +1454,11 @@ export function createMakerV8ProductBridge({
   }
 
   if (publication) {
+    const samePublicationContent = (left, right) => {
+      const { attemptNonce: leftNonce, ...leftContent } = left;
+      const { attemptNonce: rightNonce, ...rightContent } = right;
+      return canonicalMakerV8Json(leftContent) === canonicalMakerV8Json(rightContent);
+    };
     const hash = value => [...sha256(new TextEncoder().encode(canonicalMakerV8Json(value)))]
       .map(byte => byte.toString(16).padStart(2, '0')).join('');
     const releaseIdentity = hash(assertMakerV8Runtime(productRuntime.runtime, { requireEnabled: true }));
@@ -1505,7 +1534,9 @@ export function createMakerV8ProductBridge({
       }
       checkGeneration(generation);
       const scope = { ...binding.scope, currentSavedRevision: live.record.revision,
-        publishingEarlierRevision: binding.scope.draftRevision !== live.record.revision };
+        publishingEarlierRevision: binding.scope.draftRevision !== live.record.revision,
+        currentContentMatches: samePublicationContent(binding.input, live.input) };
+      if (status === 'COMPLETE' && !scope.currentContentMatches) status = 'NEW_VERSION_REQUIRED';
       const publicAssets = projectPublicMakerV8Document(binding.input.document).assets;
       const totalResources = publicAssets.length + 2; // Living Content + assets + Manifest.
       const completedResources = plan ? totalResources : stage === 'LIVING_CONTENT' ? 0
@@ -1522,7 +1553,8 @@ export function createMakerV8ProductBridge({
         frozenMakerName: binding.input.document.metadata.name,
         assetCount: publicAssets.length,
         progress,
-        message: status === 'COMPLETE' ? 'Maker publication is certified complete.'
+        message: status === 'NEW_VERSION_REQUIRED' ? 'The earlier saved revision is published. Current edits are unpublished. Open chain version history to explicitly archive the predecessor and create the next version.'
+          : status === 'COMPLETE' ? 'This saved revision is published. Inspect the completed chain version.'
           : scope.publishingEarlierRevision ? 'Continue the previously reviewed saved version. Your newer draft is preserved.'
             : nextAction === 'SIGN' ? 'Review this exact transaction before opening the wallet.'
               : nextAction === 'CONTINUE' ? 'Continue the existing signed transaction. This can broadcast or upload its exact saved bytes.'
@@ -1618,14 +1650,36 @@ export function createMakerV8ProductBridge({
         if (!binding?.attemptId) return null;
         assertBinding(binding, key);
         const identity = await method(publication, 'lookupFinalized', 'publication')(binding.attemptId);
+        const record = await loadDraftRecord(draftId);
+        const currentContentMatches = record ? samePublicationContent(binding.input,
+          await transportInputForDraft(record, account.address)) : false;
         const confirmed = await requireConnected();
         if (confirmed.address !== account.address) stale();
-        return identity?.complete ? freeze({ ...identity, scope: binding.scope }) : null;
+        return identity?.complete ? freeze({ ...identity, scope: { ...binding.scope,
+          currentSavedRevision: record?.revision ?? null, currentContentMatches } }) : null;
       },
     });
   }
 
   if (lifecycle) {
+    const archiveSources = new WeakMap();
+    const sourceProof = async ({ draftId, expectedRevision, rootId }) => {
+      const generation = publicationGeneration;
+      const account = await requireConnected();
+      const record = await loadDraftRecord(exactDraftId(draftId));
+      if (!record || record.revision !== expectedRevision) fail('MAKER_V8_PRODUCT_DRAFT_CAS_MISMATCH', 'Save the exact current draft before archiving.', 'DRAFT');
+      assertMakerV8Document(record.document, { mode: 'compile' });
+      if (!listDraftAssets || !loadMakerLineage) fail('MAKER_V8_PRODUCT_SUCCESSOR_UNAVAILABLE', 'Successor source verification is unavailable.', 'DRAFT');
+      const assets = recoveryAssetContents(record.document, await listDraftAssets(draftId), draftId);
+      const lineage = await loadMakerLineage({ makerKey: record.document.lineage.makerKey });
+      const predecessor = lineage.find(row => row.rootId === rootId);
+      if (!predecessor || predecessor.ownerAddress !== account.address || predecessor.successorRootId !== null
+        || !['ACTIVE', 'PAUSED'].includes(predecessor.lifecycle)) fail('MAKER_V8_PRODUCT_SUCCESSOR_PREDECESSOR_INVALID', 'Archive requires your exact unbranched published predecessor.', 'DRAFT');
+      const fresh = await loadDraftRecord(draftId);
+      if (disposed || generation !== publicationGeneration || fresh?.revision !== expectedRevision || canonicalMakerV8Json(fresh.document) !== canonicalMakerV8Json(record.document)
+        || (await requireConnected()).address !== account.address) fail('MAKER_V8_PRODUCT_DRAFT_CAS_MISMATCH', 'Source or wallet changed during archive review.', 'DRAFT');
+      return canonicalMakerV8Json({ generation, signer: account.address, draftId, expectedRevision, rootId, document: record.document, assets });
+    };
     const getSnapshot = method(lifecycle, 'getSnapshot', 'lifecycle', { optional: true });
     const build = method(lifecycle, 'build', 'lifecycle');
     const prepare = method(lifecycle, 'prepare', 'lifecycle');
@@ -1638,10 +1692,18 @@ export function createMakerV8ProductBridge({
     };
     bridge.prepareLifecycleAction = async (input) => {
       await requireConnected();
-      return prepare(await build(input));
+      const source = input?.action === 'ARCHIVE' && input.draftId ? await sourceProof(input) : null;
+      const prepared = await prepare(await build(input));
+      if (source !== null) {
+        if (await sourceProof(input) !== source) fail('MAKER_V8_PRODUCT_DRAFT_CAS_MISMATCH', 'Archive source changed.', 'DRAFT');
+        archiveSources.set(prepared, { input: structuredClone(input), source });
+      }
+      return prepared;
     };
     bridge.requestLifecycleSignature = async (prepared) => {
       await requireConnected();
+      const guarded = archiveSources.get(prepared);
+      if (guarded && await sourceProof(guarded.input) !== guarded.source) fail('MAKER_V8_PRODUCT_DRAFT_CAS_MISMATCH', 'Current document or assets changed after archive review.', 'DRAFT');
       return requestSignature(prepared);
     };
     bridge.recoverLifecycleAction = async (input) => {

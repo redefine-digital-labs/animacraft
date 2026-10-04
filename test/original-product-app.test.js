@@ -169,7 +169,7 @@ test('publication explicitly reviews an earlier frozen revision and restores onl
     await app.ready; app.navigate('creator'); await app.openDraft(record.draftId); await settle();
     h.emitBridge({ publication: { signingEnabled: true, broadcastEnabled: true } });
     assert.ok(reads > 0); assert.equal(signs, 0);
-    assert.match(h.doc.getElementById('imageMakerList').innerHTML, /Published Root \/ version/);
+    assert.match(h.doc.getElementById('imageMakerList').innerHTML, /Earlier revision published · current edits unpublished/);
     assert.match(h.doc.getElementById('imageMakerList').innerHTML, new RegExp(ROOT_ONE));
     const mount = h.doc.getElementById('makerV4CreatorMount');
     const fire = async (action, publicationReview) => { const target = new FakeTarget(h.doc, { dataset: { action, publicationReview, reviewDraft: record.draftId, creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } }); target.parent = mount; mount.fire('click', { target }); await settle(); };
@@ -6229,6 +6229,41 @@ test('Manage status reuses the approved panel and never exposes unbound lifecycl
   modal.fire('click', { target: harness.lifecycleOpenEditor });
   assert.equal(modal.classList.contains('active'), false);
   assert.match(harness.doc.getElementById('makerV4CreatorMount').innerHTML, /Approved Maker/);
+  app.destroy();
+});
+
+test('Version history explicitly reviews and signs archive, cold-recovers it, then copies current work to successor', async () => {
+  const address = `0x${'78'.repeat(32)}`, rootId = `0x${'45'.repeat(32)}`;
+  const harness = browserHarness({ initialUrl: 'https://animacraft.soulidity.ai/#creator', connection: { account: { address, chains: ['sui:mainnet'] } } });
+  let lifecycle = 'ACTIVE', signs = 0, prepares = 0, recoveries = 0, creates = 0;
+  harness.bridge.listMakerLineage = async () => [{ rootId, makerVersion: 1, lifecycle, ownerAddress: address, successorRootId: null }];
+  harness.bridge.prepareLifecycleAction = async input => { prepares++; assert.equal(input.action, 'ARCHIVE');
+    assert.equal(input.draftId, 'approved-maker'); assert.equal(input.expectedRevision, 1);
+    return { built: { action: 'ARCHIVE', descriptor: { sender: address } }, digest: 'exact-archive', bytes: 'AA==' }; };
+  harness.bridge.requestLifecycleSignature = async prepared => { signs++; assert.equal(prepared.digest, 'exact-archive'); return {}; };
+  harness.bridge.recoverLifecycleAction = async input => { recoveries++; assert.deepEqual(input, { action: 'ARCHIVE', rootId }); lifecycle = 'ARCHIVED'; };
+  harness.bridge.createSuccessorDraft = async input => { creates++; assert.equal(input.expectedRevision, 1);
+    assert.equal(lifecycle, 'ARCHIVED'); const draft = structuredClone(draftRecord());
+    draft.draftId = 'maker-successor-test'; draft.document.lineage.version = 2;
+    draft.document.lineage.previousRootId = rootId; draft.document.lineage.previousVersionCommitment = 'ab'.repeat(32);
+    return { draft, assets: [] }; };
+  const oldSubscribe = harness.bridge.subscribe;
+  harness.bridge.subscribe = fn => oldSubscribe(value => fn({ ...value,
+    publication: { signingEnabled: true, broadcastEnabled: true } }));
+  const app = createOriginalProductApp(harness); await app.ready; await app.openDraft('approved-maker');
+  const mount = harness.doc.getElementById('makerV4CreatorMount');
+  const action = async name => { const target = new FakeTarget(harness.doc, { dataset: { action: name, chainRoot: rootId } });
+    target.parent = mount; await waitForEvent(mount.fire('click', { target })); await settle(); };
+  await action('open-version-history');
+  assert.match(mount.innerHTML, /Published chain versions/); assert.match(mount.innerHTML, /Local saved snapshots/);
+  await action('chain-successor'); assert.equal(creates, 0);
+  await action('chain-archive-review'); assert.equal(prepares, 1); assert.equal(signs, 0);
+  assert.match(mount.innerHTML, /Archiving is irreversible/);
+  await action('chain-archive-sign'); assert.equal(signs, 1); assert.equal(recoveries, 0);
+  await action('close-version-history'); await action('open-version-history');
+  await action('chain-archive-recover'); assert.equal(signs, 1); assert.equal(recoveries, 1);
+  await action('chain-successor'); assert.equal(creates, 1);
+  assert.equal(app.getState().draftId, 'maker-successor-test');
   app.destroy();
 });
 
