@@ -66,12 +66,12 @@ const encoder = new TextEncoder();
 const PLAYER_FIELDS = Object.freeze([
   'schemaVersion', 'id', 'rootId', 'makerKey', 'makerVersion', 'title',
   'summary', 'creatorAddress', 'ownerAddress', 'lifecycle', 'coverAsset',
-  'document', 'certifiedAssets', 'evidence',
+  'document', 'certifiedAssets', 'evidence', 'creatorName', 'style', 'composableBinding',
 ]);
 const PLAYER_EVIDENCE_FIELDS = Object.freeze([
   'activationEventType', 'activationTransactionDigest', 'rootId', 'rootVersion',
   'rootDigest', 'makerVersion', 'lifecycle', 'contentCommitment',
-  'manifestBlobId', 'manifestSha256', 'manifestByteLength',
+  'manifestBlobId', 'manifestSha256', 'manifestByteLength', 'rendererCommitment',
 ]);
 const RECIPE_FIELDS = Object.freeze([
   'schemaVersion', 'rootId', 'makerVersion', 'rootContentCommitment',
@@ -462,10 +462,15 @@ function assertExactPlayer(read, runtime, requestedRootId) {
   exactRecord(player.evidence, PLAYER_EVIDENCE_FIELDS, 'player.evidence', 'MAKER_V8_PLAYER_EVIDENCE_INVALID');
   if (player.schemaVersion !== MAKER_V8_PLAYER_VIEW_SCHEMA
     || player.title !== player.document?.metadata?.name
-    || player.summary !== player.document?.metadata?.summary) {
+    || player.summary !== player.document?.metadata?.summary
+    || player.creatorName !== (player.document?.metadata?.creator ?? '')
+    || player.style !== (player.document?.metadata?.style ?? '')) {
     fail('MAKER_V8_PLAYER_VIEW_INVALID', 'Player view metadata differs from its exact Manifest.', 'READ');
   }
   const rootId = exactId(player.rootId, 'player.rootId');
+  const bindingFields = ['definitionRegistryId', 'baseRegistryId', 'packRegistryId', 'admissionAuthorityId'];
+  exactRecord(player.composableBinding, bindingFields, 'player.composableBinding', 'MAKER_V8_PLAYER_VIEW_INVALID');
+  for (const key of bindingFields) exactId(player.composableBinding[key], `player.composableBinding.${key}`);
   if (exactId(player.id, 'player.id') !== rootId
     || rootId !== exactId(requestedRootId, 'requestedRootId')
     || exactId(player.evidence.rootId, 'player.evidence.rootId') !== rootId
@@ -504,8 +509,11 @@ function assertExactPlayer(read, runtime, requestedRootId) {
     player.evidence.contentCommitment,
     'player.evidence.contentCommitment',
   );
-  if (exactHash(player.evidence.manifestSha256, 'player.evidence.manifestSha256')
-      !== contentCommitment
+  exactHash(player.evidence.rendererCommitment, 'player.evidence.rendererCommitment');
+  if (contentCommitment !== hashValue({ schemaVersion: 'animacraft.maker-v8-public-content.v1', document })
+    || exactHash(player.evidence.manifestSha256, 'player.evidence.manifestSha256')
+      !== hashValue({ schemaVersion: 'animacraft.maker-v8-manifest.v2', protocolVersion: 8,
+        document, certifiedAssets: player.certifiedAssets })
     || !Number.isSafeInteger(player.evidence.manifestByteLength)
     || player.evidence.manifestByteLength <= 0) {
     fail('MAKER_V8_PLAYER_MANIFEST_EVIDENCE_INVALID', 'Player Manifest evidence is not exact.', 'READ');

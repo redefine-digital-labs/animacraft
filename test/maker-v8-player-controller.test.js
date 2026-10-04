@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createMakerV8CatalogAdapter } from '../maker-v8-catalog-adapter.js';
 import { nativeInitialEvidenceFixture, nativeInitialInputFixture } from './fixtures/native-initial-content.js';
 
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
@@ -179,6 +180,9 @@ function playerFixture(overrides = {}) {
     makerVersion: String(document.lineage.version),
     title: document.metadata.name,
     summary: document.metadata.summary,
+    creatorName: document.metadata.creator ?? '',
+    style: document.metadata.style ?? '',
+    composableBinding: { definitionRegistryId: id(601), baseRegistryId: id(602), packRegistryId: id(603), admissionAuthorityId: id(604) },
     creatorAddress: id(901),
     ownerAddress: HOLDER,
     lifecycle: 'ACTIVE',
@@ -193,9 +197,10 @@ function playerFixture(overrides = {}) {
       rootDigest: '5'.repeat(44),
       makerVersion: String(document.lineage.version),
       lifecycle: 'ACTIVE',
-      contentCommitment: hash('ab'),
+      contentCommitment: makerV8PlayerContextCommitmentV8({ schemaVersion: 'animacraft.maker-v8-public-content.v1', document }),
+      rendererCommitment: hash('cd'),
       manifestBlobId: 'manifest-blob',
-      manifestSha256: hash('ab'),
+      manifestSha256: makerV8PlayerContextCommitmentV8({ schemaVersion: 'animacraft.maker-v8-manifest.v2', protocolVersion: 8, document, certifiedAssets }),
       manifestByteLength: 2048,
     },
     ...overrides,
@@ -501,6 +506,55 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
     persistence, controls, calls, player, sourceRuntime,
   };
 }
+
+test('real catalog Player crosses the exact controller boundary with independent commitments', async () => {
+  const h = harness({ enabled: false });
+  const p = h.player;
+  const manifest = { schemaVersion: 'animacraft.maker-v8-manifest.v2', protocolVersion: 8,
+    document: p.document, certifiedAssets: p.certifiedAssets };
+  h.productRuntime.catalog = createMakerV8CatalogAdapter({
+    chain: {
+      async discover() { return [{ type: p.evidence.activationEventType,
+        transactionDigest: p.evidence.activationTransactionDigest, binding: { rootId: p.rootId } }]; },
+      async loadContext() { return { root: { objectId: p.rootId, version: '9', digest: p.evidence.rootDigest,
+        makerKey: p.makerKey, makerVersion: p.makerVersion, lifecycle: 'ACTIVE',
+        creatorAddress: p.creatorAddress, ownerAddress: p.ownerAddress,
+        contentCommitment: p.evidence.contentCommitment, rendererCommitment: p.evidence.rendererCommitment,
+        content: { manifestBlobId: p.evidence.manifestBlobId, manifestSha256: p.evidence.manifestSha256 },
+        binding: { runtimeDefinitionRegistryId: p.composableBinding.definitionRegistryId,
+          baseRegistryId: p.composableBinding.baseRegistryId, packRegistryId: p.composableBinding.packRegistryId,
+          packAdmissionAuthorityId: p.composableBinding.admissionAuthorityId } } }; },
+    },
+    manifests: { async load(pointer) { return { ...pointer, manifest, byteLength: 2048 }; } },
+  });
+  assert.notEqual(p.evidence.manifestSha256, p.evidence.contentCommitment);
+  const read = await h.productRuntime.catalog.loadPlayer(p.rootId);
+  assert.equal(read.status, 'READY', JSON.stringify(read.diagnostics));
+  const result = await h.controller.loadPlayer(p.rootId);
+  assert.equal(result.status, 'READY', JSON.stringify(result.error));
+  assert.equal(h.calls.sign, 0);
+  assert.equal(h.calls.broadcast, 0);
+});
+
+test('exact Player rejects extra fields, metadata, binding and independent commitment drift', async () => {
+  const mutations = [
+    p => { p.unexpected = true; }, p => { p.evidence.unexpected = true; },
+    p => { p.creatorName = 'wrong'; }, p => { p.style = 'wrong'; },
+    p => { delete p.composableBinding; }, p => { p.composableBinding.extra = id(9); },
+    p => { p.composableBinding.baseRegistryId = '0x1'; },
+    p => { p.evidence.rendererCommitment = 'invalid'; },
+    p => { p.evidence.contentCommitment = p.evidence.manifestSha256; },
+    p => { p.evidence.contentCommitment = makerV8PlayerContextCommitmentV8({ schemaVersion: 'wrong', document: p.document }); },
+    p => { p.evidence.manifestSha256 = hash('ab'); },
+    p => { p.evidence.manifestByteLength = 0; },
+  ];
+  for (const mutate of mutations) {
+    const player = playerFixture(); mutate(player);
+    const h = harness({ enabled: false, player });
+    assert.equal((await h.controller.loadPlayer(ROOT_ID)).status, 'ERROR');
+    assert.equal(h.calls.sign, 0); assert.equal(h.calls.broadcast, 0);
+  }
+});
 
 test('controller loads signer-bound definitions and retained attachment layout without writes', async () => {
   const h = harness({ enabled: false });
