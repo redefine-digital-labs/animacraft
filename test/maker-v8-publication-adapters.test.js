@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { compilerSealPolicyFixture } from './fixtures/maker-v8-compiler-seal-policy.js';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { IDBFactory } from 'fake-indexeddb';
 import { bindMakerV8SourceAssets } from '../maker-v8-source-asset.js';
 import { sha256 as sourceSha256 } from '@noble/hashes/sha2.js';
 import { compileMakerV8LivingContentV8 } from '../maker-v8-living-content-compiler.js';
@@ -46,6 +47,10 @@ import {
   assertMakerV8PublicationPlanIdentityV8,
   makerV8Base64BlobV8,
   makerV8BlobRefV8,
+  createMakerV8PublicationPersistenceV8,
+  makerV8PublicationAttemptSha256V8,
+  makerV8PublicationCheckpointSha256V8,
+  makerV8Utf8BlobV8,
 } from '../maker-v8-publication-store.js';
 import {
   MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
@@ -415,8 +420,9 @@ async function scaffoldRaw(publication, transaction, digest = DIGEST) {
   return raw;
 }
 
-async function compilerHarness(name = 'default', signerAddress = nid(fixture.ids.signer)) {
+async function compilerHarness(name = 'default', signerAddress = nid(fixture.ids.signer), configureDocument = null) {
   const document = clone(fixture.document);
+  configureDocument?.(document);
   const transport = await transportFor(document);
   const template = await contextTemplate(transport);
   template.activationAuthority.livingBlob.owner.address = signerAddress;
@@ -696,7 +702,19 @@ test('Living bundle bytes are bound into the existing durable context and cannot
 });
 
 test('finalized browser readback produces a fixed milestone capsule and O(1) successor boundary', async () => {
-  const value = await compilerHarness('successor');
+  const value = await compilerHarness('successor', nid(fixture.ids.signer), document => {
+    document.colors = [{ key: 'primary', label: 'Primary', defaultSwatchKey: 'black', swatches: [
+      { key: 'black', label: 'Black', rgba: '#000000ff', stops: [{ offset: 0, rgba: '#000000ff' }, { offset: 1, rgba: '#ffffffff' }] },
+      { key: 'white', label: 'White', rgba: '#ffffffff', stops: [] },
+    ] }];
+    document.defaultRecipe.colors = [{ channelKey: 'primary', swatchKey: 'black' }];
+    const style = clone(document.parts[0].items[0].styles[0]);
+    style.key = 'digital'; style.physical = null;
+    document.parts[0].items[0].styles.push(style);
+    document.rules = [{ key: 'body-required', kind: 'REQUIRE',
+      trigger: { source: 'BASE', sourceKey: null, partKey: 'body', itemKey: 'body', styleKey: null },
+      targetMode: 'ALL', targets: [{ source: 'BASE', sourceKey: null, partKey: 'body', itemKey: 'body', styleKey: null }], payload: {} }];
+  });
   const plan = clone(value.prepared.plan);
   const transaction = value.prepared.attested.transaction;
   const signer = plan.immutable.signerAddress;
@@ -837,6 +855,53 @@ test('finalized browser readback produces a fixed milestone capsule and O(1) suc
   });
   assert.equal(successor.descriptor.ordinal, 1);
   assert.equal(successor.descriptor.kind, 'BASE_CHUNK');
+  const successorCommands = successor.transaction.getData().commands;
+  for (const name of ['none', 'some']) assert.ok(successorCommands.some(c => c.MoveCall?.module === 'option' && c.MoveCall.function === name));
+  for (const name of ['ColorStopV2', 'ColorSwatchV2', 'SemanticSelectorV2']) assert.ok(successorCommands.some(c => c.MakeMoveVec?.type.endsWith(`::${name}`)));
+  const readySuccessor = clone(successorPlan);
+  const successorBlob = await makerV8Base64BlobV8(successor.transactionKindBytes);
+  readySuccessor.current = { ...clone(successor.descriptor), transactionKindRef: makerV8BlobRefV8(successorBlob),
+    fullTransactionRef: null, signatureRef: null, outcome: { status: 'READY' } };
+  readySuccessor.nextPreparation = null;
+  await assertMakerV8PublicationPlanIdentityV8(readySuccessor);
+  const indexedDB = new IDBFactory();
+  const store = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName: 'real-compiler-successor',
+    storageManager: { async persisted() { return true; }, async persist() { return true; } } });
+  await store.requirePersistentStorage();
+  await store.createAttempt(value.prepared.plan, value.prepared.blobs);
+  const event = (status, sequence, previous = null) => {
+    const result = { schemaVersion: MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA, attemptId: plan.attemptId, ordinal: 0, sequence,
+      status, digest, kindSha256: plan.current.transactionKindSha256, fullTransactionRef: null, signatureRef: null,
+      details: { source: 'EXTERNAL_FINALIZED', at: 101 + sequence, code: null, signedAt: null, firstSeenAt: 101, broadcastAt: null },
+      observedAt: 101 + sequence, previousAttemptSha256: previous?.eventSha256 ?? null,
+      previousGlobalAttemptSha256: previous?.eventSha256 ?? null, eventSha256: '0'.repeat(64) };
+    result.eventSha256 = makerV8PublicationAttemptSha256V8(result); return result;
+  };
+  const pendingEvent = event('EXTERNAL_PENDING', 0);
+  const pending = { ...clone(value.prepared.plan), revision: 2, updatedAt: 101,
+    attemptHistory: { totalEvents: 1, excessEvents: 0, globalAttemptHeadSha256: pendingEvent.eventSha256 } };
+  pending.current.outcome = { status: 'OUTCOME_PENDING', digest, kindSha256: plan.current.transactionKindSha256,
+    signedAt: null, firstSeenAt: 101, source: 'EXTERNAL_FINALIZED', broadcastAt: null, observedAt: 101 };
+  await store.compareAndSwap(plan.attemptId, 1, pending, { attempt: pendingEvent });
+  const durableHead = clone(head);
+  durableHead.submissionSource = 'EXTERNAL_FINALIZED'; durableHead.finalizedAt = 102;
+  durableHead.certificate.readbackSha256 = (await makerV8Utf8BlobV8(canonicalMakerV8Json(durableHead.readback))).sha256;
+  durableHead.checkpointSha256 = await makerV8PublicationCheckpointSha256V8(durableHead);
+  const successEvent = event('FINALIZED_SUCCESS', 1, pendingEvent);
+  const finalized = { ...clone(successorPlan), revision: 3, updatedAt: 102,
+    attemptHistory: { totalEvents: 2, excessEvents: 0, globalAttemptHeadSha256: successEvent.eventSha256 } };
+  finalized.head.checkpointSha256 = durableHead.checkpointSha256;
+  await store.compareAndSwap(plan.attemptId, 2, finalized, { checkpoint: durableHead, attempt: successEvent });
+  const installed = await store.compareAndSwap(plan.attemptId, 3, { ...finalized, revision: 4, updatedAt: 103,
+    current: readySuccessor.current, nextPreparation: null }, { blobs: [successorBlob] });
+  const coldStore = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName: 'real-compiler-successor' });
+  const restored = await coldStore.loadPlan(plan.attemptId);
+  assert.deepEqual(restored, installed);
+  const coldCompiler = createMakerV8PublicationCompilerAdapterV8({ persistence: coldStore,
+    compilerRpc: value.compilerRpc, loadRuntimeAttestation() { throw new Error('cold recovery must not query authority'); } });
+  const cold = await coldCompiler.rehydrate({ plan: restored, head: await coldStore.loadHead(plan.attemptId),
+    transactionKindBytes: successor.transactionKindBytes, purpose: 'RESUME_READY', requireFreshAuthority: false });
+  assert.equal(cold.transactionKindBytes, successor.transactionKindBytes);
   assert.equal(value.calls.getBlob, 3 + successorPlan.blobRefs.assets.length);
   assert.equal(value.calls.loadHead, 0, 'successor consumes one passed head and never scans history');
 
