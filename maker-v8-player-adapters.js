@@ -4336,7 +4336,7 @@ function transactionDataProof(value, expected = {}) {
   const payment = snapshot.gasData?.payment;
   const epoch = snapshot.expiration?.Epoch;
   if (sender !== gasOwner || budget > MAX_GAS_BUDGET || price === 0n
-    || !Array.isArray(payment) || payment.length === 0
+    || !Array.isArray(payment)
     || !Number.isSafeInteger(epoch) || epoch <= 0) {
     fail('MAKER_V8_PLAYER_TRANSACTION_ENVELOPE_INVALID', 'Player TransactionData has an unsafe signer, gas, or expiration envelope.');
   }

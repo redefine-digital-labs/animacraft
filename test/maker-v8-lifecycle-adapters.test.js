@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { TestTransport } from '@protobuf-ts/runtime-rpc';
 
 import { bcs } from '@mysten/sui/bcs';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
@@ -703,6 +705,91 @@ test('unknown unsigned outcome remains locked until lease and exact external no-
   await assert.doesNotReject(() => recovery.reserveSignatureIntent(unsigned));
 });
 
+test('production boundary accepts official gRPC address-balance gas resolution and rejects unsafe envelopes', async t => {
+  // Exercise the installed official gRPC resolver, including protobuf response
+  // handling, rather than pre-populating Transaction gas fields in the test.
+  function addressGasResolver({ mutate = () => {} } = {}) {
+    const calls = [];
+    const fallback = new TestTransport();
+    const transport = {
+      mergeOptions: options => fallback.mergeOptions(options),
+      unary(method, input, options) {
+        assert.equal(method.service.typeName, 'sui.rpc.v2.TransactionExecutionService');
+        assert.equal(method.name, 'SimulateTransaction');
+        assert.equal(input.doGasSelection, true);
+        assert.equal(input.transaction.gasPayment.budget, undefined);
+        assert.equal(input.transaction.expiration.epoch > 0n, true);
+        calls.push(input);
+        const transaction = { ...input.transaction,
+          gasPayment: { owner: input.transaction.sender, budget: 340448n, price: 100n, objects: [] } };
+        mutate(transaction);
+        const response = method.O.create({ transaction: {
+          transaction, effects: { status: { success: true }, epoch: 41n },
+        } });
+        return new TestTransport({ response }).unary(method, input, options);
+      },
+      serverStreaming() { throw Error('Unexpected stream'); },
+      clientStreaming() { throw Error('Unexpected stream'); },
+      duplex() { throw Error('Unexpected stream'); },
+    };
+    const grpc = new SuiGrpcClient({ network: 'mainnet', transport });
+    return { calls, plugin: () => grpc.core.resolveTransactionPlugin() };
+  }
+  for (const mode of ['address-balance', 'owner', 'sender', 'budget', 'expiry', 'nonarray', 'reference']) await t.test(mode, async () => {
+    const built = buildPauseMakerV8(runtime, actionInput());
+    const kind = toBase64(await built.transaction.build({ onlyTransactionKind: true }));
+    const resolver = addressGasResolver({ mutate: tx => {
+      if (mode === 'owner') tx.gasPayment.owner = id(9999);
+      if (mode === 'sender') tx.sender = tx.gasPayment.owner = id(9999);
+      if (mode === 'budget') tx.gasPayment.budget = 500000001n;
+      if (mode === 'expiry') tx.expiration.epoch = 0n;
+      if (mode === 'nonarray') tx.gasPayment.objects = {};
+      if (mode === 'reference') tx.gasPayment.objects = [{ objectId: gasId, version: 0n, digest: gasDigest }];
+    } });
+    let simulations = 0;
+    const client = { getChainIdentifier: async () => ({ chainIdentifier: MAKER_V8_MAINNET_GENESIS_DIGEST }), core: {
+      resolveTransactionPlugin: resolver.plugin,
+      getCurrentSystemState: async () => ({ systemState: { epoch: '41' } }),
+      simulateTransaction: async ({ transaction: bytes }) => {
+        simulations++;
+        return { $kind: 'Transaction', Transaction: { digest: TransactionDataBuilder.getDigestFromBytes(bytes), bcs: bytes,
+          status: { success: true }, effects: { transactionDigest: digest(6), status: { success: true } } } };
+      },
+      executeTransaction: () => assert.fail('must never broadcast'),
+    } };
+    const boundary = createMakerV8LifecycleBoundaryAdapterV8({ client, runtime,
+      execution: { network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, allowWalletSignature: false, allowBroadcast: false },
+      loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {} });
+    const build = () => boundary.buildExactTransaction({ transaction: built.transaction, sender: owner,
+      descriptor: built.descriptor, expectedKindBytes: kind });
+    if (mode === 'expiry') {
+      const result = await build();
+      const data = TransactionDataBuilder.fromBytes(fromBase64(result.bytes));
+      assert.equal(data.snapshot().expiration.Epoch, 42, 'SDK preserves the explicitly bounded expiry over resolver data');
+      data.expiration = { Epoch: 0, $kind: 'Epoch' };
+      const bytes = data.build();
+      await assert.rejects(boundary.dryRunExactTransaction({ bytes: toBase64(bytes),
+        digest: TransactionDataBuilder.getDigestFromBytes(bytes), signer: owner,
+        descriptor: built.descriptor, expectedKindBytes: kind }), { code: 'MAKER_V8_LIFECYCLE_TRANSACTION_ENVELOPE_INVALID' });
+      assert.equal(simulations, 0);
+      return;
+    }
+    if (mode !== 'address-balance') {
+      await assert.rejects(build);
+      assert.equal(simulations, 0);
+      return;
+    }
+    const result = await build();
+    assert.equal(resolver.calls.length, 1);
+    const snapshot = TransactionDataBuilder.fromBytes(fromBase64(result.bytes)).snapshot();
+    assert.deepEqual(snapshot.gasData.payment, []);
+    assert.equal(snapshot.expiration.Epoch, 42);
+    assert.equal((await boundary.dryRunExactTransaction({ ...result, signer: owner,
+      descriptor: built.descriptor, expectedKindBytes: kind })).status, 'SUCCESS');
+    assert.equal(simulations, 1);
+  });
+});
+
 test('production boundary binds descriptor kind and accepts an independent simulation effects digest', async () => {
   const built = buildPauseMakerV8(runtime, actionInput());
   const kindBytes = await built.transaction.build({ onlyTransactionKind: true });
@@ -767,7 +854,8 @@ test('production boundary binds descriptor kind and accepts an independent simul
 });
 
 test('finalized failure and authoritative post-expiration absence are durable terminal states', async () => {
-  for (const scenario of ['FAILURE', 'EXPIRED']) {
+  for (const [scenario, paymentMode] of ['FAILURE', 'EXPIRED'].flatMap(scenario =>
+    ['coin', 'address-balance'].map(mode => [scenario, mode]))) {
     const keypair = new Ed25519Keypair();
     const signer = keypair.toSuiAddress();
     const root = { ...parsedRoot, ownerAddress: signer };
@@ -794,6 +882,7 @@ test('finalized failure and authoritative post-expiration absence are durable te
       '101',
       signer,
     );
+    if (paymentMode === 'address-balance') transaction.setGasPayment([]);
     const bytes = await transaction.build();
     const transactionDigest = TransactionDataBuilder.getDigestFromBytes(bytes);
     const signed = await keypair.signTransaction(bytes);
