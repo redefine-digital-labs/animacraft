@@ -48,6 +48,75 @@ function draftRecord({ revision = 1, updatedAt = 1_700_000_000_000 } = {}) {
 
 const ROOT_ONE = `0x${'31'.repeat(32)}`;
 
+test('certified Player original share handlers use only its public exact Root route', async t => {
+  for (const mode of ['copy', 'native', 'native-reject', 'fallback', 'cancel', 'reject', 'missing', 'stale', 'destroy']) await t.test(mode, async () => {
+    const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } }, templatesResult: { status: 'READY', diagnostics: [],
+      makers: [certifiedMaker(), certifiedMaker({ rootId: ROOT_TWO })] }, playerSessionResult: root => playerSession(root),
+      renderPlayerPreviewResult: canonicalPreview() });
+    const sent = []; const gate = deferred();
+    h.win.navigator.clipboard = { writeText: async value => {
+      sent.push(value);
+      if (mode === 'reject') throw Error('denied');
+      if (['stale', 'destroy'].includes(mode)) await gate.promise;
+    } };
+    if (['native', 'native-reject', 'cancel'].includes(mode)) h.win.navigator.share = async value => {
+      sent.push(value);
+      if (mode === 'native-reject') throw Error('share rejected');
+      if (mode === 'cancel') throw Object.assign(Error('cancel'), { name: 'AbortError' });
+    };
+    if (mode === 'missing') delete h.win.navigator.clipboard;
+    const app = createOriginalProductApp(h);
+    try {
+      await app.ready; await app.openPlayer(ROOT_ONE);
+      const mount = h.doc.getElementById('makerV4PlayerMount');
+      const preview = new FakeTarget(h.doc, { dataset: { action: 'player-preview-export' } }); preview.parent = mount;
+      await waitForEvent(mount.fire('click', { target: preview }));
+      assert.ok(mount.innerHTML.includes('makerPlayerShareStatus'), 'export sharing controls are visible');
+      assert.deepEqual(sent, []);
+      assert.match(mount.innerHTML, /Completion price not yet quoted/);
+      assert.doesNotMatch(mount.innerHTML, /Purchases are not available for this Maker yet/);
+      assert.doesNotMatch(mount.innerHTML, /Publish this Maker before sharing it/);
+      const action = ['native', 'native-reject', 'cancel', 'fallback', 'missing'].includes(mode) ? 'player-share-maker' : 'player-copy-maker-link';
+      const control = new FakeTarget(h.doc, { dataset: { action } }); control.parent = mount;
+      mount.fire('click', { target: control }); await settle();
+      if (mode === 'stale') await app.openPlayer(ROOT_TWO);
+      if (mode === 'destroy') app.destroy();
+      gate.resolve(); await settle(); await settle();
+      const url = `https://animacraft.soulidity.ai/maker/${ROOT_ONE}`;
+      assert.deepEqual(sent, mode === 'missing' ? [] : [['native', 'native-reject', 'cancel'].includes(mode) ? { url } : url]);
+      if (['copy', 'fallback'].includes(mode)) assert.match(mount.innerHTML, /Maker link copied/);
+      if (mode === 'native') assert.match(mount.innerHTML, /Maker shared/);
+      if (['missing', 'reject', 'native-reject'].includes(mode)) assert.match(mount.innerHTML, /Could not share or copy the Maker link/);
+      if (['cancel', 'stale', 'destroy'].includes(mode)) assert.doesNotMatch(mount.innerHTML, /Maker link copied|Maker shared|Could not share or copy the Maker link/);
+    } finally { app.destroy(); }
+  });
+});
+
+test('Player share dispatch rejects invalid protocols and uncertified Root identities', async t => {
+  for (const mode of ['protocol', 'root']) await t.test(mode, async () => {
+    const h = browserHarness({ initialUrl: mode === 'protocol' ? 'file:///player.html' : undefined,
+      connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } },
+      templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+      playerSessionResult: mode === 'root' ? { ...playerSession(ROOT_ONE), rootId: 'invalid' } : playerSession(ROOT_ONE),
+      renderPlayerPreviewResult: canonicalPreview() });
+    const sent = [];
+    h.win.navigator.share = async value => sent.push(value);
+    h.win.navigator.clipboard = { writeText: async value => sent.push(value) };
+    const app = createOriginalProductApp(h);
+    try {
+      await app.ready;
+      if (mode === 'root') await assert.rejects(app.openPlayer(ROOT_ONE));
+      else await app.openPlayer(ROOT_ONE);
+      const mount = h.doc.getElementById('makerV4PlayerMount');
+      for (const action of ['player-copy-maker-link', 'player-share-maker']) {
+        const control = new FakeTarget(h.doc, { dataset: { action } }); control.parent = mount;
+        await waitForEvent(mount.fire('click', { target: control }));
+      }
+      assert.deepEqual(sent, []);
+    } finally { app.destroy(); }
+  });
+});
+
 test('ordinary publication opens exact saved review without signing and rejects duplicate clicks', async () => {
   const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
   const gate = deferred(); const calls = [];
@@ -5393,6 +5462,14 @@ test('local Player uses the approved mount, local actions and Creator return wit
     preview.parent = mount;
     await waitForEvent(mount.fire('click', { target: preview }));
     assert.match(mount.innerHTML, /id="makerPlayerExportDialog"/);
+    const publicLinks = [];
+    harness.win.navigator.share = async value => publicLinks.push(value);
+    harness.win.navigator.clipboard = { writeText: async value => publicLinks.push(value) };
+    for (const action of ['player-copy-maker-link', 'player-share-maker']) {
+      const control = new FakeTarget(harness.doc, { dataset: { action } }); control.parent = mount;
+      await waitForEvent(mount.fire('click', { target: control }));
+    }
+    assert.deepEqual(publicLinks, [], 'local author preview never shares a public Maker link');
     const downloadTag = mount.innerHTML.match(/<button[^>]+data-action="player-download-png"[^>]*>/)[0];
     assert.doesNotMatch(downloadTag, /disabled/);
     const png = new FakeTarget(harness.doc, { dataset: { action: 'player-download-png' } });

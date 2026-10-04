@@ -1297,16 +1297,40 @@ test('Complete confirmation shows exact fees, distinct quotas, rights and origin
 });
 
 test('known entry access never labels an unquoted Complete as free in any locale', () => {
+  const session = sessionFixture();
+  session.execution.writeEnabled = true;
   const oldFreeLabel = { en: 'Free', zh: '免费', ja: '無料', ko: '무료', vi: 'Miễn phí' };
   for (const locale of ['en', 'zh', 'ja', 'ko', 'vi']) {
     const html = renderApprovedMakerV8Player(projectMakerV8PlayerView(
-      sessionFixture(), fullState({ locale, export: { open: true } }), { default: true },
+      session, fullState({ locale, export: { open: true } }), { default: true },
     ));
     for (const className of ['v4-player-commerce-summary', 'v4-player-commerce-quote']) {
       const region = html.match(new RegExp(`<section class="${className}"[\\s\\S]*?</section>`))?.[0];
       assert.ok(region, className);
       assert.ok(region.includes(makerWorkspaceText(locale, 'playerCommerceNotQuoted')));
       assert.ok(!region.includes(`>${oldFreeLabel[locale]}<`));
+    }
+  }
+});
+
+test('unknown access is unquoted while explicit denial or disabled execution stays unavailable', () => {
+  for (const locale of ['en', 'zh', 'ja', 'ko', 'vi']) {
+    for (const mode of ['unknown', 'denied', 'disabled']) {
+      const session = sessionFixture();
+      session.execution.writeEnabled = mode !== 'disabled';
+      const view = projectMakerV8PlayerView(session, fullState({ locale,
+        makerAccess: mode === 'denied' ? { accessible: false, reason: 'Exact denial' } : null,
+        export: { open: true } }), { default: true });
+      assert.equal(view.makerAccess.accessible, false);
+      assert.equal(view.makerAccess.known, mode === 'denied');
+      const html = renderApprovedMakerV8Player(view);
+      assert.ok(makerWorkspaceText(locale, 'playerControlUnavailable') !== 'playerControlUnavailable');
+      for (const className of ['v4-player-commerce-summary', 'v4-player-commerce-quote']) {
+        const region = html.match(new RegExp(`<section class="${className}"[\\s\\S]*?</section>`))[0];
+        assert.ok(region.includes(makerWorkspaceText(locale, mode === 'unknown' ? 'playerCommerceNotQuoted' : 'playerPurchaseUnavailable')));
+        if (mode === 'unknown') assert.ok(!region.includes(makerWorkspaceText(locale, 'playerPurchaseUnavailable')));
+        if (mode === 'denied') assert.match(region, /Exact denial/);
+      }
     }
   }
 });
@@ -1347,8 +1371,10 @@ test('read-only upfront overview separates held and required entry, completion a
 
 test('unknown access and Pack boundaries fail closed in the donor-approved status regions', () => {
   const reason = 'Fresh bridge did not expose exact access state.';
+  const disabledSession = sessionFixture();
+  disabledSession.execution.disabledReason = reason;
   const unknownAccess = renderApprovedMakerV8Player(projectMakerV8PlayerView(
-    sessionFixture(),
+    disabledSession,
     fullState({ makerAccess: null, capabilityReason: reason, export: { open: false } }),
     { default: true },
   ));

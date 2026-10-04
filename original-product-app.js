@@ -463,6 +463,7 @@ function playerCapabilities({
   complete = false,
   recovery = false,
   packAcquire = false,
+  share = false,
   session = null,
 } = {}) {
   const enabled = [
@@ -473,6 +474,7 @@ function playerCapabilities({
     'player-reset-all-soul', 'player-export', 'player-retry-save',
   ];
   if (reset) enabled.push('player-reset');
+  if (share) enabled.push('player-copy-maker-link', 'player-share-maker');
   if (render) enabled.push(
     'player-preview-export', 'close-player-export', 'close-player-export-backdrop',
     'player-export-retry', 'player-export-recipe', 'player-download-png',
@@ -2257,6 +2259,7 @@ export function createOriginalProductApp({
       complete: Boolean(completePlayerJourney && nativeCompletionConfigured()),
       recovery: Boolean(state.playerUi?.recoveryBranches?.length),
       packAcquire: Boolean(preparePlayerAction && executePlayerAction && recoverPlayerAction && getPlayerSnapshot),
+      share: Boolean(publicPlayerShareUrl(state.playerSession)),
       session: state.playerSession,
     }));
   }
@@ -2467,6 +2470,40 @@ export function createOriginalProductApp({
     return Object.fromEntries(loaded.filter(([, url]) => url));
   }
 
+  function publicPlayerShareUrl(session) {
+    if (session?.status !== 'READY' || session.player?.lifecycle !== 'ACTIVE'
+      || !EXACT_OBJECT_ID.test(session.rootId || '')) return '';
+    try {
+      const origin = new URL(win.location.href);
+      if (!['https:', 'http:'].includes(origin.protocol)) return '';
+      return new URL(`/maker/${session.rootId}`, origin.origin).href;
+    } catch { return ''; }
+  }
+
+  async function shareCurrentPlayer(action) {
+    const session = state.playerSession, ui = state.playerUi;
+    const request = state.playerRequest;
+    const url = publicPlayerShareUrl(session);
+    if (!url || !ui || state.destroyed || state.route !== 'make') return;
+    const current = () => !state.destroyed && state.route === 'make'
+      && state.playerRequest === request && state.playerSession === session && state.playerUi === ui;
+    ui.export.shareState = '';
+    try {
+      if (action === 'player-share-maker' && typeof win.navigator?.share === 'function') {
+        await win.navigator.share({ url });
+        if (current()) ui.export.shareState = makerWorkspaceText(state.locale, 'makerShared');
+      } else {
+        if (typeof win.navigator?.clipboard?.writeText !== 'function') throw new Error('Clipboard unavailable');
+        await win.navigator.clipboard.writeText(url);
+        if (current()) ui.export.shareState = makerWorkspaceText(state.locale, 'makerLinkCopied');
+      }
+    } catch (error) {
+      if (current()) ui.export.shareState = error?.name === 'AbortError' ? '' : makerWorkspaceText(state.locale, 'makerShareUnavailable');
+    } finally {
+      if (current()) renderPlayer({ drawPreview: false });
+    }
+  }
+
   function initialPlayerUi(session) {
     const selectedPartKey = session.player.document.parts
       .find((part) => part.visible === true)?.key || '';
@@ -2499,7 +2536,7 @@ export function createOriginalProductApp({
         transparent: false,
         ...makerV8ExportSizes(session.player.document.canvas),
         completionConfirmed: false,
-        shareUrl: '',
+        shareUrl: publicPlayerShareUrl(session),
         shareState: '',
       },
       recoveryBranches: [],
@@ -3959,7 +3996,9 @@ export function createOriginalProductApp({
     }
     const view = projectedPlayerView();
     if (!view) return;
-    if (['player-acquire-expansion-v8', 'player-confirm-pack-v8',
+    if (action === 'player-copy-maker-link' || action === 'player-share-maker') {
+      await shareCurrentPlayer(action);
+    } else if (['player-acquire-expansion-v8', 'player-confirm-pack-v8',
       'player-cancel-pack-v8', 'player-recover-pack-v8'].includes(action)) {
       await acquirePlayerPack(action, control);
     } else if (action === 'player-expansion-v8') {

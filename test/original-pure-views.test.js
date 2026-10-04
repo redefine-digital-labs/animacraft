@@ -42,7 +42,7 @@ test('workflow locale deltas preserve every other historical key and translation
   const changed = ['versionHistoryCopy', 'wardrobeSetupCopy', 'wardrobePartSlotCopy'];
   const added = `playerOutputSelection playerPackPaid playerPackTransactionFinalized
     playerPackAtomicUnits playerPackEntryOnly playerPackConfirm playerPackRecover playerPackDismiss
-    playerCommerceNotQuoted playerStepMakerAccess playerStepPackAccess playerStepStartAnother
+    playerCommerceNotQuoted playerControlUnavailable playerStepMakerAccess playerStepPackAccess playerStepStartAnother
     playerStepOpenSoul playerStepStartAnotherCopy playerStepRecoveredOtherDraft playerStepBaseItem
     playerStepLoadout playerStepComplete playerStepRenderUpload playerStepNativeUpload playerStepEnvelopes
     playerStepGasBudget playerEnvelopeRecoveryExport playerEnvelopeRecoveryImport playerEnvelopeRecoveryClear

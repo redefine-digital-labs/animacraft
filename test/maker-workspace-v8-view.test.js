@@ -809,7 +809,7 @@ test('view imports only current authority and hash-exact approved pure donor hel
   // Player entry/Complete replaces the misleading Free label and adds these keys.
   const playerAdditions = [
     'playerPackPaid', 'playerPackTransactionFinalized', 'playerPackAtomicUnits', 'playerPackEntryOnly',
-    'playerPackConfirm', 'playerPackRecover', 'playerPackDismiss', 'playerCommerceNotQuoted',
+    'playerPackConfirm', 'playerPackRecover', 'playerPackDismiss', 'playerCommerceNotQuoted', 'playerControlUnavailable',
     'playerStepMakerAccess', 'playerStepPackAccess', 'playerStepStartAnother', 'playerStepOpenSoul',
     'playerStepStartAnotherCopy', 'playerStepRecoveredOtherDraft', 'playerStepBaseItem', 'playerStepLoadout',
     'playerStepComplete', 'playerStepRenderUpload', 'playerStepNativeUpload', 'playerStepConfirm',
