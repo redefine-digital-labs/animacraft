@@ -417,22 +417,42 @@ export function createMakerV8PublicationControllerV8({
   );
 
   const coldAuthorize = async (attemptId, purpose, requireFreshAuthority) => {
-    const plan = await persistence.loadPlan(attemptId);
+    let plan = await persistence.loadPlan(attemptId);
     if (!plan) fail('MAKER_V8_PUBLICATION_NOT_FOUND', 'Publication attempt was not found.');
     if (!plan.current) {
       fail('MAKER_V8_PUBLICATION_CURRENT_REQUIRED', 'Publication has no current transaction cursor.');
     }
-    const [kindBytes, head] = await Promise.all([
+    let [kindBytes, head] = await Promise.all([
       readKind(plan),
       plan.head ? persistence.loadHead(attemptId) : Promise.resolve(null),
     ]);
-    const attested = await compiler.rehydrate({
+    const rehydrate = () => compiler.rehydrate({
       plan: clone(plan),
       head: head == null ? null : clone(head),
       transactionKindBytes: kindBytes,
       purpose,
       requireFreshAuthority,
     });
+    let attested;
+    try {
+      attested = await rehydrate();
+    } catch (error) {
+      if (error?.code !== 'MAKER_V8_PUBLICATION_COMPILER_REHYDRATION_DRIFT'
+        || plan.current.outcome.status !== 'READY'
+        || typeof compiler.prepareUnsignedReferenceRepair !== 'function'
+        || typeof persistence.repairUnsignedOwnedReference !== 'function') throw error;
+      const repair = await compiler.prepareUnsignedReferenceRepair({
+        plan: clone(plan), head: head == null ? null : clone(head), transactionKindBytes: kindBytes,
+      });
+      const written = await persistence.repairUnsignedOwnedReference(plan.attemptId, plan.revision, repair);
+      plan = await persistence.loadPlan(plan.attemptId);
+      if (!plan || canonical(plan) !== canonical(written)) {
+        fail('MAKER_V8_PUBLICATION_DURABLE_REREAD_FAILED', 'Owned-reference repair was not observed by an exact cold reread.');
+      }
+      kindBytes = await readKind(plan);
+      head = await persistence.loadHead(plan.attemptId);
+      attested = await rehydrate();
+    }
     return Object.freeze({
       plan,
       head,

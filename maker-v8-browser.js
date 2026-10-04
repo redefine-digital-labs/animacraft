@@ -3289,6 +3289,31 @@ async function compilerChangedObject(client, response, expectedType, label, fiel
   return { type: historical.type, reference: historical.reference, fields: historical.fields };
 }
 
+async function compilerAdminCapProgress(client, response, publication, anchor) {
+  const kind = bcs.TransactionKind.parse(fromBase64(response.compilerTransactionKindProof.transactionKindBytesBase64));
+  const inputs = kind.ProgrammableTransaction?.inputs ?? [];
+  const matches = inputs.map(input => input.Object?.ImmOrOwnedObject)
+    .filter(ref => ref?.objectId === anchor.reference.objectId);
+  if (matches.length !== 1) fail('MAKER_V8_COMPILER_ADMIN_CAP_INPUT_INVALID', 'Finalized kind requires exactly one owned AdminCap input.', 'READBACK');
+  const owner = { kind: 'AddressOwner', value: publication.context.signerAddress };
+  const inputRef = { ...matches[0], owner };
+  const change = compilerChange(response, anchor.type, 'AdminCap', anchor.reference.objectId);
+  if (change.type !== 'mutated') fail('MAKER_V8_COMPILER_ADMIN_CAP_OUTPUT_INVALID', 'AdminCap must be a mutated transaction output.', 'READBACK');
+  const outputRef = compilerEffectsRefForChange(response, change, 'AdminCap');
+  if (canonicalMakerV8Json(outputRef.owner) !== canonicalMakerV8Json(owner)
+    || BigInt(outputRef.version) <= BigInt(inputRef.version)) {
+    fail('MAKER_V8_COMPILER_ADMIN_CAP_OUTPUT_INVALID', 'AdminCap output must advance and remain owned by the signer.', 'READBACK');
+  }
+  const inputAdminCap = await readMakerV8CompilerHistoricalObjectV8(client, inputRef, anchor.type, 'inputAdminCap', SCAFFOLD_FIELDS.adminCap);
+  const adminCap = await readMakerV8CompilerHistoricalObjectV8(client, outputRef, anchor.type, 'adminCap', SCAFFOLD_FIELDS.adminCap, response.digest);
+  for (const proof of [inputAdminCap, adminCap]) {
+    if (canonicalMakerV8Json(proof.fields) !== canonicalMakerV8Json(anchor.fields)) {
+      fail('MAKER_V8_COMPILER_ADMIN_CAP_FIELDS_DRIFT', 'AdminCap historical fields differ from the certified anchor.', 'READBACK');
+    }
+  }
+  return { inputAdminCap, adminCap };
+}
+
 function companionTypes(runtime) {
   return {
     sealRegistry: makerV8StableType(runtime, 'seal', 'seal_v8', 'SealRegistryV8'),
@@ -3670,12 +3695,19 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       await assertMakerV8CompilerContextFreshV8(publication.context, fresh.context);
       const response = await assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, transaction);
       if (stage === 'SCAFFOLD') return scaffoldReadback(response, publication);
-      if (stage === 'BASE_DEFINITIONS') return baseReadback(response, scaffold);
-      if (stage === 'COMPANION_OBJECTS') return companionReadback(response, publication);
+      if (stage === 'BASE_DEFINITIONS') return { ...await baseReadback(response, scaffold), ...await compilerAdminCapProgress(client, response, publication, scaffold.adminCap) };
+      if (stage === 'COMPANION_OBJECTS') return { ...await companionReadback(response, publication), ...await compilerAdminCapProgress(client, response, publication, base.adminCap) };
       if (stage === 'ACTIVATION') {
-        return activationReadback(response, fresh.attested, publication, base, transactionDigest);
+        return { ...await activationReadback(response, fresh.attested, publication, base, transactionDigest), ...await compilerAdminCapProgress(client, response, publication, base.adminCap) };
       }
       fail('MAKER_V8_COMPILER_STAGE_INVALID', 'Unknown Maker v8 compiler stage.', 'VALIDATION');
+    },
+    async recoverOwnedReferenceProgress({ publication, adminCap, digest: transactionDigest, transactionKindBytesBase64 }) {
+      await assertPinnedMainnet(client);
+      const transaction = Transaction.fromKind(fromBase64(transactionKindBytesBase64));
+      transaction.setSender(publication.context.signerAddress);
+      const response = await assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, transaction);
+      return compilerAdminCapProgress(client, response, publication, adminCap);
     },
     async recoverCheckpoint({
       kind, digest: transactionDigest, build, transaction, publication, transport,
@@ -3686,11 +3718,12 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       if (!(expectedTransaction instanceof Transaction)) fail('MAKER_V8_COMPILER_TRANSACTION_REQUIRED', 'Recovery requires the exact compiler Transaction.', 'VALIDATION');
       const response = await assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, expectedTransaction);
       if (kind === 'SCAFFOLD') return scaffoldReadback(response, publication);
-      if (kind === 'BASE_CHUNK') return baseChunkReadback(response, scaffold);
-      if (kind === 'COMPANION_OBJECTS') return companionReadback(response, publication);
+      if (kind === 'BASE_CHUNK') return { ...await baseChunkReadback(response, scaffold), ...await compilerAdminCapProgress(client, response, publication, scaffold.adminCap) };
+      if (kind === 'COMPANION_OBJECTS') return { ...await companionReadback(response, publication), ...await compilerAdminCapProgress(client, response, publication, base.adminCap) };
       if (kind === 'ACTIVATION_CHUNK') {
-        if (build.checkpoint.final) return activationReadback(response, { runtime: assertMakerV8Runtime(runtimeInput) }, publication, base, transactionDigest);
-        return activationChunkReadback(response, build, companion);
+        const progression = await compilerAdminCapProgress(client, response, publication, base.adminCap);
+        if (build.checkpoint.final) return { ...await activationReadback(response, { runtime: assertMakerV8Runtime(runtimeInput) }, publication, base, transactionDigest), ...progression };
+        return { ...await activationChunkReadback(response, build, companion), ...progression };
       }
       fail('MAKER_V8_COMPILER_STAGE_INVALID', 'Unknown Maker v8 compiler checkpoint.', 'VALIDATION');
     },
