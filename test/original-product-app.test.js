@@ -187,6 +187,41 @@ test('publication explicitly reviews an earlier frozen revision and restores onl
   } finally { app.destroy(); }
 });
 
+test('republish current edits presents version review instead of completed predecessor resources', async () => {
+  const record = draftRecord({ revision: 41 });
+  const h = browserHarness({ record, connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const review = { schemaVersion: 'animacraft.maker-v8-publication-review.v1', reviewId: 'new-version',
+    scope: { draftId: record.draftId, draftRevision: 6, currentSavedRevision: 41,
+      publishingEarlierRevision: true, signerAddress: ROOT_ONE, network: 'mainnet' },
+    status: 'NEW_VERSION_REQUIRED', stage: 'COMPLETE', nextAction: null,
+    rootId: ROOT_ONE, makerVersion: 1, frozenMakerName: 'Original Maker', progress: { completed: 3, total: 3 } };
+  h.bridge.prepareMakerPublication = async () => review;
+  h.bridge.inspectMakerPublication = async () => review;
+  h.bridge.signMakerPublication = async () => assert.fail('signature');
+  h.bridge.continueMakerPublication = async () => assert.fail('broadcast');
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft(record.draftId); await settle();
+    h.emitBridge({ publication: { signingEnabled: true, broadcastEnabled: true } });
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const fire = async action => {
+      const target = new FakeTarget(h.doc, { dataset: { action, reviewDraft: record.draftId,
+        creatorGeneration: mount.innerHTML.match(/data-creator-generation="(\d+)"/)[1] } });
+      target.parent = mount; mount.fire('click', { target }); await settle();
+    };
+    await fire('publish');
+    for (const action of [null, 'publication-refresh']) {
+      if (action) await fire(action);
+      assert.match(mount.innerHTML, /Published saved revision 6 · current saved revision 41/);
+      assert.match(mount.innerHTML, /data-action="publication-versions"/);
+      assert.doesNotMatch(mount.innerHTML, /data-publication-stage|3 \/ 3|Continue publishing frozen|data-action="publication-(?:sign|continue|open)"/);
+    }
+    await fire('publication-versions');
+    assert.match(mount.innerHTML, /Local saved snapshots/);
+    assert.doesNotMatch(mount.innerHTML, /id="makerCreatorPublishDialog"/);
+  } finally { app.destroy(); }
+});
+
 test('publication busy close warns, keeps its flight, reopens without duplicate work and never resurrects a hidden dialog', async () => {
   const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
   const gate = deferred(); let prepares = 0;

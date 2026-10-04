@@ -29,6 +29,24 @@ test('chain version history distinguishes local snapshots and explicit archive i
   }
 });
 
+test('new version review never presents the predecessor progress as current publication', () => {
+  for (const locale of MAKER_WORKSPACE_LOCALES) {
+    const dictionary = makerWorkspaceDictionary(locale);
+    const html = render({ locale, publicationSigningEnabled: true, publicationBroadcastEnabled: true,
+      publicationReview: { review: { status: 'NEW_VERSION_REQUIRED', stage: 'COMPLETE',
+        scope: { draftRevision: 6, currentSavedRevision: 41, publishingEarlierRevision: true },
+        rootId: 'published-predecessor', makerVersion: 1, progress: { completed: 3, total: 3 },
+        assetCount: 987654, step: { id: 'predecessor-step', gasBudgetMist: '123987' },
+        nextAction: null, frozenMakerName: 'Original Maker' } } });
+    assert.ok(html.includes(dictionary.chainCurrentUnpublished));
+    assert.match(html, /data-action="publication-versions"/);
+    assert.match(html, /6/); assert.match(html, /41/);
+    assert.doesNotMatch(html, /data-publication-stage|3 \/ 3|NEW_VERSION_REQUIRED|data-action="publication-(?:sign|continue|open)"/);
+    assert.doesNotMatch(html, /987654|predecessor-step|123987/);
+    assert.ok(!html.includes(dictionary.publicationEarlier.replace('{frozen}', '6').replace('{current}', '41')));
+  }
+});
+
 test('publication modal constrains its scroll track on narrow screens', async () => {
   const css = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
   assert.match(css, /\.v4-chain-flow-backdrop \.v4-chain-flow\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/);

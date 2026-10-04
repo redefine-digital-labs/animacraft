@@ -1600,6 +1600,8 @@ function publicationReview(view) {
   if (!state) return '';
   const review = state.review, step = review?.step;
   const scope = review?.scope || {};
+  const newVersionRequired = review?.status === 'NEW_VERSION_REQUIRED';
+  const statusText = newVersionRequired ? tr(view, 'chainCurrentUnpublished') : makerPublicationStageText(view.locale, review?.status);
   const value = input => escapeHtml(input == null ? tr(view, 'publicationUnknown') : String(input));
   const row = (label, input) => '<p><strong>' + escapeHtml(tr(view, label)) + '</strong><br><span style="overflow-wrap:anywhere">' + value(input) + '</span></p>';
   const complete = review?.status === 'COMPLETE' && Boolean(review.rootId);
@@ -1664,20 +1666,20 @@ function publicationReview(view) {
     + '<div class="v4-chain-error-actions"><button type="button" data-action="publication-copy-error">' + escapeHtml(tr(view, copyLabel)) + '</button></div></aside>' : '';
   const technical = review ? '<details><summary>' + escapeHtml(tr(view, 'technicalDetails')) + '</summary>'
     + row('publicationWallet', scope.signerAddress) + row('publicationStage', makerPublicationStageText(view.locale, review.stage)
-      + ' / ' + makerPublicationStageText(view.locale, review.status))
+      + ' / ' + statusText)
     + '<p style="overflow-wrap:anywhere">' + value(scope.draftId) + ' · ' + value(scope.draftRevision) + '<br>'
-    + value(scope.contentSha256) + '</p>' + row('publicationAssets', review.assetCount)
-    + (step ? '<p style="overflow-wrap:anywhere">' + value(step.id) + ' · ' + value(step.revision) + '<br>' + value(step.digest) + '</p>'
+    + value(scope.contentSha256) + '</p>' + (newVersionRequired ? '' : row('publicationAssets', review.assetCount))
+    + (step && !newVersionRequired ? '<p style="overflow-wrap:anywhere">' + value(step.id) + ' · ' + value(step.revision) + '<br>' + value(step.digest) + '</p>'
       + row('publicationGasPrice', step.gasPriceMist)
       + row('publicationTerms', [step.storageEpochs ?? tr(view, 'publicationUnknown'), step.deletable ?? tr(view, 'publicationUnknown')].join(' / ')) : '') + '</details>' : '';
   const resourceKind = makerPublicationStageText(view.locale, progress?.currentKind || review?.stage);
   const resource = progress?.currentLabel ? resourceKind + ' · ' + progress.currentLabel : resourceKind;
-  const resourceProgress = review && !complete ? '<p style="overflow-wrap:anywhere">' + value(resource) + '</p><p>'
+  const resourceProgress = review && !complete && !newVersionRequired ? '<p style="overflow-wrap:anywhere">' + value(resource) + '</p><p>'
     + escapeHtml(tr(view, 'publicationResourceProgress', { completed: exactProgress ? progress.completed : tr(view, 'publicationUnknown'),
       total: exactProgress ? progress.total : tr(view, 'publicationUnknown') })) + '</p>' : '';
   const disabled = state.busy ? ' disabled aria-disabled="true"' : '';
   const signable = ['READY', 'TRANSPORT_SIGNATURE_REQUIRED'].includes(review?.status);
-  const action = !info && !complete && (review?.nextAction === 'SIGN' && signable ? 'publication-sign' : review?.nextAction === 'CONTINUE' ? 'publication-continue' : null);
+  const action = !info && !complete && !newVersionRequired && (review?.nextAction === 'SIGN' && signable ? 'publication-sign' : review?.nextAction === 'CONTINUE' ? 'publication-continue' : null);
   const actionLabel = action === 'publication-continue' ? 'publicationContinue'
     : onchain ? 'publishMakerStepButton' : step?.stage === 'CERTIFY' ? 'certifyStep'
       : step?.stage === 'REGISTER' ? quote ? 'confirmRegisterUploadStep' : 'registerUploadStep' : 'publicationSign';
@@ -1700,15 +1702,15 @@ function publicationReview(view) {
     + (state.closeConfirm ? confirmId + 'Title' : 'makerCreatorPublishTitle') + '" aria-describedby="'
     + (state.closeConfirm ? confirmId + 'Copy' : 'makerCreatorPublishCopy') + '" aria-busy="' + Boolean(state.busy) + '" tabindex="-1">'
     + '<div class="v4-chain-flow-content"' + (state.closeConfirm ? ' inert aria-hidden="true"' : '') + '><header><div><span class="v4-eyebrow">'
-    + escapeHtml(tr(view, 'creatorReleaseEyebrow')) + '</span><h3 id="makerCreatorPublishTitle">' + escapeHtml(tr(view, 'publishMakerStep', { step: phase }))
-    + '</h3><p id="makerCreatorPublishCopy">' + escapeHtml(tr(view, 'publicationFlowCopy')) + '</p><p>'
-    + escapeHtml(tr(view, 'publishDialogCopy')) + '</p></div><button type="button" data-action="publication-close" aria-label="'
-    + escapeHtml(tr(view, 'close')) + '">×</button></header><ol>' + stages + '</ol>'
+    + escapeHtml(tr(view, 'creatorReleaseEyebrow')) + '</span><h3 id="makerCreatorPublishTitle">' + escapeHtml(newVersionRequired ? tr(view, 'chainHistory') : tr(view, 'publishMakerStep', { step: phase }))
+    + '</h3><p id="makerCreatorPublishCopy">' + escapeHtml(tr(view, newVersionRequired ? 'chainCopy' : 'publicationFlowCopy')) + '</p>'
+    + (newVersionRequired ? '' : '<p>' + escapeHtml(tr(view, 'publishDialogCopy')) + '</p>') + '</div><button type="button" data-action="publication-close" aria-label="'
+    + escapeHtml(tr(view, 'close')) + '">×</button></header>' + (newVersionRequired ? '' : '<ol>' + stages + '</ol>')
     + (review ? '<p style="overflow-wrap:anywhere"><strong>' + value(review.frozenMakerName) + '</strong></p>' : '')
-    + (scope.publishingEarlierRevision ? '<p role="alert">' + escapeHtml(tr(view, 'publicationEarlier', { frozen: scope.draftRevision, current: scope.currentSavedRevision })) + '</p>' : '')
-    + resourceProgress + quotePanel + gasPanel + '<div class="v4-chain-status' + (state.busy ? ' busy' : '') + '" role="status" aria-live="polite">'
+    + (scope.publishingEarlierRevision && !newVersionRequired ? '<p role="alert">' + escapeHtml(tr(view, 'publicationEarlier', { frozen: scope.draftRevision, current: scope.currentSavedRevision })) + '</p>' : '')
+    + resourceProgress + (newVersionRequired ? '' : quotePanel + gasPanel) + '<div class="v4-chain-status' + (state.busy ? ' busy' : '') + '" role="status" aria-live="polite">'
     + (state.busy ? '<i aria-hidden="true"></i>' : '') + '<span>' + escapeHtml(state.busy ? tr(view, 'publicationLoading')
-      : makerPublicationStageText(view.locale, review?.status)) + '</span>'
+      : statusText) + '</span>'
     + (state.busy ? '<small>' + escapeHtml(tr(view, 'publishWorking')) + '</small>' : '') + '</div>'
     + errorPanel + technical + '<footer><button type="button" data-action="publication-refresh"' + disabled + '>'
     + escapeHtml(tr(view, 'publicationRefresh')) + '</button>' + (action ? '<button type="button" class="primary" data-action="' + action
