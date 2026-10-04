@@ -3748,7 +3748,8 @@ export function createOriginalProductApp({
         if (result?.status === 'RECOVERY_REQUIRED') {
           const stage = String(result.stage || 'chain completion');
           const message = String(result.message || `Recovery required at ${stage}.`);
-          state.playerUi.completionIssues = [message];
+          // Retry the existing journey/journal; an operation outcome is not a
+          // recipe, render or execution constraint on the next attempt.
           state.playerUi.completionStatus = { state: 'blocked', message };
           renderPlayer();
           return result;
@@ -3759,7 +3760,8 @@ export function createOriginalProductApp({
         if (flight.abort.signal.aborted) return null;
         if (typeof error?.recoveryJson === 'string') stageEnvelopeRecovery(error.recoveryJson);
         const message = String(error?.message || 'Player completion failed.');
-        state.playerUi.completionIssues = [message];
+        // Keep the failure visible without latching Complete off after external
+        // prerequisites improve. Live constraints and confirmation still apply.
         state.playerUi.completionStatus = { state: 'blocked', message };
         renderPlayer();
         throw error;

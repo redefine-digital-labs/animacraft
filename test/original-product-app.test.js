@@ -7451,6 +7451,50 @@ test('Player completion fails closed when the Native completion service is not c
   app.destroy();
 });
 
+test('receiver preflight rejection remains visible but allows the same saved project to retry through the enabled confirmation', async () => {
+  let ready = false;
+  const attempts = [];
+  const harness = browserHarness({
+    connection: { account: { address: `0x${'89'.repeat(32)}`, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(),
+    nativeCompletionConfigured: true,
+    completePlayerJourneyResult: async (_input, _count, options) => {
+      attempts.push(options);
+      if (!ready) throw Object.assign(new Error('Sign in to the same wallet in Soulidity, then retry.'), { code: 'MAKER_V8_NATIVE_RECEIVER_NOT_READY' });
+      return { status: 'RECOVERY_REQUIRED', stage: 'FINALITY', message: 'Recover the existing signed transaction.' };
+    },
+  });
+  const app = createOriginalProductApp(harness); await app.ready; await app.openPlayer(ROOT_ONE);
+  const mount = harness.doc.getElementById('makerV4PlayerMount');
+  const fire = async action => {
+    const target = new FakeTarget(harness.doc, { dataset: { action } }); target.parent = mount;
+    await waitForEvent(mount.fire('click', { target }));
+  };
+  await fire('player-complete');
+  await fire('player-confirm-complete');
+  assert.equal(harness.calls.completePlayerJourney.length, 1);
+  assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Sign in to the same wallet/);
+  assert.doesNotMatch(mount.innerHTML, /data-action="player-confirm-complete"[^>]*disabled/);
+  assert.doesNotMatch(mount.innerHTML, /data-action="player-complete"[^>]*disabled/);
+  ready = true;
+  await fire('close-player-export');
+  assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Sign in to the same wallet/);
+  assert.doesNotMatch(mount.innerHTML, /data-action="player-complete"[^>]*disabled/);
+  await fire('player-complete');
+  await fire('player-confirm-complete');
+  assert.equal(harness.calls.completePlayerJourney.length, 2);
+  assert.deepEqual(harness.calls.completePlayerJourney[1], harness.calls.completePlayerJourney[0]);
+  assert.equal(attempts[1].startNew, false);
+  assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /existing signed transaction/);
+  assert.doesNotMatch(mount.innerHTML, /data-action="player-confirm-complete"[^>]*disabled/);
+  await fire('player-confirm-complete');
+  assert.equal(harness.calls.completePlayerJourney.length, 3);
+  assert.deepEqual(harness.calls.completePlayerJourney[2], harness.calls.completePlayerJourney[0]);
+  assert.equal(attempts[2].startNew, false, 'signed recovery must never request a new Soul');
+  app.destroy();
+});
+
 test('blocked reception popup stops completion before costs and permits retry in the original confirmation', async () => {
   let blocked = true;
   const harness = browserHarness({
