@@ -57,6 +57,24 @@ function setup() {
   return { ...f, options, state, calls, receiver, provider: createProductionMakerV8NativeContentV8(options) };
 }
 
+test('configured Native service is synchronous, dependency-derived and false after disposal', async () => {
+  const f = setup();
+  assert.equal(f.provider.isConfigured(), true);
+  assert.deepEqual(f.calls, []);
+  for (const mutate of [
+    o => { o.wallet = {}; }, o => { o.client = {}; }, o => { o.indexedDB = null; },
+    o => { o.walrus = {}; }, o => { o.receiver = {}; }, o => { o.win = {}; },
+    o => { o.win = { ...o.win, crypto: {} }; },
+    o => { o.createSealClient = null; },
+  ]) {
+    const options = { ...f.options }; mutate(options);
+    assert.equal(createProductionMakerV8NativeContentV8(options).isConfigured(), false);
+  }
+  assert.deepEqual(f.calls, []);
+  await f.provider.dispose();
+  assert.equal(f.provider.isConfigured(), false);
+});
+
 test('production factory is lazy and scopes a synchronous popup without opening Creator network services', async () => {
   const f = setup(); assert.deepEqual(f.calls, []);
   f.provider.open({ rootId, signer });
@@ -64,6 +82,7 @@ test('production factory is lazy and scopes a synchronous popup without opening 
   await f.provider.dispose();
   await assert.rejects(f.provider.loadCompletion({ rootId, signer }), { code: 'MAKER_V8_NATIVE_CONTENT_DISPOSED' });
   const absent = createProductionMakerV8NativeContentV8({ runtime: runtime() });
+  assert.equal(absent.isConfigured(), false);
   assert.throws(() => absent.open({ rootId, signer }), { code: 'MAKER_V8_NATIVE_INTEGRATION_REQUIRED' });
 });
 

@@ -91,6 +91,25 @@ export function createProductionMakerV8NativeContentV8({ runtime: runtimeInput, 
     return provider;
   }
   return Object.freeze({
+    // Configuration only; live authority, wallet and receiver checks remain in preflight.
+    isConfigured() {
+      const crypto = win?.crypto ?? globalThis.crypto;
+      return !disposed && Boolean(runtime.nativeSoulIntegration)
+        && typeof client?.getObject === 'function'
+        && typeof client?.core?.getObject === 'function'
+        && typeof wallet?.getCurrentAccount === 'function'
+        && typeof createSealClient === 'function'
+        && typeof indexedDB?.open === 'function'
+        && typeof crypto?.getRandomValues === 'function'
+        && ['generateKey', 'encrypt', 'decrypt'].every(name => typeof crypto?.subtle?.[name] === 'function')
+        && typeof win?.navigator?.locks?.request === 'function'
+        && typeof walrus?.persistence?.requirePersistentStorage === 'function'
+        && ['prepare', 'load', 'resume', 'requestSignature', 'loadContent']
+          .every(name => typeof walrus?.publisher?.[name] === 'function')
+        && (receiver ? ['open', 'preflight', 'sync'].every(name => typeof receiver[name] === 'function')
+          : typeof win?.open === 'function' && typeof win?.addEventListener === 'function'
+            && typeof win?.location?.origin === 'string' && win.location.origin !== 'null');
+    },
     // Called synchronously in the original Complete button's user gesture.
     open(scope) { receive().open(scope); },
     ...Object.fromEntries(['preflight', 'prepare', 'finalize', 'exportRecovery', 'loadCompletion', 'saveCompletion', 'clearCompletion', 'retireFinalizedCompletion']

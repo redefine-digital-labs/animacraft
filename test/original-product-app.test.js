@@ -3,6 +3,10 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { IDBFactory } from 'fake-indexeddb';
+import { createProductionMakerV8NativeContentV8 } from '../maker-v8-native-content-production.js';
+import { createMakerV8PlayerJourneyV8 } from '../maker-v8-player-journey.js';
+import { createMakerV8ProductBridge } from '../maker-v8-product-bridge.js';
+import { createProductionAnimacraftApp } from '../app.js';
 
 import { createCharacterMakerV8Starter } from '../maker-v8-document.js';
 import { applyMakerV8WorkspaceCommand } from '../maker-v8-workspace.js';
@@ -2814,7 +2818,7 @@ function browserHarness({
   bridgeReadyError = null,
   initialUrl = 'https://animacraft.soulidity.ai/#templates',
   soulidityAppUrl = null,
-  certifiedLivingContent = false,
+  nativeCompletionConfigured = false,
   storageMap = new Map(),
 } = {}) {
   const doc = new FakeDocument();
@@ -2964,7 +2968,7 @@ function browserHarness({
       jsonRpc: false,
       issue: null,
     },
-    capabilities: { certifiedLivingContent },
+    capabilities: { nativeCompletionConfigured },
   };
   const emitBridge = (next = bridgeState) => {
     bridgeState = next;
@@ -2986,7 +2990,7 @@ function browserHarness({
         runtime: {
           status: 'READY', transport: 'SUI_GRPC_GRAPHQL', jsonRpc: false, issue: null,
         },
-        capabilities: { certifiedLivingContent },
+        capabilities: { nativeCompletionConfigured },
       });
       return true;
     },
@@ -6686,7 +6690,7 @@ test('signed envelope rescue downloads privately and file import only stages the
   const harness = browserHarness({ storageMap,
     connection: { account: { address, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
     completePlayerJourneyResult: async (_input, count, options) => {
       received.push(options.recoveryJson);
       if (count === 1) throw Object.assign(new Error('Private journal could not save the signature.'), { recoveryJson: serialized });
@@ -6725,7 +6729,7 @@ test('envelope rescue staging rejects late files/refreshes and invalidated walle
     const harness = browserHarness({
       connection: { account: { address, chains: ['sui:mainnet'] } },
       templatesResult: { status: 'READY', makers: [certifiedMaker(), certifiedMaker({ rootId: ROOT_TWO })], diagnostics: [] },
-      playerSessionResult: rootId => playerSession(rootId), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+      playerSessionResult: rootId => playerSession(rootId), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
       exportPlayerEnvelopeRecovery: variant === 'late-refresh' ? () => slow.promise : undefined,
       completePlayerJourneyResult: async (_input, _count, options) => { received.push(options.recoveryJson); return { status: 'RECOVERY_REQUIRED' }; },
     });
@@ -6789,7 +6793,7 @@ test('post-mint envelope step uses the original confirmation for all or only rem
     const harness = browserHarness({
       connection: { account: { address, chains: ['sui:mainnet'] } },
       templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-      playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+      playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
       completePlayerJourneyResult: async (_input, _count, { confirmStep }) => {
         approvals.push(await confirmStep({ kind: 'NATIVE_ENVELOPES', rootId: ROOT_ONE, signer: address,
           soulId: ROOT_ONE, stateId: ROOT_TWO, transactionDigest: '8'.repeat(43), gasBudgetMist: '50000000', envelopeCount: count }));
@@ -6818,7 +6822,7 @@ test('upfront completion overview waits in original Export and continues without
   const harness = browserHarness({
     connection: { account: { address, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
     completePlayerJourneyResult: async (_input, _count, { confirmStep }) => {
       const overview = { rootId: ROOT_ONE, signer: address, recipeCommitment: 'a'.repeat(64),
         entryPaymentQuote: { paymentCoinType: coin, maker: { required: true, priceAtomic: '9007199254740993' },
@@ -6866,7 +6870,7 @@ test('prepared journey steps wait for their own button and an old confirmation c
   const harness = browserHarness({
     connection: { account: { address, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
     completePlayerJourneyResult: async (_input, _count, { confirmStep, signal }) => {
       for (const action of ['acquireMakerAccess', 'commitLoadout']) {
         const approved = await confirmStep({ kind: 'PLAYER_ACTION', rootId: ROOT_ONE, signer: address, action,
@@ -6910,7 +6914,7 @@ test('closing, leaving, editing, changing wallet or destroying rejects a visible
     const harness = browserHarness({
       connection: { account: { address, chains: ['sui:mainnet'] } },
       templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-      playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+      playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
       completePlayerJourneyResult: async (_input, _count, { confirmStep, signal }) => {
         const approved = await confirmStep({ kind: 'STORAGE_UPLOAD', purpose: 'NATIVE_CONTENT',
           rootId: ROOT_ONE, signer: address, uploadId: 'encrypted-file', byteLength: 16, byteSha256: '12'.repeat(32) });
@@ -6945,7 +6949,7 @@ test('closing after confirmation suppresses late success navigation and leaves c
   const harness = browserHarness({
     connection: { account: { address: `0x${'85'.repeat(32)}`, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
     completePlayerJourneyResult: async () => finished.promise,
   });
   const navigations = []; harness.win.location.assign = url => navigations.push(url);
@@ -6973,7 +6977,7 @@ test('recovered foreign-draft Soul does not unlock the current PNG and starting 
   const harness = browserHarness({
     connection: { account: { address, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
     completePlayerJourneyResult: async (_input, count, options) => {
       if (count === 1) return { status: 'HANDOFF_READY', recovered: true, completedProjectHash: 'ab'.repeat(32),
         actionId: 'previous-action', soulId: ROOT_TWO, transactionDigest: 'previous-digest', handoffUrl: 'https://www.soulidity.ai/my-souls' };
@@ -7012,7 +7016,7 @@ test('after starting another Soul, cancelling its next step permits ordinary sam
   const harness = browserHarness({
     connection: { account: { address, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), certifiedLivingContent: true,
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
     completePlayerJourneyResult: async (_input, count, options) => {
       starts.push(options.startNew);
       if (count === 1) return { status: 'HANDOFF_READY', recovered: true, actionId: 'prior-action' };
@@ -7076,7 +7080,7 @@ test('the original Player controls drive profile, export and the gated completio
         playerSessionResult: playerSession(ROOT_ONE),
         renderPlayerPreviewResult: canonicalPreview(),
         completePlayerJourneyResult: entry.result,
-        certifiedLivingContent: true,
+        nativeCompletionConfigured: true,
       });
       const app = createOriginalProductApp(harness);
       await app.ready;
@@ -7198,7 +7202,7 @@ test('formal export options persist the selected final image, keep main preview 
   const config = { storageMap,
     connection: { account: { address, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
-    playerSessionResult: session, certifiedLivingContent: true,
+    playerSessionResult: session, nativeCompletionConfigured: true,
     renderPlayerPreviewResult: canonicalPreview({ width: 1080, height: 1920, sha256: '10'.repeat(32) }),
     renderPlayerExportResult: ({ exportOptions }) => canonicalPreview({
       width: exportOptions.sizeMode === 'standard' ? 576 : 1080,
@@ -7311,7 +7315,7 @@ test('completion recovery and chain failures preserve the durable-save state wit
           if (entry.error) throw entry.error;
           return entry.result;
         },
-        certifiedLivingContent: true,
+        nativeCompletionConfigured: true,
       });
       const setItem = harness.win.localStorage.setItem.bind(harness.win.localStorage);
       harness.win.localStorage.setItem = (key, value) => {
@@ -7353,7 +7357,77 @@ test('completion recovery and chain failures preserve the durable-save state wit
   }
 });
 
-test('current V1 Player completion fails closed until the bridge certifies living-content binding', async () => {
+test('actual production app factory composes Native capability without mint, storage or popup work', async () => {
+  const config = { window: {} }; runInNewContext(deploymentConfigSource, config);
+  const runtime = JSON.parse(JSON.stringify(config.window.SoulidityMakerV8));
+  for (const enabled of [true, false]) {
+    const h = browserHarness(); let costs = 0;
+    const forbidden = () => { costs++; throw new Error('unexpected paid or popup operation'); };
+    const wallet = { async getCurrentAccount() { return null; }, async reconnect() { return null; }, subscribe() { return () => {}; }, dispose() {} };
+    const compiler = Object.fromEntries(['loadTrustedContext', 'assertContextFresh', 'recoverStage', 'recoverCheckpoint'].map(key => [key, forbidden]));
+    const walrus = { publisher: Object.fromEntries(['prepare', 'load', 'resume', 'requestSignature', 'loadContent'].map(key => [key, forbidden])),
+      persistence: { load: forbidden, requirePersistentStorage: forbidden } };
+    h.win.crypto = crypto; h.win.indexedDB = new IDBFactory();
+    h.win.navigator.locks = { request: forbidden }; h.win.open = forbidden;
+    const client = { async getChainIdentifier() { throw new Error('Read-only bootstrap unavailable in fixture'); },
+      getObject: forbidden, core: { getObject: forbidden } };
+    const app = await createProductionAnimacraftApp({ root: { querySelector() { return {}; } }, doc: h.doc, win: h.win,
+      runtime, execution: { schemaVersion: 'animacraft.web-execution.v8', network: 'mainnet', chainIdentifier: '35834a8a',
+        allowWalletSignature: enabled, allowBroadcast: enabled }, client, walletUi: h.walletUi,
+      browserAdapters: { wallet, compiler, rpc: {} }, indexedDB: h.win.indexedDB,
+      controllers: { publication: {}, publicationAdapters: {}, publicationTransport: {}, walrus } });
+    await app.ready.catch(() => {});
+    assert.equal(app.playerJourney.isNativeCompletionConfigured(), true);
+    assert.equal(app.bridge.getState().capabilities.nativeCompletionConfigured, enabled);
+    assert.equal(costs, 0);
+    app.dispose(); await settle();
+    assert.equal(app.playerJourney.isNativeCompletionConfigured(), false);
+    assert.equal(costs, 0);
+  }
+});
+
+test('production Native service through real journey and bridge enables only configured Player UI', async () => {
+  const config = { window: {} }; runInNewContext(deploymentConfigSource, config);
+  let effects = 0;
+  const forbidden = () => { effects++; throw new Error('No preflight, storage, popup or signature during configuration'); };
+  const methods = names => Object.fromEntries(names.map(name => [name, forbidden]));
+  const walrus = { publisher: methods(['prepare', 'load', 'resume', 'requestSignature', 'loadContent']),
+    persistence: methods(['load', 'requirePersistentStorage']) };
+  const provider = createProductionMakerV8NativeContentV8({ runtime: JSON.parse(JSON.stringify(config.window.SoulidityMakerV8)),
+    client: { getObject: forbidden, core: { getObject: forbidden } },
+    wallet: { getCurrentAccount: forbidden }, walrus, indexedDB: new IDBFactory(),
+    win: { crypto, navigator: { locks: { request: forbidden } } },
+    receiver: methods(['open', 'preflight', 'sync', 'dispose']) });
+  const journey = createMakerV8PlayerJourneyV8({ nativeContent: provider, walrus,
+    player: methods(['getSnapshot', 'loadPlayer', 'setRecipe', 'preparePlayerAction', 'executePlayerAction', 'recoverPlayerAction']),
+    productRuntime: { inventory: { load: forbidden } } });
+  const bridgeFor = execution => createMakerV8ProductBridge({ execution, playerJourney: journey,
+    productRuntime: { ready: forbidden, catalog: methods(['loadPlaza', 'loadPlayer']), wallet: methods(['getCurrentAccount', 'reconnect']) },
+    drafts: methods(['createBundle', 'load', 'list', 'compareAndSwap', 'export']) });
+  const enabled = { allowWalletSignature: true, allowBroadcast: true };
+  const bridge = bridgeFor(enabled);
+  assert.equal(bridge.getState().capabilities.nativeCompletionConfigured, true);
+  assert.equal(bridgeFor({}).getState().capabilities.nativeCompletionConfigured, false);
+  assert.equal(effects, 0);
+  const harness = browserHarness({
+    connection: { account: { address: `0x${'88'.repeat(32)}`, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(),
+    nativeCompletionConfigured: bridge.getState().capabilities.nativeCompletionConfigured,
+    completePlayerJourneyResult: { status: 'HANDOFF_READY' },
+  });
+  const app = createOriginalProductApp(harness); await app.ready; await app.openPlayer(ROOT_ONE);
+  const mount = harness.doc.getElementById('makerV4PlayerMount');
+  assert.doesNotMatch(mount.innerHTML, /Native completion service is not configured/);
+  assert.doesNotMatch(mount.innerHTML, /data-action="player-complete"[^>]+disabled/);
+  assert.equal(effects, 0);
+  app.destroy();
+  // Dispose is itself allowed here; it must invalidate the live configuration projection.
+  await assert.rejects(provider.dispose(), /No preflight/);
+  assert.equal(bridge.getState().capabilities.nativeCompletionConfigured, false);
+});
+
+test('Player completion fails closed when the Native completion service is not configured', async () => {
   const address = `0x${'88'.repeat(32)}`;
   const maker = certifiedMaker();
   const harness = browserHarness({
@@ -7368,12 +7442,12 @@ test('current V1 Player completion fails closed until the bridge certifies livin
   await app.openPlayer(ROOT_ONE);
   const mount = harness.doc.getElementById('makerV4PlayerMount');
   assert.match(mount.innerHTML, /data-action="player-complete"[^>]+disabled/);
-  assert.match(mount.innerHTML, /Certified living-content binding is unavailable/);
+  assert.match(mount.innerHTML, /Native completion service is not configured/);
   const confirm = new FakeTarget(harness.doc, { dataset: { action: 'player-confirm-complete' } });
   confirm.parent = mount;
   await waitForEvent(mount.fire('click', { target: confirm }));
   assert.equal(harness.calls.completePlayerJourney.length, 0);
-  assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /living-content binding is unavailable/);
+  assert.match(harness.doc.getElementById('v4PlayerCompletionStatus').textContent, /Native completion service is not configured/);
   app.destroy();
 });
 
@@ -7383,7 +7457,7 @@ test('blocked reception popup stops completion before costs and permits retry in
     connection: { account: { address: `0x${'89'.repeat(32)}`, chains: ['sui:mainnet'] } },
     templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
     playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(),
-    completePlayerJourneyResult: { status: 'HANDOFF_READY' }, certifiedLivingContent: true,
+    completePlayerJourneyResult: { status: 'HANDOFF_READY' }, nativeCompletionConfigured: true,
     openPlayerReception() { if (blocked) throw new Error('Allow the Soulidity account window, then retry.'); },
   });
   const app = createOriginalProductApp(harness); await app.ready; await app.openPlayer(ROOT_ONE);
@@ -7416,7 +7490,7 @@ test('Player completion is single-flight and an edit invalidates the frozen proj
       return completion.promise;
     },
     openPlayerReception: input => receptions.push(input),
-    certifiedLivingContent: true,
+    nativeCompletionConfigured: true,
   });
   const app = createOriginalProductApp(harness);
   await app.ready;
@@ -7480,7 +7554,7 @@ test('an irreversible completion stays globally single-flight after an edit and 
       await releaseCompletion.promise;
       return { status: 'HANDOFF_READY', handoffUrl: '' };
     },
-    certifiedLivingContent: true,
+    nativeCompletionConfigured: true,
   });
   const app = createOriginalProductApp(harness);
   await app.ready;
@@ -7542,7 +7616,7 @@ test('late completion for Player A cannot mark newly opened Player B complete', 
       completionEntered.resolve();
       return completion.promise;
     },
-    certifiedLivingContent: true,
+    nativeCompletionConfigured: true,
   });
   const app = createOriginalProductApp(harness);
   await app.ready;
@@ -8262,7 +8336,7 @@ test('Player retry-save retries only the exact durable project write and never c
     playerSessionResult: playerSession(ROOT_ONE),
     renderPlayerPreviewResult: canonicalPreview(),
     completePlayerJourneyResult: { status: 'HANDOFF_READY' },
-    certifiedLivingContent: true,
+    nativeCompletionConfigured: true,
   });
   const app = createOriginalProductApp(harness);
   await app.ready;

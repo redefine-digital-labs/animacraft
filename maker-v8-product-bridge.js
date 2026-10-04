@@ -572,6 +572,9 @@ export function createMakerV8ProductBridge({
       drafts: true,
       player: Boolean(player),
       playerJourney: Boolean(playerJourney),
+      nativeCompletionConfigured: gates.allowWalletSignature && gates.allowBroadcast
+        && typeof playerJourney?.isNativeCompletionConfigured === 'function'
+        && playerJourney.isNativeCompletionConfigured() === true,
       pack: Boolean(pack),
       composable: Boolean(composable),
       lifecycle: Boolean(lifecycle),

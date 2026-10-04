@@ -2254,7 +2254,7 @@ export function createOriginalProductApp({
       reset: Boolean(getPlayerSnapshot && resetPlayerRecipe),
       render: Boolean(renderPlayerPreview && renderPlayerExport),
       exportSettings: Boolean(renderPlayerExport && !state.playerCompletionFlight),
-      complete: Boolean(completePlayerJourney && certifiedLivingContentAvailable()),
+      complete: Boolean(completePlayerJourney && nativeCompletionConfigured()),
       recovery: Boolean(state.playerUi?.recoveryBranches?.length),
       packAcquire: Boolean(preparePlayerAction && executePlayerAction && recoverPlayerAction && getPlayerSnapshot),
       session: state.playerSession,
@@ -2345,14 +2345,14 @@ export function createOriginalProductApp({
   function playerExecutionIssues() {
     const issues = state.playerSession?.execution?.writeEnabled === true
       ? [] : [String(state.playerSession?.execution?.disabledReason || '')].filter(Boolean);
-    if (!certifiedLivingContentAvailable()) {
-      issues.push('Certified living-content binding is unavailable for this Fresh-v8 tuple.');
+    if (!nativeCompletionConfigured()) {
+      issues.push('Native completion service is not configured for this release.');
     }
     return issues;
   }
 
-  function certifiedLivingContentAvailable() {
-    return state.bridgeState?.capabilities?.certifiedLivingContent === true;
+  function nativeCompletionConfigured() {
+    return state.bridgeState?.capabilities?.nativeCompletionConfigured === true;
   }
 
   function presentPlayerError(error, fallback = 'Player operation failed.', { recipeInvalid = false } = {}) {
@@ -3684,8 +3684,8 @@ export function createOriginalProductApp({
         openPlayerReception?.({ rootId });
         await state.playerMutationQueue;
         if (!playerProjectCurrent(generation, playerRequest, mutation, rootId)) return null;
-        if (!certifiedLivingContentAvailable()) {
-          throw new TypeError('Certified living-content binding is unavailable for this Fresh-v8 tuple.');
+        if (!nativeCompletionConfigured()) {
+          throw new TypeError('Native completion service is not configured for this release.');
         }
         const project = structuredClone(playerProjectSnapshot());
         const projectCanonical = canonicalJson(project);
