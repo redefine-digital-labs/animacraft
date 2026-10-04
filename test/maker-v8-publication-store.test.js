@@ -22,6 +22,7 @@ import {
   assertMakerV8PublicationHistoryReserveV8,
   assertMakerV8PublicationCheckpointV8,
   assertMakerV8PublicationPlanIdentityV8,
+  assertMakerV8UnsignedOwnedReferenceDeltaV8,
   createMakerV8PublicationPersistenceV8,
   makerV8Base64BlobV8,
   makerV8BlobRefV8,
@@ -36,6 +37,28 @@ import {
 } from '../maker-v8-publication-store.js';
 
 const CHAIN = '35834a8a';
+
+test('unsigned reference repair permits only one exact owned ref advance, never other input or command changes', async () => {
+  const ref = { objectId: `0x${'ab'.repeat(32)}`, version: '9', digest: toBase58(new Uint8Array(32).fill(9)) };
+  const nextRef = { ...ref, version: '12', digest: toBase58(new Uint8Array(32).fill(12)) };
+  const transaction = new Transaction();
+  transaction.moveCall({ target: `0x${'cd'.repeat(32)}::maker_v8::check`, arguments: [transaction.objectRef(ref), transaction.pure.u64(7)] });
+  const before = toBase64(await transaction.build({ onlyTransactionKind: true }));
+  const parsed = bcs.TransactionKind.parse(Buffer.from(before, 'base64'));
+  parsed.ProgrammableTransaction.inputs[0].Object.ImmOrOwnedObject = nextRef;
+  const encode = value => toBase64(bcs.TransactionKind.serialize(value).toBytes());
+  assert.equal(assertMakerV8UnsignedOwnedReferenceDeltaV8(before, encode(parsed), nextRef), true);
+  const rejects = change => {
+    const bad = structuredClone(parsed); change(bad);
+    assert.throws(() => assertMakerV8UnsignedOwnedReferenceDeltaV8(before, encode(bad), nextRef), { code: 'MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID' });
+  };
+  rejects(value => { value.ProgrammableTransaction.inputs[1].Pure.bytes = toBase64(new Uint8Array(8).fill(8)); });
+  rejects(value => { value.ProgrammableTransaction.commands[0].MoveCall.arguments.reverse(); });
+  rejects(value => { value.ProgrammableTransaction.inputs[0].Object.ImmOrOwnedObject.objectId = `0x${'ef'.repeat(32)}`; });
+  rejects(value => { value.ProgrammableTransaction.inputs[0].Object.ImmOrOwnedObject.version = '9'; });
+  rejects(value => { value.ProgrammableTransaction.inputs[0].Object.ImmOrOwnedObject.digest = ref.digest; });
+  assert.throws(() => assertMakerV8UnsignedOwnedReferenceDeltaV8(before, before), { code: 'MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID' });
+});
 const COIN = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 const ROLES = ['core', 'seal', 'runtime', 'output', 'physical', 'market', 'release'];
 const id = (byte) => `0x${byte.repeat(32)}`;
@@ -711,6 +734,50 @@ async function prepareNext(store, plan, _kindLabel, options) {
   }, { blobs: [kindBlob] });
   return { plan: next, kindBlob };
 }
+
+test('unsigned owned-ref CAS preserves history and rejects every prior attempt including wallet rejection', async () => {
+  for (const disposition of ['none', 'rejected', 'signed']) {
+    const store = await publicationStore(new IDBFactory(), { databaseName: `owned-ref-${disposition}` });
+    const fixture = await planFixture();
+    await store.createAttempt(fixture.plan, fixture.blobs);
+    const headPlan = await finalize(store, await signedPath(store, fixture));
+    const transaction = new Transaction();
+    const ref = { objectId: id('ab'), version: '1', digest: TX_DIGEST };
+    transaction.moveCall({ target: `${id('11')}::core_v8::new_initial_maker_draft_v8`, arguments: [transaction.objectRef(ref)] });
+    const oldBlob = await makerV8Base64BlobV8(toBase64(await transaction.build({ onlyTransactionKind: true })));
+    const current = cursor(oldBlob, headPlan.head.ordinal + 1, {});
+    let plan = await store.compareAndSwap(headPlan.attemptId, headPlan.revision, {
+      ...headPlan, revision: headPlan.revision + 1, current, nextPreparation: null,
+    }, { blobs: [oldBlob] });
+    const headBefore = await store.loadHead(plan.attemptId);
+    const changed = bcs.TransactionKind.parse(Buffer.from(oldBlob.data, 'base64'));
+    changed.ProgrammableTransaction.inputs[0].Object.ImmOrOwnedObject = { ...ref, version: '2', digest: OTHER_TX_DIGEST };
+    const transactionKindBytes = toBase64(bcs.TransactionKind.serialize(changed).toBytes());
+    const newBlob = await makerV8Base64BlobV8(transactionKindBytes);
+    const descriptor = { ...plan.current, transactionKindSha256: newBlob.sha256, transactionKindRef: makerV8BlobRefV8(newBlob) };
+    if (disposition === 'rejected') {
+      const attempt = event(plan, 'WALLET_REJECTED', 0, { at: plan.updatedAt + 1, digest: null, fullTransactionRef: null, signatureRef: null, code: 'WALLET_REJECTED' });
+      plan = await store.compareAndSwap(plan.attemptId, plan.revision, {
+        ...plan, revision: plan.revision + 1, updatedAt: plan.updatedAt + 1,
+        attemptHistory: withAttemptHistory(plan, attempt),
+      }, { attempt });
+    } else if (disposition === 'signed') {
+      plan = (await signedPath(store, { plan })).plan;
+    }
+    if (disposition === 'none') {
+      const repaired = await store.repairUnsignedOwnedReference(plan.attemptId, plan.revision, { descriptor, transactionKindBytes });
+      assert.equal(repaired.revision, plan.revision + 1);
+      assert.deepEqual(repaired.head, plan.head);
+      assert.deepEqual(repaired.attemptHistory, plan.attemptHistory);
+      assert.deepEqual(await store.loadHead(plan.attemptId), headBefore);
+      assert.deepEqual((await store.getBlob(oldBlob.sha256)).data, oldBlob.data);
+      await assert.rejects(store.repairUnsignedOwnedReference(plan.attemptId, plan.revision, { descriptor, transactionKindBytes }), { code: 'MAKER_V8_PUBLICATION_CAS_MISMATCH' });
+    } else {
+      await assert.rejects(store.repairUnsignedOwnedReference(plan.attemptId, plan.revision, { descriptor, transactionKindBytes }), { code: 'MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID' });
+    }
+    await store.close();
+  }
+});
 
 test('real IndexedDB atomically appends signed attempts and success head before successor preparation', async () => {
   const indexedDB = new IDBFactory();

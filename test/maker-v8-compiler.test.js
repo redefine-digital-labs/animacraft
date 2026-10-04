@@ -9,6 +9,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { IDBFactory } from 'fake-indexeddb';
 import { createMakerV8PublicationCompilerAdapterV8 } from '../maker-v8-publication-adapters.js';
+import { createMakerV8PublicationControllerV8 } from '../maker-v8-publication-controller.js';
 import {
   createMakerV8PublicationPersistenceV8, MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA,
   makerV8Base64BlobV8, makerV8BlobRefV8, makerV8Utf8BlobV8,
@@ -16,7 +17,7 @@ import {
 } from '../maker-v8-publication-store.js';
 import { makerV8ActivationAuthorityFixture, makerV8LivingBlobIdFixture } from './fixtures/maker-v8-activation-authority-fixture.js';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
-import { toBase64 } from '@mysten/sui/utils';
+import { toBase58, toBase64 } from '@mysten/sui/utils';
 import { deriveMakerV8SealStorageV2 } from '../maker-v8-seal-compiler.js';
 import { bcs } from '@mysten/sui/bcs';
 import {
@@ -261,15 +262,15 @@ function rootObjects(publication) {
 const testBaseProgress = new WeakMap();
 // Exercise the public browser adapter against exact synthetic finalized BCS and
 // historical snapshots, then feed its result into the real compiler certifier.
-async function publicationHistoricalBridge(publication, transaction, objects, mutateHistory = null) {
+async function publicationHistoricalBridge(publication, transaction, objects, mutateHistory = null, finalizedBytes = null) {
   const sender = publication.context.signerAddress;
   const kind = bcs.TransactionKind.parse(await transaction.build({ onlyTransactionKind: true }));
-  const transactionBcs = bcs.TransactionData.serialize({ V1: { kind, sender,
+  const transactionBcs = finalizedBytes ?? bcs.TransactionData.serialize({ V1: { kind, sender,
     gasData: { payment: [{ objectId: nid('0x9999'), version: '1', digest: DIGEST }], owner: sender, price: '1', budget: '1000000' },
     expiration: { None: true },
   } }).toBytes();
   const digest = TransactionDataBuilder.getDigestFromBytes(transactionBcs);
-  const rows = Object.values(objects).filter(object => object?.reference).map(object => {
+  const historicalRow = object => {
     const reference = object.reference;
     const owner = reference.kind === 'shared' ? { Shared: { initialSharedVersion: reference.initialSharedVersion } } : { AddressOwner: sender };
     const parsed = clone(object.fields);
@@ -289,12 +290,16 @@ async function publicationHistoricalBridge(publication, transaction, objects, mu
     return { objectId: nid(reference.objectId), version: reference.version ?? '1', digest: reference.digest ?? DIGEST,
       owner, type: object.type, parsed: normalizeIds(parsed), previousTransaction: digest,
       contentBcs: Uint8Array.of(1), objectBcs: Uint8Array.of(2) };
-  });
+  };
+  const rows = Object.entries(objects).filter(([key, object]) => key !== 'inputAdminCap' && object?.reference)
+    .map(([, object]) => historicalRow(object));
+  const inputAdmin = objects.inputAdminCap ? historicalRow(objects.inputAdminCap) : null;
+  const isAdminMutation = row => row.objectId === inputAdmin?.objectId;
   const effectsBcs = bcs.TransactionEffects.serialize({ V1: {
     status: { Success: true }, executedEpoch: '1', gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
-    modifiedAtVersions: [], sharedObjects: [], transactionDigest: digest,
-    created: rows.map(row => [{ objectId: row.objectId, version: row.version, digest: row.digest }, row.owner]),
-    mutated: [], unwrapped: [], deleted: [], unwrappedThenDeleted: [], wrapped: [],
+    modifiedAtVersions: inputAdmin ? [[inputAdmin.objectId, inputAdmin.version]] : [], sharedObjects: [], transactionDigest: digest,
+    created: rows.filter(row => !isAdminMutation(row)).map(row => [{ objectId: row.objectId, version: row.version, digest: row.digest }, row.owner]),
+    mutated: rows.filter(isAdminMutation).map(row => [{ objectId: row.objectId, version: row.version, digest: row.digest }, row.owner]), unwrapped: [], deleted: [], unwrappedThenDeleted: [], wrapped: [],
     gasObject: [{ objectId: nid('0x9999'), version: '2', digest: DIGEST }, { AddressOwner: sender }], eventsDigest: null, dependencies: [],
   } }).toBytes();
   const evidence = { digest, checkpoint: '7', epoch: '1', transactionBcs, transactionBcsBase64: toBase64(transactionBcs),
@@ -305,12 +310,12 @@ async function publicationHistoricalBridge(publication, transaction, objects, mu
     core: { async getTransaction() { return { $kind: 'Transaction', Transaction: {
       digest, epoch: '1', status: { success: true }, transaction: { sender, commands: transaction.getData().commands }, bcs: transactionBcs,
       effects: { status: { success: true }, transactionDigest: digest, bcs: effectsBcs, eventsDigest: null,
-        changedObjects: rows.map(row => ({ objectId: row.objectId, outputState: 'ObjectWrite', idOperation: 'Created',
+        changedObjects: rows.map(row => ({ objectId: row.objectId, outputState: 'ObjectWrite', idOperation: isAdminMutation(row) ? 'None' : 'Created',
           outputVersion: row.version, outputDigest: row.digest, outputOwner: row.owner })) },
       events: [], objectTypes: Object.fromEntries(rows.map(row => [row.objectId, row.type])),
     } }; } },
     async getHistoricalObject({ objectId, version }) {
-      const row = clone(rows.find(row => row.objectId === objectId));
+      const row = clone([...rows, ...(inputAdmin ? [inputAdmin] : [])].find(row => row.objectId === objectId && BigInt(row.version) === version));
       assert.equal(version, BigInt(row.version));
       mutateHistory?.(row);
       return row;
@@ -348,9 +353,10 @@ test('publication browser historical readbacks cross scaffold, Base, companion a
   assert.ok(prior.base);
   const base = prior.base;
   const companionBuild = await buildMakerV8CompanionObjectsTransaction(publication, base);
-  const rawCompanion = await companionReadback(publication, base, companionBuild.expected, companionBuild.transaction);
+  const rawCompanion = { ...clone(await companionReadback(publication, base, companionBuild.expected, companionBuild.transaction)),
+    ...advancedAdminReadback(companionBuild.transaction, base.adminCap) };
   const companionStage = await publicationHistoricalBridge(publication, companionBuild.transaction, rawCompanion);
-  const projectedCompanion = await companionStage.adapter.recoverCheckpoint({ ...companionStage, kind: 'COMPANION_OBJECTS', publication });
+  const projectedCompanion = await companionStage.adapter.recoverCheckpoint({ ...companionStage, kind: 'COMPANION_OBJECTS', publication, base });
   const companion = await certifyMakerV8CompanionReadback(publication, base, projectedCompanion);
   let activationPrior = null, activationCount = 0;
   while (true) {
@@ -358,7 +364,7 @@ test('publication browser historical readbacks cross scaffold, Base, companion a
     if (activationBuild.checkpoint.final) break; // Finalize consumes events, not compilerChangedObject.
     const raw = await activationChunkRaw(activationBuild, companion);
     const stage = await publicationHistoricalBridge(publication, activationBuild.transaction, raw);
-    const projected = await stage.adapter.recoverCheckpoint({ ...stage, kind: 'ACTIVATION_CHUNK', build: activationBuild, publication, companion });
+    const projected = await stage.adapter.recoverCheckpoint({ ...stage, kind: 'ACTIVATION_CHUNK', build: activationBuild, publication, base, companion });
     activationPrior = await certifyMakerV8ActivationChunkReadback(publication, base, companion, activationBuild, projected);
     activationCount++;
   }
@@ -389,7 +395,11 @@ function baseReadbackRaw(publication, scaffold) {
   const total = Object.values(publication.counts).reduce((sum, value) => sum + value, 0n);
   const root = clone(scaffold.root);
   root.fields.sealedBaseRegistryCommitment = progress.storage.sealedCommitments.aggregate;
-  return { schemaVersion: MAKER_V8_BASE_READBACK_SCHEMA, root,
+  const inputAdminCap = { ...clone(scaffold.adminCap), owner: { kind: 'AddressOwner', value: publication.context.signerAddress } };
+  const adminCap = clone(inputAdminCap);
+  adminCap.reference.version = String(BigInt(inputAdminCap.reference.version) + 1n);
+  adminCap.reference.digest = toBase58(new Uint8Array(32).fill(2));
+  return { schemaVersion: MAKER_V8_BASE_READBACK_SCHEMA, root, inputAdminCap, adminCap,
     baseRegistry: shared(fixture.ids.baseRegistry, scaffold.baseRegistry.type, {
       ...clone(scaffold.baseRegistry.fields),
       observedCounts: Object.fromEntries(Object.entries(publication.counts).map(([key, value]) => [key, String(value)])),
@@ -420,7 +430,7 @@ async function companionRaw(publication, base, expected, transaction = null) {
   const marketTreasury = shared(fixture.ids.marketTreasury, type('market', 'market_v8', 'MarketTreasuryV8', `<${COIN}>`), { version: 8, catalogId: nid(fixture.ids.catalog), packageConfigId: nid(fixture.ids.marketConfig), rootId, makerVersion: 1, rootContentCommitment: content, balanceAtomic: '0', grossEscrowedAtomic: '0', grossReleasedAtomic: '0' });
   const marketRegistry = shared(fixture.ids.marketRegistry, type('market', 'market_v8', 'MarketRegistryV8', `<${COIN}>`), { catalogId: nid(fixture.ids.catalog), packageConfigId: nid(fixture.ids.marketConfig), productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment, rootId, makerVersion: 1, rootContentCommitment: content, protocolConfigId: nid(fixture.ids.protocolConfig), protocolConfigRevision: '3', protocolConfigCommitment: c.protocolConfig.fields.commitment, economicsCommitment: publication.commitments.economics, rightsCommitment: publication.commitments.rights, makerMarketFeeBps: 80, soulMarketFeeBps: 90, soulCreatorRoyaltyBps: publication.document.commerce.soulCreatorRoyaltyBps, makerSourceRoyaltyBps: publication.document.commerce.makerSourceRoyaltyBps, makerResaleRoyaltyBps: publication.document.commerce.makerResaleRoyaltyBps, treasuryId: nid(fixture.ids.marketTreasury), sealed: false, revision: '0', listingCount: '0', escrowCount: '0', completedSaleCount: '0', canceledSaleCount: '0', recoveredSaleCount: '0', grossVolumeAtomic: '0', protocolPaidAtomic: '0', creatorPaidAtomic: '0', sourcePaidAtomic: '0', sellerPaidAtomic: '0', zeroStateCommitment: ZERO });
   const companionTransaction = transaction ?? (await buildMakerV8CompanionObjectsTransaction(publication, base)).transaction;
-  return { schemaVersion: MAKER_V8_COMPANION_READBACK_SCHEMA, source: 'FINALIZED_RPC', transactionDigest: DIGEST, ...await transactionKindProof({ transaction: companionTransaction }), sealRegistry, runtimeDefinitions, packRegistry, admissionAuthority, outputRegistry, soulRegistry, physicalRegistry, marketRegistry, marketTreasury };
+  return { schemaVersion: MAKER_V8_COMPANION_READBACK_SCHEMA, source: 'FINALIZED_RPC', transactionDigest: DIGEST, ...await transactionKindProof({ transaction: companionTransaction }), ...advancedAdminReadback(companionTransaction, base.adminCap), sealRegistry, runtimeDefinitions, packRegistry, admissionAuthority, outputRegistry, soulRegistry, physicalRegistry, marketRegistry, marketTreasury };
 }
 
 async function companionReadback(publication, base, expected, transaction = null) {
@@ -731,12 +741,28 @@ async function transactionKindProof(build) {
   return { transactionKindBytesBase64: Buffer.from(bytes).toString('base64'), transactionKindSha256: await hashBytes(bytes) };
 }
 
+function adminInputReference(transaction) {
+  const reference = transaction.getData().inputs.map(input => input.Object?.ImmOrOwnedObject)
+    .find(value => value?.objectId === nid(fixture.ids.adminCap));
+  assert.ok(reference, 'real publication transaction borrows the owned AdminCap');
+  return clone(reference);
+}
+
+function advancedAdminReadback(transaction, seed) {
+  const inputAdminCap = { ...clone(seed), reference: { kind: 'owned', ...adminInputReference(transaction) },
+    owner: { kind: 'AddressOwner', value: nid(fixture.ids.signer) } };
+  const adminCap = clone(inputAdminCap);
+  adminCap.reference.version = String(BigInt(inputAdminCap.reference.version) + 1n);
+  adminCap.reference.digest = toBase58(new Uint8Array(32).fill(Number(BigInt(adminCap.reference.version) % 255n)));
+  return { inputAdminCap, adminCap };
+}
+
 async function baseChunkRaw(publication, scaffold, build, digest = DIGEST) {
   const expected = build.checkpoint.expected;
   const root = expected.sealed ? clone(scaffold.root) : null;
   if (root) root.fields.sealedBaseRegistryCommitment = expected.sealedCommitments.aggregate;
   return { schemaVersion: MAKER_V8_BASE_CHUNK_READBACK_SCHEMA, source: 'FINALIZED_RPC', transactionDigest: digest,
-    ...await transactionKindProof(build), root,
+    ...await transactionKindProof(build), ...advancedAdminReadback(build.transaction, scaffold.adminCap), root,
     baseRegistry: shared(fixture.ids.baseRegistry, scaffold.baseRegistry.type, {
       ...clone(scaffold.baseRegistry.fields), ...clone(expected),
     }),
@@ -751,6 +777,7 @@ async function activationChunkRaw(build, companion, digest = DIGEST) {
     source: 'FINALIZED_RPC',
     transactionDigest: digest,
     ...await transactionKindProof(build),
+    ...advancedAdminReadback(build.transaction, companion.adminCap),
     rootId: companion.sealRegistry.fields.rootId,
     makerVersion: 1,
     lifecycle: 'ACTIVE',
@@ -768,7 +795,7 @@ async function activationChunkRaw(build, companion, digest = DIGEST) {
   if (lane === 'RUNTIME') { object.fields.observedProfileCount = expected.observedCount; object.fields.rollingProfileCommitment = expected.rollingCommitment; object.fields.sealed = expected.sealed; }
   if (lane === 'OUTPUT') { object.fields.observedOutputCount = expected.observedCount; object.fields.rollingPolicyCommitment = expected.rollingCommitment; object.fields.sealed = expected.sealed; }
   if (lane === 'PHYSICAL') { object.fields.observedBasePolicyCount = expected.observedCount; object.fields.rollingBasePolicyCommitment = expected.rollingCommitment; object.fields.baseSealed = expected.sealed; }
-  return { schemaVersion: MAKER_V8_ACTIVATION_CHUNK_READBACK_SCHEMA, source: 'FINALIZED_RPC', transactionDigest: digest, ...await transactionKindProof(build), phase, object };
+  return { schemaVersion: MAKER_V8_ACTIVATION_CHUNK_READBACK_SCHEMA, source: 'FINALIZED_RPC', transactionDigest: digest, ...await transactionKindProof(build), ...advancedAdminReadback(build.transaction, companion.adminCap), phase, object };
 }
 
 async function allActivationBuilds(path) {
@@ -806,16 +833,50 @@ async function allBaseBuilds(publication, scaffold) {
   return { builds, base: prior.base };
 }
 
-test('real compiler FINALIZE persists through the complete checkpoint chain and cold IndexedDB recovery', async () => {
+test('finalized Base output AdminCap reference advances the next real Base builder', async () => {
+  const path = await compilePath();
+  const first = await buildMakerV8BaseChunkTransaction(path.publication, path.scaffold, null);
+  const raw = await baseChunkRaw(path.publication, path.scaffold, first);
+  const certificate = await certifyMakerV8BaseChunkReadback(path.publication, path.scaffold, first, raw);
+  const next = await buildMakerV8BaseChunkTransaction(path.publication, path.scaffold, certificate);
+  assert.equal(adminInputReference(next.transaction).version,
+    String(BigInt(adminInputReference(first.transaction).version) + 1n),
+    'the successfully borrowed owned AdminCap advances by the finalized transaction Lamport version');
+  assert.deepEqual(adminInputReference(next.transaction), (({ kind, ...reference }) => reference)(raw.adminCap.reference));
+  const historical = await rehydrateMakerV8BaseChunkCertificateV8(path.publication, path.scaffold,
+    { checkpoint: first.checkpoint, readback: raw });
+  assert.deepEqual(historical.adminCap, certificate.adminCap);
+  assert.equal(historical.transactionKind.sha256, (await transactionKindProof(first)).transactionKindSha256);
+  for (const mutate of [
+    value => { value.adminCap.reference.objectId = nid('0xbad'); },
+    value => { value.adminCap.type = value.adminCap.type.replace('MakerAdminCapV8', 'OtherCapV8'); },
+    value => { value.adminCap.owner.value = nid('0xbad'); },
+    value => { value.adminCap.fields.controlEpoch = '1'; },
+    value => { value.adminCap.reference.version = value.inputAdminCap.reference.version; },
+    value => { value.inputAdminCap.reference.digest = toBase58(new Uint8Array(32).fill(99)); },
+  ]) {
+    const forged = clone(raw); mutate(forged);
+    await assert.rejects(certifyMakerV8BaseChunkReadback(path.publication, path.scaffold, first, forged));
+  }
+});
+
+async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } = {}) {
   const path = await compilePath();
   const indexedDB = new IDBFactory();
   const databaseName = 'compiler-finalize-durable';
   const store = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName,
     storageManager: { async persisted() { return true; }, async persist() { return true; } } });
   await store.requirePersistentStorage();
+  const historicalBridges = new Map();
+  let repairedLegacyCursor = false;
   const compilerRpc = {
     async loadTrustedContext() { return path.context; },
-    async recoverCheckpoint({ kind, publication, scaffold, base, companion, build, digest }) {
+    async recoverOwnedReferenceProgress(input) {
+      const bridge = historicalBridges.get(input.digest);
+      assert.ok(bridge, 'legacy missing reference proof must reread the exact successful transaction');
+      return bridge.adapter.recoverOwnedReferenceProgress(input);
+    },
+    async recoverCheckpoint({ kind, publication, scaffold, base, companion, build, transaction, digest }) {
       let raw;
       if (kind === 'SCAFFOLD') await scaffoldReadback(publication, value => { raw = clone(value); });
       else if (kind === 'BASE_CHUNK') raw = await baseChunkRaw(publication, scaffold, build, digest);
@@ -823,8 +884,22 @@ test('real compiler FINALIZE persists through the complete checkpoint chain and 
         raw = await companionRaw(publication, base, build.expected, build.transaction);
         const certified = await companionReadback(publication, base, build.expected, build.transaction);
         for (const key of ['runtimeDefinitions', 'outputRegistry', 'physicalRegistry', 'marketRegistry']) raw[key] = clone(certified[key]);
-      } else raw = await activationChunkRaw(build, companion, digest);
+      } else {
+        raw = await activationChunkRaw(build, companion, digest);
+        if (build.checkpoint.final) Object.assign(raw, {
+          makerKey: publication.document.lineage.makerKey, versionCommitment: publication.commitments.version,
+          manifestSha256: publication.manifest.sha256, contentCommitment: publication.commitments.content,
+          protocolConfigCommitment: publication.context.protocolConfig.fields.commitment,
+          productBindingCommitment: publication.context._derived.productBindingCommitment,
+          callCapSetCommitment: publication.context._derived.callCapSetCommitment,
+        });
+      }
       raw.transactionDigest = digest;
+      if (legacyUnsignedBase && kind === 'BASE_CHUNK' && build.checkpoint.phase === 'BASE_APPEND') {
+        const bridge = await publicationHistoricalBridge(publication, transaction, raw, null, await transaction.build());
+        assert.equal(bridge.digest, digest);
+        historicalBridges.set(digest, bridge);
+      }
       return raw;
     },
   };
@@ -842,8 +917,26 @@ test('real compiler FINALIZE persists through the complete checkpoint chain and 
   let plan = await store.createAttempt(prepared.plan, prepared.blobs);
   let attested = prepared.attested;
   const phases = [];
-  while (plan.current.phase !== 'ACTIVATION_FINALIZE') {
+  let finalizedAdminReference = null;
+  while (plan.status !== 'COMPLETE') {
     phases.push(plan.current.phase);
+    const complete = plan.current.phase === 'ACTIVATION_FINALIZE';
+    const coldStore = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName });
+    const coldPlan = await coldStore.loadPlan(plan.attemptId);
+    const coldAdapter = createMakerV8PublicationCompilerAdapterV8({ persistence: coldStore, compilerRpc,
+      loadRuntimeAttestation() { throw new Error('Historical recovery cannot replace proven references with live authority'); } });
+    const historical = await coldAdapter.rehydrate({ plan: coldPlan, head: await coldStore.loadHead(plan.attemptId),
+      transactionKindBytes: (await coldStore.getBlob(coldPlan.current.transactionKindRef.sha256)).data,
+      purpose: 'RESUME_READY', requireFreshAuthority: false });
+    assert.equal(historical.transactionKindBytes, attested.transactionKindBytes, `${plan.current.phase} cold kind stays exact`);
+    if (finalizedAdminReference) assert.deepEqual(adminInputReference(historical.transaction), finalizedAdminReference,
+      `${plan.current.phase} must consume the preceding finalized AdminCap output`);
+    if (complete) {
+      const expected = (await allActivationBuilds(attested.compilerState)).at(-1);
+      assert.equal(attested.transactionKindBytes, (await transactionKindProof(expected)).transactionKindBytesBase64);
+      assert.equal(plan.current.commandCount, 9, 'complete activation transaction, not an epoch-only substitute');
+      assert.match(plan.current.targets.at(-1), /::system::epoch$/);
+    }
     const transaction = attested.transaction;
     transaction.setGasOwner(plan.immutable.signerAddress);
     transaction.setGasBudget(10_000_000); transaction.setGasPrice(1_000);
@@ -876,8 +969,18 @@ test('real compiler FINALIZE persists through the complete checkpoint chain and 
       query: { status: 'FINALIZED_SUCCESS', digest, epoch: '7', effectsFingerprint: `0x${'ab'.repeat(32)}`,
         eventsDigest: null, error: null, absence: null },
       artifacts: { bytes: toBase64(bytes), signature: null, digest, kindBytes: attested.transactionKindBytes } });
+    const milestone = capsule.milestones.progress ?? (plan.current.kind === 'COMPANION_OBJECTS'
+      ? capsule.milestones.companion : plan.current.kind === 'BASE_CHUNK'
+        ? capsule.milestones.baseFinal : capsule.milestones.scaffold);
+    const { kind: referenceKind, ...outputReference } = milestone.readback.adminCap.reference;
+    finalizedAdminReference = { ...outputReference, objectId: nid(outputReference.objectId) };
+    const durableCapsule = clone(capsule);
+    if (legacyUnsignedBase && plan.current.phase === 'BASE_APPEND') {
+      delete durableCapsule.milestones.progress.readback.inputAdminCap;
+      delete durableCapsule.milestones.progress.readback.adminCap;
+    }
     const readback = { schemaVersion: 'animacraft.maker-v8-publication-finalized-readback.v1', source: 'FINALIZED_RPC',
-      transactionDigest: digest, transactionKindSha256: plan.current.transactionKindSha256, compiler: capsule };
+      transactionDigest: digest, transactionKindSha256: plan.current.transactionKindSha256, compiler: durableCapsule };
     const { outcome, ...descriptor } = plan.current;
     const checkpoint = { ...descriptor, schemaVersion: MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA,
       attemptId: plan.attemptId, planId: plan.planId, digest, readback,
@@ -889,28 +992,97 @@ test('real compiler FINALIZE persists through the complete checkpoint chain and 
     checkpoint.checkpointSha256 = await makerV8PublicationCheckpointSha256V8(checkpoint);
     await save({ head: { ordinal: checkpoint.ordinal, digest, transactionKindSha256: checkpoint.transactionKindSha256,
       checkpointSha256: checkpoint.checkpointSha256, phase: checkpoint.phase, lane: checkpoint.lane }, current: null,
-      nextPreparation: { status: 'REQUIRED', ordinal: checkpoint.ordinal + 1, reason: null } }, { checkpoint }, event('FINALIZED_SUCCESS', pending));
+      status: complete ? 'COMPLETE' : 'ACTIVE',
+      terminal: complete ? { status: 'COMPLETE', reason: 'ACTIVATION_FINALIZED', at: checkpoint.finalizedAt } : null,
+      nextPreparation: complete ? null : { status: 'REQUIRED', ordinal: checkpoint.ordinal + 1, reason: null } }, { checkpoint }, event('FINALIZED_SUCCESS', pending));
+    if (complete) break;
     attested = await adapter.prepareSuccessor({ plan, head: await store.loadHead(plan.attemptId), requireFreshAuthority: true });
-    const blob = await makerV8Base64BlobV8(attested.transactionKindBytes);
-    await save({ current: { ...clone(attested.descriptor), transactionKindRef: makerV8BlobRefV8(blob),
+    let blob = await makerV8Base64BlobV8(attested.transactionKindBytes);
+    const nextDescriptor = clone(attested.descriptor);
+    const repairLegacy = legacyUnsignedBase && nextDescriptor.phase === 'BASE_SEAL';
+    if (repairLegacy) {
+      const parsed = bcs.TransactionKind.parse(Buffer.from(blob.data, 'base64'));
+      const cap = parsed.ProgrammableTransaction.inputs.map(input => input.Object?.ImmOrOwnedObject)
+        .find(reference => reference?.objectId === nid(fixture.ids.adminCap));
+      Object.assign(cap, { version: path.scaffold.adminCap.reference.version, digest: path.scaffold.adminCap.reference.digest });
+      blob = await makerV8Base64BlobV8(toBase64(bcs.TransactionKind.serialize(parsed).toBytes()));
+      nextDescriptor.transactionKindSha256 = blob.sha256;
+    }
+    await save({ current: { ...nextDescriptor, transactionKindRef: makerV8BlobRefV8(blob),
       fullTransactionRef: null, signatureRef: null, outcome: { status: 'READY' } }, nextPreparation: null }, { blobs: [blob] });
+    if (repairLegacy) {
+      const oldHead = await store.loadHead(plan.attemptId);
+      const oldHistory = clone(plan.attemptHistory);
+      await assert.rejects(adapter.rehydrate({ plan, head: oldHead, transactionKindBytes: blob.data,
+        purpose: 'RESUME_READY', requireFreshAuthority: false }));
+      const repair = await adapter.prepareUnsignedReferenceRepair({ plan, head: oldHead, transactionKindBytes: blob.data });
+      assert.equal(repair.transactionKindBytes, attested.transactionKindBytes);
+      await assert.rejects(store.repairUnsignedOwnedReference(plan.attemptId, plan.revision - 1, repair),
+        error => error.code === 'MAKER_V8_PUBLICATION_CAS_MISMATCH');
+      const changedSemantics = clone(repair);
+      changedSemantics.descriptor.postState.contentCommitment = 'ff'.repeat(32);
+      await assert.rejects(store.repairUnsignedOwnedReference(plan.attemptId, plan.revision, changedSemantics),
+        error => error.code === 'MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID');
+      assert.deepEqual(await store.loadPlan(plan.attemptId), plan, 'rejected repair leaves the old unsigned cursor intact');
+      // The inert store accepts a reference-only write, but it cannot authorize
+      // that reference for execution or make a bogus high version unrecoverable.
+      for (const version of ['18446744073709551615', finalizedAdminReference.version]) {
+        const parsed = bcs.TransactionKind.parse(Buffer.from(repair.transactionKindBytes, 'base64'));
+        const cap = parsed.ProgrammableTransaction.inputs.map(input => input.Object?.ImmOrOwnedObject)
+          .find(reference => reference?.objectId === nid(fixture.ids.adminCap));
+        Object.assign(cap, { version, digest: toBase58(new Uint8Array(32).fill(99)) });
+        const forged = await makerV8Base64BlobV8(toBase64(bcs.TransactionKind.serialize(parsed).toBytes()));
+        plan = await store.repairUnsignedOwnedReference(plan.attemptId, plan.revision, {
+          descriptor: { ...clone(repair.descriptor), transactionKindSha256: forged.sha256 }, transactionKindBytes: forged.data,
+        });
+        await assert.rejects(adapter.rehydrate({ plan, head: oldHead, transactionKindBytes: forged.data,
+          purpose: 'RESUME_READY', requireFreshAuthority: false }),
+        error => error.code === 'MAKER_V8_PUBLICATION_COMPILER_REHYDRATION_DRIFT');
+      }
+      const forbidden = async () => { throw new Error('Unsigned recovery must not sign, broadcast, or query a new transaction'); };
+      const controller = createMakerV8PublicationControllerV8({ persistence: store, compiler: adapter,
+        boundary: {
+          async buildExactTransaction({ transaction, sender, expectedKindBytes }) {
+            assert.equal(expectedKindBytes, repair.transactionKindBytes);
+            assert.deepEqual(adminInputReference(transaction), finalizedAdminReference);
+            transaction.setGasOwner(sender); transaction.setGasBudget(10_000_000); transaction.setGasPrice(1_000);
+            transaction.setGasPayment([{ objectId: nid('0xabc'), version: '1', digest: DIGEST }]);
+            const bytes = await transaction.build();
+            return { bytes: toBase64(bytes), digest: TransactionDataBuilder.getDigestFromBytes(bytes) };
+          },
+          async dryRunExactTransaction({ expectedKindBytes }) {
+            assert.equal(expectedKindBytes, repair.transactionKindBytes); return { status: 'SUCCESS' };
+          },
+          broadcastExactTransaction: forbidden,
+        }, wallet: { signExactTransaction: forbidden, verifyExactSignature: forbidden }, rpc: { queryTransaction: forbidden } });
+      const review = await controller.prepareReview(plan.attemptId);
+      plan = await store.loadPlan(plan.attemptId);
+      assert.equal(review.revision, plan.revision);
+      assert.equal(plan.current.transactionKindSha256, repair.descriptor.transactionKindSha256);
+      assert.deepEqual(await store.loadHead(plan.attemptId), oldHead, 'successful historical checkpoint bytes remain untouched');
+      assert.deepEqual(plan.attemptHistory, oldHistory, 'unsigned repair creates no duplicate transaction attempt');
+      repairedLegacyCursor = true;
+    }
   }
   assert.ok(phases.includes('BASE_SEAL') && phases.includes('COMPANION_OBJECTS') && phases.includes('ACTIVATION_PHYSICAL_SEAL'));
-  const expected = (await allActivationBuilds(path)).at(-1);
-  assert.equal(attested.transactionKindBytes, (await transactionKindProof(expected)).transactionKindBytesBase64);
-  assert.equal(plan.current.commandCount, 9, 'complete activation transaction, not an epoch-only substitute');
-  assert.match(plan.current.targets.at(-1), /::system::epoch$/);
   const coldStore = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName });
   const restored = await coldStore.loadPlan(plan.attemptId);
   assert.deepEqual(restored, plan);
   const cold = createMakerV8PublicationCompilerAdapterV8({ persistence: coldStore, compilerRpc,
     loadRuntimeAttestation() { throw new Error('Cold restoration must use the durable certified snapshot'); } });
-  const recovered = await cold.rehydrate({ plan: restored, head: await coldStore.loadHead(plan.attemptId),
-    transactionKindBytes: (await coldStore.getBlob(restored.current.transactionKindRef.sha256)).data,
-    purpose: 'RESUME_READY', requireFreshAuthority: false });
-  assert.equal(recovered.transactionKindBytes, attested.transactionKindBytes);
-  assert.equal(recovered.descriptor.phase, 'ACTIVATION_FINALIZE');
-});
+  const finalHead = await coldStore.loadHead(plan.attemptId);
+  const recovered = await cold.describeFinalized(restored, finalHead);
+  assert.equal(recovered.complete, true);
+  assert.equal(finalHead.phase, 'ACTIVATION_FINALIZE');
+  assert.deepEqual(finalHead.readback.compiler.milestones.progress.readback.adminCap.reference,
+    { kind: 'owned', ...finalizedAdminReference });
+  assert.equal((await coldStore.getBlob(finalHead.transactionKindRef.sha256)).data, attested.transactionKindBytes);
+  assert.equal(repairedLegacyCursor, legacyUnsignedBase);
+}
+
+test('real compiler FINALIZE persists through the complete checkpoint chain and cold IndexedDB recovery', () => assertCompletePublicationRecovery());
+test('legacy successful Base proof repairs only the unsigned stale BaseSeal before cold full publication recovery',
+  () => assertCompletePublicationRecovery({ legacyUnsignedBase: true }));
 
 function compilerTargetKey(target) {
   const [packageId, module, fn] = target.split('::');
@@ -1380,7 +1552,9 @@ test('manifest, asset bytes, package tuple, stable TypeOrigin, and zero-state ta
   await assert.rejects(deriveMakerV8ReleaseCommitments({ catalogId: fixture.ids.catalog, roles: collision, authorities: tuple.authorities }), (error) => error.code === 'MAKER_V8_PACKAGE_ROLE_COLLISION');
   const path = await compilePath(); const wrongType = await companionRaw(path.publication, path.base, path.companionBuild.expected, path.companionBuild.transaction); wrongType.physicalRegistry.type = wrongType.physicalRegistry.type.replace(path.context.catalog.fields.roles.physical.originalPackageId, path.context.catalog.fields.roles.physical.callablePackageId);
   await assert.rejects(certifyMakerV8CompanionReadback(path.publication, path.base, wrongType), (error) => error.code === 'MAKER_V8_TYPE_ORIGIN_MISMATCH');
-  const zero = clone(path.companion); delete zero.expected; delete zero.transactionKind; Object.assign(zero, await transactionKindProof(path.companionBuild)); zero.marketRegistry.fields.zeroStateCommitment = 'ff'.repeat(32);
+  const zero = clone(path.companion); delete zero.expected; delete zero.transactionKind;
+  Object.assign(zero, await transactionKindProof(path.companionBuild), advancedAdminReadback(path.companionBuild.transaction, path.base.adminCap));
+  zero.marketRegistry.fields.zeroStateCommitment = 'ff'.repeat(32);
   await assert.rejects(certifyMakerV8CompanionReadback(path.publication, path.base, zero), (error) => error.code === 'MAKER_V8_MARKET_ZERO_COMMITMENT_MISMATCH');
 });
 

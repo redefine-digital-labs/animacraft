@@ -51,6 +51,7 @@ import {
 import {
   MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA,
   assertMakerV8PublicationPlanIdentityV8,
+  assertMakerV8UnsignedOwnedReferenceDeltaV8,
   createMakerV8PublicationPersistenceV8,
   makerV8Base64BlobV8,
   makerV8BlobRefV8,
@@ -1022,6 +1023,18 @@ export function createMakerV8PublicationCompilerAdapterV8({
     return { publication, transport };
   }
 
+  async function historicalProgress(publication, anchor, raw) {
+    const value = clone(raw);
+    if (Object.hasOwn(value, 'inputAdminCap') || Object.hasOwn(value, 'adminCap')) return value;
+    requireMethod(compilerRpc, 'recoverOwnedReferenceProgress', 'compilerRpc');
+    const proof = await compilerRpc.recoverOwnedReferenceProgress({
+      publication, adminCap: anchor, digest: value.transactionDigest,
+      transactionKindBytesBase64: value.transactionKindBytesBase64,
+    });
+    exact(proof, ['inputAdminCap', 'adminCap'], 'historical owned-reference progression');
+    return { ...value, ...clone(proof) };
+  }
+
   async function compilerState(plan, head, requireFreshAuthority) {
     const { publication, transport } = await durablePublication(plan, requireFreshAuthority);
     const state = {
@@ -1047,7 +1060,7 @@ export function createMakerV8PublicationCompilerAdapterV8({
           state.scaffold,
           {
             checkpoint: clone(milestones.baseFinal.checkpoint),
-            readback: clone(milestones.baseFinal.readback),
+            readback: await historicalProgress(publication, state.scaffold.adminCap, milestones.baseFinal.readback),
           },
         );
         if (!certificate.base) {
@@ -1058,7 +1071,7 @@ export function createMakerV8PublicationCompilerAdapterV8({
       if (milestones.companion) {
         if (!state.base) fail('MAKER_V8_PUBLICATION_CAPSULE_INVALID', 'Companion milestone lacks sealed Base state.');
         state.companion = await certifyMakerV8CompanionReadback(
-          publication, state.base, clone(milestones.companion.readback),
+          publication, state.base, await historicalProgress(publication, state.base.adminCap, milestones.companion.readback),
         );
       }
       if (milestones.progress?.kind === 'BASE_CHUNK') {
@@ -1067,7 +1080,7 @@ export function createMakerV8PublicationCompilerAdapterV8({
           state.scaffold,
           {
             checkpoint: clone(milestones.progress.checkpoint),
-            readback: clone(milestones.progress.readback),
+            readback: await historicalProgress(publication, state.scaffold.adminCap, milestones.progress.readback),
           },
         );
       }
@@ -1081,7 +1094,7 @@ export function createMakerV8PublicationCompilerAdapterV8({
           state.companion,
           {
             checkpoint: clone(milestones.progress.checkpoint),
-            readback: clone(milestones.progress.readback),
+            readback: await historicalProgress(publication, state.base.adminCap, milestones.progress.readback),
           },
         );
       }
@@ -1544,6 +1557,26 @@ export function createMakerV8PublicationCompilerAdapterV8({
     });
   }
 
+  async function prepareUnsignedReferenceRepair(input) {
+    exact(input, ['plan', 'head', 'transactionKindBytes'], 'unsigned reference repair');
+    const { plan, head } = input;
+    if (!plan.head || plan.status !== 'ACTIVE' || plan.current?.outcome.status !== 'READY'
+      || plan.current.fullTransactionRef !== null || plan.current.signatureRef !== null
+      || await persistence.loadAttemptHead(plan.attemptId, plan.current.ordinal)) {
+      fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Only a never-attempted unsigned cursor can refresh its proved owned reference.');
+    }
+    const state = await compilerState(plan, head, true);
+    const built = await attestBuild({ ...plan, current: null }, head, state);
+    const expected = { ...built.descriptor, transactionKindSha256: plan.current.transactionKindSha256 };
+    if (!exactDescriptor(plan.current, expected)) {
+      fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Owned-reference repair changed compiler stage or semantics.');
+    }
+    const adminCap = state.priorActivation?.adminCap ?? state.companion?.adminCap
+      ?? state.priorBase?.adminCap ?? state.base?.adminCap ?? state.scaffold?.adminCap;
+    assertMakerV8UnsignedOwnedReferenceDeltaV8(input.transactionKindBytes, built.kindBytes, adminCap.reference);
+    return Object.freeze({ descriptor: built.descriptor, transactionKindBytes: built.kindBytes });
+  }
+
   async function prepareSuccessor(input) {
     exact(input, ['plan', 'head', 'requireFreshAuthority'], 'publication successor input');
     if (input.requireFreshAuthority !== true || input.plan?.current !== null
@@ -1578,6 +1611,7 @@ export function createMakerV8PublicationCompilerAdapterV8({
     rehydrate,
     certifyFinalized,
     prepareSuccessor,
+    prepareUnsignedReferenceRepair,
     async describeFinalized(plan, head) {
       // Recompile durable commitments and recertify every milestone before
       // projecting the Root identity. A scaffold alone never means COMPLETE.

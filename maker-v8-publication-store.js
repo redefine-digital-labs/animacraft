@@ -183,6 +183,32 @@ const PLAN_TRANSITIONS = Object.freeze({
   RELEASE_RETIRED: new Set(),
 });
 const RESTORE_TOKEN = Symbol('maker-v8-publication-restore');
+const OWNED_REFERENCE_REPAIR_TOKEN = Symbol('maker-v8-publication-owned-reference-repair');
+
+// Structural storage check only. Execution authority remains the exact cold
+// compiler reconstruction before review/signing, including the historical proof.
+export function assertMakerV8UnsignedOwnedReferenceDeltaV8(beforeBytes, afterBytes, expectedReference = null) {
+  const before = bcs.TransactionKind.parse(fromBase64(beforeBytes));
+  const after = bcs.TransactionKind.parse(fromBase64(afterBytes));
+  const oldInputs = before.ProgrammableTransaction?.inputs;
+  const newInputs = after.ProgrammableTransaction?.inputs;
+  if (!oldInputs || !newInputs || oldInputs.length !== newInputs.length) {
+    fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Reference repair changed transaction shape.');
+  }
+  const changed = oldInputs.map((value, index) => canonical(value) === canonical(newInputs[index]) ? -1 : index).filter(index => index >= 0);
+  if (changed.length !== 1) fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Reference repair must change exactly one input.');
+  const index = changed[0];
+  const oldRef = oldInputs[index].Object?.ImmOrOwnedObject;
+  const newRef = newInputs[index].Object?.ImmOrOwnedObject;
+  if (!oldRef || !newRef || oldRef.objectId !== newRef.objectId
+    || (expectedReference && (newRef.objectId !== expectedReference.objectId
+      || newRef.version !== expectedReference.version || newRef.digest !== expectedReference.digest))) {
+    fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Reference repair must select the exact proved owned object.');
+  }
+  oldInputs[index] = newInputs[index];
+  if (canonical(before) !== canonical(after)) fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Reference repair changed commands or other inputs.');
+  return true;
+}
 
 function optionalAttemptEvent(attempt, prior = null) {
   if (['FINALIZED_SUCCESS', 'FINALIZED_FAILURE'].includes(attempt.status)) return false;
@@ -3062,8 +3088,29 @@ export function createMakerV8PublicationPersistenceV8(
       return checkpoint;
     },
 
+    async repairUnsignedOwnedReference(attemptId, expectedRevision, { descriptor, transactionKindBytes }) {
+      const current = await api.loadPlan(attemptId);
+      if (!current || current.revision !== expectedRevision) fail('MAKER_V8_PUBLICATION_CAS_MISMATCH', 'Publication changed before reference repair.');
+      if (!current.head || current.status !== 'ACTIVE' || current.current?.outcome.status !== 'READY'
+        || current.current.fullTransactionRef !== null || current.current.signatureRef !== null) {
+        fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Only an unsigned READY successor can be repaired.');
+      }
+      const blob = await makerV8Base64BlobV8(transactionKindBytes);
+      const oldBytes = await readMakerV8PublicationBlobV8(api, current.current.transactionKindRef, 'unsigned reference repair');
+      assertMakerV8UnsignedOwnedReferenceDeltaV8(oldBytes, transactionKindBytes);
+      const nextCursor = { ...current.current, ...clone(descriptor), transactionKindRef: makerV8BlobRefV8(blob) };
+      const unchanged = { ...nextCursor, transactionKindRef: current.current.transactionKindRef,
+        transactionKindSha256: current.current.transactionKindSha256 };
+      if (descriptor.transactionKindSha256 !== blob.sha256 || canonical(unchanged) !== canonical(current.current)) {
+        fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Reference repair changed cursor semantics.');
+      }
+      return api.compareAndSwap(attemptId, expectedRevision, {
+        ...current, revision: current.revision + 1, current: nextCursor,
+      }, { blobs: [blob], ownedReferenceRepairToken: OWNED_REFERENCE_REPAIR_TOKEN });
+    },
+
     async compareAndSwap(attemptId, expectedRevision, nextValue, {
-      checkpoint = null, attempt = null, blobs = [], restoreToken = null,
+      checkpoint = null, attempt = null, blobs = [], restoreToken = null, ownedReferenceRepairToken = null,
     } = {}) {
       const next = clone(nextValue);
       await assertMakerV8PublicationPlanIdentityV8(next);
@@ -3135,13 +3182,23 @@ export function createMakerV8PublicationPersistenceV8(
         const priorAttempt = checkedAttemptValue
           ? await checkedAttemptHead(transaction, current, checkedAttemptValue.ordinal)
           : null;
+        const repairingReference = ownedReferenceRepairToken === OWNED_REFERENCE_REPAIR_TOKEN;
+        if (repairingReference) {
+          const attempts = await requestResult(transaction.objectStore(ATTEMPT_STORE).index('byOrdinal').count([current.attemptId, current.current.ordinal]));
+          const attemptHead = await checkedAttemptHead(transaction, current, current.current.ordinal);
+          if (attempts !== 0 || attemptHead !== null || checkedCheckpoint || checkedAttemptValue
+            || current.current.outcome.status !== 'READY' || current.current.fullTransactionRef !== null
+            || current.current.signatureRef !== null || canonical(current.head) !== canonical(next.head)) {
+            fail('MAKER_V8_PUBLICATION_UNSIGNED_REPAIR_INVALID', 'Reference repair cannot alter an attempted or signed cursor.');
+          }
+        }
         validatePlanMutation(
           current,
           next,
           checkedCheckpoint,
           checkedAttemptValue,
           priorAttempt,
-          restoring,
+          restoring || repairingReference,
         );
         if (checkedAttemptValue) {
           assertAttemptBindsDurableState({
