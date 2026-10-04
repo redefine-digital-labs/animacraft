@@ -3625,7 +3625,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       || root.creatorAddress !== publication.context.signerAddress) {
       fail('MAKER_V8_COMPILER_ACTIVATION_ROOT_INVALID', 'Activated Root ownership/lifecycle differs from the compiler signer.', 'READBACK');
     }
-    const historical = compilerFields(historicalRoot.parsed, [
+    const historical = compilerRootFields(historicalRoot.parsed, [
       'manifestSha256', 'protocolConfigCommitment', 'productBindingCommitment',
       'callCapSetCommitment',
     ], 'activated Root');
