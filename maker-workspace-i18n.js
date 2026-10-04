@@ -3860,6 +3860,122 @@ const chainTranslations = {
 for (const [locale, values] of Object.entries(chainTranslations)) {
   Object.keys(chainVersionCopy).forEach((key, index) => { dictionaries[locale][key] = values[index]; });
 }
+
+const publicationProgressCopy = {
+  "en": {
+    "publicationThreeStageTitle": "Publish Maker · step {step} of 3",
+    "publicationThreeStageCopy": "Prepare your files, upload and certify each resource, then publish the Maker. Upload and certification repeat within stage 2 until all resources are ready.",
+    "publicationUploadAndCertify": "Upload & certify resources",
+    "publicationCurrentResource": "Current resource: {resource}",
+    "publicationCheckTransaction": "Check transaction result",
+    "publicationContinuePublish": "Continue publishing",
+    "publicationContinueCertify": "Continue certification",
+    "publicationContinueUpload": "Continue uploading",
+    "publicationContinueRegister": "Continue registration & upload",
+    "publicationResultPending": "Transaction result pending. Check the saved transaction before requesting another signature.",
+    "publicationPublishSaved": "Publication signature saved. Continue the same transaction.",
+    "publicationCertifySaved": "Certification signature saved. Continue certification for this resource.",
+    "publicationUploadReady": "Registration completed. Continue uploading this resource.",
+    "publicationRegisterSaved": "Registration signature saved. Continue registration and upload for this resource.",
+    "publicationPublishReview": "Review the Maker publication transaction in your wallet.",
+    "publicationCertifyReview": "Resource uploaded. Review its certification transaction in your wallet.",
+    "publicationRegisterReview": "Review the registration and upload quote for this resource.",
+    "publicationSignPublish": "Review publication in wallet",
+    "publicationSignCertify": "Review certification in wallet",
+    "publicationSignRegister": "Review upload in wallet"
+  },
+  "zh": {
+    "publicationThreeStageTitle": "发布 Maker · 第 {step}/3 步",
+    "publicationThreeStageCopy": "准备文件，逐项上传并认证资源，最后发布 Maker。所有资源完成前，上传和认证都在第 2 阶段内进行。",
+    "publicationUploadAndCertify": "上传并认证资源",
+    "publicationCurrentResource": "当前资源：{resource}",
+    "publicationCheckTransaction": "查询交易结果",
+    "publicationContinuePublish": "继续发布",
+    "publicationContinueCertify": "继续认证",
+    "publicationContinueUpload": "继续上传",
+    "publicationContinueRegister": "继续登记并上传",
+    "publicationResultPending": "交易结果待确认。先查询已保存的交易，再决定是否需要新签名。",
+    "publicationPublishSaved": "发布签名已保存，请继续同一笔交易。",
+    "publicationCertifySaved": "认证签名已保存，请继续完成当前资源认证。",
+    "publicationUploadReady": "登记已完成，请继续上传当前资源。",
+    "publicationRegisterSaved": "登记签名已保存，请继续登记并上传当前资源。",
+    "publicationPublishReview": "请在钱包审核 Maker 发布交易。",
+    "publicationCertifyReview": "资源已上传，请在钱包审核认证交易。",
+    "publicationRegisterReview": "请审核当前资源的登记和上传报价。",
+    "publicationSignPublish": "在钱包审核发布",
+    "publicationSignCertify": "在钱包审核认证",
+    "publicationSignRegister": "在钱包审核上传"
+  },
+  "ja": {
+    "publicationThreeStageTitle": "Maker を公開 · {step}/3 ステップ",
+    "publicationThreeStageCopy": "ファイルを準備し、各リソースをアップロード・認証してから Maker を公開します。全リソースが揃うまでステップ2を繰り返します。",
+    "publicationUploadAndCertify": "リソースをアップロード・認証",
+    "publicationCurrentResource": "現在のリソース：{resource}",
+    "publicationCheckTransaction": "取引結果を確認",
+    "publicationContinuePublish": "公開を続行",
+    "publicationContinueCertify": "認証を続行",
+    "publicationContinueUpload": "アップロードを続行",
+    "publicationContinueRegister": "登録とアップロードを続行",
+    "publicationResultPending": "取引結果を確認中です。再署名する前に保存済み取引を確認してください。",
+    "publicationPublishSaved": "公開の署名を保存しました。同じ取引を続行してください。",
+    "publicationCertifySaved": "認証の署名を保存しました。このリソースの認証を続行してください。",
+    "publicationUploadReady": "登録済みです。このリソースをアップロードしてください。",
+    "publicationRegisterSaved": "登録の署名を保存しました。登録とアップロードを続行してください。",
+    "publicationPublishReview": "ウォレットで Maker の公開取引を確認してください。",
+    "publicationCertifyReview": "アップロード済みです。ウォレットで認証取引を確認してください。",
+    "publicationRegisterReview": "このリソースの登録・アップロード見積もりを確認してください。",
+    "publicationSignPublish": "ウォレットで公開を確認",
+    "publicationSignCertify": "ウォレットで認証を確認",
+    "publicationSignRegister": "ウォレットでアップロードを確認"
+  },
+  "ko": {
+    "publicationThreeStageTitle": "Maker 게시 · {step}/3단계",
+    "publicationThreeStageCopy": "파일을 준비하고 각 리소스를 업로드·인증한 뒤 Maker를 게시합니다. 모든 리소스가 준비될 때까지 2단계에서 업로드와 인증을 반복합니다.",
+    "publicationUploadAndCertify": "리소스 업로드 및 인증",
+    "publicationCurrentResource": "현재 리소스: {resource}",
+    "publicationCheckTransaction": "거래 결과 확인",
+    "publicationContinuePublish": "게시 계속",
+    "publicationContinueCertify": "인증 계속",
+    "publicationContinueUpload": "업로드 계속",
+    "publicationContinueRegister": "등록 및 업로드 계속",
+    "publicationResultPending": "거래 결과를 기다리는 중입니다. 다시 서명하기 전에 저장된 거래를 확인하세요.",
+    "publicationPublishSaved": "게시 서명이 저장되었습니다. 같은 거래를 계속하세요.",
+    "publicationCertifySaved": "인증 서명이 저장되었습니다. 현재 리소스의 인증을 계속하세요.",
+    "publicationUploadReady": "등록이 완료되었습니다. 현재 리소스를 업로드하세요.",
+    "publicationRegisterSaved": "등록 서명이 저장되었습니다. 등록 및 업로드를 계속하세요.",
+    "publicationPublishReview": "지갑에서 Maker 게시 거래를 검토하세요.",
+    "publicationCertifyReview": "업로드되었습니다. 지갑에서 인증 거래를 검토하세요.",
+    "publicationRegisterReview": "현재 리소스의 등록 및 업로드 견적을 검토하세요.",
+    "publicationSignPublish": "지갑에서 게시 검토",
+    "publicationSignCertify": "지갑에서 인증 검토",
+    "publicationSignRegister": "지갑에서 업로드 검토"
+  },
+  "vi": {
+    "publicationThreeStageTitle": "Đăng Maker · bước {step}/3",
+    "publicationThreeStageCopy": "Chuẩn bị tệp, tải lên và chứng nhận từng tài nguyên, rồi đăng Maker. Việc tải lên và chứng nhận lặp lại trong bước 2 cho đến khi mọi tài nguyên sẵn sàng.",
+    "publicationUploadAndCertify": "Tải lên và chứng nhận tài nguyên",
+    "publicationCurrentResource": "Tài nguyên hiện tại: {resource}",
+    "publicationCheckTransaction": "Kiểm tra kết quả giao dịch",
+    "publicationContinuePublish": "Tiếp tục đăng",
+    "publicationContinueCertify": "Tiếp tục chứng nhận",
+    "publicationContinueUpload": "Tiếp tục tải lên",
+    "publicationContinueRegister": "Tiếp tục đăng ký và tải lên",
+    "publicationResultPending": "Đang chờ kết quả. Kiểm tra giao dịch đã lưu trước khi yêu cầu chữ ký mới.",
+    "publicationPublishSaved": "Đã lưu chữ ký đăng. Tiếp tục cùng giao dịch.",
+    "publicationCertifySaved": "Đã lưu chữ ký chứng nhận. Tiếp tục chứng nhận tài nguyên này.",
+    "publicationUploadReady": "Đã đăng ký. Tiếp tục tải lên tài nguyên này.",
+    "publicationRegisterSaved": "Đã lưu chữ ký đăng ký. Tiếp tục đăng ký và tải lên tài nguyên này.",
+    "publicationPublishReview": "Xem xét giao dịch đăng Maker trong ví.",
+    "publicationCertifyReview": "Đã tải lên. Xem xét giao dịch chứng nhận trong ví.",
+    "publicationRegisterReview": "Xem xét báo giá đăng ký và tải lên tài nguyên này.",
+    "publicationSignPublish": "Xem xét đăng trong ví",
+    "publicationSignCertify": "Xem xét chứng nhận trong ví",
+    "publicationSignRegister": "Xem xét tải lên trong ví"
+  }
+};
+for (const [locale, copy] of Object.entries(publicationProgressCopy)) Object.assign(dictionaries[locale], copy);
+
+for (const [locale, copy] of Object.entries({"en": {"publicationResourceReady": "Resource certified. Continue to the next resource.", "publicationContinueResources": "Continue to next resource"}, "zh": {"publicationResourceReady": "当前资源已认证，请继续下一项资源。", "publicationContinueResources": "继续下一项资源"}, "ja": {"publicationResourceReady": "認証済みです。次のリソースへ進んでください。", "publicationContinueResources": "次のリソースへ"}, "ko": {"publicationResourceReady": "인증되었습니다. 다음 리소스로 진행하세요.", "publicationContinueResources": "다음 리소스로 계속"}, "vi": {"publicationResourceReady": "Đã chứng nhận tài nguyên. Tiếp tục tài nguyên tiếp theo.", "publicationContinueResources": "Tiếp tục tài nguyên tiếp theo"}})) Object.assign(dictionaries[locale], copy);
 export const MAKER_WORKSPACE_KEYS = Object.freeze(Object.keys(en));
 
 export function makerWorkspaceDictionary(locale) {
