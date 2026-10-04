@@ -2790,6 +2790,24 @@ function compilerFields(value, names, label) {
   }));
 }
 
+function compilerMarketTreasuryFields(value, names, label) {
+  const fields = rawMoveFields(value, label);
+  return Object.fromEntries(names.map(name => {
+    if (name !== 'balanceAtomic') {
+      return [name, compilerField(rawMoveField(fields, name, label), name, `${label}.${name}`)];
+    }
+    // MarketTreasuryV8 stores Balance<PaymentCoin> as escrow. The pinned gRPC
+    // JSON representation is a decimal u64; balanceAtomic is only our DTO name.
+    const escrow = rawMoveField(fields, 'escrow', label);
+    if (Object.hasOwn(fields, 'balanceAtomic') || Object.hasOwn(fields, 'balance_atomic')
+      || typeof escrow !== 'string' || escrow.length > 20 || !/^(?:0|[1-9][0-9]*)$/.test(escrow)
+      || BigInt(escrow) > 18446744073709551615n) {
+      fail('MAKER_V8_COMPILER_BALANCE_INVALID', `${label}.escrow must be the canonical u64 Balance value.`, 'READBACK');
+    }
+    return [name, escrow];
+  }));
+}
+
 function compilerRootFields(value, names, label) {
   const fields = rawMoveFields(value, label);
   return Object.fromEntries(names.map(name => {
@@ -2891,6 +2909,8 @@ export async function readMakerV8CompilerHistoricalObjectV8(
     historical,
     expectedType.includes('::maker_v8::MakerRootV8<')
       ? compilerRootFields(historical.parsed, fields, label)
+      : expectedType.includes('::market_v8::MarketTreasuryV8<')
+        ? compilerMarketTreasuryFields(historical.parsed, fields, label)
       : expectedType.endsWith('::soul::SoulState')
         ? Object.fromEntries(fields.map(name => {
           const raw = rawMoveField(historical.parsed, name, label);

@@ -274,6 +274,13 @@ async function publicationHistoricalBridge(publication, transaction, objects, mu
     const reference = object.reference;
     const owner = reference.kind === 'shared' ? { Shared: { initialSharedVersion: reference.initialSharedVersion } } : { AddressOwner: sender };
     const parsed = clone(object.fields);
+    if (object.type.includes('::market_v8::MarketTreasuryV8<')) {
+      // The historical gRPC Move field is escrow: Balance<PaymentCoin>,
+      // represented as a decimal scalar, not the compiler's balanceAtomic DTO.
+      parsed.escrow = parsed.balanceAtomic;
+      delete parsed.balanceAtomic;
+      assert.equal(Object.hasOwn(parsed, 'balance_atomic'), false);
+    }
     if (object.type.includes('::maker_v8::MakerRootV8<')) {
       parsed.content = Object.fromEntries(['rendererCommitment', 'manifestBlobId', 'manifestSha256', 'contentCommitment'].map(key => [key, parsed[key]]));
       parsed.economics = { ...Object.fromEntries(['protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment'].map(key => [key, parsed[key]])), commitment: parsed.economicsCommitment };
@@ -358,6 +365,25 @@ test('publication browser historical readbacks cross scaffold, Base, companion a
   const companionStage = await publicationHistoricalBridge(publication, companionBuild.transaction, rawCompanion);
   const projectedCompanion = await companionStage.adapter.recoverCheckpoint({ ...companionStage, kind: 'COMPANION_OBJECTS', publication, base });
   const companion = await certifyMakerV8CompanionReadback(publication, base, projectedCompanion);
+  assert.equal(projectedCompanion.marketTreasury.fields.balanceAtomic, '0');
+  for (const mutate of [
+    parsed => { delete parsed.escrow; },
+    parsed => { parsed.escrow = { value: '0' }; },
+    parsed => { parsed.escrow = '00'; },
+    parsed => { parsed.escrow = '18446744073709551616'; },
+    parsed => { parsed.balance_atomic = '0'; },
+  ]) {
+    const malformed = await publicationHistoricalBridge(publication, companionBuild.transaction, rawCompanion, row => {
+      if (row.type.includes('::market_v8::MarketTreasuryV8<')) mutate(row.parsed);
+    });
+    await assert.rejects(malformed.adapter.recoverCheckpoint({ ...malformed, kind: 'COMPANION_OBJECTS', publication, base }));
+  }
+  const nonzero = await publicationHistoricalBridge(publication, companionBuild.transaction, rawCompanion, row => {
+    if (row.type.includes('::market_v8::MarketTreasuryV8<')) row.parsed.escrow = '1';
+  });
+  const nonzeroReadback = await nonzero.adapter.recoverCheckpoint({ ...nonzero, kind: 'COMPANION_OBJECTS', publication, base });
+  await assert.rejects(certifyMakerV8CompanionReadback(publication, base, nonzeroReadback),
+    error => error.code === 'MAKER_V8_MARKET_TREASURY_READBACK_MISMATCH');
   let activationPrior = null, activationCount = 0;
   while (true) {
     const activationBuild = await buildMakerV8ActivationChunkTransaction(publication, base, companion, activationPrior);
@@ -895,6 +921,11 @@ async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } 
         });
       }
       raw.transactionDigest = digest;
+      if (kind === 'COMPANION_OBJECTS') {
+        const bridge = await publicationHistoricalBridge(publication, transaction, raw, null, await transaction.build());
+        assert.equal(bridge.digest, digest);
+        return bridge.adapter.recoverCheckpoint({ ...bridge, kind, build, publication, base });
+      }
       if (legacyUnsignedBase && kind === 'BASE_CHUNK' && build.checkpoint.phase === 'BASE_APPEND') {
         const bridge = await publicationHistoricalBridge(publication, transaction, raw, null, await transaction.build());
         assert.equal(bridge.digest, digest);
