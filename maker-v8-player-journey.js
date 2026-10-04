@@ -1053,6 +1053,11 @@ export function createMakerV8PlayerJourneyV8({
 
   return freeze({
     schemaVersion: MAKER_V8_PLAYER_JOURNEY_SCHEMA,
+    isNativeCompletionConfigured() {
+      return typeof nativeContent?.isConfigured === 'function' && nativeContent.isConfigured() === true
+        && ['preflight', 'prepare', 'finalize', 'loadCompletion', 'saveCompletion', 'clearCompletion']
+          .every(name => typeof nativeContent?.[name] === 'function');
+    },
     openReception(scope) { nativeContent?.open?.(scope); },
     async exportEnvelopeRecovery(scope) { return nativeContent?.exportRecovery?.(scope) ?? null; },
     async complete({ rootId, signer, selections, project = {} } = {}, { confirmStep, signal, startNew = false, newCompletionFrom, recoveryJson } = {}) {
