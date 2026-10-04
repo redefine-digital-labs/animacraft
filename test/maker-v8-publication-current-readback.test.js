@@ -7,6 +7,7 @@ const hash = n => Array(32).fill(n);
 const some = value => ({ fields: { vec: [value] } });
 const rootType = `${id(51)}::maker_v8::MakerRootV8<0x2::sui::SUI>`;
 const baseType = `${id(51)}::base_registry_v8::BaseDefinitionRegistryV8`;
+const marketTreasuryType = `${id(52)}::market_v8::MarketTreasuryV8<0x2::sui::SUI>`;
 async function read(parsed, fields, type = rootType) {
   const ref = { objectId: id(1), version: '7', digest, owner: { kind: 'Shared', value: { initialSharedVersion: '3' } } };
   return readMakerV8CompilerHistoricalObjectV8({ async getHistoricalObject() { return {
@@ -23,6 +24,26 @@ function root() {
     publication: { fields: { catalog_id: some(id(5)), sealed_base_registry_commitment: null,
       release_commitments: some({ fields: { product_binding_commitment: hash(10), call_cap_set_commitment: hash(11) } }) } } };
 }
+
+test('Market Treasury projects its actual escrow Balance into the compiler balance DTO', async () => {
+  const input = { escrow: '0', gross_escrowed_atomic: '0', gross_released_atomic: '0' };
+  assert.deepEqual((await read(input, ['balanceAtomic', 'grossEscrowedAtomic', 'grossReleasedAtomic'], marketTreasuryType)).fields,
+    { balanceAtomic: '0', grossEscrowedAtomic: '0', grossReleasedAtomic: '0' });
+});
+
+test('Market Treasury rejects missing, shadowed and noncanonical escrow without changing other types', async () => {
+  for (const escrow of [undefined, null, 0, '00', '-1', '1.0', '1e0', ' 0', '+0', '9'.repeat(100), '18446744073709551616', { value: '0' }, { fields: { value: '0' } }, []]) {
+    await assert.rejects(read({ escrow }, ['balanceAtomic'], marketTreasuryType));
+  }
+  for (const shadow of ['balanceAtomic', 'balance_atomic']) {
+    await assert.rejects(read({ [shadow]: '0' }, ['balanceAtomic'], marketTreasuryType));
+    await assert.rejects(read({ escrow: '0', [shadow]: '0' }, ['balanceAtomic'], marketTreasuryType));
+  }
+  for (const value of ['1', '18446744073709551615']) {
+    assert.equal((await read({ escrow: value }, ['balanceAtomic'], marketTreasuryType)).fields.balanceAtomic, value);
+  }
+  await assert.rejects(read({ escrow: '0' }, ['balanceAtomic'], baseType));
+});
 const fields = ['version', 'makerDocumentCommitment', 'creatorDefaultsCommitment', 'livingContentBindingCommitment', 'rendererCommitment', 'manifestBlobId', 'manifestSha256', 'contentCommitment', 'baseRegistryId', 'makerTreasuryId', 'protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment', 'economicsCommitment', 'rightsCommitment', 'catalogId', 'productBindingCommitment', 'callCapSetCommitment', 'sealedBaseRegistryCommitment'];
 test('historical publication Root projects actual nested content/economics/rights/slots without old flat sources', async () => {
   const value = await read(root(), fields);
