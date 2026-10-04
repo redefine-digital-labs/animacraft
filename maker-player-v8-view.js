@@ -661,7 +661,7 @@ function projectPlayerPresentation(exact, state, capabilities, assetRecords) {
   const boundaryReason = String(
     state.capabilityReason
     || exact.execution.disabledReason
-    || makerWorkspaceText(locale, 'playerPurchaseUnavailable'),
+    || makerWorkspaceText(locale, 'playerControlUnavailable'),
   );
   const contextualChoices = projectContextualChoices(player);
   const enabledPackReleaseIds = [...assertMakerV8EnabledPackReleaseIds(state.enabledPackReleaseIds ?? [], exact.recipe)];
@@ -761,8 +761,11 @@ function projectPlayerPresentation(exact, state, capabilities, assetRecords) {
         reason: String(state.makerAccess.reason || ''),
       }
     : { known: false, accessible: false, reason: boundaryReason };
-  const accessBoundaryReason = makerAccess.known && makerAccess.accessible
-    ? '' : makerAccess.reason || boundaryReason;
+  const executionDenied = !executionReady && (exact.execution.writeEnabled === false
+    || exact.execution.completeEnabled === false);
+  const accessBoundaryReason = makerAccess.known && !makerAccess.accessible
+    ? makerAccess.reason || boundaryReason
+    : executionDenied ? String(exact.execution.disabledReason || boundaryReason) : '';
   let packBoundaryReason = '';
   for (const choice of contextualChoices.filter((entry) => entry.source === 'PACK')) {
     const action = choice.access.accessible
@@ -1160,7 +1163,7 @@ function renderExportModal(view) {
             <fieldset><legend>${escapeHtml(tr(view, 'exportSize'))}</legend><div class="v4-player-export-choice"><button type="button" data-action="player-export-size" data-size-mode="standard" aria-pressed="${pressed(view.export.sizeMode === 'standard')}" class="${view.export.sizeMode === 'standard' ? 'active' : ''}"${controlAttributes(view, 'player-export-size', 'standard', rendering ? tr(view, 'renderingFinalImage') : '')}><strong>${escapeHtml(tr(view, 'standardSize'))}</strong><small>${escapeHtml(tr(view, 'exportDimensions', view.export.standard))}</small></button><button type="button" data-action="player-export-size" data-size-mode="original" aria-pressed="${pressed(view.export.sizeMode === 'original')}" class="${view.export.sizeMode === 'original' ? 'active' : ''}"${controlAttributes(view, 'player-export-size', 'original', !view.export.originalSafe ? tr(view, 'originalSizeUnavailable') : rendering ? tr(view, 'renderingFinalImage') : '')}><strong>${escapeHtml(tr(view, 'originalSize'))}</strong><small>${escapeHtml(view.export.originalSafe ? tr(view, 'exportDimensions', view.export.original) : tr(view, 'originalSizeUnavailable'))}</small></button></div></fieldset>
             <fieldset><legend>${escapeHtml(tr(view, 'backgroundMode'))}</legend><div class="v4-player-export-choice"><button type="button" data-action="player-export-background" data-transparent="false" aria-pressed="${pressed(!view.export.transparent)}" class="${view.export.transparent ? '' : 'active'}"${controlAttributes(view, 'player-export-background', 'opaque', rendering ? tr(view, 'renderingFinalImage') : '')}>${escapeHtml(tr(view, 'currentBackground'))}</button><button type="button" data-action="player-export-background" data-transparent="true" aria-pressed="${pressed(view.export.transparent)}" class="${view.export.transparent ? 'active' : ''}"${controlAttributes(view, 'player-export-background', 'transparent', rendering ? tr(view, 'renderingFinalImage') : '')}>${escapeHtml(tr(view, 'transparentBackground'))}</button></div></fieldset>
             <div class="v4-player-export-status" role="status" data-state="${escapeHtml(view.export.state)}"><strong>${escapeHtml(renderStatus)}</strong>${view.export.state === 'error' ? `<button type="button" data-action="player-export-retry"${controlAttributes(view, 'player-export-retry')}>${escapeHtml(tr(view, 'retryRender'))}</button>` : ''}</div>
-            ${view.completionConfirmation ? renderCompletionConfirmation(view) : `<section class="v4-player-commerce-quote" aria-labelledby="v4PlayerCommerceQuoteTitle"><header><strong id="v4PlayerCommerceQuoteTitle">${escapeHtml(tr(view, 'playerCommerceQuoteTitle'))}</strong><span>${escapeHtml(view.accessBoundaryReason ? tr(view, 'playerPurchaseUnavailable') : tr(view, 'playerCommerceNotQuoted'))}</span></header><p>${escapeHtml(view.accessBoundaryReason || view.boundaryReason)}</p><small>${escapeHtml(tr(view, 'playerCommerceNetworkSeparate'))}</small></section>`}
+            ${view.completionConfirmation ? renderCompletionConfirmation(view) : `<section class="v4-player-commerce-quote" aria-labelledby="v4PlayerCommerceQuoteTitle"><header><strong id="v4PlayerCommerceQuoteTitle">${escapeHtml(tr(view, 'playerCommerceQuoteTitle'))}</strong><span>${escapeHtml(view.accessBoundaryReason ? tr(view, 'playerPurchaseUnavailable') : tr(view, 'playerCommerceNotQuoted'))}</span></header><p>${escapeHtml(view.accessBoundaryReason || tr(view, 'playerCommerceNotQuoted'))}</p><small>${escapeHtml(tr(view, 'playerCommerceNetworkSeparate'))}</small></section>`}
             <div class="v4-player-export-share"><strong>${escapeHtml(tr(view, 'shareMaker'))}</strong><div><button type="button" data-action="player-copy-maker-link" aria-describedby="makerPlayerShareStatus"${controlAttributes(view, 'player-copy-maker-link', '', view.export.shareUrl ? '' : tr(view, 'makerMustBePublishedToShare'))}>${escapeHtml(tr(view, 'copyMakerLink'))}</button><button type="button" data-action="player-share-maker" aria-describedby="makerPlayerShareStatus"${controlAttributes(view, 'player-share-maker', '', view.export.shareUrl ? '' : tr(view, 'makerMustBePublishedToShare'))}>${escapeHtml(tr(view, 'shareMaker'))}</button></div><small id="makerPlayerShareStatus" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(view.export.shareUrl ? view.export.shareState : tr(view, 'makerMustBePublishedToShare'))}</small></div>
             <p class="v4-player-export-license">${escapeHtml(tr(view, 'exportLicenseNotice'))}</p>
           </aside>
