@@ -3824,6 +3824,37 @@ export function makerPublicationStageText(locale, stage) {
   const index = publicationStages.indexOf(stage);
   return index < 0 ? String(stage ?? '') : (publicationStageLabels[locale] || publicationStageLabels.en)[index];
 }
+const chainVersionCopy = {
+  chainHistory: ['Published chain versions', '已发布的链上版本'],
+  chainCopy: ['Local snapshots do not publish changes. A new chain version requires an explicitly archived predecessor.', '本地保存不会发布修改。新链上版本必须以前一版本已明确归档为前提。'],
+  chainLocal: ['Local saved snapshots', '本地保存快照'],
+  chainCurrentUnpublished: ['Earlier revision published · current edits unpublished', '旧修订已发布 · 当前修改未发布'],
+  chainNext: ['Review chain versions and publish next version', '查看链上版本并发布下一版'],
+  chainRevisions: ['Published saved revision {published} · current saved revision {current}', '已发布修订 {published} · 当前保存修订 {current}'],
+  chainArchiveReview: ['Review irreversible archive', '审阅不可逆归档'],
+  chainArchiveSign: ['Confirm irreversible archive in wallet', '在钱包确认不可逆归档'],
+  chainArchiveRecover: ['Recover archive (query saved transaction)', '恢复归档（查询已保存交易）'],
+  chainSuccessor: ['Create next version from current saved work', '用当前保存的作品创建下一版'],
+  chainArchiveDigest: ['Exact archive digest', '归档交易摘要'],
+  chainLoading: ['Loading chain versions…', '正在读取链上版本…'],
+  chainUnavailable: ['Chain version reader unavailable.', '链上版本读取服务不可用。'],
+  chainEmpty: ['No published chain versions.', '尚无已发布的链上版本。'],
+  chainPreparing: ['Preparing exact archive transaction for review. No signature requested.', '正在准备归档交易供审阅，尚未请求签名。'],
+  chainArchiveImpact: ['Archiving is irreversible: this version stops new authorizations and cannot resume. Existing Souls remain. Current saved work and all assets are preserved. Review the exact transaction before signing.', '归档不可逆：此版本将停止新授权，且无法恢复。已有 Soul 保留，当前保存的作品和全部素材也会保留。请审阅确切交易后再签名。'],
+  chainArchiveSaved: ['Archive signature saved. Recover archive to query and continue the exact saved transaction; do not sign another archive.', '归档签名已保存。请恢复归档以查询并继续原交易，不要重复签名。'],
+  chainSuccessorReady: ['Next version draft created from current saved work and all assets. Review and Publish this new draft.', '已用当前保存的作品和全部素材创建下一版草稿。请审阅并发布该草稿。'],
+};
+for (const [key, [english, chinese]] of Object.entries(chainVersionCopy)) {
+  dictionaries.en[key] = english; dictionaries.zh[key] = chinese;
+}
+const chainTranslations = {
+  ja: ['公開済みオンチェーン版', 'ローカル保存では公開されません。次の版には前の版の明示的なアーカイブが必要です。', 'ローカル保存履歴', '以前の版は公開済み・現在の編集は未公開', 'チェーン上の版を確認して次の版を公開', '公開済みリビジョン {published}・現在の保存 {current}', '取り消せないアーカイブを確認', 'ウォレットでアーカイブを確認', 'アーカイブを復旧（保存取引を照会）', '現在の保存内容から次の版を作成', 'アーカイブ取引ダイジェスト', 'チェーン上の版を読込中…', 'チェーン上の版を読み取れません。', '公開済みの版はありません。', '確認用のアーカイブ取引を準備中。署名はまだ要求していません。', 'アーカイブは取り消せません。この版の新規認可は停止し、再開できません。既存の Soul と現在の保存内容・素材は保持されます。署名前に取引を確認してください。', '署名を保存しました。復旧から保存取引を照会して続行してください。再署名しないでください。', '現在の保存内容と全素材から次の版を作成しました。この草稿を確認して公開してください。'],
+  ko: ['게시된 온체인 버전', '로컬 저장은 게시가 아닙니다. 다음 버전에는 이전 버전의 명시적 보관이 필요합니다.', '로컬 저장 기록', '이전 수정본 게시됨 · 현재 편집 미게시', '체인 버전 확인 후 다음 버전 게시', '게시된 수정본 {published} · 현재 저장본 {current}', '되돌릴 수 없는 보관 검토', '지갑에서 보관 확인', '보관 복구 (저장 거래 조회)', '현재 저장 내용으로 다음 버전 만들기', '보관 거래 다이제스트', '체인 버전 읽는 중…', '체인 버전을 읽을 수 없습니다.', '게시된 체인 버전이 없습니다.', '검토할 보관 거래를 준비합니다. 아직 서명을 요청하지 않았습니다.', '보관은 되돌릴 수 없습니다. 이 버전의 신규 승인이 중단되며 재개할 수 없습니다. 기존 Soul과 현재 저장 내용 및 모든 소재는 유지됩니다. 서명 전에 거래를 확인하세요.', '서명을 저장했습니다. 복구로 저장 거래를 조회하고 계속하세요. 다시 서명하지 마세요.', '현재 저장 내용과 모든 소재로 다음 버전 초안을 만들었습니다. 검토 후 게시하세요.'],
+  vi: ['Phiên bản đã xuất bản trên chuỗi', 'Lưu cục bộ không xuất bản thay đổi. Phiên bản mới yêu cầu lưu trữ phiên bản trước một cách rõ ràng.', 'Các bản lưu cục bộ', 'Bản trước đã xuất bản · chỉnh sửa hiện tại chưa xuất bản', 'Xem phiên bản trên chuỗi và xuất bản bản tiếp theo', 'Bản đã xuất bản {published} · bản lưu hiện tại {current}', 'Xem xét lưu trữ không thể đảo ngược', 'Xác nhận lưu trữ trong ví', 'Khôi phục lưu trữ (truy vấn giao dịch đã lưu)', 'Tạo bản tiếp theo từ nội dung đang lưu', 'Mã băm giao dịch lưu trữ', 'Đang đọc phiên bản trên chuỗi…', 'Không thể đọc phiên bản trên chuỗi.', 'Chưa có phiên bản trên chuỗi.', 'Đang chuẩn bị giao dịch lưu trữ để xem xét. Chưa yêu cầu chữ ký.', 'Lưu trữ không thể đảo ngược: bản này ngừng cấp phép mới và không thể tiếp tục. Soul hiện có, nội dung đang lưu và mọi tài nguyên được giữ lại. Kiểm tra giao dịch trước khi ký.', 'Đã lưu chữ ký. Dùng khôi phục để truy vấn và tiếp tục đúng giao dịch đã lưu; không ký lại.', 'Đã tạo bản nháp tiếp theo từ nội dung đang lưu và mọi tài nguyên. Hãy xem xét và xuất bản bản nháp này.'],
+};
+for (const [locale, values] of Object.entries(chainTranslations)) {
+  Object.keys(chainVersionCopy).forEach((key, index) => { dictionaries[locale][key] = values[index]; });
+}
 export const MAKER_WORKSPACE_KEYS = Object.freeze(Object.keys(en));
 
 export function makerWorkspaceDictionary(locale) {

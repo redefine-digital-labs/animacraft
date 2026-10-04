@@ -526,6 +526,9 @@ function normalizeVersionHistory(state, locale) {
     })).filter((entry) => Number.isSafeInteger(entry.revision) && entry.revision >= 0),
     error: String(source.error || state.versionHistoryError || ''),
     message: String(source.message || state.versionHistoryMessage || ''),
+    chainVersions: Array.isArray(state.chainVersions) ? state.chainVersions : [],
+    chainStatus: String(state.chainVersionStatus || ''),
+    archiveReview: state.chainVersionReview || null,
     restoringRevision: Number.isSafeInteger(source.restoringRevision)
       ? source.restoringRevision
       : Number.isSafeInteger(state.restoringCheckpointRevision)
@@ -1682,7 +1685,11 @@ function publicationReview(view) {
     ? ' disabled aria-disabled="true" title="' + escapeHtml(tr(view, 'publicationUnavailable')) + '"' : '';
   const success = complete ? '<strong class="v4-chain-published">' + escapeHtml(tr(view, 'publishedDone')) + '</strong>'
     + row('publicationComplete', review.rootId + ' / ' + review.makerVersion)
-    + '<button type="button" data-action="publication-open" data-publication-review="' + value(review.reviewId) + '">' + escapeHtml(tr(view, 'publicationOpen')) + '</button>' : '';
+    + '<button type="button" data-action="publication-open" data-publication-review="' + value(review.reviewId) + '">' + escapeHtml(tr(view, 'publicationOpen')) + '</button>'
+    + '<button type="button" data-action="publication-versions">' + escapeHtml(tr(view, 'chainHistory')) + '</button>'
+    : review?.status === 'NEW_VERSION_REQUIRED' ? '<aside role="status"><strong>' + escapeHtml(tr(view, 'chainCurrentUnpublished')) + '</strong><p>'
+      + escapeHtml(tr(view, 'chainCopy')) + '</p><p>' + escapeHtml(tr(view, 'chainRevisions', { published: scope.draftRevision, current: scope.currentSavedRevision }))
+      + '</p><button type="button" data-action="publication-versions">' + escapeHtml(tr(view, 'chainNext')) + '</button></aside>' : '';
   const confirmId = 'makerCreatorPublishCloseConfirm';
   const close = state.closeConfirm ? '<aside id="' + confirmId + '" class="v4-chain-close-confirm" role="alertdialog" aria-labelledby="'
     + confirmId + 'Title" aria-describedby="' + confirmId + 'Copy" tabindex="-1"><strong id="' + confirmId + 'Title">'
@@ -1726,6 +1733,18 @@ function versionHistory(view) {
   else if (history.status === 'error') content = `<div class="v4-version-history-state error"><strong>${escapeHtml(tr(view, 'versionHistoryFailed'))}</strong><span>${escapeHtml(history.error || tr(view, 'versionHistoryRestoreFailed'))}</span><button type="button" data-action="retry-version-history"${controlAttributes(view, 'retry-version-history')}>${escapeHtml(tr(view, 'versionHistoryRetry'))}</button></div>${list}`;
   else if (history.status === 'restoring') content = `<div class="v4-version-history-notice">${escapeHtml(tr(view, 'versionHistoryRestoring'))}</div>${list}`;
   else if (history.message) content = `<div class="v4-version-history-notice success">${escapeHtml(history.message)}</div>${list}`;
+  const chain = '<h4>' + escapeHtml(tr(view, 'chainHistory')) + '</h4><p>' + escapeHtml(tr(view, 'chainCopy')) + '</p>'
+    + history.chainVersions.map(row => {
+      const root = escapeHtml(row.rootId), allowed = row.canManage === true;
+      const button = (action, label, enabled) => `<button type="button" data-action="${action}" data-chain-root="${root}"${enabled && !busy ? '' : ' disabled'}>${label}</button>`;
+      return `<article><strong>Chain version ${escapeHtml(row.makerVersion)} · ${escapeHtml(row.lifecycle)}</strong><p style="overflow-wrap:anywhere">${root}</p>`
+        + button('chain-archive-review', escapeHtml(tr(view, 'chainArchiveReview')), allowed && ['ACTIVE', 'PAUSED'].includes(row.lifecycle))
+        + button('chain-archive-recover', escapeHtml(tr(view, 'chainArchiveRecover')), allowed)
+        + button('chain-successor', escapeHtml(tr(view, 'chainSuccessor')), allowed && row.lifecycle === 'ARCHIVED')
+        + (history.archiveReview?.rootId === row.rootId ? `<p>${escapeHtml(tr(view, 'chainArchiveDigest'))}: ${escapeHtml(history.archiveReview.digest)}</p>`
+          + button('chain-archive-sign', escapeHtml(tr(view, 'chainArchiveSign')), allowed && view.publicationSigningEnabled) : '') + '</article>';
+    }).join('') + `<p role="status">${escapeHtml(history.chainStatus)}</p><h4>${escapeHtml(tr(view, 'chainLocal'))}</h4>`;
+  content = chain + content;
   return `<div class="v4-modal-backdrop v4-version-history-backdrop" data-action="close-version-history-backdrop"><section class="v4-version-history-dialog" role="dialog" aria-modal="true" aria-labelledby="makerVersionHistoryTitle"><header><div><span class="v4-eyebrow">${escapeHtml(tr(view, 'versionHistory'))}</span><h3 id="makerVersionHistoryTitle">${escapeHtml(tr(view, 'versionHistoryTitle'))}</h3><p>${escapeHtml(tr(view, 'versionHistoryCopy'))}</p></div><button type="button" data-action="close-version-history" aria-label="${escapeHtml(tr(view, 'close'))}"${forcedControlAttributes(view, 'close-version-history', '', history.status === 'restoring')}>×</button></header><div class="v4-version-history-content">${content}</div></section></div>`;
 }
 

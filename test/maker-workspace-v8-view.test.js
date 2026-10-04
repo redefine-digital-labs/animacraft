@@ -13,6 +13,22 @@ import {
   renderApprovedMakerV8Workspace,
 } from '../maker-workspace-v8-view.js';
 
+test('chain version history distinguishes local snapshots and explicit archive in English and Chinese', () => {
+  const document = createCharacterMakerV8Starter({ makerKey: 'version-view', name: 'Versioned' });
+  for (const locale of ['en', 'zh']) {
+    const view = projectMakerV8WorkspaceView(document, { locale, versionHistoryOpen: true,
+      versionHistoryStatus: 'ready', versionEntries: [{ revision: 41 }],
+      chainVersions: [{ rootId: `0x${'12'.repeat(32)}`, makerVersion: 1, lifecycle: 'ACTIVE', canManage: true }],
+      chainVersionStatus: makerWorkspaceDictionary(locale).chainArchiveImpact }, { default: true });
+    const html = renderApprovedMakerV8Workspace(view);
+    assert.match(html, /chain-archive-review/); assert.match(html, /chain-archive-recover/);
+    assert.match(html, /data-action="chain-successor"[^>]*disabled/);
+    assert.ok(html.includes(makerWorkspaceDictionary(locale).chainHistory));
+    assert.ok(html.includes(makerWorkspaceDictionary(locale).chainLocal));
+    assert.ok(html.includes(makerWorkspaceDictionary(locale).chainArchiveImpact));
+  }
+});
+
 test('publication modal constrains its scroll track on narrow screens', async () => {
   const css = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
   assert.match(css, /\.v4-chain-flow-backdrop \.v4-chain-flow\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/);
@@ -796,6 +812,9 @@ test('view imports only current authority and hash-exact approved pure donor hel
     'publicationEarlier', 'publicationGasPrice',
     'publicationOpen',
     'publicationFlowCopy', 'publicationResourceProgress', 'publicationQuoteScope', 'publicationRecoveryCopy', 'publicationInProgress',
+    'chainHistory', 'chainCopy', 'chainLocal', 'chainCurrentUnpublished', 'chainNext', 'chainRevisions',
+    'chainArchiveReview', 'chainArchiveSign', 'chainArchiveRecover', 'chainSuccessor', 'chainArchiveDigest',
+    'chainLoading', 'chainUnavailable', 'chainEmpty', 'chainPreparing', 'chainArchiveImpact', 'chainArchiveSaved', 'chainSuccessorReady',
   ].sort();
   assert.deepEqual(MAKER_WORKSPACE_LOCALES, donorI18n.MAKER_WORKSPACE_LOCALES);
   for (const locale of MAKER_WORKSPACE_LOCALES) {

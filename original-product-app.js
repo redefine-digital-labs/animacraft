@@ -906,6 +906,8 @@ export function createOriginalProductApp({
   const dispatchDraftTransaction = optionalMethod(bridge, 'dispatchDraftTransaction');
   const replaceDraftSnapshot = optionalMethod(bridge, 'replaceDraftSnapshot');
   const listDraftVersions = optionalMethod(bridge, 'listDraftVersions');
+  const listMakerLineage = optionalMethod(bridge, 'listMakerLineage');
+  const createSuccessorDraft = optionalMethod(bridge, 'createSuccessorDraft');
   const restoreDraftVersion = optionalMethod(bridge, 'restoreDraftVersion');
   const getPlayerSnapshot = optionalMethod(bridge, 'getPlayerSnapshot');
   const updatePlayerRecipe = optionalMethod(bridge, 'updatePlayerRecipe');
@@ -938,6 +940,8 @@ export function createOriginalProductApp({
   const publishedMakers = new Map();
   let publicationFlight = null;
   let publicationGeneration = 0;
+  let chainVersionFlight = null;
+  let archiveReview = null;
   const requestLifecycleSignature = optionalMethod(bridge, 'requestLifecycleSignature');
   const recoverLifecycleAction = optionalMethod(bridge, 'recoverLifecycleAction');
   const cleanups = [];
@@ -1072,6 +1076,9 @@ export function createOriginalProductApp({
     versionEntries: [],
     versionHistoryError: '',
     versionHistoryMessage: '',
+    chainVersions: [],
+    chainVersionStatus: '',
+    chainVersionReview: null,
   };
 
   const byId = (id) => doc.getElementById(id);
@@ -1861,8 +1868,8 @@ export function createOriginalProductApp({
     return {
       ...state,
       publicationReview: state.publicationHidden ? null : state.publicationReview,
-      ...(publishedMaker(state.record) ? { lifecycle: { label: makerWorkspaceText(state.locale, 'publicationComplete'),
-        manageLabel: makerWorkspaceText(state.locale, 'publicationComplete'), badgeClass: 'active' } } : {}),
+      ...(publishedMaker(state.record) ? { lifecycle: { label: publicationLabel(state.record),
+        manageLabel: publicationLabel(state.record), badgeClass: 'active' } } : {}),
       publicationSigningEnabled: state.bridgeState?.publication?.signingEnabled === true
         && state.bridgeState?.publication?.broadcastEnabled === true,
       publicationBroadcastEnabled: state.bridgeState?.publication?.signingEnabled === true
@@ -4358,13 +4365,13 @@ export function createOriginalProductApp({
           <div class="maker-cover-mini">${coverUrl ? `<img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(document.metadata.name)}" />` : '<span class="mini-face"></span>'}</div>
           <div class="maker-card-body">
             <div class="maker-tags">
-              <span class="maker-card-lifecycle ${published ? 'active' : 'draft'}">${escapeHtml(published ? makerWorkspaceText(state.locale, 'publicationComplete') : record.draftId.startsWith('maker-recovery-')
+              <span class="maker-card-lifecycle ${published ? 'active' : 'draft'}">${escapeHtml(published ? publicationLabel(record) : record.draftId.startsWith('maker-recovery-')
     ? makerWorkspaceText(state.locale, 'localRecoveryCopy') : t('localDraft', 'Local draft'))}</span>
               <span>${escapeHtml(creatorDraftCanvasLabel(record))}</span>
               <span>${escapeHtml(t('freeCombine', 'Free combine'))}</span>
             </div>
             <h2>${escapeHtml(document.metadata.name)}</h2>
-            ${published ? `<p style="overflow-wrap:anywhere">${escapeHtml(makerWorkspaceText(state.locale, 'publicationComplete'))}: ${escapeHtml(published.rootId)} · ${escapeHtml(published.makerVersion)}</p>` : ''}
+            ${published ? `<p style="overflow-wrap:anywhere">${escapeHtml(publicationLabel(record))}: ${escapeHtml(published.rootId)} · ${escapeHtml(published.makerVersion)}</p>` : ''}
             <p>${escapeHtml(document.metadata.summary)}</p>
             ${document.metadata.creator ? `<p>${escapeHtml(t('byCreator', 'by {creator}', { creator: document.metadata.creator }))}</p>` : ''}
             ${document.metadata.style ? `<p>${escapeHtml(document.metadata.style)}</p>` : ''}
@@ -5131,18 +5138,90 @@ export function createOriginalProductApp({
     state.versionHistoryStatus = 'loading';
     state.versionHistoryError = '';
     state.versionHistoryMessage = '';
+    state.chainVersions = [];
+    state.chainVersionStatus = makerWorkspaceText(state.locale, listMakerLineage ? 'chainLoading' : 'chainUnavailable');
+    state.chainVersionReview = null; archiveReview = null;
     renderCreator({ focusVersion: true });
     try {
       const entries = await listDraftVersions({ draftId });
       if (!current()) return;
       state.versionEntries = Array.isArray(entries) ? entries : [];
       state.versionHistoryStatus = state.versionEntries.length ? 'ready' : 'empty';
+      if (listMakerLineage) {
+        const lineage = await listMakerLineage({ draftId });
+        if (!current()) return;
+        state.chainVersions = Array.isArray(lineage) ? lineage.map(row => ({ ...row,
+          canManage: row.ownerAddress === state.connection.address && row.successorRootId === null,
+        })) : [];
+        state.chainVersionStatus = state.chainVersions.length ? '' : makerWorkspaceText(state.locale, 'chainEmpty');
+      }
     } catch (error) {
       if (!current()) return;
       state.versionHistoryStatus = 'error';
       state.versionHistoryError = String(error?.message || 'Version history is unavailable.');
     }
     renderCreator({ focusVersion: true });
+  }
+
+  async function runChainVersionAction(action, control) {
+    if (chainVersionFlight || control?.disabled || !state.versionHistoryOpen || !state.record
+      || !state.connection.connected || state.route !== 'creator') return;
+    const rootId = control?.dataset?.chainRoot;
+    const row = state.chainVersions.find(value => value.rootId === rootId);
+    if (!row?.canManage || !EXACT_OBJECT_ID.test(rootId || '')) return;
+    const draftId = state.record.draftId, generation = state.creatorDraftGeneration;
+    const connection = creatorConnectionGeneration, address = state.connection.address;
+    const current = () => creatorDraftCurrent(generation, draftId) && state.versionHistoryOpen
+      && creatorConnectionGeneration === connection && state.connection.address === address;
+    const flight = {}; chainVersionFlight = flight;
+    try {
+      if (!await finishCreatorChanges() || !current()) return;
+      const revision = state.record.revision;
+      const stable = () => current() && state.record.revision === revision && !creatorHasPendingChanges();
+      if (action === 'chain-archive-review') {
+        if (!prepareLifecycleAction || !['ACTIVE', 'PAUSED'].includes(row.lifecycle)) return;
+        archiveReview = null; state.chainVersionReview = null;
+        state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainPreparing');
+        renderCreator();
+        const prepared = await prepareLifecycleAction({ action: 'ARCHIVE', rootId, draftId, expectedRevision: revision });
+        if (!stable()) return;
+        if (prepared?.built?.action !== 'ARCHIVE' || prepared.built.descriptor?.sender !== address
+          || !prepared.digest || !prepared.bytes) throw new TypeError('Archive review identity is invalid.');
+        archiveReview = { prepared, rootId, draftId, revision, address, connection };
+        state.chainVersionReview = { rootId, digest: prepared.digest };
+        state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainArchiveImpact');
+      } else if (action === 'chain-archive-sign') {
+        const review = archiveReview;
+        if (!review || review.rootId !== rootId || review.draftId !== draftId || review.revision !== revision
+          || review.address !== address || review.connection !== connection || !stable()
+          || !state.bridgeState?.publication?.signingEnabled || !state.bridgeState?.publication?.broadcastEnabled) return;
+        archiveReview = null; state.chainVersionReview = null;
+        await requestLifecycleSignature(review.prepared);
+        if (!current()) return;
+        state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainArchiveSaved');
+      } else if (action === 'chain-archive-recover') {
+        if (!recoverLifecycleAction) return;
+        await recoverLifecycleAction({ action: 'ARCHIVE', rootId });
+        if (!current()) return;
+        await loadVersionHistory();
+      } else {
+        if (!createSuccessorDraft || row.lifecycle !== 'ARCHIVED') return;
+        const bundle = await createSuccessorDraft({ draftId, expectedRevision: revision, previousRootId: rootId });
+        if (!stable()) return;
+        installCreatorRecord(exactDraftRecord(bundle.draft)); installDraftAssets(bundle.assets);
+        state.undo = []; state.redo = []; state.saveState = 'saved'; state.versionHistoryOpen = false;
+        state.chainVersions = []; archiveReview = null; state.chainVersionReview = null;
+        invalidatePublicationReview();
+        await requestCreatorPreview();
+        state.status = makerWorkspaceText(state.locale, 'chainSuccessorReady');
+      }
+    } catch (error) {
+      if (current()) { archiveReview = null; state.chainVersionReview = null;
+        state.chainVersionStatus = String(error?.message || error); }
+    } finally {
+      if (chainVersionFlight === flight) chainVersionFlight = null;
+      if (!state.destroyed) renderCreator();
+    }
   }
 
   async function restoreVersion(revision) {
@@ -5197,6 +5276,9 @@ export function createOriginalProductApp({
   }
 
   function lifecycleActionMarkup(action, label) {
+    if (action === 'archive' && listMakerLineage && prepareLifecycleAction && requestLifecycleSignature && recoverLifecycleAction) {
+      return `<button class="maker-lifecycle-manager-action" type="button" data-lifecycle-action="chain-versions"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(makerWorkspaceText(state.locale, 'chainArchiveImpact'))}</small></button>`;
+    }
     const unavailable = t(
       'makerLifecycleDraftActionCopy',
       'This draft only exists in the current wallet workspace. Continue editing or delete its local record.',
@@ -5223,7 +5305,7 @@ export function createOriginalProductApp({
       deleteButton.textContent = (DRAFT_DELETE_COPY[state.locale] || DRAFT_DELETE_COPY.en).action;
     }
     if (byId('makerLifecycleManagerBadge')) byId('makerLifecycleManagerBadge').textContent = published
-      ? makerWorkspaceText(state.locale, 'publicationComplete') : 'Draft';
+      ? publicationLabel(state.record) : 'Draft';
     if (byId('makerLifecycleManagerName')) byId('makerLifecycleManagerName').textContent = document?.metadata?.name || 'Maker';
     if (byId('makerLifecycleManagerScope')) byId('makerLifecycleManagerScope').textContent = 'Fresh-v8 working version';
     if (byId('lifecycleWorkingVersionCard')) {
@@ -5245,7 +5327,7 @@ export function createOriginalProductApp({
     }
     if (byId('makerLifecycleManagerStatus')) {
       byId('makerLifecycleManagerStatus').textContent = published
-        ? makerWorkspaceText(state.locale, 'publicationComplete') : getPublishedMaker
+        ? publicationLabel(state.record) : getPublishedMaker
           ? makerWorkspaceText(state.locale, 'publicationUnknown') : controllerReady
         ? t('makerLifecycleNoPublishedVersion', 'No version has been published on Sui yet.')
         : t('makerLifecycleActionUnavailable', 'This action is unavailable until the current operation finishes.');
@@ -6656,6 +6738,13 @@ export function createOriginalProductApp({
   function publishedMaker(record) {
     return record && publishedMakers.get(JSON.stringify([state.connection.address, record.draftId]));
   }
+  function publicationLabel(record) {
+    const published = publishedMaker(record);
+    return published?.scope?.currentSavedRevision === record?.revision && published.scope.currentContentMatches === true
+      || published?.scope?.draftRevision === record?.revision
+      ? makerWorkspaceText(state.locale, 'publicationComplete')
+      : makerWorkspaceText(state.locale, 'chainCurrentUnpublished');
+  }
 
   async function readPublishedMaker(record) {
     if (!getPublishedMaker || !state.connection.connected) return;
@@ -6779,6 +6868,13 @@ export function createOriginalProductApp({
 
   async function handleCreatorAction(action, control, eventTarget = control) {
     if (state.projectImportPending || creatorAssetFlight || creatorRecoveryFlight) return;
+    if (action === 'publication-versions') {
+      if (control?.disabled || !state.record) return;
+      closePublication(); state.versionHistoryOpen = true; return loadVersionHistory();
+    }
+    if (['chain-archive-review', 'chain-archive-sign', 'chain-archive-recover', 'chain-successor'].includes(action)) {
+      return runChainVersionAction(action, control);
+    }
     if (action === 'publication-close') { closePublication(); return; }
     if (action === 'publication-force-close') { closePublication(true); return; }
     if (action === 'publication-keep-open') {
@@ -7589,6 +7685,8 @@ export function createOriginalProductApp({
       renderDraftDeleteConfirmation();
     } else if (control.dataset.lifecycleAction === 'confirm-delete-draft') {
       void confirmDraftDeletion();
+    } else if (control.dataset.lifecycleAction === 'chain-versions') {
+      closeLifecycleManager(); state.versionHistoryOpen = true; void loadVersionHistory();
     }
   });
   listen(mount, 'dragstart', (event) => {

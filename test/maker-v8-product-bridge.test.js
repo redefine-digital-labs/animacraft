@@ -12,7 +12,7 @@ import {
   createMakerV8ProductBridge,
   makerV8DocumentFromProductDraft,
 } from '../maker-v8-product-bridge.js';
-import { MAKER_V8_DEFAULT_ASSET_BASE64, seedMinimalArtworkDraft } from './fixtures/maker-v8-minimal-artwork.js';
+import { MAKER_V8_DEFAULT_ASSET_BASE64, seedMinimalArtworkDraft, minimalArtworkDocument } from './fixtures/maker-v8-minimal-artwork.js';
 import { assertMakerV8Document } from '../maker-v8-document.js';
 import { prepareCreatorStylePng } from '../maker-v8-creator-image.js';
 import { prepareCreatorStructure } from '../maker-v8-creator-structure.js';
@@ -1277,6 +1277,10 @@ test('approved Version history creates only an exact archived N+1 successor draf
   assert.equal(successor.assets.length, 1);
   assert.equal(draftCalls.successor, 1);
   assert.equal(calls.lineage, 2);
+  const resumed = await bridge.createSuccessorDraft({ draftId: source.draftId,
+    expectedRevision: source.revision, previousRootId });
+  assert.equal(resumed.draft.draftId, successor.draft.draftId);
+  assert.equal(draftCalls.successor, 1);
 
   lineage[0].ownerAddress = `0x${'99'.repeat(32)}`;
   await assert.rejects(
@@ -1480,6 +1484,94 @@ function publicationReviewHarness() {
     pauseSign(value) { pauseSign = value; }, pausePrepare(value) { pausePrepare = value; },
     get prepares() { return prepares; } };
 }
+
+test('two cold bridges converge on one successor preserving seven Parts, nine Items and all asset bytes', async () => {
+  const drafts = createMakerV8DraftPersistence(new IDBFactory(), { databaseName: 'successor-full', now: () => 500 });
+  const document = minimalArtworkDocument({ draftId: 'full-maker', name: 'Full current Maker' });
+  const part = structuredClone(document.parts[0]), asset = structuredClone(document.assets[0]);
+  document.parts = []; document.tracks = []; document.assets = []; document.defaultRecipe.selections = [];
+  for (let index = 0; index < 7; index++) {
+    const next = structuredClone(part); next.key = `part-${index}`; next.kind = index ? 'STANDARD' : 'LAST_BASTION';
+    next.renderOrder = index; next.menuOrder = index;
+    next.items = Array.from({ length: index === 0 ? 3 : 1 }, (_, itemIndex) => {
+      const item = structuredClone(part.items[0]); item.key = `item-${itemIndex}`; item.displayOrder = itemIndex;
+      item.styles[0].trackKey = `track-${index}`; item.styles[0].assetId = `asset-${index}-${itemIndex}`;
+      document.assets.push({ ...asset, id: item.styles[0].assetId }); return item;
+    });
+    document.parts.push(next); document.tracks.push({ key: `track-${index}`, label: `Track ${index}`, renderOrder: index, locked: true });
+    document.defaultRecipe.selections.push({ partKey: next.key, itemKey: next.items[0].key, styleKey: 'default' });
+  }
+  document.metadata.coverAssetId = document.assets[0].id;
+  const source = await drafts.createBundle({ draftId: 'full-maker', document, createdAt: 100,
+    assets: document.assets.map(row => ({ assetId: row.id, kind: row.kind, mediaType: row.mediaType, bytesBase64: MAKER_V8_DEFAULT_ASSET_BASE64 })) });
+  const rootId = `0x${'67'.repeat(32)}`;
+  const runtime = runtimeHarness({ connected: true, lineage: [{ rootId, makerKey: 'full-maker', makerVersion: 1,
+    versionCommitment: 'cd'.repeat(32), lifecycle: 'ARCHIVED', ownerAddress: address, successorRootId: null }] });
+  const make = () => createMakerV8ProductBridge({ productRuntime: runtime.productRuntime, drafts, now: () => 500 });
+  const input = { draftId: 'full-maker', expectedRevision: 1, previousRootId: rootId };
+  const [a, b] = await Promise.all([make().createSuccessorDraft(input), make().createSuccessorDraft(input)]);
+  assert.equal(a.draft.draftId, b.draft.draftId); assert.equal((await drafts.list()).length, 2);
+  assert.deepEqual(a.draft.document.parts, document.parts); assert.equal(a.draft.document.parts.length, 7);
+  assert.equal(a.draft.document.parts.flatMap(row => row.items).length, 9);
+  assert.equal(a.assets.length, 9);
+  for (const row of a.assets) { const before = source.assets.find(asset => asset.assetId === row.assetId);
+    assert.equal(row.bytesBase64, before.bytesBase64); assert.equal(row.sha256, before.sha256); }
+  const edited = structuredClone(a.draft.document); edited.metadata.name = 'Edited successor';
+  await drafts.compareAndSwap({ draftId: a.draft.draftId, expectedRevision: 1, document: edited, updatedAt: 501 });
+  await assert.rejects(make().createSuccessorDraft(input), { code: 'MAKER_V8_PRODUCT_SUCCESSOR_EXISTS' });
+  assert.equal((await drafts.load(a.draft.draftId)).document.metadata.name, 'Edited successor');
+  assert.deepEqual((await drafts.load('full-maker')).document, source.draft.document);
+  await drafts.close();
+});
+
+test('republish archive validates every source byte before preparation and rechecks before signature', async () => {
+  const rootId = `0x${'45'.repeat(32)}`;
+  const lineage = [{ rootId, makerKey: 'archive-source', makerVersion: 1, lifecycle: 'ACTIVE', ownerAddress: address, successorRootId: null }];
+  for (const drift of ['missing', 'corrupt', 'revision', 'wallet', 'wallet-aba', 'none']) {
+    const runtime = runtimeHarness({ connected: true, lineage }); const source = draftHarness();
+    const record = await seedMinimalArtworkDraft(source.drafts, { draftId: 'archive-source', name: 'Complete source' });
+    let builds = 0, signs = 0;
+    const lifecycle = { build(input) { builds++; return input; }, async prepare(built) { return { built }; },
+      async requestSignature() { signs++; return {}; }, async recover() {} };
+    const bridge = createMakerV8ProductBridge({ productRuntime: runtime.productRuntime, drafts: source.drafts, lifecycle });
+    const input = { action: 'ARCHIVE', rootId, draftId: record.draftId, expectedRevision: record.revision };
+    if (['missing', 'corrupt'].includes(drift)) {
+      const asset = (await source.drafts.listAssets(record.draftId))[0];
+      source.mutateAsset(record.draftId, asset.assetId, { bytesBase64: drift === 'missing' ? '' : 'AAAA' });
+      await assert.rejects(bridge.prepareLifecycleAction(input)); assert.equal(builds, 0); continue;
+    }
+    const prepared = await bridge.prepareLifecycleAction(input);
+    if (drift === 'revision') source.mutateDraft(record.draftId, { revision: 2 });
+    if (drift.startsWith('wallet')) runtime.setAccount({ address: `0x${'55'.repeat(32)}`, network: 'mainnet' });
+    if (drift === 'wallet-aba') runtime.setAccount({ address, network: 'mainnet' });
+    if (drift === 'none') { await bridge.requestLifecycleSignature(prepared); assert.equal(signs, 1); }
+    else { await assert.rejects(bridge.requestLifecycleSignature(prepared)); assert.equal(signs, 0); }
+  }
+});
+
+test('completed publication with current edits requires a successor without replacing the completed binding', async () => {
+  const value = publicationReviewHarness();
+  await seedMinimalArtworkDraft(value.drafts, { draftId: 'publish-maker', name: 'Original' });
+  const bridge = value.makeBridge();
+  const prepared = await bridge.prepareMakerPublication({ draftId: 'publish-maker', expectedRevision: 1 });
+  const signed = await bridge.signMakerPublication({ reviewId: prepared.reviewId });
+  await bridge.continueMakerPublication({ reviewId: signed.reviewId });
+  const binding = structuredClone([...value.bindings.values()]);
+  const record = await value.drafts.load('publish-maker');
+  const document = structuredClone(record.document); document.metadata.name = 'Full edited Maker';
+  await value.drafts.compareAndSwap({ draftId: record.draftId, expectedRevision: record.revision, document, updatedAt: record.updatedAt + 1 });
+  const before = value.prepares;
+  const next = await value.makeBridge().prepareMakerPublication({ draftId: record.draftId, expectedRevision: 2 });
+  assert.equal(next.status, 'NEW_VERSION_REQUIRED'); assert.equal(next.nextAction, null);
+  assert.equal(next.rootId, value.rootId); assert.equal(next.scope.draftRevision, 1);
+  assert.equal(next.scope.currentSavedRevision, 2); assert.match(next.message, /unpublished/);
+  assert.deepEqual([...value.bindings.values()], binding); assert.equal(value.prepares, before);
+  await value.drafts.compareAndSwap({ draftId: record.draftId, expectedRevision: 2,
+    document: record.document, updatedAt: record.updatedAt + 2 });
+  const identical = await value.makeBridge().prepareMakerPublication({ draftId: record.draftId, expectedRevision: 3 });
+  assert.equal(identical.status, 'COMPLETE'); assert.equal(identical.scope.currentContentMatches, true);
+  assert.deepEqual([...value.bindings.values()], binding);
+});
 
 test('Creator publication reviews one step, signs only it, and explicit continuation cold-recovers certified Root', async () => {
   const value = publicationReviewHarness();
