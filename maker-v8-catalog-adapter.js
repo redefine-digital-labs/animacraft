@@ -1,4 +1,7 @@
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { canonicalMakerV8Json } from './maker-v8-compiler.js';
+import { assertMakerV8Manifest } from './maker-v8-manifest-adapter.js';
 
 export const MAKER_V8_CATALOG_ADAPTER_SCHEMA = 'animacraft.maker-v8-catalog-adapter.v1';
 export const MAKER_V8_PLAZA_VIEW_SCHEMA = 'animacraft.maker-v8-plaza-view.v1';
@@ -78,15 +81,6 @@ function rootManifestPointer(root) {
   }
   const blobId = boundedText(root.content.manifestBlobId, 'root.content.manifestBlobId');
   const sha256 = bytesHash(root.content.manifestSha256, 'root.content.manifestSha256');
-  const contentCommitment = bytesHash(root.contentCommitment, 'root.contentCommitment');
-  if (sha256 !== contentCommitment) {
-    fail(
-      'MAKER_V8_ROOT_MANIFEST_COMMITMENT_MISMATCH',
-      'Activated Root Manifest SHA-256 differs from its content commitment.',
-      'ROOT',
-      { sha256, contentCommitment },
-    );
-  }
   return freeze({ blobId, sha256 });
 }
 
@@ -137,17 +131,19 @@ function manifestAsset(manifest, assetId) {
 }
 
 function assertManifestBindsRoot(root, manifestRead) {
-  const manifest = manifestRead?.manifest;
+  let manifest = manifestRead?.manifest;
   if (!plain(manifest) || !plain(manifest.document)) {
     fail('MAKER_V8_CATALOG_MANIFEST_READ_INVALID', 'Manifest adapter returned an invalid read envelope.', 'MANIFEST');
   }
-  if (manifestRead.sha256 !== rootManifestPointer(root).sha256) {
+  const pointer = rootManifestPointer(root);
+  if (manifestRead.sha256 !== pointer.sha256 || manifestRead.blobId !== pointer.blobId) {
     fail(
       'MAKER_V8_CATALOG_MANIFEST_READBACK_MISMATCH',
       'Manifest adapter returned bytes for another Root commitment.',
       'MANIFEST',
     );
   }
+  manifest = assertMakerV8Manifest(manifest);
   const document = manifest.document;
   if (document.lineage?.makerKey !== root.makerKey
     || BigInt(document.lineage?.version ?? -1) !== BigInt(root.makerVersion)) {
@@ -162,6 +158,17 @@ function assertManifestBindsRoot(root, manifestRead) {
         manifestMakerVersion: document.lineage?.version ?? null,
       },
     );
+  }
+  // Compiler content identity commits to the public document in its own domain;
+  // the independently verified Manifest SHA commits to the entire envelope.
+  const contentCommitment = bytesHash(root.contentCommitment, 'root.contentCommitment');
+  const observedContent = bytesHash(sha256(encoder.encode(canonicalMakerV8Json({
+    schemaVersion: 'animacraft.maker-v8-public-content.v1', document,
+  }))), 'manifest public content commitment');
+  if (observedContent !== contentCommitment) {
+    fail('MAKER_V8_ROOT_CONTENT_COMMITMENT_MISMATCH',
+      'Manifest public document differs from the activated Root content commitment.',
+      'INTEGRITY', { expected: contentCommitment, observed: observedContent });
   }
   return manifest;
 }

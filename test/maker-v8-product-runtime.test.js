@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
+import { canonicalMakerV8Json } from '../maker-v8-compiler.js';
 import { createCreatorCharacterStarter } from '../maker-v8-creator-structure.js';
 import { packPublicationAuthoringContent } from '../maker-v8-pack-authoring.js';
 import { compileMakerV8PackDefinitionRowsV8 } from '../maker-v8-pack-definitions-compiler.js';
@@ -132,6 +134,10 @@ function productFixture() {
     binding: { rootId },
     makerKey: 'product-maker',
   };
+  const manifestHash = createHash('sha256').update(canonicalMakerV8Json(manifest)).digest('hex');
+  const publicContentHash = createHash('sha256').update(canonicalMakerV8Json({
+    schemaVersion: 'animacraft.maker-v8-public-content.v1', document: manifest.document,
+  })).digest('hex');
   const root = {
     objectId: rootId,
     version: 9n,
@@ -141,12 +147,12 @@ function productFixture() {
     makerVersion: 1n,
     creatorAddress: objectId(901),
     ownerAddress: objectId(902),
-    contentCommitment: manifestSha256,
-    content: { manifestBlobId: 'manifest-blob', manifestSha256 },
+    contentCommitment: publicContentHash,
+    content: { manifestBlobId: 'manifest-blob', manifestSha256: manifestHash },
     rendererCommitment: '12'.repeat(32),
     binding: { baseRegistryId: objectId(903) },
     fields: {
-      content: { manifest_blob_id: 'manifest-blob', manifest_sha256: Array(32).fill(0xab) },
+      content: { manifest_blob_id: 'manifest-blob', manifest_sha256: [...Buffer.from(manifestHash, 'hex')] },
     },
   };
   return { activation, root, manifest };
@@ -271,6 +277,7 @@ test('adapts wallet, inventory, compiler and manifest-bound Player without expos
   const player = await product.catalog.loadPlayer(rootId);
   assert.equal(player.status, 'READY', JSON.stringify(player));
   assert.equal(player.player.document.lineage.makerKey, 'product-maker');
+  assert.notEqual(player.player.evidence.manifestSha256, player.player.evidence.contentCommitment);
   assert.equal(await product.compiler.loadTrustedContext(), 'trusted');
 
   const loadedAsset = await product.assets.load(productFixture().manifest.certifiedAssets[0]);
@@ -330,7 +337,7 @@ test('contextual Player choices merge exact active PackPass manifests and holder
           sha256: '2'.repeat(64),
           rootId,
           rootVersion: '1',
-          rootContentCommitment: manifestSha256,
+          rootContentCommitment: productFixture().root.contentCommitment,
           semanticPackId: 'moon_pack',
           contentCommitment: packContentCommitment,
         });
