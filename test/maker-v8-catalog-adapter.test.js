@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
+import { canonicalMakerV8Json } from '../maker-v8-compiler.js';
+import { createMakerV8ManifestAdapter } from '../maker-v8-manifest-adapter.js';
 
 import { createCharacterMakerV8Starter } from '../maker-v8-document.js';
 import {
@@ -10,7 +13,9 @@ import {
 
 const objectId = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const rootId = objectId(100);
-const manifestSha256 = 'ab'.repeat(32);
+const hashJson = value => createHash('sha256').update(canonicalMakerV8Json(value)).digest('hex');
+const contentHash = document => hashJson({ schemaVersion: 'animacraft.maker-v8-public-content.v1', document });
+const manifestSha256 = hashJson(manifest());
 
 function manifest() {
   const document = structuredClone(createCharacterMakerV8Starter({
@@ -52,6 +57,7 @@ function root({
   previousRootId = null,
   previousVersionCommitment = null,
   successorRootId = null,
+  contentCommitment = contentHash(manifest().document),
 } = {}) {
   return {
     objectId: id,
@@ -66,7 +72,7 @@ function root({
     successorRootId,
     creatorAddress: objectId(901),
     ownerAddress: objectId(902),
-    contentCommitment: sha256,
+    contentCommitment,
     rendererCommitment: 'aa'.repeat(32),
     content: {
       manifestBlobId: `manifest-${id.slice(-4)}`,
@@ -108,7 +114,8 @@ test('resolves Activation to exact ACTIVE Root and emits Plaza and Player view m
   const plaza = await catalog.loadPlaza();
 
   assert.equal(plaza.schemaVersion, MAKER_V8_PLAZA_VIEW_SCHEMA);
-  assert.equal(plaza.status, 'READY');
+  assert.equal(plaza.status, 'READY', JSON.stringify(plaza.diagnostics));
+  assert.notEqual(manifestSha256, contentHash(manifest().document));
   assert.equal(plaza.makers.length, 1);
   assert.equal(plaza.makers[0].rootId, rootId);
   assert.equal(plaza.makers[0].title, 'Catalog Maker');
@@ -126,12 +133,54 @@ test('resolves Activation to exact ACTIVE Root and emits Plaza and Player view m
   assert.equal(player.player.certifiedAssets[0].sha256, 'cd'.repeat(32));
 });
 
+test('actual Manifest byte verification and domain-separated content bind Plaza, Player and lineage', async t => {
+  const baseline = manifest();
+  const make = ({ value = baseline, chainRoot = root(), corruptBytes = false, mutateRead = value => value } = {}) => {
+    const bytes = new TextEncoder().encode(canonicalMakerV8Json(value));
+    if (corruptBytes) bytes[bytes.length - 1] ^= 1;
+    const verified = createMakerV8ManifestAdapter({ fetcher: async () => bytes });
+    return createMakerV8CatalogAdapter({
+      chain: { discover: async () => [activation()], loadContext: async () => ({ root: chainRoot }) },
+      manifests: { load: async pointer => mutateRead(await verified.load(pointer)) },
+    });
+  };
+  const valid = make();
+  assert.equal((await valid.loadPlaza()).status, 'READY');
+  assert.equal((await valid.loadPlayer(rootId)).status, 'READY');
+  assert.equal((await valid.loadLineage({ makerKey: 'catalog-maker' })).length, 1);
+  assert.notEqual(hashJson(baseline), contentHash(baseline.document));
+  const changed = structuredClone(baseline); changed.document.metadata.summary = 'Tampered content, valid rehashed envelope';
+  const malformed = structuredClone(baseline); malformed.document.canvas = null;
+  const wrongSchema = { ...baseline, schemaVersion: 'animacraft.maker-v8-manifest.v1' };
+  const lineage = structuredClone(baseline); lineage.document.lineage.makerKey = 'another-maker';
+  for (const [name, options, code] of [
+    ['changed content with rehashed Manifest', { value: changed, chainRoot: root({ sha256: hashJson(changed) }) }, 'MAKER_V8_ROOT_CONTENT_COMMITMENT_MISMATCH'],
+    ['wrong content domain', { chainRoot: root({ contentCommitment: hashJson({ schemaVersion: 'animacraft.maker-v8-public-content.v2', document: baseline.document }) }) }, 'MAKER_V8_ROOT_CONTENT_COMMITMENT_MISMATCH'],
+    ['plain document hash', { chainRoot: root({ contentCommitment: hashJson(baseline.document) }) }, 'MAKER_V8_ROOT_CONTENT_COMMITMENT_MISMATCH'],
+    ['old equal hash assumption', { chainRoot: root({ contentCommitment: manifestSha256 }) }, 'MAKER_V8_ROOT_CONTENT_COMMITMENT_MISMATCH'],
+    ['malformed content hash', { chainRoot: root({ contentCommitment: 'not-a-hash' }) }, 'MAKER_V8_CATALOG_HASH_INVALID'],
+    ['malformed public document', { value: malformed, chainRoot: root({ sha256: hashJson(malformed) }) }, 'MAKER_V8_MANIFEST_DOCUMENT_INVALID'],
+    ['wrong Manifest schema', { value: wrongSchema, chainRoot: root({ sha256: hashJson(wrongSchema) }) }, 'MAKER_V8_MANIFEST_VERSION_INVALID'],
+    ['lineage drift', { value: lineage, chainRoot: root({ sha256: hashJson(lineage), contentCommitment: contentHash(lineage.document) }) }, 'MAKER_V8_CATALOG_MANIFEST_LINEAGE_MISMATCH'],
+    ['corrupt bytes', { corruptBytes: true }, 'MAKER_V8_MANIFEST_HASH_MISMATCH'],
+    ['readback SHA drift', { mutateRead: value => ({ ...value, sha256: 'ff'.repeat(32) }) }, 'MAKER_V8_CATALOG_MANIFEST_READBACK_MISMATCH'],
+    ['readback blob pointer drift', { mutateRead: value => ({ ...value, blobId: 'another-blob' }) }, 'MAKER_V8_CATALOG_MANIFEST_READBACK_MISMATCH'],
+  ]) await t.test(name, async () => {
+    const catalog = make(options);
+    const plaza = await catalog.loadPlaza();
+    assert.equal(plaza.status, 'ERROR'); assert.equal(plaza.diagnostics[0].code, code);
+    const player = await catalog.loadPlayer(rootId);
+    assert.equal(player.status, 'ERROR'); assert.equal(player.diagnostics[0].code, code);
+    await assert.rejects(catalog.loadLineage({ makerKey: 'catalog-maker' }), { code });
+  });
+});
+
 test('Maker Info display fields come from the verified manifest without replacing chain creator identity', async () => {
   const value = manifest();
   value.document.metadata.creator = 'Studio 🌍';
   value.document.metadata.style = '水彩世界';
   const catalog = adapter({
-    loadContext: async () => ({ root: { ...root(), creatorName: 'Untrusted root alias', style: 'Alias style' } }),
+    loadContext: async () => ({ root: { ...root({ sha256: hashJson(value), contentCommitment: contentHash(value.document) }), creatorName: 'Untrusted root alias', style: 'Alias style' } }),
     loadManifest: async (pointer) => manifestRead(value, { blobId: pointer.blobId, sha256: pointer.sha256 }),
   });
   const card = (await catalog.loadPlaza()).makers[0];
@@ -241,7 +290,7 @@ test('Root commitment/Manifest lineage drift is fail-closed and diagnostic', asy
   });
   const commitment = await commitmentDrift.loadPlaza();
   assert.equal(commitment.status, 'ERROR');
-  assert.equal(commitment.diagnostics[0].code, 'MAKER_V8_ROOT_MANIFEST_COMMITMENT_MISMATCH');
+  assert.equal(commitment.diagnostics[0].code, 'MAKER_V8_ROOT_CONTENT_COMMITMENT_MISMATCH');
 
   const lineageDrift = manifest();
   lineageDrift.document.lineage.makerKey = 'another-maker';
@@ -311,6 +360,8 @@ test('creator lineage loads archived manifests and proves the exact predecessor 
       versionCommitment: secondCommitment,
       previousRootId: firstRootId,
       previousVersionCommitment: firstCommitment,
+      sha256: hashJson(secondDocument),
+      contentCommitment: contentHash(secondDocument.document),
     })],
   ]);
   const documents = new Map([
