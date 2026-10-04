@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { TestTransport } from '@protobuf-ts/runtime-rpc';
 import { MAKER_V8_PACK_DEFINITIONS_BCS, packDefinitionCommitmentV8 } from '../maker-v8-pack-definition-wire.js';
 import { deriveMakerV8PackProfiles } from '../maker-v8-profile-wire.js';
 
@@ -2486,6 +2488,80 @@ test('IndexedDB persistence provides exact active/digest/build O(1) indices and 
   assert.equal(checked.checkedAt, 11);
   assert.equal(reclaimed.status, 'PREPARED');
   assert.equal(reclaimed.signatureIntent, null);
+});
+
+test('Player boundary accepts official gRPC address-balance gas resolution and rejects unsafe envelopes', async t => {
+  // Exercise the installed official gRPC resolver, including protobuf response
+  // handling, rather than pre-populating Transaction gas fields in the test.
+  function addressGasResolver({ mutate = () => {} } = {}) {
+    const calls = [];
+    const fallback = new TestTransport();
+    const transport = {
+      mergeOptions: options => fallback.mergeOptions(options),
+      unary(method, input, options) {
+        assert.equal(method.service.typeName, 'sui.rpc.v2.TransactionExecutionService');
+        assert.equal(method.name, 'SimulateTransaction');
+        assert.equal(input.doGasSelection, true);
+        assert.equal(input.transaction.gasPayment.budget, undefined);
+        assert.equal(input.transaction.expiration.epoch > 0n, true);
+        calls.push(input);
+        const transaction = { ...input.transaction,
+          gasPayment: { owner: input.transaction.sender, budget: 340448n, price: 100n, objects: [] } };
+        mutate(transaction);
+        const response = method.O.create({ transaction: {
+          transaction, effects: { status: { success: true }, epoch: 41n },
+        } });
+        return new TestTransport({ response }).unary(method, input, options);
+      },
+      serverStreaming() { throw Error('Unexpected stream'); },
+      clientStreaming() { throw Error('Unexpected stream'); },
+      duplex() { throw Error('Unexpected stream'); },
+    };
+    const grpc = new SuiGrpcClient({ network: 'mainnet', transport });
+    return { calls, plugin: () => grpc.core.resolveTransactionPlugin() };
+  }
+  for (const mode of ['address-balance', 'owner', 'sender', 'budget', 'expiry', 'nonarray', 'reference']) await t.test(mode, async () => {
+    const client = clientFixture();
+    const resolver = addressGasResolver({ mutate: tx => {
+      if (mode === 'owner') tx.gasPayment.owner = id(9999);
+      if (mode === 'sender') tx.sender = tx.gasPayment.owner = id(9999);
+      if (mode === 'budget') tx.gasPayment.budget = 500000001n;
+      if (mode === 'expiry') tx.expiration.epoch = 0n;
+      if (mode === 'nonarray') tx.gasPayment.objects = {};
+      if (mode === 'reference') tx.gasPayment.objects = [{ objectId: gasId, version: 0n, digest: gasDigest }];
+    } });
+    client.core.resolveTransactionPlugin = resolver.plugin;
+    const compiler = createMakerV8PlayerCompilerAdapterV8({ client, runtime,
+      loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {} });
+    const request = await certifiedRequest(client, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS);
+    const prepared = await compiler.preparePlayerAction(request);
+    const persistence = createMakerV8PlayerPersistenceV8(new IDBFactory(), {
+      databaseName: 'address-gas-'+mode, storageManager: storageManager() });
+    const boundary = createMakerV8PlayerBoundaryAdapterV8({ client, runtime, compiler, persistence,
+      wallet: { getCurrentAccount: async () => ({ address: signer, network: MAKER_V8_CHAIN_NETWORK }), verifyExactSignature: async () => false },
+      execution: { allowWalletSignature: false, allowBroadcast: false, allowProtectedContent: false },
+      loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {} });
+    const build = () => boundary.buildExactTransaction({ descriptor: prepared.plan.descriptor });
+    if (mode === 'expiry') {
+      const built = await build();
+      const data = TransactionDataBuilder.fromBytes(fromBase64(built.transactionBytes));
+      assert.equal(data.snapshot().expiration.Epoch, 42, 'SDK preserves the explicitly bounded expiry over resolver data');
+      data.expiration = { Epoch: 0, $kind: 'Epoch' };
+      await assert.rejects(boundary.dryRunExactTransaction({ transactionBytes: toBase64(data.build()),
+        descriptor: prepared.plan.descriptor }), { code: 'MAKER_V8_PLAYER_BUILD_PROOF_REQUIRED' });
+      return;
+    }
+    if (mode !== 'address-balance') { await assert.rejects(build); return; }
+    const built = await build();
+    assert.equal(resolver.calls.length, 1);
+    const snapshot = TransactionDataBuilder.fromBytes(fromBase64(built.transactionBytes)).snapshot();
+    assert.deepEqual(snapshot.gasData.payment, []);
+    assert.equal(snapshot.expiration.Epoch, 42);
+    assert.equal((await boundary.dryRunExactTransaction({ transactionBytes: built.transactionBytes,
+      descriptor: prepared.plan.descriptor })).status, 'SUCCESS');
+    assert.deepEqual(await build(), built, 'durable rebuild retains the exact empty-payment bytes');
+    assert.equal(resolver.calls.length, 1, 'recovery does not silently replace the transaction');
+  });
 });
 
 test('boundary persists one canonical V1 TransactionData and cold rebuild returns byte-identical proof', async () => {
