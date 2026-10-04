@@ -7,6 +7,13 @@ import { deriveMakerV8BaseAuthorCommitmentV2, deriveMakerV8BaseStorageCommitment
 import { compileMakerV8RuleRows } from '../maker-v8-compiler.js';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { IDBFactory } from 'fake-indexeddb';
+import { createMakerV8PublicationCompilerAdapterV8 } from '../maker-v8-publication-adapters.js';
+import {
+  createMakerV8PublicationPersistenceV8, MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA,
+  makerV8Base64BlobV8, makerV8BlobRefV8, makerV8Utf8BlobV8,
+  makerV8PublicationAttemptSha256V8, makerV8PublicationCheckpointSha256V8,
+} from '../maker-v8-publication-store.js';
 import { makerV8ActivationAuthorityFixture, makerV8LivingBlobIdFixture } from './fixtures/maker-v8-activation-authority-fixture.js';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { toBase64 } from '@mysten/sui/utils';
@@ -798,6 +805,112 @@ async function allBaseBuilds(publication, scaffold) {
   } while (!builds.at(-1).checkpoint.final);
   return { builds, base: prior.base };
 }
+
+test('real compiler FINALIZE persists through the complete checkpoint chain and cold IndexedDB recovery', async () => {
+  const path = await compilePath();
+  const indexedDB = new IDBFactory();
+  const databaseName = 'compiler-finalize-durable';
+  const store = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName,
+    storageManager: { async persisted() { return true; }, async persist() { return true; } } });
+  await store.requirePersistentStorage();
+  const compilerRpc = {
+    async loadTrustedContext() { return path.context; },
+    async recoverCheckpoint({ kind, publication, scaffold, base, companion, build, digest }) {
+      let raw;
+      if (kind === 'SCAFFOLD') await scaffoldReadback(publication, value => { raw = clone(value); });
+      else if (kind === 'BASE_CHUNK') raw = await baseChunkRaw(publication, scaffold, build, digest);
+      else if (kind === 'COMPANION_OBJECTS') {
+        raw = await companionRaw(publication, base, build.expected, build.transaction);
+        const certified = await companionReadback(publication, base, build.expected, build.transaction);
+        for (const key of ['runtimeDefinitions', 'outputRegistry', 'physicalRegistry', 'marketRegistry']) raw[key] = clone(certified[key]);
+      } else raw = await activationChunkRaw(build, companion, digest);
+      raw.transactionDigest = digest;
+      return raw;
+    },
+  };
+  const adapter = createMakerV8PublicationCompilerAdapterV8({ persistence: store, compilerRpc,
+    async loadRuntimeAttestation() {
+      return { coreArtifact: clone(path.context.coreArtifact), packageTuple: MAKER_V8_ROLE_ORDER.map((role, index) => ({
+        role, originalPackageId: path.context.catalog.fields.roles[role].originalPackageId,
+        callablePackageId: path.context.catalog.fields.roles[role].callablePackageId,
+        packageDigest: role === 'core' ? path.context.coreArtifact.packageDigest : String(index + 2).repeat(44),
+      })) };
+    }, now: () => 100 });
+  const prepared = await adapter.prepare({ document: clone(fixture.document),
+    transport: await certifiedTransport(clone(fixture.document), clone(fixture.transportAssets)),
+    signerAddress: path.context.signerAddress, attemptNonce: 'real-finalize-durable' });
+  let plan = await store.createAttempt(prepared.plan, prepared.blobs);
+  let attested = prepared.attested;
+  const phases = [];
+  while (plan.current.phase !== 'ACTIVATION_FINALIZE') {
+    phases.push(plan.current.phase);
+    const transaction = attested.transaction;
+    transaction.setGasOwner(plan.immutable.signerAddress);
+    transaction.setGasBudget(10_000_000); transaction.setGasPrice(1_000);
+    transaction.setGasPayment([{ objectId: nid('0xabc'), version: '1', digest: DIGEST }]);
+    const bytes = await transaction.build();
+    const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
+    const event = (status, previous = null) => {
+      const at = plan.updatedAt + 1;
+      const value = { schemaVersion: MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA,
+        attemptId: plan.attemptId, ordinal: plan.current.ordinal, sequence: previous ? 1 : 0, status, digest,
+        kindSha256: plan.current.transactionKindSha256, fullTransactionRef: null, signatureRef: null,
+        details: { source: 'EXTERNAL_FINALIZED', at, code: null, signedAt: null,
+          firstSeenAt: previous?.details.firstSeenAt ?? at, broadcastAt: null }, observedAt: at,
+        previousAttemptSha256: previous?.eventSha256 ?? null,
+        previousGlobalAttemptSha256: plan.attemptHistory.globalAttemptHeadSha256, eventSha256: ZERO };
+      value.eventSha256 = makerV8PublicationAttemptSha256V8(value); return value;
+    };
+    const save = async (changes, options, attempt = null) => {
+      plan = await store.compareAndSwap(plan.attemptId, plan.revision, { ...plan,
+        revision: plan.revision + 1, updatedAt: plan.updatedAt + 1, ...changes,
+        ...(attempt ? { attemptHistory: { ...plan.attemptHistory, totalEvents: plan.attemptHistory.totalEvents + 1,
+          globalAttemptHeadSha256: attempt.eventSha256 } } : {}),
+      }, { ...options, ...(attempt ? { attempt } : {}) });
+    };
+    const pending = event('EXTERNAL_PENDING');
+    await save({ current: { ...plan.current, outcome: { status: 'OUTCOME_PENDING', digest,
+      kindSha256: plan.current.transactionKindSha256, signedAt: null, firstSeenAt: pending.observedAt,
+      source: 'EXTERNAL_FINALIZED', broadcastAt: null, observedAt: pending.observedAt } } }, {}, pending);
+    const capsule = await adapter.certifyFinalized({ plan, attested,
+      query: { status: 'FINALIZED_SUCCESS', digest, epoch: '7', effectsFingerprint: `0x${'ab'.repeat(32)}`,
+        eventsDigest: null, error: null, absence: null },
+      artifacts: { bytes: toBase64(bytes), signature: null, digest, kindBytes: attested.transactionKindBytes } });
+    const readback = { schemaVersion: 'animacraft.maker-v8-publication-finalized-readback.v1', source: 'FINALIZED_RPC',
+      transactionDigest: digest, transactionKindSha256: plan.current.transactionKindSha256, compiler: capsule };
+    const { outcome, ...descriptor } = plan.current;
+    const checkpoint = { ...descriptor, schemaVersion: MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA,
+      attemptId: plan.attemptId, planId: plan.planId, digest, readback,
+      certificate: { source: 'FINALIZED_RPC', transactionDigest: digest,
+        transactionKindSha256: plan.current.transactionKindSha256,
+        readbackSha256: (await makerV8Utf8BlobV8(canonicalMakerV8Json(readback))).sha256 },
+      submissionSource: 'EXTERNAL_FINALIZED', previousCheckpointSha256: plan.head?.checkpointSha256 ?? null,
+      finalizedAt: plan.updatedAt + 1, checkpointSha256: ZERO };
+    checkpoint.checkpointSha256 = await makerV8PublicationCheckpointSha256V8(checkpoint);
+    await save({ head: { ordinal: checkpoint.ordinal, digest, transactionKindSha256: checkpoint.transactionKindSha256,
+      checkpointSha256: checkpoint.checkpointSha256, phase: checkpoint.phase, lane: checkpoint.lane }, current: null,
+      nextPreparation: { status: 'REQUIRED', ordinal: checkpoint.ordinal + 1, reason: null } }, { checkpoint }, event('FINALIZED_SUCCESS', pending));
+    attested = await adapter.prepareSuccessor({ plan, head: await store.loadHead(plan.attemptId), requireFreshAuthority: true });
+    const blob = await makerV8Base64BlobV8(attested.transactionKindBytes);
+    await save({ current: { ...clone(attested.descriptor), transactionKindRef: makerV8BlobRefV8(blob),
+      fullTransactionRef: null, signatureRef: null, outcome: { status: 'READY' } }, nextPreparation: null }, { blobs: [blob] });
+  }
+  assert.ok(phases.includes('BASE_SEAL') && phases.includes('COMPANION_OBJECTS') && phases.includes('ACTIVATION_PHYSICAL_SEAL'));
+  const expected = (await allActivationBuilds(path)).at(-1);
+  assert.equal(attested.transactionKindBytes, (await transactionKindProof(expected)).transactionKindBytesBase64);
+  assert.equal(plan.current.commandCount, 9, 'complete activation transaction, not an epoch-only substitute');
+  assert.match(plan.current.targets.at(-1), /::system::epoch$/);
+  const coldStore = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName });
+  const restored = await coldStore.loadPlan(plan.attemptId);
+  assert.deepEqual(restored, plan);
+  const cold = createMakerV8PublicationCompilerAdapterV8({ persistence: coldStore, compilerRpc,
+    loadRuntimeAttestation() { throw new Error('Cold restoration must use the durable certified snapshot'); } });
+  const recovered = await cold.rehydrate({ plan: restored, head: await coldStore.loadHead(plan.attemptId),
+    transactionKindBytes: (await coldStore.getBlob(restored.current.transactionKindRef.sha256)).data,
+    purpose: 'RESUME_READY', requireFreshAuthority: false });
+  assert.equal(recovered.transactionKindBytes, attested.transactionKindBytes);
+  assert.equal(recovered.descriptor.phase, 'ACTIVATION_FINALIZE');
+});
 
 function compilerTargetKey(target) {
   const [packageId, module, fn] = target.split('::');

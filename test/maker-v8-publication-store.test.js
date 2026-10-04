@@ -6,9 +6,13 @@ import {
   IDBDatabase, IDBFactory, IDBIndex, IDBObjectStore,
 } from 'fake-indexeddb';
 import { Transaction } from '@mysten/sui/transactions';
+import { bcs } from '@mysten/sui/bcs';
+import { buildMakerV8CoreRowCommandsV2 } from '../maker-v8-base-rows.js';
 import { toBase58, toBase64 } from '@mysten/sui/utils';
 
-import { MAKER_V8_PUBLICATION_COMPILER_ABI } from '../maker-v8-compiler.js';
+import { MAKER_V8_PUBLICATION_COMPILER_ABI, buildMakerV8RuleRowCommands } from '../maker-v8-compiler.js';
+import { makerV8WalrusExecutionFixture } from './fixtures/walrus-execution-fixture.js';
+import { assertMakerV8WalrusExecutionV1, MAKER_V8_WALRUS_MINIMUM_DEPENDENCY } from '../maker-v8-walrus-execution.js';
 import { MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256 } from '../maker-v8-chain.js';
 import {
   MAKER_V8_PUBLICATION_DATABASE,
@@ -38,6 +42,12 @@ const id = (byte) => `0x${byte.repeat(32)}`;
 const hash = (byte) => byte.repeat(32);
 const clone = (value) => structuredClone(value);
 const TX_DIGEST = toBase58(new Uint8Array(32).fill(0xa5));
+const walrusExecution = makerV8WalrusExecutionFixture();
+const walrusIdentity = assertMakerV8WalrusExecutionV1(walrusExecution, { minimumDependency: MAKER_V8_WALRUS_MINIMUM_DEPENDENCY });
+const walrusSystem = { reference: { kind: 'shared', objectId: walrusIdentity.system.objectId, initialSharedVersion: walrusIdentity.system.initialSharedVersion } };
+const finalTransaction = new Transaction();
+finalTransaction.moveCall({ target: `${walrusIdentity.packageId}::system::epoch`, arguments: [finalTransaction.sharedObjectRef({ ...walrusSystem.reference, mutable: false })] });
+const FINAL_KIND_BLOB = await makerV8Base64BlobV8(toBase64(await finalTransaction.build({ onlyTransactionKind: true })));
 const OTHER_TX_DIGEST = toBase58(new Uint8Array(32).fill(0xa6));
 const PERSISTENT_STORAGE = Object.freeze({
   async persisted() { return true; },
@@ -186,7 +196,7 @@ function* derivedLimitTopology(kindBlob) {
       localIndex: activationIndex++,
     });
   }
-  yield cursor(kindBlob, ordinal++, {
+  yield cursor(FINAL_KIND_BLOB, ordinal++, {
     kind: 'ACTIVATION_CHUNK', phase: 'ACTIVATION_FINALIZE', lane: 'FINALIZE',
     action: 'FINALIZE', startSequence: '0', endSequence: '0',
     localIndex: activationIndex,
@@ -374,7 +384,7 @@ function cursor(kindBlob, ordinal = 0, options = {}) {
     transactionKindRef: ref,
     transactionKindSha256: ref.sha256,
     commandCount: 1,
-    targets: [`${id('11')}::core_v8::new_initial_maker_draft_v8`],
+    targets: [kindBlob.sha256 === FINAL_KIND_BLOB.sha256 ? `${walrusIdentity.packageId}::system::epoch` : `${id('11')}::core_v8::new_initial_maker_draft_v8`],
     fullTransactionRef: null,
     signatureRef: null,
     outcome: { status: 'READY' },
@@ -383,12 +393,13 @@ function cursor(kindBlob, ordinal = 0, options = {}) {
 
 async function planFixture({
   makerKey = 'maker', nonce = '1:first', kindSalt = 0,
+  activationAuthority = { walrusExecution, walrusSystem },
 } = {}) {
   const kindBase64 = await compilerKindBase64(kindSalt);
   const [documentBlob, metadataBlob, compilerContextBlob, kindBlob] = await Promise.all([
     makerV8Utf8BlobV8('{"schemaVersion":"animacraft.maker.v8"}'),
     makerV8Utf8BlobV8('{"schemaVersion":"animacraft.maker-v8-author-transport-metadata.v1","assets":[]}'),
-    makerV8Utf8BlobV8('{"schemaVersion":"animacraft.maker-v8-compiler-context-snapshot.v1"}'),
+    makerV8Utf8BlobV8(JSON.stringify({ schemaVersion: 'animacraft.maker-v8-compiler-context-snapshot.v1', context: { activationAuthority } })),
     makerV8Base64BlobV8(kindBase64),
   ]);
   const blobRefs = {
@@ -687,7 +698,7 @@ async function finalize(store, signed, options = {}) {
 }
 
 async function prepareNext(store, plan, _kindLabel, options) {
-  const kindBlob = await makerV8Base64BlobV8(
+  const kindBlob = options?.phase === 'ACTIVATION_FINALIZE' ? FINAL_KIND_BLOB : await makerV8Base64BlobV8(
     await compilerKindBase64((plan.head.ordinal + 1) % 256),
   );
   const current = cursor(kindBlob, plan.head.ordinal + 1, options);
@@ -725,6 +736,120 @@ test('real IndexedDB atomically appends signed attempts and success head before 
   }, { blobs: [nextKind] });
   assert.equal(advanced.current.ordinal, 1);
   assert.equal(advanced.head.ordinal, 0);
+});
+
+test('Base typed vectors and Physical Options persist only with exact compiler constructor flows', async t => {
+  const indexedDB = new IDBFactory(), store = await publicationStore(indexedDB, { databaseName: 'typed-base' });
+  const f = await planFixture(); await store.createAttempt(f.plan, f.blobs);
+  const finalized = await finalize(store, await signedPath(store, f));
+  const core = f.plan.immutable.compilerAuthority.packageTuple[0];
+  const tx = new Transaction();
+  buildMakerV8CoreRowCommandsV2(tx, { corePackageId: core.callablePackageId, coreOriginalPackageId: core.originalPackageId,
+    kind: 'color', row: { sequence: 0, key: 'color', label: 'Color', default_swatch_key: 'a', swatches: [
+      { key: 'a', label: 'A', rgba: 1, stops: [{ offset_ppm: 0, rgba: 1 }, { offset_ppm: 1000000, rgba: 2 }] },
+      { key: 'b', label: 'B', rgba: 2, stops: [] },
+    ] } });
+  for (const physical of [null, { material: 'paper', issuance: 0, proof: 0, price_atomic: 0, max_supply: 1, transferable: true }]) {
+    buildMakerV8CoreRowCommandsV2(tx, { corePackageId: core.callablePackageId, coreOriginalPackageId: core.originalPackageId,
+      kind: 'style', row: { sequence: 1, part_key: 'body', item_key: 'body', style_key: 'default', label: 'Style', display_order: 0,
+        track_key: 'base', color_channel_key: null, default_swatch_key: null, asset_id: 'asset', asset_blob_id: 'blob', asset_sha256: Array(32).fill(1),
+        protected: false, transform: { x_milli: { negative: false, magnitude: 0 }, y_milli: { negative: false, magnitude: 0 },
+          scale_ppm: 1000000, rotation_millidegrees: { negative: false, magnitude: 0 } }, opacity_ppm: 1000000, blend_mode: 0,
+        physical, visibility_tokens: [], visibility_commitment: Array(32).fill(2), payload_commitment: Array(32).fill(3) } });
+  }
+  const selector = { source: 0, source_key: null, part_key: 'body', item_key: null, style_key: null };
+  buildMakerV8RuleRowCommands(tx, { corePackageId: core.callablePackageId, coreOriginalPackageId: core.originalPackageId,
+    row: { sequence: 2, key: 'rule', kind: 0, trigger: selector, target_mode: 0, targets: [selector], payload_commitment: Array(32).fill(4) } });
+  const shape = bcs.TransactionKind.parse(await tx.build({ onlyTransactionKind: true }));
+  const install = async (parsed, options = {}) => {
+    const blob = await makerV8Base64BlobV8(toBase64(bcs.TransactionKind.serialize(parsed).toBytes()));
+    const targets = parsed.ProgrammableTransaction.commands.filter(c => c.MoveCall).map(c => `${c.MoveCall.package}::${c.MoveCall.module}::${c.MoveCall.function}`);
+    const current = { ...cursor(blob, 1, options), commandCount: targets.length, targets };
+    return store.compareAndSwap(finalized.attemptId, finalized.revision, { ...finalized,
+      revision: finalized.revision + 1, updatedAt: finalized.updatedAt + 1, current, nextPreparation: null }, { blobs: [blob] });
+  };
+  for (const [label, mutate, options] of [
+    ['vector wrong type', p => { p.commands.find(c => c.MakeMoveVec).MakeMoveVec.type = 'u8'; }],
+    ['vector wrong original package', p => { const v = p.commands.find(c => c.MakeMoveVec).MakeMoveVec; v.type = v.type.replace(core.originalPackageId, id('ff')); }],
+    ['vector wrong source', p => { p.commands.find(c => c.MakeMoveVec).MakeMoveVec.elements[0] = { Input: 0 }; }],
+    ['vector wrong consumer', p => { p.commands.find(c => c.MoveCall?.function === 'new_color_swatch_v2').MoveCall.arguments[3] = { Input: 0 }; }],
+    ['duplicate vector source', p => { const v = p.commands.find(c => c.MakeMoveVec).MakeMoveVec; v.elements[1] = v.elements[0]; }],
+    ['option arbitrary type', p => { p.commands.find(c => c.MoveCall?.module === 'option').MoveCall.typeArguments = ['u64']; }],
+    ['option wrong type package', p => { const c = p.commands.find(c => c.MoveCall?.module === 'option').MoveCall; c.typeArguments[0] = c.typeArguments[0].replace(core.originalPackageId, id('ff')); }],
+    ['option wrong arity', p => { p.commands.find(c => c.MoveCall?.function === 'none').MoveCall.arguments.push({ Input: 0 }); }],
+    ['option wrong source', p => { p.commands.find(c => c.MoveCall?.function === 'some').MoveCall.arguments[0] = { Input: 0 }; }],
+    ['option wrong consumer', p => { p.commands.find(c => c.MoveCall?.function === 'new_style_row_v2').MoveCall.arguments[16] = { Input: 0 }; }],
+    ['other command', p => { p.commands.push({ TransferObjects: { objects: [], address: { Input: 0 } } }); }],
+    ['wrong phase', () => {}, { phase: 'BASE_SEAL' }],
+  ]) await t.test(label, async () => { const bad = clone(shape); mutate(bad.ProgrammableTransaction); await assert.rejects(install(bad, options)); });
+  const installed = await install(shape);
+  const cold = await publicationStore(indexedDB, { databaseName: 'typed-base' });
+  assert.deepEqual(await cold.loadPlan(installed.attemptId), installed);
+});
+
+test('Activation epoch is bound to immutable execution BCS and exact final readonly System input', async t => {
+  const indexedDB = new IDBFactory(), store = await publicationStore(indexedDB, { databaseName: 'exact-epoch' });
+  const f = await planFixture(); await store.createAttempt(f.plan, f.blobs);
+  let boundary = await finalize(store, await signedPath(store, f));
+  for (const options of [
+    { kind: 'BASE_CHUNK', phase: 'BASE_SEAL', localIndex: 0 },
+    { kind: 'COMPANION_OBJECTS', phase: 'COMPANION_OBJECTS' },
+    ...['SEAL', 'RUNTIME', 'OUTPUT', 'PHYSICAL'].map((lane, localIndex) => ({ kind: 'ACTIVATION_CHUNK', phase: `ACTIVATION_${lane}_SEAL`, localIndex })),
+  ]) {
+    const next = await prepareNext(store, boundary, null, options);
+    boundary = await finalize(store, await signedPath(store, { plan: next.plan }));
+  }
+  const shape = bcs.TransactionKind.parse(await finalTransaction.build({ onlyTransactionKind: true }));
+  const install = async parsed => {
+    const blob = await makerV8Base64BlobV8(toBase64(bcs.TransactionKind.serialize(parsed).toBytes()));
+    const targets = parsed.ProgrammableTransaction.commands.filter(c => c.MoveCall).map(c => `${c.MoveCall.package}::${c.MoveCall.module}::${c.MoveCall.function}`);
+    const current = { ...cursor(blob, boundary.head.ordinal + 1, { kind: 'ACTIVATION_CHUNK', phase: 'ACTIVATION_FINALIZE', localIndex: 4 }),
+      commandCount: targets.length, targets };
+    return store.compareAndSwap(boundary.attemptId, boundary.revision, { ...boundary,
+      revision: boundary.revision + 1, updatedAt: boundary.updatedAt + 1, current, nextPreparation: null }, { blobs: [blob] });
+  };
+  for (const [label, mutate] of [
+    ['wrong package', p => { p.commands[0].MoveCall.package = id('ff'); }],
+    ['wrong System', p => { p.inputs[0].Object.SharedObject.objectId = id('ff'); }],
+    ['wrong initial version', p => { p.inputs[0].Object.SharedObject.initialSharedVersion = '99'; }],
+    ['mutable System', p => { p.inputs[0].Object.SharedObject.mutable = true; }],
+    ['type arguments', p => { p.commands[0].MoveCall.typeArguments = ['u64']; }],
+    ['arity', p => { p.commands[0].MoveCall.arguments = []; }],
+    ['duplicate epoch', p => { p.commands.push(clone(p.commands[0])); }],
+    ['not final command', p => { p.commands.push({ MoveCall: { package: id('11'), module: 'core_v8', function: 'new_initial_maker_draft_v8', typeArguments: [], arguments: [] } }); }],
+    ['missing epoch', p => { p.commands[0].MoveCall = { package: id('11'), module: 'core_v8', function: 'new_initial_maker_draft_v8', typeArguments: [], arguments: [] }; }],
+  ]) await t.test(label, async () => { const bad = clone(shape); mutate(bad.ProgrammableTransaction); await assert.rejects(install(bad)); });
+  const installed = await install(shape);
+  const cold = await publicationStore(indexedDB, { databaseName: 'exact-epoch' });
+  assert.deepEqual(await cold.loadPlan(installed.attemptId), installed);
+  const completed = await finalize(cold, await signedPath(cold, { plan: installed }), { complete: true });
+  assert.equal((await cold.loadPlan(completed.attemptId)).status, 'COMPLETE');
+  assert.equal((await cold.loadHead(completed.attemptId)).phase, 'ACTIVATION_FINALIZE');
+});
+
+test('hash-bound snapshot cannot substitute System metadata or omit certified execution proof', async t => {
+  for (const [label, mutate] of [
+    ['wrong System metadata', a => { a.walrusSystem.reference.objectId = id('ff'); }],
+    ['wrong initial metadata', a => { a.walrusSystem.reference.initialSharedVersion = '99'; }],
+    ['missing execution', a => { delete a.walrusExecution; }],
+    ['tampered execution BCS', a => { a.walrusExecution.system.objectBcsBase64 = 'AQ=='; }],
+  ]) await t.test(label, async () => {
+    const activationAuthority = clone({ walrusExecution, walrusSystem }); mutate(activationAuthority);
+    const f = await planFixture({ activationAuthority });
+    const store = await publicationStore(new IDBFactory(), { databaseName: label });
+    await store.createAttempt(f.plan, f.blobs);
+    let boundary = await finalize(store, await signedPath(store, f));
+    for (const options of [
+      { kind: 'BASE_CHUNK', phase: 'BASE_SEAL', localIndex: 0 },
+      { kind: 'COMPANION_OBJECTS', phase: 'COMPANION_OBJECTS' },
+      ...['SEAL', 'RUNTIME', 'OUTPUT', 'PHYSICAL'].map((lane, localIndex) => ({ kind: 'ACTIVATION_CHUNK', phase: `ACTIVATION_${lane}_SEAL`, localIndex })),
+    ]) {
+      const next = await prepareNext(store, boundary, null, options);
+      boundary = await finalize(store, await signedPath(store, { plan: next.plan }));
+    }
+    await assert.rejects(prepareNext(store, boundary, null, { kind: 'ACTIVATION_CHUNK', phase: 'ACTIVATION_FINALIZE', localIndex: 4 }),
+      { code: 'MAKER_V8_PUBLICATION_TRANSACTION_KIND_COMMAND_INVALID' });
+  });
 });
 
 test('success CAS stops at the exact non-final boundary and only final Activation may complete', async () => {
@@ -2093,6 +2218,7 @@ test('derived-limit WAL hot resume stays bounded across 14,520 checkpoints and 4
     transaction.objectStore('activeScopes').delete(finalPlan.scopeKey);
     transaction.objectStore('blobs').put(fullBlob);
     transaction.objectStore('blobs').put(signatureBlob);
+    transaction.objectStore('blobs').put(FINAL_KIND_BLOB);
     await completion;
   }
 

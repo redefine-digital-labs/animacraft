@@ -12,6 +12,7 @@ import {
   MAKER_V8_TRANSACTION_LIMITS,
 } from './maker-v8-compiler.js';
 import { MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256 } from './maker-v8-chain.js';
+import { assertMakerV8WalrusExecutionV1, MAKER_V8_WALRUS_MINIMUM_DEPENDENCY } from './maker-v8-walrus-execution.js';
 
 export const MAKER_V8_PUBLICATION_DATABASE = 'animacraft-fresh-maker-v8-publication-v1';
 export const MAKER_V8_PUBLICATION_PERSISTENCE_SCHEMA = 'animacraft.maker-v8-publication-wal.v1';
@@ -492,16 +493,102 @@ function validateCompilerAuthority(authority) {
   return authority;
 }
 
+const BASE_OPTION_PACKAGE = `0x${'0'.repeat(63)}1`;
+const BASE_OPTION_TARGETS = ['none', 'some'].map(name => `${BASE_OPTION_PACKAGE}::option::${name}`);
+function isBaseAppend(descriptor) {
+  return descriptor.kind === 'BASE_CHUNK' && descriptor.phase === 'BASE_APPEND'
+    && descriptor.lane === 'BASE' && descriptor.action === 'APPEND';
+}
+function isActivationFinalize(descriptor) {
+  return descriptor.kind === 'ACTIVATION_CHUNK' && descriptor.phase === 'ACTIVATION_FINALIZE'
+    && descriptor.lane === 'FINALIZE' && descriptor.action === 'FINALIZE';
+}
+const isWalrusEpochCandidate = target => /^0x[0-9a-f]{64}::system::epoch$/.test(target);
+
 function validateCompilerTargets(descriptor, plan, label) {
   if (!plan) {
     fail('MAKER_V8_PUBLICATION_AUTHORITY_REQUIRED', `${label} requires its immutable compiler authority.`);
   }
   const allowed = new Set(ROLES.flatMap((role) => plan.immutable.compilerAuthority.compilerAbi[role]));
+  if (isBaseAppend(descriptor)) BASE_OPTION_TARGETS.forEach(target => allowed.add(target));
   if (!Array.isArray(descriptor.targets)
     || descriptor.targets.length !== descriptor.commandCount
-    || descriptor.targets.some((target) => !allowed.has(target))) {
+    || descriptor.targets.some((target) => !allowed.has(target)
+      // Shape only: persistence independently binds this call to the immutable
+      // context snapshot and its certified Walrus execution evidence below.
+      && !(isActivationFinalize(descriptor) && isWalrusEpochCandidate(target)))) {
     fail('MAKER_V8_PUBLICATION_TARGET_INVALID', `${label} contains a Move target outside its immutable exact compiler ABI.`);
   }
+}
+
+function validateWalrusEpoch(commands, descriptor, plan, contextBlob) {
+  const candidates = commands.flatMap((command, index) => command.MoveCall
+    && isWalrusEpochCandidate(`${command.MoveCall.package}::${command.MoveCall.module}::${command.MoveCall.function}`) ? [index] : []);
+  if (!isActivationFinalize(descriptor)) {
+    if (candidates.length) fail('MAKER_V8_PUBLICATION_TARGET_INVALID', 'Walrus epoch belongs only to Activation finalize.');
+    return;
+  }
+  const invalid = () => fail('MAKER_V8_PUBLICATION_TRANSACTION_KIND_COMMAND_INVALID', 'Activation epoch differs from immutable certified Walrus authority.');
+  let authority, execution;
+  try {
+    const snapshot = JSON.parse(contextBlob.data);
+    authority = snapshot.context.activationAuthority;
+    execution = assertMakerV8WalrusExecutionV1(authority.walrusExecution, { minimumDependency: MAKER_V8_WALRUS_MINIMUM_DEPENDENCY });
+  } catch { invalid(); }
+  if (authority.walrusSystem.reference?.kind !== 'shared'
+    || authority.walrusSystem.reference.objectId !== execution.system.objectId
+    || authority.walrusSystem.reference.initialSharedVersion !== execution.system.initialSharedVersion) invalid();
+  const index = candidates[0], call = commands[index]?.MoveCall;
+  if (candidates.length !== 1 || index !== commands.length - 1 || call.package !== execution.packageId
+    || call.typeArguments.length !== 0 || call.arguments.length !== 1 || call.arguments[0]?.$kind !== 'Input') invalid();
+  return { inputIndex: call.arguments[0].Input, reference: authority.walrusSystem.reference };
+}
+
+function validateBaseConstructors(commands, descriptor, plan) {
+  const core = plan.immutable.compilerAuthority.packageTuple.find(entry => entry.role === 'core');
+  const invalid = () => fail('MAKER_V8_PUBLICATION_TRANSACTION_KIND_COMMAND_INVALID', 'Publication constructor differs from its exact Base compiler shape.');
+  const callIs = (index, name) => {
+    const call = commands[index]?.MoveCall;
+    return call?.package === core.callablePackageId && call.module === 'base_registry_v8'
+      && call.function === name && call.typeArguments.length === 0;
+  };
+  const sourceIs = (arg, index, name) => arg?.$kind === 'Result' && arg.Result < index && callIs(arg.Result, name);
+  const uses = index => commands.flatMap((command, commandIndex) => {
+    const args = command.MoveCall?.arguments ?? command.MakeMoveVec?.elements ?? [];
+    return args.flatMap((arg, slot) => (arg.$kind === 'Result' && arg.Result === index
+      || arg.$kind === 'NestedResult' && arg.NestedResult[0] === index) ? [{ commandIndex, slot, arg }] : []);
+  });
+  const consumedBy = (index, name, slot) => {
+    const consumers = uses(index);
+    return consumers.length === 1 && consumers[0].commandIndex > index && consumers[0].slot === slot
+      && consumers[0].arg.$kind === 'Result' && callIs(consumers[0].commandIndex, name);
+  };
+  const tag = value => typeof value === 'string' ? value : null;
+  const types = {
+    ColorStopV2: ['new_color_stop_v2', 'new_color_swatch_v2', 3],
+    ColorSwatchV2: ['new_color_swatch_v2', 'new_color_channel_row_v2', 4],
+    SemanticSelectorV2: ['new_semantic_selector_v2', 'new_rule_row_v2', 5],
+  };
+  commands.forEach((command, index) => {
+    if (command.$kind === 'MoveCall') {
+      const call = command.MoveCall;
+      if (!BASE_OPTION_TARGETS.includes(`${call.package}::${call.module}::${call.function}`)) return;
+      if (!isBaseAppend(descriptor) || call.typeArguments.length !== 1
+        || tag(call.typeArguments[0]) !== `${core.originalPackageId}::base_registry_v8::PhysicalPolicyV1`
+        || !consumedBy(index, 'new_style_row_v2', 16)
+        || (call.function === 'none' ? call.arguments.length !== 0
+          : call.arguments.length !== 1 || !sourceIs(call.arguments[0], index, 'new_physical_policy_v1')
+            || uses(call.arguments[0].Result).length !== 1)) invalid();
+      return;
+    }
+    if (command.$kind !== 'MakeMoveVec' || !isBaseAppend(descriptor)) invalid();
+    const vector = command.MakeMoveVec;
+    const name = Object.keys(types).find(name => tag(vector.type) === `${core.originalPackageId}::base_registry_v8::${name}`);
+    if (!name) invalid();
+    const [source, consumer, slot] = types[name];
+    if (!consumedBy(index, consumer, slot) || vector.elements.some(arg => !sourceIs(arg, index, source)
+      || uses(arg.Result).length !== 1)) invalid();
+  });
 }
 
 async function digest(bytes) {
@@ -2171,7 +2258,7 @@ export function createMakerV8PublicationPersistenceV8(
     return descriptors;
   };
 
-  const assertTransactionKindDescriptor = (descriptor, blob, plan) => {
+  const assertTransactionKindDescriptor = (descriptor, blob, plan, contextBlob) => {
     validateCompilerTargets(descriptor, plan, 'Durable TransactionKind descriptor');
     if (blob.encoding !== 'BASE64' || blob.byteLength > MAKER_V8_TRANSACTION_LIMITS.maxKindBytes) {
       fail('MAKER_V8_PUBLICATION_TRANSACTION_KIND_INVALID', 'Durable TransactionKind bytes have an invalid encoding or exceed the pinned byte limit.');
@@ -2196,7 +2283,17 @@ export function createMakerV8PublicationPersistenceV8(
       fail('MAKER_V8_PUBLICATION_TRANSACTION_KIND_INVALID', 'Durable TransactionKind is not one canonical bounded ProgrammableTransaction.');
     }
     const targets = [];
+    validateBaseConstructors(parsed.ProgrammableTransaction.commands, descriptor, plan);
+    const epoch = validateWalrusEpoch(parsed.ProgrammableTransaction.commands, descriptor, plan, contextBlob);
+    if (epoch) {
+      const shared = parsed.ProgrammableTransaction.inputs[epoch.inputIndex]?.Object?.SharedObject;
+      if (epoch.reference?.kind !== 'shared' || !shared || shared.objectId !== epoch.reference.objectId
+        || String(shared.initialSharedVersion) !== epoch.reference.initialSharedVersion || shared.mutable !== false) {
+        fail('MAKER_V8_PUBLICATION_TRANSACTION_KIND_COMMAND_INVALID', 'Activation epoch must read the exact immutable Walrus System reference.');
+      }
+    }
     for (const command of parsed.ProgrammableTransaction.commands) {
+      if (command?.$kind === 'MakeMoveVec') continue;
       if (command?.$kind !== 'MoveCall' || !plain(command.MoveCall)) {
         fail('MAKER_V8_PUBLICATION_TRANSACTION_KIND_COMMAND_INVALID', 'Publication TransactionKind may contain only exact compiler MoveCall commands.');
       }
@@ -2211,6 +2308,12 @@ export function createMakerV8PublicationPersistenceV8(
 
   const ensureRefs = async (transaction, values, plan = null) => {
     const refs = collectBlobRefs(values);
+    const descriptors = collectTransactionDescriptors(values);
+    if (descriptors.some(isActivationFinalize)) {
+      const ref = plan?.blobRefs?.compilerContext;
+      validateRef(ref, 'Activation immutable compiler context');
+      refs.set(ref.sha256, ref);
+    }
     const store = transaction.objectStore(BLOB_STORE);
     const blobs = new Map();
     for (const ref of refs.values()) {
@@ -2222,12 +2325,12 @@ export function createMakerV8PublicationPersistenceV8(
       }
       blobs.set(ref.sha256, blob);
     }
-    for (const descriptor of collectTransactionDescriptors(values)) {
+    for (const descriptor of descriptors) {
       const blob = blobs.get(descriptor.transactionKindRef.sha256);
       if (!blob) {
         fail('MAKER_V8_PUBLICATION_BLOB_MISSING', 'Durable TransactionKind descriptor has no content-addressed bytes.');
       }
-      assertTransactionKindDescriptor(descriptor, blob, plan);
+      assertTransactionKindDescriptor(descriptor, blob, plan, blobs.get(plan?.blobRefs?.compilerContext?.sha256));
     }
   };
 
