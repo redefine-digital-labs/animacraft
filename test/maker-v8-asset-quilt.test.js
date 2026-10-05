@@ -141,6 +141,10 @@ function input() {
 }
 test('fresh nine-file publication uses only Living Content, one asset group and Manifest across cold restarts', async () => {
   const h = harness(), candidate = input(); let final = null;
+  assert.equal(h.uploads.size, 0, 'fresh acceptance cannot reuse old uploads');
+  assert.equal(h.bindings.size, 0, 'fresh acceptance starts with no durable layout');
+  assert.equal(new Set(candidate.assets.map(a => hash(fromBase64(a.bytesBase64)))).size, 9,
+    'nine distinct content hashes must exercise actual batching, not deduplication');
   const compiler = { async prepareTransportManifest(value) {
     assert.equal(value.assetTransports.length, 9);
     const group = { assets: value.assetTransports, upload: [...h.uploads.values()].find(u => u.blobId === parseQuiltPatchId(value.assetTransports[0].blobId).quiltId) };
@@ -161,9 +165,17 @@ test('fresh nine-file publication uses only Living Content, one asset group and 
   assert.equal(view.status, 'PUBLICATION_READY');
   assert.equal(h.prepares.length, 3); assert.equal(h.signed.length, 6);
   assert.equal(new Set(h.signed.map(([id]) => id)).size, 3);
+  assert.equal(new Set(h.signed.map(([id, stage]) => `${id}/${stage}`)).size, 6,
+    'cold recovery must never request an already-signed stage again');
   assert.equal(final.transport.assets.length, 9);
   assert.equal(final.transport.livingContent.blobId.length, 43, 'Soul bundle remains a real standalone Blob');
   assert.equal(final.transport.manifest.blobId.length, 43);
+  const signatures = structuredClone(h.signed);
+  const restored = createMakerV8PublicationTransportV8({ publisher: h.publisher, compiler, publication });
+  const again = await restored.prepare(candidate);
+  assert.equal(again.status, 'PUBLICATION_READY');
+  assert.deepEqual(h.signed, signatures, 'completed cold reopen must not add wallet prompts');
+  assert.equal(h.prepares.length, 3, 'completed cold reopen must not register duplicate resources');
 });
 
 test('an unknown pre-upgrade per-file registration is recovered before grouping untouched assets', async () => {
