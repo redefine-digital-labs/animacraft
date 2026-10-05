@@ -73,14 +73,14 @@ test('publication review exposes certified completion only and renders exact cos
   }
 });
 
-test('publication restores four-stage donor wizard without treating one Blob as all resources', () => {
+test('publication shows three stable phases without treating one Blob as all resources', () => {
   const review = { reviewId: 'exact', scope: { signerAddress: 'wallet', draftId: 'draft', draftRevision: 1, contentSha256: 'technical-hash' }, stage: 'ASSET', status: 'TRANSPORT_SIGNATURE_REQUIRED', nextAction: 'SIGN',
     progress: { completed: 1, total: 5, currentLabel: 'image.png' }, step: { stage: 'CERTIFY', digest: 'technical-digest', gasBudgetMist: '100' } };
   const html = render({ publicationSigningEnabled: true, publicationBroadcastEnabled: true, publicationReview: { review } });
   assert.match(html, /class="v4-modal-backdrop v4-chain-flow-backdrop"/);
   assert.match(html, /class="v4-chain-flow creator"/);
-  assert.equal([...html.matchAll(/data-publication-stage="[1-4]"/g)].length, 4);
-  assert.match(html, /data-publication-stage="3"[^>]*aria-current="step"/);
+  assert.equal([...html.matchAll(/data-publication-stage="[1-3]"/g)].length, 3);
+  assert.match(html, /data-publication-stage="2"[^>]*aria-current="step"/);
   assert.match(html, /1 \/ 5/);
   assert.doesNotMatch(html, /<li class="completed" data-publication-stage="[23]"/);
   assert.match(html, /<details[^>]*>[\s\S]*technical-hash[\s\S]*technical-digest[\s\S]*<\/details>/);
@@ -117,7 +117,7 @@ test('publication wizard quotes only verified exact current-resource amounts in 
     assert.match(html, /<time datetime="2026-/);
     assert.match(html, /&lt;image&gt;/);
     assert.ok(html.includes(dictionary.publicationQuoteScope));
-    assert.ok(html.includes(dictionary.publicationFlowCopy));
+    assert.ok(html.includes(dictionary.publicationThreeStageCopy));
     assert.doesNotMatch(html, /Quilt|quilt|<image>/);
     const unverified = display({ step: { stage: 'REGISTER', quote: { ...quote, verified: false } } });
     assert.doesNotMatch(unverified, /123456789012345678901|987654321/);
@@ -135,8 +135,8 @@ test('publication wizard requires total resource certification and certified Roo
     progress: { completed: 5, total: 5 }, step: { stage: 'SCAFFOLD', gasBudgetMist: '999' } };
   const display = patch => render({ publicationSigningEnabled: true, publicationReview: { review: { ...review, ...patch } } });
   const chain = display({});
-  for (const n of [1, 2, 3]) assert.match(chain, new RegExp('<li class="completed" data-publication-stage="' + n + '"'));
-  assert.match(chain, /<li class="current" data-publication-stage="4" aria-current="step"/);
+  for (const n of [1, 2]) assert.match(chain, new RegExp('<li class="completed" data-publication-stage="' + n + '"'));
+  assert.match(chain, /<li class="current" data-publication-stage="3" aria-current="step"/);
   assert.doesNotMatch(chain, /v4-chain-published|WAL<\/small>|Waiting for quote/);
   assert.match(chain, /999/);
   const unknown = display({ progress: undefined });
@@ -145,24 +145,24 @@ test('publication wizard requires total resource certification and certified Roo
   const complete = display({ status: 'COMPLETE', rootId: 'certified-root', makerVersion: 1 });
   assert.match(complete, /v4-chain-published/);
   assert.match(complete, /data-action="publication-open"/);
-  assert.equal([...complete.matchAll(/<li class="completed" data-publication-stage=/g)].length, 4);
+  assert.equal([...complete.matchAll(/<li class="completed" data-publication-stage=/g)].length, 3);
 });
 
 test('publication wizard uses the original step buttons and never signs failed or uncertain state', () => {
   const review = { reviewId: 'review', scope: {}, stage: 'ASSET', status: 'TRANSPORT_SIGNATURE_REQUIRED', nextAction: 'SIGN', step: { stage: 'REGISTER' } };
   const display = (patch, state = {}) => render({ publicationSigningEnabled: true, publicationBroadcastEnabled: true,
     publicationReview: { review: { ...review, ...patch }, ...state } });
-  assert.match(display({}), />2\. Register &amp; upload<\/button>/);
+  assert.match(display({}), />Review upload in wallet<\/button>/);
   assert.match(display({ step: { stage: 'REGISTER', quote: { verified: true } } }), />Confirm this quote<\/button>/);
-  assert.match(display({ step: { stage: 'CERTIFY' } }), />3\. Certify<\/button>/);
-  assert.match(display({ stage: 'BASE_CHUNK', status: 'READY' }), />4\. Publish Maker<\/button>/);
+  assert.match(display({ step: { stage: 'CERTIFY' } }), />Review certification in wallet<\/button>/);
+  assert.match(display({ stage: 'BASE_CHUNK', status: 'READY' }), />Review publication in wallet<\/button>/);
   assert.match(display({ stage: 'BASE_CHUNK', status: 'READY' }), /Review in wallet<\/small>/);
   for (const status of ['FAILED', 'OUTCOME_UNKNOWN', 'OUTCOME_PENDING', 'UNKNOWN', undefined]) {
     assert.doesNotMatch(display({ status }), /data-action="publication-sign"/);
   }
   const continuation = display({ status: 'OUTCOME_UNKNOWN', nextAction: 'CONTINUE' });
   assert.match(continuation, /data-action="publication-continue"/);
-  assert.match(continuation, /Continue upload \/ broadcast/);
+  assert.match(continuation, /Check transaction result/);
   const duplicate = display({}, { errorInfo: { code: 'FAILED', message: 'One exact diagnostic', diagnostic: 'One exact diagnostic' } });
   assert.equal([...duplicate.matchAll(/One exact diagnostic/g)].length, 1);
 });
@@ -823,6 +823,28 @@ test('view imports only current authority and hash-exact approved pure donor hel
     'playerOverviewContinue', 'playerOverviewCopy', 'playerOverviewRightsCopy', 'playerSlotCapacityFull',
     'saveRecoveryCopy', 'saveRecoveryCopyHint', 'savingRecoveryCopy', 'localRecoveryCopy',
     'recoveryCopyRetry', 'playerOutputSelection',
+    'publicationThreeStageTitle',
+    'publicationThreeStageCopy',
+    'publicationUploadAndCertify',
+    'publicationCurrentResource',
+    'publicationCheckTransaction',
+    'publicationContinuePublish',
+    'publicationContinueCertify',
+    'publicationContinueUpload',
+    'publicationContinueRegister',
+    'publicationResultPending',
+    'publicationPublishSaved',
+    'publicationCertifySaved',
+    'publicationUploadReady',
+    'publicationRegisterSaved',
+    'publicationPublishReview',
+    'publicationCertifyReview',
+    'publicationRegisterReview',
+    'publicationSignPublish',
+    'publicationSignCertify',
+    'publicationSignRegister',
+    'publicationResourceReady',
+    'publicationContinueResources',
     'publicationReview', 'publicationCopy', 'publicationSign', 'publicationContinue', 'publicationRefresh',
     'publicationUnknown', 'publicationGas', 'publicationStorage', 'publicationRelay', 'publicationTerms',
     'publicationWallet', 'publicationStage', 'publicationAssets', 'publicationStale', 'publicationUnavailable',
@@ -861,4 +883,38 @@ test('view imports only current authority and hash-exact approved pure donor hel
   assert.doesNotMatch(viewSource, /from\s+['"][^'"]*(?:chain|transport|transaction|legacy|json-rpc)[^'"]*['"]/i);
   assert.doesNotMatch(viewSource, /\b(?:fetch|localStorage|sessionStorage|indexedDB)\b/);
   assert.doesNotMatch(viewSource, /document\.(?:querySelector|getElementById|createElement)/);
+});
+
+test('resource registration and certification remain in phase 2 across every resource', () => {
+  for (const completed of [0, 1, 10]) for (const stage of ['REGISTER', 'UPLOAD', 'CERTIFY']) {
+    const html = render({ publicationReview: { review: { stage: 'ASSET',
+      status: 'TRANSPORT_RECOVERY_REQUIRED', nextAction: 'CONTINUE',
+      progress: { completed, total: 11, currentLabel: 'image.png' }, step: { stage } } } });
+    assert.match(html, /data-publication-stage="2" aria-current="step"/);
+    assert.match(html, /<li class="pending" data-publication-stage="3"/);
+    assert.match(html, new RegExp(completed + ' / 11'));
+    assert.doesNotMatch(html, /This upload quote|Waiting for quote|Gas budget \(MIST\) Unknown/);
+  }
+});
+
+test('signed resource recovery has truthful copy, action and no empty quotation in every locale', () => {
+  for (const locale of MAKER_WORKSPACE_LOCALES) {
+    const copy = makerWorkspaceDictionary(locale);
+    for (const [stage, message, button] of [
+      ['REGISTER', 'publicationRegisterSaved', 'publicationContinueRegister'],
+      ['UPLOAD', 'publicationUploadReady', 'publicationContinueUpload'],
+      ['CERTIFY', 'publicationCertifySaved', 'publicationContinueCertify'],
+    ]) {
+      const html = render({ locale, publicationBroadcastEnabled: true, publicationReview: { review: {
+        stage: 'ASSET', status: 'TRANSPORT_RECOVERY_REQUIRED', nextAction: 'CONTINUE',
+        step: { stage, status: stage + '_SIGNED', digest: 'saved-only' },
+        progress: { completed: 1, total: 11 } } } });
+      assert.ok(html.includes(copy[message]));
+      assert.ok(html.includes(copy[button].replaceAll('&', '&amp;')));
+      assert.ok(!html.includes(copy.publishQuoteTitle));
+      assert.ok(!html.includes(copy.publishQuoteUnavailable));
+      assert.doesNotMatch(html, /data-action="publication-sign"/);
+      assert.match(html, /saved-only/);
+    }
+  }
 });

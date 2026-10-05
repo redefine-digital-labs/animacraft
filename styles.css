@@ -11994,6 +11994,10 @@ pre {
   list-style: none;
 }
 
+.v4-chain-flow.creator ol {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .v4-chain-flow li {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -15280,4 +15284,29 @@ pre {
   .expansion-pack-release-steps {
     grid-template-columns: 1fr;
   }
+}
+
+@media (max-width: 600px) {
+  .v4-chain-flow.creator ol { grid-template-columns: 1fr; }
+}
+
+.v4-chain-flow.creator button:not(.primary) {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--ui-surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.v4-chain-flow.creator button:disabled { cursor: wait; opacity: .55; }
+.v4-chain-flow.creator button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+.v4-chain-flow.creator li.current > span {
+  background: var(--ink);
+  color: var(--ui-surface);
 }

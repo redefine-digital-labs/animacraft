@@ -162,7 +162,14 @@ test('unchanged UI baseline is byte locked outside explicit feature, retired col
   grid-template-rows: minmax(0, 1fr);
 `;
   assert.equal(approvedStyles.split(publicationGrid).length, 2);
-  const baselineStyles = approvedStyles.replace(networkErrorWrapping, '')
+  // User-approved publication progress layout; unrelated CSS remains byte-locked.
+  const publicationProgressStyles = [".v4-chain-flow.creator ol {\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n}\n\n", "\n@media (max-width: 600px) {\n  .v4-chain-flow.creator ol { grid-template-columns: 1fr; }\n}\n\n.v4-chain-flow.creator button:not(.primary) {\n  border: 1px solid var(--line);\n  border-radius: 10px;\n  padding: 10px 14px;\n  background: var(--ui-surface);\n  color: var(--ink);\n  font: inherit;\n  font-size: 13px;\n  font-weight: 750;\n  cursor: pointer;\n}\n.v4-chain-flow.creator button:disabled { cursor: wait; opacity: .55; }\n.v4-chain-flow.creator button:focus-visible {\n  outline: 3px solid var(--accent);\n  outline-offset: 2px;\n}\n.v4-chain-flow.creator li.current > span {\n  background: var(--ink);\n  color: var(--ui-surface);\n}\n"];
+  let unchangedStyles = approvedStyles;
+  for (const delta of publicationProgressStyles) {
+    assert.equal(unchangedStyles.split(delta).length, 2);
+    unchangedStyles = unchangedStyles.replace(delta, "");
+  }
+  const baselineStyles = unchangedStyles.replace(networkErrorWrapping, '')
     .replace(publicationGrid, publicationGrid.replace('  grid-template-rows: minmax(0, 1fr);\n', ''))
     .replace('.badge-row,\n.template-footer,', `${collectionStyles}.badge-row,\n.template-footer,`);
   assert.equal(sha256(baselineStyles.replace(completionStyles, '')), '22f486c0fdc3e109703602ed27574300f1c2c8bf41f185a8b514beb46674d46d');
