@@ -1109,7 +1109,7 @@ export function createMakerV8PublicationCompilerAdapterV8({
     return state;
   }
 
-  async function nextBuild(state, head) {
+  async function nextBuild(state, head, current = null) {
     if (!COMPILER_STATES.has(state)) fail('MAKER_V8_PUBLICATION_COMPILER_STATE_REQUIRED', 'Branded compiler state is required.');
     const kind = expectedNextKind(head);
     if (kind === 'SCAFFOLD') {
@@ -1138,12 +1138,13 @@ export function createMakerV8PublicationCompilerAdapterV8({
       kind,
       build: await buildMakerV8ActivationChunkTransaction(
         state.publication, state.base, state.companion, state.priorActivation,
+        current?.compilerCheckpoint?.phase ?? null,
       ),
     };
   }
 
   async function attestBuild(plan, head, state) {
-    const next = await nextBuild(state, head);
+    const next = await nextBuild(state, head, plan.current);
     const built = await descriptorFromBuild({
       ordinal: (head?.ordinal ?? -1) + 1,
       kind: next.kind,
