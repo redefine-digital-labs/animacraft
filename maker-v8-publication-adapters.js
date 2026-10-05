@@ -1013,12 +1013,6 @@ export function createMakerV8PublicationCompilerAdapterV8({
         expectedContext: context,
         expectedAuthority: plan.immutable.compilerAuthority,
       });
-      if (predecessor !== null) {
-        const livePredecessor = await successorPredecessor(document, context);
-        if (canonical(livePredecessor) !== canonical(predecessor)) {
-          fail('MAKER_V8_PUBLICATION_SUCCESSOR_PREDECESSOR_DRIFT', 'Archived predecessor changed before successor signing.');
-        }
-      }
     }
     return { publication, transport };
   }
@@ -1100,6 +1094,15 @@ export function createMakerV8PublicationCompilerAdapterV8({
       }
     } else if (head !== null) {
       fail('MAKER_V8_PUBLICATION_HEAD_DRIFT', 'Publication without a durable head cannot accept historical evidence.');
+    }
+    // Creating the scaffold consumes the predecessor authority. Once its exact
+    // finalized readback is certified above, later signatures use the successor
+    // state and must not require the predecessor to remain unbranched.
+    if (requireFreshAuthority && state.scaffold === null && publication.predecessor !== null) {
+      const livePredecessor = await successorPredecessor(publication.document, publication.context);
+      if (canonical(livePredecessor) !== canonical(publication.predecessor)) {
+        fail('MAKER_V8_PUBLICATION_SUCCESSOR_PREDECESSOR_DRIFT', 'Archived predecessor changed before successor signing.');
+      }
     }
     freeze(state);
     COMPILER_STATES.add(state);

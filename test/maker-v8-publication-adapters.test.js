@@ -325,7 +325,7 @@ function rootObjects(publication) {
   const context = publication.context;
   const core = context.catalog.fields.roles.core.originalPackageId;
   const total = Object.values(publication.counts).reduce((sum, value) => sum + value, 0n);
-  return {
+  const result = {
     root: shared(fixture.ids.root, `${core}::maker_v8::MakerRootV8<${COIN}>`, {
       version: 8,
       creator: context.signerAddress,
@@ -334,9 +334,9 @@ function rootObjects(publication) {
       controlEpoch: '0',
       lifecycle: 0,
       makerKey: publication.document.lineage.makerKey,
-      makerVersion: 1,
-      previousRootId: null,
-      previousVersionCommitment: null,
+      makerVersion: publication.document.lineage.version,
+      previousRootId: publication.document.lineage.previousRootId,
+      previousVersionCommitment: publication.document.lineage.previousVersionCommitment,
       versionCommitment: publication.commitments.version,
       sealedBaseRegistryCommitment: null,
       makerDocumentCommitment: publication.commitments.makerDocument,
@@ -363,7 +363,7 @@ function rootObjects(publication) {
     baseRegistry: shared(fixture.ids.baseRegistry, `${core}::base_registry_v8::BaseDefinitionRegistryV8`, {
       version: 8,
       rootId: nid(fixture.ids.root),
-      makerVersion: 1,
+      makerVersion: publication.document.lineage.version,
       rootContentCommitment: publication.commitments.content,
       expectedCounts: Object.fromEntries(Object.entries(publication.counts).map(([key, value]) => [key, String(value)])),
       observedCounts: Object.fromEntries(Object.keys(publication.counts).map((key) => [key, '0'])),
@@ -378,7 +378,7 @@ function rootObjects(publication) {
     makerTreasury: shared(fixture.ids.makerTreasury, `${core}::treasury_v8::MakerTreasuryV8<${COIN}>`, {
       version: 8,
       rootId: nid(fixture.ids.root),
-      makerVersion: 1,
+      makerVersion: publication.document.lineage.version,
       rootContentCommitment: publication.commitments.content,
     }),
     adminCap: owned(fixture.ids.adminCap, `${core}::maker_v8::MakerAdminCapV8`, {
@@ -388,6 +388,11 @@ function rootObjects(publication) {
       controlEpoch: '0',
     }),
   };
+  if (publication.predecessor) {
+    result.previousRoot = clone(publication.predecessor.root);
+    result.previousRoot.fields.successorRootId = nid(fixture.ids.root);
+  }
+  return result;
 }
 
 async function kindProof(transaction) {
@@ -433,9 +438,10 @@ async function compilerHarness(name = 'default', signerAddress = nid(fixture.ids
     loadPlan: 0,
     loadTrustedContext: 0,
     recoverCheckpoint: 0,
+    loadSuccessorPredecessor: 0,
     runtimeAttestation: 0,
   };
-  const controls = { driftRole: null, head: null, plan: null, tamperHash: null };
+  const controls = { driftRole: null, head: null, plan: null, tamperHash: null, predecessorConsumed: false };
   const persistence = {
     async getBlob(hash) {
       calls.getBlob += 1;
@@ -465,6 +471,30 @@ async function compilerHarness(name = 'default', signerAddress = nid(fixture.ids
         signerAddress,
         transport: clone(liveTransport),
       });
+    },
+    async loadSuccessorPredecessor() {
+      calls.loadSuccessorPredecessor += 1;
+      if (controls.predecessorConsumed) {
+        throw Object.assign(new Error('Archived predecessor already has a successor'), {
+          code: 'MAKER_V8_SUCCESSOR_PREDECESSOR_DRIFT',
+        });
+      }
+      const core = template.catalog.fields.roles.core.originalPackageId;
+      const rootId = document.lineage.previousRootId;
+      const adminId = nid('0x402');
+      return {
+        schemaVersion: 'animacraft.maker-v8-successor-predecessor.v1',
+        root: shared(rootId, `${core}::maker_v8::MakerRootV8<${COIN}>`, {
+          version: 8, owner: signerAddress, adminCapId: adminId, controlEpoch: '7',
+          lifecycle: 3, makerKey: document.lineage.makerKey,
+          makerVersion: document.lineage.version - 1,
+          versionCommitment: document.lineage.previousVersionCommitment,
+          successorAuthorityId: null, successorRootId: null,
+        }),
+        adminCap: owned(adminId, `${core}::maker_v8::MakerAdminCapV8`, {
+          version: 8, rootId, owner: signerAddress, controlEpoch: '7',
+        }),
+      };
     },
     async recoverCheckpoint({ kind, publication, transaction, digest }) {
       calls.recoverCheckpoint += 1;
@@ -701,8 +731,15 @@ test('Living bundle bytes are bound into the existing durable context and cannot
   error => error.code === 'MAKER_V8_PUBLICATION_BLOB_HASH_MISMATCH');
 });
 
-test('finalized browser readback produces a fixed milestone capsule and O(1) successor boundary', async () => {
-  const value = await compilerHarness('successor', nid(fixture.ids.signer), document => {
+for (const makerVersion of [1, 2]) {
+test(`v${makerVersion} finalized browser readback continues through Base preparation and cold recovery`, async () => {
+  const value = await compilerHarness(`successor-v${makerVersion}`, nid(fixture.ids.signer), document => {
+    if (makerVersion > 1) {
+      document.lineage.version = makerVersion;
+      document.lineage.previousRootId = nid('0x401');
+      document.lineage.previousVersionCommitment = 'ab'.repeat(32);
+      document.lineage.changelog = ['Version 2'];
+    }
     document.colors = [{ key: 'primary', label: 'Primary', defaultSwatchKey: 'black', swatches: [
       { key: 'black', label: 'Black', rgba: '#000000ff', stops: [{ offset: 0, rgba: '#000000ff' }, { offset: 1, rgba: '#ffffffff' }] },
       { key: 'white', label: 'White', rgba: '#ffffffff', stops: [] },
@@ -715,6 +752,16 @@ test('finalized browser readback produces a fixed milestone capsule and O(1) suc
       trigger: { source: 'BASE', sourceKey: null, partKey: 'body', itemKey: 'body', styleKey: null },
       targetMode: 'ALL', targets: [{ source: 'BASE', sourceKey: null, partKey: 'body', itemKey: 'body', styleKey: null }], payload: {} }];
   });
+  if (makerVersion > 1) {
+    value.controls.predecessorConsumed = true;
+    await assert.rejects(value.adapter.rehydrate({
+      plan: value.prepared.plan, head: null,
+      transactionKindBytes: value.prepared.attested.transactionKindBytes,
+      purpose: 'BEFORE_SIGN', requireFreshAuthority: true,
+    }), error => error.code === 'MAKER_V8_SUCCESSOR_PREDECESSOR_DRIFT',
+    'an uncommitted scaffold must still reject an already consumed predecessor');
+    value.controls.predecessorConsumed = false;
+  }
   const plan = clone(value.prepared.plan);
   const transaction = value.prepared.attested.transaction;
   const signer = plan.immutable.signerAddress;
@@ -787,6 +834,8 @@ test('finalized browser readback produces a fixed milestone capsule and O(1) suc
     'known finalized bytes are certified from exact historical readback, not mutable live authority',
   );
   value.controls.driftRole = null;
+  value.controls.predecessorConsumed = makerVersion > 1;
+  const predecessorReadsAfterScaffold = value.calls.loadSuccessorPredecessor;
 
   const checkpointHash = 'cd'.repeat(32);
   const head = {
@@ -905,6 +954,18 @@ test('finalized browser readback produces a fixed milestone capsule and O(1) suc
   assert.equal(value.calls.getBlob, 3 + successorPlan.blobRefs.assets.length);
   assert.equal(value.calls.loadHead, 0, 'successor consumes one passed head and never scans history');
 
+  const freshReadsBeforeResume = value.calls.runtimeAttestation;
+  await value.adapter.rehydrate({ plan: readySuccessor, head,
+    transactionKindBytes: successor.transactionKindBytes, purpose: 'BEFORE_SIGN', requireFreshAuthority: true });
+  assert.ok(value.calls.runtimeAttestation > freshReadsBeforeResume, 'next signature still checks fresh runtime authority');
+  assert.equal(value.calls.loadSuccessorPredecessor, predecessorReadsAfterScaffold,
+    'certified scaffold consumes predecessor authority; later steps must not require it unconsumed');
+  value.controls.driftRole = 'market';
+  await assert.rejects(value.adapter.prepareSuccessor({ plan: successorPlan, head, requireFreshAuthority: true }),
+    error => error.code === 'MAKER_V8_PUBLICATION_AUTHORITY_DRIFT');
+  value.controls.driftRole = null;
+  await assert.rejects(value.adapter.prepareSuccessor({ plan: successorPlan, head: null, requireFreshAuthority: true }));
+
   const tamperedHead = clone(head);
   tamperedHead.readback.compiler.milestones.scaffold.readback.transactionKindSha256 = 'ff'.repeat(32);
   await assert.rejects(value.adapter.describeFinalized(successorPlan, tamperedHead));
@@ -920,6 +981,8 @@ test('finalized browser readback produces a fixed milestone capsule and O(1) suc
     ].includes(error.code),
   );
 });
+
+}
 
 function boundaryTransaction(keypair) {
   const signer = keypair.toSuiAddress();
