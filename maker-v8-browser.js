@@ -3267,10 +3267,11 @@ export async function assertFinalizedMakerV8CompilerTransactionV8(client, transa
   return Object.freeze(response);
 }
 
-function compilerChange(response, expectedType, label, expectedId = null) {
+function compilerChange(response, expectedType, label, expectedId = null, expectedChange = null) {
   const normalizedType = normalizeStructTag(expectedType);
   const matches = response.objectChanges.filter((change) => {
     if (!['created', 'mutated'].includes(change?.type)) return false;
+    if (expectedChange !== null && change.type !== expectedChange) return false;
     if (expectedId && change.objectId !== expectedId) return false;
     try {
       return normalizeStructTag(change.objectType) === normalizedType;
@@ -3298,8 +3299,8 @@ function compilerEffectsRefForChange(response, change, label) {
   return ref;
 }
 
-async function compilerChangedObject(client, response, expectedType, label, fields, expectedId = null) {
-  const change = compilerChange(response, expectedType, label, expectedId);
+async function compilerChangedObject(client, response, expectedType, label, fields, expectedId = null, expectedChange = null) {
+  const change = compilerChange(response, expectedType, label, expectedId, expectedChange);
   const ref = compilerEffectsRefForChange(response, change, label);
   const historical = await readMakerV8CompilerHistoricalObjectV8(
     client, ref, expectedType, label, fields, response.digest,
@@ -3479,7 +3480,9 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
     };
     const entries = await Promise.all(Object.keys(types).map(async (name) => [
       name,
-      await compilerChangedObject(client, response, types[name], name, SCAFFOLD_FIELDS[name]),
+      // Successor scaffolds also mutate the predecessor Root/AdminCap of the
+      // same types. The new scaffold is identified only by created effects.
+      await compilerChangedObject(client, response, types[name], name, SCAFFOLD_FIELDS[name], null, 'created'),
     ]));
     const result = {
       schemaVersion: MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
@@ -3497,6 +3500,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
         'previousRoot',
         SUCCESSOR_PREDECESSOR_FIELDS,
         publication.predecessor.root.reference.objectId,
+        'mutated',
       );
     }
     return result;
