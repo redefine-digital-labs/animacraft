@@ -906,6 +906,32 @@ test('raw package projection preserves actual original, type-introduction and de
   await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_PACKAGE_DRIFT'));
 });
 
+test('system package linkage preserves explicit zero without accepting missing or zero package versions', async () => {
+  const fixture = fixtures();
+  const framework = `0x${'0'.repeat(63)}2`;
+  const standardLibrary = `0x${'0'.repeat(63)}1`;
+  fixture.values.current = moveObject({ objectId: framework, version: '60', digest: PACKAGE_DIGEST,
+    owner: { $kind: 'Immutable', Immutable: true }, type: 'package', json: null });
+  Object.assign(fixture.values.rawPackage, { objectId: framework, version: 60n });
+  Object.assign(fixture.values.rawPackage.package, {
+    storageId: framework, originalId: framework, version: 60n,
+    linkage: [{ originalId: standardLibrary, upgradedId: standardLibrary, upgradedVersion: 0n }],
+  });
+  const read = () => fixture.transport.getObject({ id: framework, options: { showBcs: true } });
+  const response = await read();
+  assert.equal(response.data.version, '60');
+  assert.deepEqual(response.data.bcs.linkageTable, [{
+    originalId: standardLibrary, upgradedId: standardLibrary, upgradedVersion: '0',
+  }]);
+  delete fixture.values.rawPackage.package.linkage[0].upgradedVersion;
+  await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_UINT64_INVALID'));
+  fixture.values.rawPackage.package.linkage[0].upgradedVersion = -1n;
+  await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_UINT64_INVALID'));
+  fixture.values.rawPackage.package.linkage[0].upgradedVersion = 0n;
+  fixture.values.rawPackage.package.version = 0n;
+  await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_UINT64_INVALID'));
+});
+
 test('package Core/raw identity drift is rejected', async () => {
   const fixture = fixtures();
   fixture.values.current = moveObject({
