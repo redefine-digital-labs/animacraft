@@ -6855,7 +6855,7 @@ export function createOriginalProductApp({
     const current = () => creatorDraftCurrent(generation, draftId)
       && connection === creatorConnectionGeneration && address === state.connection.address
       && navigation === state.localNavigationRequest && state.route === 'creator';
-    const prior = state.publicationReview?.review;
+    let prior = state.publicationReview?.review;
     const consequential = action === 'publication-sign' || action === 'publication-continue';
     if (consequential && (state.publicationReview?.errorInfo || state.publicationHidden
       || !prior || prior.reviewId !== reviewId
@@ -6877,15 +6877,41 @@ export function createOriginalProductApp({
       state.publicationReview = { review: prior, busy: true, error: '', errorInfo: null, closeConfirm: false };
       renderCreator();
       focusPublication();
-      const result = consequential
+      let result = consequential
         ? await (action === 'publication-sign' ? signMakerPublication : continueMakerPublication)({ reviewId })
         : await (action === 'publication-refresh' ? inspectMakerPublication : prepareMakerPublication)({ draftId, expectedRevision: revision });
-      if (!current() || request !== publicationGeneration || state.record.revision !== revision) return;
-      if (result?.schemaVersion !== 'animacraft.maker-v8-publication-review.v1'
-        || result.scope?.draftId !== draftId || (result.scope?.currentSavedRevision ?? result.scope?.draftRevision) !== revision
-        || (result.scope.draftRevision !== revision && result.scope.publishingEarlierRevision !== true)
-        || result.scope?.signerAddress !== address || result.scope?.network !== 'mainnet') {
-        throw new TypeError(makerWorkspaceText(state.locale, 'publicationStale'));
+      const stillCurrent = () => current() && request === publicationGeneration && state.record.revision === revision;
+      const validateResult = value => {
+        if (value?.schemaVersion !== 'animacraft.maker-v8-publication-review.v1'
+          || value.scope?.draftId !== draftId || (value.scope?.currentSavedRevision ?? value.scope?.draftRevision) !== revision
+          || (value.scope.draftRevision !== revision && value.scope.publishingEarlierRevision !== true)
+          || value.scope?.signerAddress !== address || value.scope?.network !== 'mainnet') {
+          throw new TypeError(makerWorkspaceText(state.locale, 'publicationStale'));
+        }
+      };
+      if (!stillCurrent()) return;
+      validateResult(result);
+      // A completed wallet interaction already authorized these exact bytes.
+      // Drain their durable checkpoints without asking for a second Continue
+      // click. Never request a new signature, spin on unchanged outcomes, or
+      // let a read-only refresh initiate a broadcast.
+      const checkpointKey = value => JSON.stringify([value?.status, value?.stage,
+        value?.step?.id, value?.step?.revision, value?.step?.digest, value?.step?.status]);
+      const seen = new Set(action === 'publication-continue' ? [checkpointKey(prior)] : []);
+      for (let count = 0; consequential && count < 8 && !state.publicationHidden && !creatorHasPendingChanges()
+        && result.nextAction === 'CONTINUE'
+        && ['SIGNED', 'OUTCOME_PENDING', 'TRANSPORT_RECOVERY_REQUIRED'].includes(result.status)
+        && state.bridgeState?.publication?.signingEnabled && state.bridgeState?.publication?.broadcastEnabled;
+        count += 1) {
+        const checkpoint = checkpointKey(result);
+        if (!result.reviewId || seen.has(checkpoint) || !stillCurrent()) break;
+        seen.add(checkpoint);
+        prior = result;
+        state.publicationReview = { review: result, busy: true, error: '', errorInfo: null, closeConfirm: false };
+        renderCreator();
+        result = await continueMakerPublication({ reviewId: result.reviewId });
+        if (!stillCurrent()) return;
+        validateResult(result);
       }
       state.publicationReview = { review: result, busy: false, error: '', errorInfo: null, closeConfirm: false };
       // Discovery uses certified Root readback. Never fabricate a local template.
