@@ -3864,7 +3864,9 @@ for (const [locale, values] of Object.entries(chainTranslations)) {
 const publicationProgressCopy = {
   "en": {
     "publicationThreeStageTitle": "Publish Maker · step {step} of 3",
-    "publicationThreeStageCopy": "Prepare your files, upload and certify each resource, then publish the Maker. Upload and certification repeat within stage 2 until all resources are ready.",
+    "publicationThreeStageCopy": "Prepare your files, upload and certify the resources, then publish the Maker. New assets are uploaded together; Soul documents and the publication manifest are separate uploads.",
+    "publicationAssetBatch": "Asset batch · {count} files",
+    "publicationBatchQuoteScope": "This quote covers all {count} files in this batch and their storage period. Other uploads and transactions are quoted separately.",
     "publicationUploadAndCertify": "Upload & certify resources",
     "publicationCurrentResource": "Current resource: {resource}",
     "publicationCheckTransaction": "Check transaction result",
@@ -3886,7 +3888,9 @@ const publicationProgressCopy = {
   },
   "zh": {
     "publicationThreeStageTitle": "发布 Maker · 第 {step}/3 步",
-    "publicationThreeStageCopy": "准备文件，逐项上传并认证资源，最后发布 Maker。所有资源完成前，上传和认证都在第 2 阶段内进行。",
+    "publicationThreeStageCopy": "准备文件，上传并认证资源，最后发布 Maker。新素材一起上传；Soul 文档和发布清单分别上传。",
+    "publicationAssetBatch": "素材批次 · {count} 个文件",
+    "publicationBatchQuoteScope": "此报价涵盖本批全部 {count} 个文件及其存储周期。其他上传和交易另行报价。",
     "publicationUploadAndCertify": "上传并认证资源",
     "publicationCurrentResource": "当前资源：{resource}",
     "publicationCheckTransaction": "查询交易结果",
@@ -3908,7 +3912,9 @@ const publicationProgressCopy = {
   },
   "ja": {
     "publicationThreeStageTitle": "Maker を公開 · {step}/3 ステップ",
-    "publicationThreeStageCopy": "ファイルを準備し、各リソースをアップロード・認証してから Maker を公開します。全リソースが揃うまでステップ2を繰り返します。",
+    "publicationThreeStageCopy": "ファイルを準備し、リソースをアップロード・認証してから Maker を公開します。新しい素材はまとめて、Soul 文書と公開マニフェストはそれぞれアップロードします。",
+    "publicationAssetBatch": "素材バッチ · {count} ファイル",
+    "publicationBatchQuoteScope": "この見積もりはバッチ内の全{count}ファイルと保存期間を対象とします。その他のアップロードと取引は別途見積もります。",
     "publicationUploadAndCertify": "リソースをアップロード・認証",
     "publicationCurrentResource": "現在のリソース：{resource}",
     "publicationCheckTransaction": "取引結果を確認",
@@ -3930,7 +3936,9 @@ const publicationProgressCopy = {
   },
   "ko": {
     "publicationThreeStageTitle": "Maker 게시 · {step}/3단계",
-    "publicationThreeStageCopy": "파일을 준비하고 각 리소스를 업로드·인증한 뒤 Maker를 게시합니다. 모든 리소스가 준비될 때까지 2단계에서 업로드와 인증을 반복합니다.",
+    "publicationThreeStageCopy": "파일을 준비하고 리소스를 업로드·인증한 뒤 Maker를 게시합니다. 새 소재는 함께 업로드하며 Soul 문서와 게시 목록은 각각 업로드합니다.",
+    "publicationAssetBatch": "소재 묶음 · 파일 {count}개",
+    "publicationBatchQuoteScope": "이 견적은 묶음의 파일 {count}개 전체와 보관 기간을 포함합니다. 다른 업로드와 거래는 별도로 견적합니다.",
     "publicationUploadAndCertify": "리소스 업로드 및 인증",
     "publicationCurrentResource": "현재 리소스: {resource}",
     "publicationCheckTransaction": "거래 결과 확인",
@@ -3952,7 +3960,9 @@ const publicationProgressCopy = {
   },
   "vi": {
     "publicationThreeStageTitle": "Đăng Maker · bước {step}/3",
-    "publicationThreeStageCopy": "Chuẩn bị tệp, tải lên và chứng nhận từng tài nguyên, rồi đăng Maker. Việc tải lên và chứng nhận lặp lại trong bước 2 cho đến khi mọi tài nguyên sẵn sàng.",
+    "publicationThreeStageCopy": "Chuẩn bị tệp, tải lên và chứng nhận tài nguyên, rồi đăng Maker. Các tài nguyên mới được tải lên cùng nhau; tài liệu Soul và bản kê xuất bản được tải lên riêng.",
+    "publicationAssetBatch": "Nhóm tài nguyên · {count} tệp",
+    "publicationBatchQuoteScope": "Báo giá này bao gồm toàn bộ {count} tệp trong nhóm và thời hạn lưu trữ. Các lượt tải lên và giao dịch khác được báo giá riêng.",
     "publicationUploadAndCertify": "Tải lên và chứng nhận tài nguyên",
     "publicationCurrentResource": "Tài nguyên hiện tại: {resource}",
     "publicationCheckTransaction": "Kiểm tra kết quả giao dịch",

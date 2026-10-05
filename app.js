@@ -1,3 +1,4 @@
+import { makerV8WalrusAssetPathV8 } from './maker-v8-asset-quilt.js';
 import { createOriginalProductApp } from './original-product-app.js';
 import { createAnimacraftWalletUiV8 } from './animacraft-wallet-ui.js';
 import { createMakerV8DAppKitWalletAdapterV8 } from './maker-v8-dapp-kit-wallet.js';
@@ -346,7 +347,8 @@ export function createMainnetWalrusManifestFetcher({
     if (typeof blobId !== 'string' || !SAFE_BLOB_ID.test(blobId)) {
       fail('ANIMACRAFT_WALRUS_BLOB_ID_INVALID', 'Walrus Blob ID is not canonical bounded text.', 'MANIFEST');
     }
-    const url = new URL(`${basePath}/v1/blobs/${encodeURIComponent(blobId)}`, base.origin);
+    const path = blobId.length === 50 ? makerV8WalrusAssetPathV8(blobId) : `/v1/blobs/${encodeURIComponent(blobId)}`;
+    const url = new URL(`${basePath}${path}`, base.origin);
     let response;
     try {
       response = await fetcher(url.href, freeze({

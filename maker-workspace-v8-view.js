@@ -1659,9 +1659,10 @@ function publicationReview(view) {
     + escapeHtml(tr(view, label)) + '</dt><dd>' + amount(quote?.[field], atomic, token) + '</dd></div>').join('');
   const gasPanel = !complete && step && onchain && awaitingSignature ? '<aside class="v4-chain-fee">' + row('publicationGas', step.gasBudgetMist)
     + '<p class="v4-chain-fee-warning">' + escapeHtml(tr(view, 'publicationCopy')) + '</p></aside>' : '';
+  const batchCount = progress?.currentKind === 'ASSET' && Number.isSafeInteger(progress?.currentCount) && progress.currentCount > 1 ? progress.currentCount : null;
   const quotePanel = !complete && step && !onchain && awaitingSignature ? '<aside class="v4-chain-fee" aria-labelledby="makerCreatorPublishQuoteTitle">'
     + '<div class="v4-chain-fee-heading"><span id="makerCreatorPublishQuoteTitle">' + escapeHtml(tr(view, 'publishQuoteTitle'))
-    + '</span><small>' + escapeHtml(tr(view, 'publicationQuoteScope')) + '</small>' + quoteTime + '</div><dl>' + quoteRows
+    + '</span><small>' + escapeHtml(tr(view, batchCount ? 'publicationBatchQuoteScope' : 'publicationQuoteScope', { count: batchCount })) + '</small>' + quoteTime + '</div><dl>' + quoteRows
     + '</dl>' + row('publicationGas', step.gasBudgetMist) + '<p class="v4-chain-fee-warning">'
     + escapeHtml(tr(view, 'publishQuoteGasWarning')) + '</p></aside>' : '';
   const info = state.errorInfo || (state.error ? { message: state.error } : null);
@@ -1688,7 +1689,8 @@ function publicationReview(view) {
       + row('publicationGasPrice', step.gasPriceMist)
       + row('publicationTerms', [step.storageEpochs ?? tr(view, 'publicationUnknown'), step.deletable ?? tr(view, 'publicationUnknown')].join(' / ')) : '') + '</details>' : '';
   const resourceKind = makerPublicationStageText(view.locale, progress?.currentKind || review?.stage);
-  const resource = progress?.currentLabel ? resourceKind + ' · ' + progress.currentLabel : resourceKind;
+  const resource = batchCount ? tr(view, 'publicationAssetBatch', { count: batchCount })
+    : progress?.currentLabel ? resourceKind + ' · ' + progress.currentLabel : resourceKind;
   const resourceProgress = review && !complete && !newVersionRequired ? '<p class="v4-publication-resource" style="overflow-wrap:anywhere">' + escapeHtml(tr(view, 'publicationCurrentResource', { resource })) + '</p><p>'
     + escapeHtml(tr(view, 'publicationResourceProgress', { completed: exactProgress ? progress.completed : tr(view, 'publicationUnknown'),
       total: exactProgress ? progress.total : tr(view, 'publicationUnknown') })) + '</p>' : '';

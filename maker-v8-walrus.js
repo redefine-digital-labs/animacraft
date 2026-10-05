@@ -302,6 +302,52 @@ export function createMakerV8WalrusPersistenceV8(indexedDB = globalThis.indexedD
     create: (record) => write('create', null, record),
     load: read,
     compareAndSwap: (current, next) => write('cas', current, next),
+    async bindAssetLayout(key, { schemaVersion, owner, sourceSha256, source }) {
+      await persistent();
+      const expectedHash = hashBytes(encoder.encode(JSON.stringify({ schemaVersion, owner, source })));
+      if (schemaVersion !== 'animacraft.maker-v8-asset-layout.v1' || expectedHash !== sourceSha256
+        || key !== `${schemaVersion}:${sourceSha256}` || !Array.isArray(source) || source.length < 2
+        || new Set(source.map(asset => asset.assetId)).size !== source.length
+        || new Set(source.map(asset => asset.uploadId)).size !== source.length) {
+        fail('MAKER_V8_WALRUS_LAYOUT_INVALID', 'Asset layout identity is invalid.', 'PERSISTENCE');
+      }
+      suiId(owner, 'layout owner');
+      source.forEach(asset => id(asset.uploadId));
+      const db = await database();
+      // Select membership and invalidate already-held unsigned reviews atomically.
+      // A crash commits both or neither; retries never invalidate a later review.
+      const tx = db.transaction([STORE, BINDING_STORE], 'readwrite', { durability: 'strict' });
+      const done = transactionDone(tx);
+      const uploads = tx.objectStore(STORE), bindings = tx.objectStore(BINDING_STORE);
+      try {
+        const current = await requestResult(bindings.get(key));
+        if (current) { await done; return freeze(current); }
+        const records = await Promise.all(source.map(asset => requestResult(uploads.get(asset.uploadId))));
+        records.forEach((record, i) => {
+          if (!record) return;
+          assertRecord(record);
+          if (record.owner !== owner || record.byteSha256 !== source[i].sha256 || record.mediaType !== source[i].mediaType) {
+            fail('MAKER_V8_WALRUS_LAYOUT_INVALID', 'Asset layout differs from durable upload bytes.', 'PERSISTENCE');
+          }
+        });
+        const eligible = source.filter((_, i) => !records[i] || records[i].status === 'ENCODED').map(asset => asset.assetId);
+        const members = eligible.length > 1 ? eligible : [];
+        const layoutSha256 = hashBytes(encoder.encode(JSON.stringify({ sourceSha256, members })));
+        const binding = { schemaVersion, owner, sourceSha256, members, layoutSha256, key, revision: 1 };
+        records.forEach((record, i) => {
+          if (record && members.includes(source[i].assetId)) {
+            uploads.put(clone(nextRecord(record, record.updatedAt, {})));
+          }
+        });
+        bindings.add(binding);
+        await done;
+        return freeze(binding);
+      } catch (error) {
+        try { tx.abort(); } catch { /* The transaction may already have aborted. */ }
+        await done.catch(() => {});
+        throw error;
+      }
+    },
     async loadPublicationBinding(key) {
       const db = await database();
       const tx = db.transaction(BINDING_STORE, 'readonly');
@@ -792,6 +838,7 @@ export function createMakerV8WalrusPublisherV8({
   const reviews = new Map();
   const api = {
     schemaVersion: MAKER_V8_WALRUS_SCHEMA,
+    async getNumShards() { return (await walrusClient.systemState()).committee.n_shards; },
     loadPublicationBinding: (...args) => {
       requireMethod(persistence, 'loadPublicationBinding', 'persistence');
       return persistence.loadPublicationBinding(...args);
@@ -799,6 +846,11 @@ export function createMakerV8WalrusPublisherV8({
     savePublicationBinding: (...args) => {
       requireMethod(persistence, 'savePublicationBinding', 'persistence');
       return persistence.savePublicationBinding(...args);
+    },
+
+    bindAssetLayout: (...args) => {
+      requireMethod(persistence, 'bindAssetLayout', 'persistence');
+      return persistence.bindAssetLayout(...args);
     },
 
     async prepareReview(uploadId) {
