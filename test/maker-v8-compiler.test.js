@@ -301,7 +301,9 @@ async function publicationHistoricalBridge(publication, transaction, objects, mu
   const rows = Object.entries(objects).filter(([key, object]) => key !== 'inputAdminCap' && object?.reference)
     .map(([, object]) => historicalRow(object));
   const inputAdmin = objects.inputAdminCap ? historicalRow(objects.inputAdminCap) : null;
-  const isAdminMutation = row => row.objectId === inputAdmin?.objectId;
+  const isAdminMutation = row => row.objectId === inputAdmin?.objectId
+    || row.objectId === objects.previousRoot?.reference.objectId
+    || row.objectId === objects.previousAdminCap?.reference.objectId;
   const effectsBcs = bcs.TransactionEffects.serialize({ V1: {
     status: { Success: true }, executedEpoch: '1', gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
     modifiedAtVersions: inputAdmin ? [[inputAdmin.objectId, inputAdmin.version]] : [], sharedObjects: [], transactionDigest: digest,
@@ -1213,6 +1215,26 @@ test('successor publication consumes the archived predecessor authority atomical
   assert.equal(scaffold.root.fields.previousRootId, previousRootId);
   assert.equal(scaffold.previousRoot.fields.successorAuthorityId, null);
   assert.equal(scaffold.previousRoot.fields.successorRootId, nid(fixture.ids.root));
+
+  // Mainnet successor effects include BOTH the mutated predecessor Root/AdminCap
+  // and newly created Root/AdminCap with identical Move types (C4EYGDv2…QjN5).
+  const browserObjects = { ...scaffold, previousAdminCap: clone(predecessor.adminCap) };
+  const bridge = await publicationHistoricalBridge(publication, transaction, browserObjects);
+  const recovered = await bridge.adapter.recoverCheckpoint({ ...bridge, kind: 'SCAFFOLD', publication });
+  const browserCertified = await certifyMakerV8ScaffoldReadback(publication, recovered);
+  assert.equal(browserCertified.root.reference.objectId, nid(fixture.ids.root));
+  assert.equal(browserCertified.adminCap.reference.objectId, nid(fixture.ids.adminCap));
+  assert.equal(browserCertified.previousRoot.reference.objectId, previousRootId);
+  const ambiguous = clone(browserObjects);
+  ambiguous.extraRoot = clone(ambiguous.root);
+  ambiguous.extraRoot.reference.objectId = nid('0x499');
+  const duplicate = await publicationHistoricalBridge(publication, transaction, ambiguous);
+  await assert.rejects(duplicate.adapter.recoverCheckpoint({ ...duplicate, kind: 'SCAFFOLD', publication }),
+    error => error.code === 'MAKER_V8_COMPILER_OBJECT_CHANGE_INVALID');
+  const missingNew = clone(browserObjects); delete missingNew.root;
+  const missing = await publicationHistoricalBridge(publication, transaction, missingNew);
+  await assert.rejects(missing.adapter.recoverCheckpoint({ ...missing, kind: 'SCAFFOLD', publication }),
+    error => error.code === 'MAKER_V8_COMPILER_OBJECT_CHANGE_INVALID');
 
   const wrongLineage = clone(document);
   wrongLineage.lineage.previousVersionCommitment = 'cd'.repeat(32);
