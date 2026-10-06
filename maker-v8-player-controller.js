@@ -1,3 +1,4 @@
+import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from './maker-v8-sui-grpc.js';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -1005,16 +1006,23 @@ function assertBuiltTransaction(built, plan, runtime) {
   const snapshot = TransactionDataBuilder.fromBytes(bytes).snapshot();
   const startEpoch = String(built.epochWindow?.start ?? '');
   const endEpoch = String(built.epochWindow?.end ?? '');
+  const validDuring = snapshot.expiration?.ValidDuring;
+  const expirationMatches = validDuring
+    ? validDuring.chain === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+      && validDuring.minEpoch === startEpoch && validDuring.maxEpoch === endEpoch
+      && validDuring.minTimestamp === null && validDuring.maxTimestamp === null
+      && Number.isInteger(validDuring.nonce) && validDuring.nonce >= 0 && validDuring.nonce <= 0xffffffff
+    : String(snapshot.expiration?.Epoch ?? '') === endEpoch;
   if (digest !== built.transactionDigest
     || snapshot.sender !== plan.signer
     || snapshot.gasData?.owner !== plan.signer
     || !/^(?:0|[1-9][0-9]*)$/.test(startEpoch)
     || !/^[1-9][0-9]*$/.test(endEpoch)
     || BigInt(endEpoch) !== BigInt(startEpoch) + 1n
-    || String(snapshot.expiration?.Epoch ?? '') !== endEpoch) {
+    || !expirationMatches) {
     fail(
       'MAKER_V8_PLAYER_TRANSACTION_DRIFT',
-      'Built TransactionData digest, sender, or gas owner differs from the plan.',
+      'Built TransactionData digest, sender, gas owner, or expiration differs from the plan.',
       'BUILD',
     );
   }

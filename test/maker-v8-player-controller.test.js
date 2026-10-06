@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { makerV8PublicationExpiration } from '../maker-v8-publication-expiration.js';
 import { createMakerV8CatalogAdapter } from '../maker-v8-catalog-adapter.js';
 import { nativeInitialEvidenceFixture, nativeInitialInputFixture } from './fixtures/native-initial-content.js';
 
@@ -291,6 +292,7 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
     broadcast: 0, query: 0, readback: 0, create: 0, loadRecord: 0, cas: 0,
   };
   const controls = {
+    expirationOverride: makerV8PublicationExpiration('100'),
     catalogError: null,
     catalogRead: null,
     chainIdentifier: CHAIN,
@@ -424,7 +426,7 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
       transaction.setGasPayment([{
         objectId: id(999), version: '1', digest: GAS_DIGEST,
       }]);
-      transaction.setExpiration({ Epoch: '101' });
+      transaction.setExpiration(controls.expirationOverride ?? makerV8PublicationExpiration('100'));
       const bytes = await transaction.build();
       return {
         transactionBytes: toBase64(bytes),
@@ -1501,4 +1503,41 @@ test('controller errors expose stable code/layer/retryable metadata', () => {
   assert.equal(error.retryable, true);
   assert.equal(error.details.objectId, ROOT_ID);
   assert.equal(Object.isFrozen(error.details), true);
+});
+
+
+test('Player controller accepts production ValidDuring and retains exact legacy Epoch recovery bytes', async () => {
+  for (const expiration of [makerV8PublicationExpiration('100'), { Epoch: '101' }]) {
+    const h = harness();
+    h.controls.expirationOverride = expiration;
+    await h.controller.loadPlayer(h.player.rootId);
+    const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+    const original = h.persistence.inspect(prepared.actionId).transaction;
+    const resumed = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+    assert.equal(resumed.actionId, prepared.actionId);
+    assert.deepEqual(h.persistence.inspect(resumed.actionId).transaction, original);
+    assert.equal(h.calls.sign, 0);
+    assert.equal(h.calls.broadcast, 0);
+  }
+});
+
+test('Player controller rejects expiration chain/window/timestamp drift before simulation or signing', async () => {
+  const mutations = [
+    e => { e.ValidDuring.chain = GAS_DIGEST; },
+    e => { e.ValidDuring.minEpoch = '99'; },
+    e => { e.ValidDuring.maxEpoch = '102'; },
+    e => { e.ValidDuring.minEpoch = null; },
+    e => { e.ValidDuring.maxEpoch = null; },
+    e => { e.ValidDuring.minTimestamp = '1'; },
+    e => { e.ValidDuring.maxTimestamp = '1'; },
+  ];
+  for (const mutate of mutations) {
+    const h = harness();
+    const expiration = makerV8PublicationExpiration('100'); mutate(expiration);
+    h.controls.expirationOverride = expiration;
+    await h.controller.loadPlayer(h.player.rootId);
+    await assert.rejects(h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS }),
+      { code: 'MAKER_V8_PLAYER_TRANSACTION_DRIFT' });
+    assert.equal(h.calls.dryRun, 0); assert.equal(h.calls.sign, 0); assert.equal(h.calls.broadcast, 0);
+  }
 });
