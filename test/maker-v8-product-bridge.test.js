@@ -3206,3 +3206,31 @@ test('approved Soulidity handoff is exposed only through one gated high-level Pl
   assert.equal(receptions.length, 1);
   disabled.dispose();
 });
+
+for (const method of ['Preview', 'Export']) test(`a recipe snapshot supersedes an in-flight ${method} before its late authority reread`, async () => {
+  let releaseRender, renderEntered;
+  const entered = new Promise(resolve => { renderEntered = resolve; });
+  const h = await liveExportHarness({ render(_input, record) {
+    return new Promise(resolve => { releaseRender = () => resolve(record(1080, 1920)); renderEntered(); });
+  } });
+  try {
+    const preview = h.bridge[`renderPlayer${method}`]({ rootId: h.rootId, exportOptions: { sizeMode: 'standard' } }).catch(error => error);
+    await entered;
+    let releaseCatalog, catalogEntered;
+    const reading = new Promise(resolve => { catalogEntered = resolve; });
+    h.controls.catalog = () => {
+      h.controls.catalog = null;
+      return new Promise(resolve => { releaseCatalog = resolve; catalogEntered(); });
+    };
+    const snapshot = h.bridge.getPlayerSnapshot();
+    const checkedSnapshot = snapshot.then(value => value, error => error);
+    await reading;
+    releaseRender();
+    const rendered = await preview;
+    releaseCatalog();
+    const current = await checkedSnapshot;
+    assert.equal(current.player?.rootId, h.rootId, 'late render must not cancel the current recipe read');
+    assert.equal(rendered.code, 'STALE_PLAYER_SESSION', 'superseded render cannot install pixels');
+    assert.equal((await h.bridge.getPlayerSnapshot()).player.rootId, h.rootId);
+  } finally { h.bridge.dispose(); }
+});
