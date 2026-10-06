@@ -5223,7 +5223,9 @@ function certifyPlayerEvent(runtime, record, response, outputs, types) {
   } else if (record.action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT) {
     layout = NATIVE_SOUL_BOUND_BCS;
     fields = ['binding_id', 'soul_id', 'soul_state_id', 'root_id', 'output_id', 'receipt_id', 'original_holder', 'authorization_commitment'];
-    role = 'output'; moduleName = 'output_v8';
+    // The AC event type is emitted inside Soulidity's top-level native mint.
+    // Sui records that PTB entrypoint in packageId/transactionModule.
+    role = 'output'; moduleName = 'market';
     addressFields = new Set(['binding_id', 'soul_id', 'soul_state_id', 'root_id', 'output_id', 'receipt_id', 'original_holder']);
     hashFields = new Set(['authorization_commitment']);
     numericFields = new Set();
@@ -5240,7 +5242,10 @@ function certifyPlayerEvent(runtime, record, response, outputs, types) {
   } else {
     fail('MAKER_V8_PLAYER_EVENT_INVALID', 'Player descriptor requires an event for an unsupported action.');
   }
-  if (event.packageId !== runtime.roles[role].callablePackageId
+  const emitterPackageId = record.action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT
+    ? runtime.nativeSoulIntegration.soulidityCallablePackageId
+    : runtime.roles[role].callablePackageId;
+  if (event.packageId !== emitterPackageId
     || event.transactionModule !== moduleName) {
     fail('MAKER_V8_PLAYER_EVENT_INVALID', 'Player event emitter differs from the exact callable package/module.');
   }
@@ -5286,6 +5291,12 @@ function certifyPlayerEvent(runtime, record, response, outputs, types) {
     }
   }
   return freeze({ type: expectedType, fields: bound });
+}
+
+/** Verify Ledger-bound event bytes against the attested action entrypoint and historical outputs. */
+export function certifyMakerV8PlayerFinalizedEventV8({ runtime: runtimeInput, record, response, outputs } = {}) {
+  const runtime = assertMakerV8Runtime(runtimeInput);
+  return certifyPlayerEvent(runtime, record, response, outputs, playerTypes(runtime));
 }
 
 /** Raw Ledger/Core finality plus exact historical output certification. */
@@ -5446,7 +5457,7 @@ export function createMakerV8PlayerReadbackAdapterV8({
         }
         assertOwnedItemTransitionReadback(expected, output, loadoutOutput, types);
       }
-      const certifiedEvent = certifyPlayerEvent(runtime, record, response, outputs, types);
+      const certifiedEvent = certifyMakerV8PlayerFinalizedEventV8({ runtime, record, response, outputs });
       const certifiedObjects = freeze([...outputs, ...ownedItemOutputs]);
       const certificate = freeze({
         schemaVersion: MAKER_V8_PLAYER_READBACK_SCHEMA,

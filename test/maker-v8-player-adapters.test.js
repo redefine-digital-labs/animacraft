@@ -39,6 +39,7 @@ import {
   makerV8PlayerSelectionDependenciesV8,
   makerV8PlayerRequiresMakerAccessV8,
   assertMakerV8PlayerCompleteReadbackV8,
+  certifyMakerV8PlayerFinalizedEventV8,
   assertMakerV8PlayerOwnedItemReadbackV8,
   assertMakerV8PlayerLoadoutLayoutV8,
   createProductionMakerV8PlayerAdaptersV8,
@@ -2919,4 +2920,46 @@ test('production Player composition exposes certified committed Loadout reuse wi
   const context = await adapters.custody.loadPlayerContext(input);
   assert.equal(await adapters.custody.matchesCommittedPlayerLoadout({ ...input, context }), true);
   assert.equal(signatures, 0);
+});
+
+
+test('native Complete event binds its Soulidity mint entrypoint separately from the AC event type origin', async t => {
+  const type = `${runtime.roles.output.typeOriginPackageId}::output_v8::NativeSoulBoundV8`;
+  const fields = { binding_id: id(455), soul_id: id(452), soul_state_id: id(453), root_id: rootId,
+    output_id: id(450), receipt_id: id(451), original_holder: signer, authorization_commitment: new Array(32).fill(11) };
+  const layout = bcs.struct('NativeSoulBoundV8', { binding_id: bcs.Address, soul_id: bcs.Address,
+    soul_state_id: bcs.Address, root_id: bcs.Address, output_id: bcs.Address, receipt_id: bcs.Address,
+    original_holder: bcs.Address, authorization_commitment: bcs.vector(bcs.u8()) });
+  const event = { type, packageId: runtime.nativeSoulIntegration.soulidityCallablePackageId,
+    transactionModule: 'market', sender: signer, parsedJson: structuredClone(fields), bcs: layout.serialize(fields).toBase64() };
+  const record = { action: MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT, playerIdentity: { rootId },
+    plan: { signer, descriptor: { expected: { expectedEventType: type } } } };
+  const outputs = [
+    { type: runtime.nativeSoulIntegration.expectedNativeBinding.soulOriginalType, objectId: fields.soul_id },
+    { type: `${runtime.nativeSoulIntegration.soulidityOriginalPackageId}::soul::SoulState`, objectId: fields.soul_state_id },
+    { type: `${runtime.roles.output.typeOriginPackageId}::output_v8::NativeSoulBindingV8`, objectId: fields.binding_id,
+      fields: { authorizationCommitment: '0b'.repeat(32) } },
+    { type: `${runtime.roles.output.typeOriginPackageId}::output_v8::CompleteOutputV8`, objectId: fields.output_id },
+    { type: `${runtime.roles.output.typeOriginPackageId}::output_v8::CompleteReceiptV8`, objectId: fields.receipt_id },
+  ];
+  const run = events => certifyMakerV8PlayerFinalizedEventV8({ runtime, record, outputs, response: { events } });
+  const certificate = run([event]);
+  assert.equal(certificate.type, type);
+  assert.equal(certificate.fields.authorization_commitment, '0b'.repeat(32));
+  for (const [name, mutate] of Object.entries({
+    wrongPackage: e => { e.packageId = id(999); },
+    eventDefinitionAsEmitter: e => { e.packageId = runtime.roles.output.callablePackageId; e.transactionModule = 'output_v8'; },
+    wrongModule: e => { e.transactionModule = 'soul'; },
+    wrongSigner: e => { e.sender = id(999); },
+    wrongType: e => { e.type = `${id(999)}::output_v8::NativeSoulBoundV8`; },
+    changedJson: e => { e.parsedJson.soul_id = id(999); },
+    forgedBoundSoul: e => { e.parsedJson.soul_id = id(999); e.bcs = layout.serialize(e.parsedJson).toBase64(); },
+    forgedRoot: e => { e.parsedJson.root_id = id(999); e.bcs = layout.serialize(e.parsedJson).toBase64(); },
+    forgedAuthorization: e => { e.parsedJson.authorization_commitment = new Array(32).fill(12); e.bcs = layout.serialize(e.parsedJson).toBase64(); },
+    trailingBytes: e => { e.bcs = toBase64(new Uint8Array([...fromBase64(e.bcs), 0])); },
+  })) await t.test(name, () => {
+    const wrong = structuredClone(event); mutate(wrong); assert.throws(() => run([wrong]));
+  });
+  assert.throws(() => run([event, event]), { code: 'MAKER_V8_PLAYER_EVENT_INVALID' });
+  assert.throws(() => run([]), { code: 'MAKER_V8_PLAYER_EVENT_INVALID' });
 });
