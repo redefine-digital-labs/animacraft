@@ -279,6 +279,8 @@ function harness({
   colors = [],
   protectedTransport = null,
   onActionPrepared = null,
+  committedLoadout = false,
+  onCommittedCheck = null,
   onUploadPrepared = null,
   nativeContentOverride = undefined,
   nativeContentStatus = 'READY',
@@ -306,6 +308,11 @@ function harness({
   const calls = [];
   let inventoryLoads = 0;
   const player = {
+    async reuseCommittedPlayerLoadout() {
+      calls.push("checkCommittedLoadout");
+      await onCommittedCheck?.();
+      return committedLoadout;
+    },
     getSnapshot() { return activePlayerUnavailable ? { status: 'UNAVAILABLE' } : snapshot; },
     async quotePlayerCompletion() {
       calls.push('quote');
@@ -1160,6 +1167,7 @@ test('completion never acquires or signs when the contextual ownership inventory
       async preparePlayerAction() { calls.push('prepare'); throw new Error('not reached'); },
       async executePlayerAction() { throw new Error('not reached'); },
       async recoverPlayerAction() { throw new Error('not reached'); },
+      async reuseCommittedPlayerLoadout() { throw new Error('not reached'); },
     },
     productRuntime: {
       inventory: { async load() { return { status: 'ERROR', items: [], diagnostics: [{ code: 'READ_FAILED' }] }; } },
@@ -2009,4 +2017,42 @@ test('preview rendering rejects SHA drift and protected Base bytes without an ex
   });
   await assert.rejects(renderProtected('AQIDBQ=='), { code: 'MAKER_V8_PLAYER_PROTECTED_SOURCE_MISMATCH' });
   await renderProtected(RENDER_BYTES);
+});
+
+
+test('resumed committed selection reaches native Soul handoff without another selection transaction', async () => {
+  const current = harness({ committedLoadout: true });
+  const result = await current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() }, { confirmStep: async () => true });
+  assert.equal(result.status, 'HANDOFF_READY');
+  assert.ok(current.calls.includes('checkCommittedLoadout'));
+  assert.equal(current.calls.includes('prepare:commitLoadout'), false);
+  assert.equal(current.calls.includes('execute:commitLoadout-id'), false);
+  assert.ok(current.calls.some(call => call?.upload));
+  assert.ok(current.calls.includes('execute:completeOutput-id'));
+});
+
+test('uncommitted selection requires its transaction while malformed reuse evidence aborts before upload', async () => {
+  const current = harness({ committedLoadout: false });
+  assert.equal((await current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() }, { confirmStep: async () => true })).status, 'HANDOFF_READY');
+  assert.ok(current.calls.includes('execute:commitLoadout-id'));
+  const invalid = harness({ committedLoadout: { certified: true } });
+  await assert.rejects(invalid.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: invalid.project() }, { confirmStep: async () => true }), {
+    code: 'MAKER_V8_PLAYER_JOURNEY_LOADOUT_REUSE_INVALID',
+  });
+  assert.equal(invalid.calls.includes('prepare:commitLoadout'), false);
+  assert.equal(invalid.calls.some(call => call?.upload), false);
+});
+
+test('visible intent change during committed selection check cannot reach storage or Complete', async () => {
+  let current;
+  current = harness({ committedLoadout: true, onCommittedCheck: async () => {
+    current.mutateRecipe({ colors: [{ channelKey: 'primary', swatchKey: 'green' }] });
+  } });
+  await assert.rejects(current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() }, { confirmStep: async () => true }));
+  assert.equal(current.calls.some(call => call?.upload), false);
+  assert.equal(current.calls.includes('prepare:completeOutput'), false);
 });

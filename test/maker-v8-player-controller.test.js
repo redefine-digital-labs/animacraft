@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { IDBFactory } from 'fake-indexeddb';
+import { createMakerV8PlayerPersistenceV8 } from '../maker-v8-player-adapters.js';
 import { makerV8PublicationExpiration } from '../maker-v8-publication-expiration.js';
 import { createMakerV8CatalogAdapter } from '../maker-v8-catalog-adapter.js';
 import { nativeInitialEvidenceFixture, nativeInitialInputFixture } from './fixtures/native-initial-content.js';
@@ -284,7 +286,7 @@ function memoryPersistence(calls) {
   };
 }
 
-function harness({ enabled = true, protectedContent = false, player = playerFixture() } = {}) {
+function harness({ enabled = true, protectedContent = false, player = playerFixture(), persistenceOverride = null } = {}) {
   const sourceRuntime = runtime();
   const calls = {
     order: [], catalog: 0, chain: 0, account: 0, custody: 0, custodyAssert: 0,
@@ -302,6 +304,8 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
     account: { address: HOLDER, network: 'mainnet' },
     custodyError: null,
     custodyCertified: true,
+    committedMatches: false,
+    onCommittedCheck: null,
     protectedContentRequired: false,
     compilerError: null,
     freshError: null,
@@ -336,7 +340,7 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
       },
     },
   };
-  const persistence = memoryPersistence(calls);
+  const persistence = persistenceOverride ?? memoryPersistence(calls);
   const authority = Object.freeze({
     schemaVersion: 'animacraft.maker-v8-player-test-authority.v1',
   });
@@ -375,6 +379,10 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
     },
   };
   const custody = {
+    async matchesCommittedPlayerLoadout(request) {
+      await controls.onCommittedCheck?.(request);
+      return controls.committedMatches;
+    },
     async loadPlayerContext({ action, player: livePlayer, recipe, account }) {
       calls.custody += 1;
       calls.order.push('custody');
@@ -1643,4 +1651,119 @@ test('cold preparation never replaces legacy signed or uncertain records without
     assert.deepEqual(retained.signature, original.signature); assert.deepEqual(retained.signatureIntent, original.signatureIntent);
     assert.deepEqual({ compile: h.calls.compile, create: h.calls.create, sign: h.calls.sign, broadcast: h.calls.broadcast }, counts);
   });
+});
+
+
+test('cold journey reuses a live committed selection after finalized action indices are released', async () => {
+  const h = harness();
+  const ready = await h.controller.loadPlayer(ROOT_ID);
+  const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT });
+  assert.equal((await h.controller.executePlayerAction(prepared.actionId)).status, 'FINALIZED_SUCCESS');
+  const original = h.persistence.inspect(prepared.actionId);
+  assert.equal(await h.persistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), null);
+  const cold = createMakerV8PlayerControllerV8({ productRuntime: h.productRuntime, compiler: h.compiler,
+    custody: h.custody, boundary: h.boundary, wallet: h.wallet, rpc: h.rpc, persistence: h.persistence,
+    execution: { allowWalletSignature: true, allowBroadcast: true }, now: () => 1000 });
+  await cold.loadPlayer(ROOT_ID); cold.setRecipe(ready.recipe);
+  h.controls.committedMatches = true;
+  const before = clone(h.calls);
+  assert.equal(await cold.reuseCommittedPlayerLoadout(), true);
+  for (const key of ['compile', 'build', 'dryRun', 'sign', 'broadcast', 'create', 'cas']) {
+    assert.equal(h.calls[key], before[key], key);
+  }
+  assert.deepEqual(h.persistence.inspect(prepared.actionId), original);
+});
+
+test('live mismatch still prepares the changed selection and never reuses a nonboolean proof', async () => {
+  const h = harness(); await h.controller.loadPlayer(ROOT_ID);
+  assert.equal(await h.controller.reuseCommittedPlayerLoadout(), false);
+  const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT });
+  assert.equal(prepared.status, 'PREPARED');
+  const original = h.persistence.inspect(prepared.actionId);
+  h.controls.committedMatches = { certified: true };
+  await assert.rejects(h.controller.reuseCommittedPlayerLoadout(), { code: 'MAKER_V8_PLAYER_CUSTODY_DRIFT' });
+  assert.deepEqual(h.persistence.inspect(prepared.actionId), original);
+  assert.equal(h.calls.sign, 0); assert.equal(h.calls.broadcast, 0);
+});
+
+test('exact unsigned duplicate is retired atomically with its bytes retained in real IndexedDB', async () => {
+  const persistence = createMakerV8PlayerPersistenceV8(new IDBFactory(), {
+    databaseName: 'committed-loadout-unsigned', storageManager: {
+      async persist() { return true; }, async persisted() { return true; },
+      async estimate() { return { quota: 100_000_000, usage: 0 }; },
+    },
+  });
+  const h = harness({ persistenceOverride: persistence }); await h.controller.loadPlayer(ROOT_ID);
+  const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT });
+  const original = await persistence.load(prepared.actionId);
+  h.controls.committedMatches = true;
+  assert.equal(await h.controller.reuseCommittedPlayerLoadout(), true);
+  const retired = await persistence.load(prepared.actionId);
+  assert.equal(retired.status, 'CANCELLED_UNSIGNED');
+  for (const key of ['transaction', 'plan', 'recipe', 'loadout', 'input']) assert.deepEqual(retired[key], original[key], key);
+  assert.equal(await persistence.resolveActive(original.scopeKey), null);
+  assert.equal(await persistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), null);
+  assert.equal(h.calls.sign, 0); assert.equal(h.calls.broadcast, 0);
+});
+
+test('different scope and signed or uncertain work remains on its original recovery path', async () => {
+  for (const mode of ['other-action', 'other-recipe', 'signed', 'unknown']) {
+    const h = harness(); const ready = await h.controller.loadPlayer(ROOT_ID);
+    const action = mode === 'other-action' ? MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS : MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT;
+    const prepared = await h.controller.preparePlayerAction({ action });
+    if (mode === 'other-recipe') h.controller.setRecipe({ ...ready.recipe, colors: [{ channelKey: 'primary', swatchKey: 'blue' }] });
+    if (mode === 'signed' || mode === 'unknown') {
+      if (mode === 'signed') h.controls.broadcastError = new Error('Broadcast response lost');
+      else h.controls.signError = new Error('Wallet response lost');
+      await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+    }
+    const original = h.persistence.inspect(prepared.actionId);
+    h.controls.committedMatches = true;
+    let checks = 0; h.controls.onCommittedCheck = async () => { checks++; };
+    assert.equal(await h.controller.reuseCommittedPlayerLoadout(), false, mode);
+    assert.deepEqual(h.persistence.inspect(prepared.actionId), original, mode);
+    assert.equal(checks, 0, mode);
+  }
+});
+
+test('wallet switch-back and visible recipe mutation abort reuse before unsigned retirement', async () => {
+  for (const mode of ['wallet', 'recipe']) {
+    const h = harness(); const ready = await h.controller.loadPlayer(ROOT_ID);
+    const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT });
+    const original = h.persistence.inspect(prepared.actionId);
+    h.controls.committedMatches = true;
+    h.controls.onCommittedCheck = async () => {
+      if (mode === 'wallet') {
+        h.controls.walletEvent({ address: id(903), network: 'mainnet' });
+        h.controls.walletEvent({ address: HOLDER, network: 'mainnet' });
+      } else h.controller.setRecipe({ ...ready.recipe, colors: [{ channelKey: 'primary', swatchKey: 'blue' }] });
+    };
+    await assert.rejects(h.controller.reuseCommittedPlayerLoadout(), { code: 'MAKER_V8_PLAYER_LOADOUT_REUSE_STALE' });
+    assert.deepEqual(h.persistence.inspect(prepared.actionId), original);
+    assert.equal(h.calls.sign, 0); assert.equal(h.calls.broadcast, 0);
+  }
+});
+
+test('concurrent signing defeats unsigned retirement CAS and retains the original WAL', async () => {
+  const persistence = createMakerV8PlayerPersistenceV8(new IDBFactory(), {
+    databaseName: 'committed-loadout-signing-race', storageManager: {
+      async persist() { return true; }, async persisted() { return true; },
+      async estimate() { return { quota: 100_000_000, usage: 0 }; },
+    },
+  });
+  const h = harness({ persistenceOverride: persistence }); await h.controller.loadPlayer(ROOT_ID);
+  const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT });
+  const original = await persistence.load(prepared.actionId);
+  h.controls.committedMatches = true;
+  h.controls.onCommittedCheck = async () => {
+    await persistence.compareAndSwap(original.actionId, original.revision, {
+      ...original, revision: original.revision + 1, updatedAt: original.updatedAt + 1,
+      status: 'SIGNING', signatureIntent: { sessionId: hash('ee'), startedAt: 101, leaseExpiresAt: 1001 },
+    });
+  };
+  await assert.rejects(h.controller.reuseCommittedPlayerLoadout(), { code: 'MAKER_V8_PLAYER_PERSISTENCE_FAILED' });
+  const retained = await persistence.load(original.actionId);
+  assert.equal(retained.status, 'SIGNING');
+  assert.deepEqual(retained.transaction, original.transaction);
+  assert.equal(await persistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), original.actionId);
 });
