@@ -382,6 +382,15 @@ function hex(value, label) {
   if (typeof value === 'string') {
     const normalized = value.startsWith('0x') ? value.slice(2) : value;
     if (HASH.test(normalized)) return normalized;
+    // gRPC Move JSON encodes vector<u8> as canonical Base64, including hashes.
+    try {
+      const bytes = fromBase64(value);
+      if (bytes.length === 32 && toBase64(bytes) === value) {
+        return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+      }
+    } catch {
+      // Reject malformed or non-canonical encodings below.
+    }
   }
   if (Array.isArray(value) && value.length === 32
     && value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
