@@ -759,10 +759,14 @@ export function createMakerV8ProductRuntime({
           .sort((left, right) => left.assetId.localeCompare(right.assetId))),
         diagnostics: freeze(diagnostics),
       });
+      // Chain inventory keeps Move integers as BigInt; the public Player
+      // definition view uses canonical decimal strings, without Number rounding.
+      const loadoutRevision = typeof currentLoadout?.revision === 'bigint'
+        || typeof currentLoadout?.revision === 'string' ? String(currentLoadout.revision) : null;
       if (currentLoadout && (!EXACT_ID.test(currentLoadout.objectId)
         || currentLoadout.rootId !== rootId || currentLoadout.holder !== address
-        || typeof currentLoadout.revision !== 'string'
-        || !/^(0|[1-9][0-9]*)$/.test(currentLoadout.revision)
+        || loadoutRevision === null
+        || !/^(0|[1-9][0-9]*)$/.test(loadoutRevision)
         || !currentLoadout.packDefinitionLayout)) {
         fail('MAKER_V8_PRODUCT_LOADOUT_LAYOUT_INVALID', 'Player definitions require the certified current Loadout layout.');
       }
@@ -770,7 +774,7 @@ export function createMakerV8ProductRuntime({
         schemaVersion: 'animacraft.maker-v8-player-definitions.v1', address, rootId,
         packs: packDefinitions,
         currentLoadout: currentLoadout === null ? null : {
-          objectId: currentLoadout.objectId, revision: currentLoadout.revision,
+          objectId: currentLoadout.objectId, revision: loadoutRevision,
           layout: structuredClone(currentLoadout.packDefinitionLayout),
         },
       } });

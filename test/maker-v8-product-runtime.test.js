@@ -679,6 +679,38 @@ test('choices retain current-loadout locks and block absent admission without du
   await assert.rejects(load(), { code: 'MAKER_V8_PRODUCT_EXTERNAL_ASSET_DRIFT' });
 });
 
+test('Player definitions project chain BigInt loadout revisions without losing identity or precision', async () => {
+  const loadout = { objectId: objectId(952), rootId, holder: objectId(902), revision: 4n,
+    packDefinitionLayout: { bindings: [], profiles: [] }, selections: [] };
+  const { options } = harness({ ownedInventory: { makerLoadouts: [loadout] } });
+  const product = createMakerV8ProductRuntime(options);
+  const load = () => product.playerContext.load({ address: objectId(902), rootId });
+  for (const revision of [0n, 4n, 9007199254740993n, '4']) {
+    loadout.revision = revision;
+    assert.deepEqual((await load()).definitions.currentLoadout, {
+      objectId: loadout.objectId, revision: String(revision), layout: { bindings: [], profiles: [] },
+    });
+    assert.equal(loadout.revision, revision, 'chain inventory remains unchanged');
+  }
+  for (const revision of [-1n, '-1', '04', 4, Number.MAX_SAFE_INTEGER + 1, null, undefined, {}]) {
+    loadout.revision = revision;
+    await assert.rejects(load(), { code: 'MAKER_V8_PRODUCT_LOADOUT_LAYOUT_INVALID' });
+  }
+  loadout.revision = 4n;
+  for (const mutate of [
+    row => { row.objectId = 'invalid'; },
+    row => { row.rootId = objectId(999); },
+    row => { row.holder = objectId(999); },
+    row => { delete row.packDefinitionLayout; },
+  ]) {
+    const original = structuredClone(loadout);
+    mutate(loadout);
+    await assert.rejects(load(), { code: 'MAKER_V8_PRODUCT_LOADOUT_LAYOUT_INVALID' });
+    Object.keys(loadout).forEach(key => { delete loadout[key]; });
+    Object.assign(loadout, original);
+  }
+});
+
 test('application singleton is stable and refuses silent reconfiguration', () => {
   const first = harness();
   const initialized = initializeMakerV8ProductRuntime(first.options);
