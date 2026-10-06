@@ -97,6 +97,7 @@
     "publicationGasPrice",
     "publicationInProgress",
     "publicationLoading",
+    "publicationContinuingSigned",
     "publicationOpen",
     "publicationPublishReview",
     "publicationPublishSaved",
