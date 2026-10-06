@@ -1,3 +1,4 @@
+import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 import { bcs } from '@mysten/sui/bcs';
 import { ObjectError } from '@mysten/sui/client';
 import { readMakerV8PackDefinitions, findMakerV8PackDefinitions } from './maker-v8-pack-definition-reader.js';
@@ -362,6 +363,29 @@ function hashValue(value) {
 
 function same(left, right) {
   try { return canonical(left) === canonical(right); } catch { return false; }
+}
+
+// The shared system Clock advances independently of custody. Transactions bind
+// its identity and initial shared version, not its latest version/digest. Keep
+// every economic/ownership field strict while allowing only forward Clock reads.
+function sameCustodyAfterClockProgress(fresh, previous, runtime) {
+  if (same(fresh, previous)) return true;
+  const before = previous.builderInput?.objects?.clock;
+  const after = fresh.builderInput?.objects?.clock;
+  const u64 = value => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value)
+    && BigInt(value) <= 18446744073709551615n;
+  if (!before || !after || before.objectId !== runtime.clockObjectId
+    || after.objectId !== runtime.clockObjectId
+    || before.type !== playerTypes(runtime).clock || after.type !== before.type
+    || before.owner?.kind !== 'SHARED' || !same(before.owner, after.owner)
+    || !u64(before.version) || !u64(after.version)
+    || BigInt(after.version) <= BigInt(before.version)
+    || !u64(before.fields?.timestamp_ms) || !u64(after.fields?.timestamp_ms)
+    || BigInt(after.fields.timestamp_ms) < BigInt(before.fields.timestamp_ms)) return false;
+  const comparableClock = { ...after, version: before.version, digest: before.digest,
+    fields: { ...after.fields, timestamp_ms: before.fields.timestamp_ms } };
+  return same(previous, { ...fresh, builderInput: { ...fresh.builderInput,
+    objects: { ...fresh.builderInput.objects, clock: comparableClock } } });
 }
 
 function address(value, label) {
@@ -2811,7 +2835,7 @@ export function createMakerV8PlayerCustodyAdapterV8({
         fail('MAKER_V8_PLAYER_CUSTODY_PROOF_REQUIRED', 'Player context lacks this custody adapter certificate.');
       }
       const fresh = await load(request);
-      if (!same(fresh, context)) fail('MAKER_V8_PLAYER_CUSTODY_DRIFT', 'Player custody changed during certification.');
+      if (!sameCustodyAfterClockProgress(fresh, context, runtime)) fail('MAKER_V8_PLAYER_CUSTODY_DRIFT', 'Player custody changed during certification.');
       return freeze({ certified: true });
     },
     // Attached after the readback adapter is composed by the production factory.
@@ -4352,10 +4376,23 @@ function transactionDataProof(value, expected = {}) {
   const budget = BigInt(decimal(snapshot.gasData?.budget, 'TransactionData.gasBudget', { positive: true }));
   const price = BigInt(decimal(snapshot.gasData?.price, 'TransactionData.gasPrice', { positive: true }));
   const payment = snapshot.gasData?.payment;
-  const epoch = snapshot.expiration?.Epoch;
+  const validDuring = snapshot.expiration?.ValidDuring;
+  let epoch = snapshot.expiration?.Epoch;
+  if (validDuring) {
+    const min = BigInt(decimal(validDuring.minEpoch, 'TransactionData.expiration.minEpoch'));
+    const max = BigInt(decimal(validDuring.maxEpoch, 'TransactionData.expiration.maxEpoch', { positive: true }));
+    if (validDuring.chain !== MAKER_V8_MAINNET_GENESIS_DIGEST || max < min || max - min > 1n
+      || max > 18446744073709551615n || validDuring.minTimestamp !== null || validDuring.maxTimestamp !== null
+      || !Number.isInteger(validDuring.nonce) || validDuring.nonce < 0 || validDuring.nonce > 0xffffffff) {
+      fail('MAKER_V8_PLAYER_TRANSACTION_ENVELOPE_INVALID', 'Player ValidDuring envelope must bind Mainnet and at most two epochs.');
+    }
+    epoch = max.toString();
+  }
+  // Existing durable Epoch bytes remain recoverable; newly built transactions
+  // use ValidDuring so address-balance gas and shared-only inputs are valid.
   if (sender !== gasOwner || budget > MAX_GAS_BUDGET || price === 0n
     || !Array.isArray(payment)
-    || !Number.isSafeInteger(epoch) || epoch <= 0) {
+    || (!validDuring && (!Number.isSafeInteger(epoch) || epoch <= 0))) {
     fail('MAKER_V8_PLAYER_TRANSACTION_ENVELOPE_INVALID', 'Player TransactionData has an unsafe signer, gas, or expiration envelope.');
   }
   for (const [index, ref] of payment.entries()) {
@@ -4470,7 +4507,7 @@ export function createMakerV8PlayerBoundaryAdapterV8({
       const startEpoch = BigInt(decimal(system?.systemState?.epoch, 'current epoch'));
       const transaction = Transaction.fromKind(kind.raw);
       transaction.setSender(input.descriptor.signer);
-      transaction.setExpiration({ Epoch: (startEpoch + 1n).toString() });
+      transaction.setExpiration(makerV8PublicationExpiration(startEpoch.toString()));
       const raw = await transaction.build({ client });
       await pinnedMainnet(client);
       await freshRuntime();

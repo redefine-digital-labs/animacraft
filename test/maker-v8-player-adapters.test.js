@@ -2594,7 +2594,9 @@ test('Player boundary accepts official gRPC address-balance gas resolution and r
         assert.equal(method.name, 'SimulateTransaction');
         assert.equal(input.doGasSelection, true);
         assert.equal(input.transaction.gasPayment.budget, undefined);
-        assert.equal(input.transaction.expiration.epoch > 0n, true);
+        assert.equal(input.transaction.expiration.minEpoch, 41n);
+        assert.equal(input.transaction.expiration.epoch, 42n);
+        assert.equal(input.transaction.expiration.chain, MAKER_V8_MAINNET_GENESIS_DIGEST);
         calls.push(input);
         const transaction = { ...input.transaction,
           gasPayment: { owner: input.transaction.sender, budget: 340448n, price: 100n, objects: [] } };
@@ -2636,7 +2638,7 @@ test('Player boundary accepts official gRPC address-balance gas resolution and r
     if (mode === 'expiry') {
       const built = await build();
       const data = TransactionDataBuilder.fromBytes(fromBase64(built.transactionBytes));
-      assert.equal(data.snapshot().expiration.Epoch, 42, 'SDK preserves the explicitly bounded expiry over resolver data');
+      assert.equal(data.snapshot().expiration.ValidDuring.maxEpoch, '42', 'SDK preserves the explicitly bounded expiry over resolver data');
       data.expiration = { Epoch: 0, $kind: 'Epoch' };
       await assert.rejects(boundary.dryRunExactTransaction({ transactionBytes: toBase64(data.build()),
         descriptor: prepared.plan.descriptor }), { code: 'MAKER_V8_PLAYER_BUILD_PROOF_REQUIRED' });
@@ -2647,7 +2649,7 @@ test('Player boundary accepts official gRPC address-balance gas resolution and r
     assert.equal(resolver.calls.length, 1);
     const snapshot = TransactionDataBuilder.fromBytes(fromBase64(built.transactionBytes)).snapshot();
     assert.deepEqual(snapshot.gasData.payment, []);
-    assert.equal(snapshot.expiration.Epoch, 42);
+    assert.equal(snapshot.expiration.ValidDuring.maxEpoch, '42');
     assert.equal((await boundary.dryRunExactTransaction({ transactionBytes: built.transactionBytes,
       descriptor: prepared.plan.descriptor })).status, 'SUCCESS');
     assert.deepEqual(await build(), built, 'durable rebuild retains the exact empty-payment bytes');
@@ -2717,4 +2719,75 @@ test('boundary persists one canonical V1 TransactionData and cold rebuild return
       'MAKER_V8_PLAYER_COMPILER_AUTHORITY_REQUIRED',
     ].includes(error.code),
   );
+});
+
+test('custody certification accepts only canonical system Clock progress and rejects real state drift', async () => {
+  const check = async (mutate, accepted) => {
+    const request = requestFor(MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS);
+    const state = request.context.builderInput;
+    state.objects.clock.type = normalizeStructTag('0x2::clock::Clock');
+    state.objects.clock.fields = { id: runtime.clockObjectId, timestamp_ms: '1000' };
+    let reads = 0;
+    const custody = createMakerV8PlayerCustodyAdapterV8({
+      client: clientFixture(), runtime, loadRuntimeAttestation: async () => ({ runtime }),
+      loadPlayerState: async () => {
+        const next = structuredClone(state);
+        if (reads++ > 0) {
+          next.objects.clock.version = '8';
+          next.objects.clock.digest = digest(33);
+          next.objects.clock.fields.timestamp_ms = '1001';
+          mutate(next);
+        }
+        return next;
+      }, assertTransport() {},
+    });
+    const { context: ignored, ...input } = request;
+    const context = await custody.loadPlayerContext(input);
+    const operation = custody.assertPlayerContext({ ...input, context });
+    if (accepted) assert.deepEqual(await operation, { certified: true });
+    else await assert.rejects(operation, { code: 'MAKER_V8_PLAYER_CUSTODY_DRIFT' });
+  };
+  await check(() => {}, true);
+  await check(s => { s.objects.clock.fields.timestamp_ms = '1000'; }, true);
+  for (const mutate of [
+    s => { s.objects.clock.objectId = id(99); },
+    s => { s.objects.clock.type = `${id(1)}::fake::Clock`; },
+    s => { s.objects.clock.owner.initialSharedVersion = '2'; },
+    s => { s.objects.clock.fields.timestamp_ms = '999'; },
+    s => { s.objects.clock.fields.timestamp_ms = 'invalid'; },
+    s => { delete s.objects.clock.fields.timestamp_ms; },
+    s => { s.objects.clock.version = '6'; },
+    s => { s.objects.clock.version = '7'; },
+    s => { s.objects.clock.fields.extra = true; },
+    s => { s.objects.root.fields.creator = id(99); },
+    s => { s.objects.protocolConfig.version = '8'; },
+    s => { s.objects.makerTreasury.digest = digest(34); },
+  ]) await check(mutate, false);
+});
+
+test('Player ValidDuring envelope rejects wrong chain, unbounded validity and timestamp substitutions', async t => {
+  for (const mode of ['chain', 'wide', 'reversed', 'missing-min', 'missing-max', 'timestamp']) await t.test(mode, async () => {
+    const client = clientFixture();
+    const original = client.core.resolveTransactionPlugin;
+    client.core.resolveTransactionPlugin = () => async (data, options, next) => {
+      const expiry = data.expiration.ValidDuring;
+      if (mode === 'chain') expiry.chain = digest(99);
+      if (mode === 'wide') expiry.maxEpoch = '43';
+      if (mode === 'reversed') expiry.minEpoch = '43';
+      if (mode === 'missing-min') expiry.minEpoch = null;
+      if (mode === 'missing-max') expiry.maxEpoch = null;
+      if (mode === 'timestamp') expiry.maxTimestamp = '1000';
+      return original()(data, options, next);
+    };
+    const compiler = createMakerV8PlayerCompilerAdapterV8({ client, runtime,
+      loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {} });
+    const request = await certifiedRequest(client, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS);
+    const prepared = await compiler.preparePlayerAction(request);
+    const boundary = createMakerV8PlayerBoundaryAdapterV8({ client, runtime, compiler,
+      persistence: createMakerV8PlayerPersistenceV8(new IDBFactory()),
+      wallet: { getCurrentAccount: async () => request.account, verifyExactSignature: async () => false },
+      execution: { allowWalletSignature: false, allowBroadcast: false },
+      loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {} });
+    await assert.rejects(boundary.buildExactTransaction({ descriptor: prepared.plan.descriptor }));
+  });
 });
