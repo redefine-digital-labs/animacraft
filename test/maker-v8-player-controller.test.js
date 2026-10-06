@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { IDBFactory } from 'fake-indexeddb';
 import { createMakerV8PlayerPersistenceV8 } from '../maker-v8-player-adapters.js';
+import { nativeIntegrationFixture } from './fixtures/maker-v8-native-integration.js';
+import { attestMakerV8Runtime } from '../maker-v8-chain.js';
 import { makerV8PublicationExpiration } from '../maker-v8-publication-expiration.js';
 import { createMakerV8CatalogAdapter } from '../maker-v8-catalog-adapter.js';
 import { nativeInitialEvidenceFixture, nativeInitialInputFixture } from './fixtures/native-initial-content.js';
@@ -286,8 +288,8 @@ function memoryPersistence(calls) {
   };
 }
 
-function harness({ enabled = true, protectedContent = false, player = playerFixture(), persistenceOverride = null } = {}) {
-  const sourceRuntime = runtime();
+function harness({ enabled = true, protectedContent = false, player = playerFixture(), persistenceOverride = null, runtimeOverride = null } = {}) {
+  const sourceRuntime = runtimeOverride ?? runtime();
   const calls = {
     order: [], catalog: 0, chain: 0, account: 0, custody: 0, custodyAssert: 0,
     compile: 0, fresh: 0, build: 0, dryRun: 0, sign: 0, verify: 0,
@@ -366,7 +368,7 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
           contextCommitment: makerV8PlayerContextCommitmentV8(context),
           descriptor: { action, signer: account.address, target, input: clone(input ?? {}),
             ...(controls.expected ? { expected: clone(controls.expected) } : {}) },
-          targets: [target],
+          targets: controls.planTargets ?? [target],
         },
       };
     },
@@ -432,10 +434,9 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
       calls.order.push('build');
       const transaction = new Transaction();
       transaction.setSender(descriptor.signer);
-      transaction.moveCall({
-        target: controls.buildTargetOverride ?? descriptor.target,
-        arguments: [],
-      });
+      for (const target of controls.buildTargets ?? [controls.buildTargetOverride ?? descriptor.target]) {
+        transaction.moveCall({ target, arguments: [] });
+      }
       transaction.setGasOwner(descriptor.signer);
       transaction.setGasBudget(10_000_000);
       transaction.setGasPrice(1_000);
@@ -1766,4 +1767,46 @@ test('concurrent signing defeats unsigned retirement CAS and retains the origina
   assert.equal(retained.status, 'SIGNING');
   assert.deepEqual(retained.transaction, original.transaction);
   assert.equal(await persistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), original.actionId);
+});
+
+
+test('native Complete validates all attested package calls in exact BCS order before signing', async () => {
+  const fixture = nativeIntegrationFixture(runtime());
+  const sourceRuntime = (await attestMakerV8Runtime(fixture.rpc, fixture.config)).runtime;
+  const native = sourceRuntime.nativeSoulIntegration;
+  const targets = [
+    targetFor(MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT, sourceRuntime),
+    `${id(2)}::coin::zero`,
+    `${id(2)}::kiosk::new`,
+    `${native.kioskPackageId}::personal_kiosk::new`,
+    `${native.soulidityCallablePackageId}::market::mint_animacraft_v8_in_personal_kiosk`,
+    `${native.soulidityCallablePackageId}::market::finalize_soul_state`,
+    `${id(2)}::transfer::public_share_object`,
+    `${native.kioskPackageId}::personal_kiosk::transfer_to_sender`,
+  ];
+  for (const mode of ['exact', 'missing-native', 'reordered-native', 'extra-native', 'wrong-native-function']) {
+    const h = harness({ runtimeOverride: sourceRuntime });
+    h.controls.planTargets = targets;
+    h.controls.buildTargets = [...targets];
+    if (mode === 'missing-native') h.controls.buildTargets.splice(4, 1);
+    if (mode === 'reordered-native') [h.controls.buildTargets[4], h.controls.buildTargets[5]]
+      = [h.controls.buildTargets[5], h.controls.buildTargets[4]];
+    if (mode === 'extra-native') h.controls.buildTargets.push(targets[4]);
+    if (mode === 'wrong-native-function') h.controls.buildTargets[4]
+      = `${native.soulidityCallablePackageId}::market::unreviewed_mint`;
+    assert.equal((await h.controller.loadPlayer(ROOT_ID)).status, 'READY');
+    const prepare = h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT, input: RENDER_INPUT });
+    if (mode === 'exact') {
+      const prepared = await prepare;
+      assert.equal(prepared.status, 'PREPARED');
+      assert.deepEqual(h.persistence.inspect(prepared.actionId).transaction.targets, targets);
+      assert.equal(h.calls.dryRun, 1);
+    } else {
+      await assert.rejects(prepare, { code: 'MAKER_V8_PLAYER_TRANSACTION_TARGET_DRIFT' }, mode);
+      assert.equal(h.calls.dryRun, 0);
+      assert.equal(h.calls.create, 0);
+    }
+    assert.equal(h.calls.sign, 0);
+    assert.equal(h.calls.broadcast, 0);
+  }
 });
