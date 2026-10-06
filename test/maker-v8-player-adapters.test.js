@@ -2791,3 +2791,51 @@ test('Player ValidDuring envelope rejects wrong chain, unbounded validity and ti
     await assert.rejects(boundary.buildExactTransaction({ descriptor: prepared.plan.descriptor }));
   });
 });
+
+
+test('unsigned retirement retains the original WAL and releases scope and Root atomically for cold preparation', async () => {
+  const indexedDB = new IDBFactory();
+  const options = { databaseName: 'player-unsigned-retirement', storageManager: storageManager() };
+  const persistence = createMakerV8PlayerPersistenceV8(indexedDB, options);
+  const original = { actionId: commitment('a'), scopeKey: commitment('b'), revision: 1,
+    createdAt: 1, updatedAt: 1, status: 'PREPARED', signatureIntent: null, signature: null,
+    broadcast: null, query: null, certificate: null, playerIdentity: { rootId },
+    recipe: {}, loadout: {}, input: {}, plan: { signer, value: 3 },
+    transaction: { digest: digest(3), bytes: 'original-bytes' } };
+  await persistence.create(original);
+  const changedBytes = { ...original, revision: 2, status: 'CANCELLED_UNSIGNED',
+    transaction: { ...original.transaction, bytes: 'replacement-bytes' } };
+  await assert.rejects(persistence.compareAndSwap(original.actionId, 1, changedBytes), { code: 'MAKER_V8_PLAYER_CAS_CONFLICT' });
+  assert.equal(await persistence.resolveActive(original.scopeKey), original.actionId);
+  assert.equal(await persistence.resolveRootActive({ rootId, signer }), original.actionId);
+  const retired = { ...original, revision: 2, updatedAt: 2, status: 'CANCELLED_UNSIGNED' };
+  await persistence.compareAndSwap(original.actionId, 1, retired);
+  const cold = createMakerV8PlayerPersistenceV8(indexedDB, options);
+  assert.deepEqual(await cold.load(original.actionId), retired);
+  assert.deepEqual((await cold.loadByDigest(original.transaction.digest)).transaction, original.transaction);
+  assert.equal(await cold.resolveActive(original.scopeKey), null);
+  assert.equal(await cold.resolveRootActive({ rootId, signer }), null);
+  const replacement = { ...original, actionId: commitment('d'), transaction: { digest: digest(4), bytes: 'new-reviewed-bytes' } };
+  await cold.create(replacement);
+  assert.equal(await cold.resolveActive(original.scopeKey), replacement.actionId);
+  assert.equal(await cold.resolveRootActive({ rootId, signer }), replacement.actionId);
+  assert.deepEqual((await cold.load(original.actionId)).transaction, original.transaction);
+});
+
+test('WAL retirement rejects signed or uncertain artifacts and preserves both active indices', async () => {
+  for (const field of ['status', 'signatureIntent', 'signature', 'broadcast', 'query', 'certificate']) {
+    const persistence = createMakerV8PlayerPersistenceV8(new IDBFactory(), {
+      databaseName: 'player-no-retirement-'+field, storageManager: storageManager() });
+    const original = { actionId: commitment('a'), scopeKey: commitment('b'), revision: 1,
+      createdAt: 1, updatedAt: 1, status: 'PREPARED', signatureIntent: null, signature: null,
+      broadcast: null, query: null, certificate: null, playerIdentity: { rootId },
+      recipe: {}, loadout: {}, input: {}, plan: { signer }, transaction: { digest: digest(3) },
+      [field]: field === 'status' ? 'SIGNING_UNKNOWN' : { artifact: true } };
+    await persistence.create(original);
+    await assert.rejects(persistence.compareAndSwap(original.actionId, 1,
+      { ...original, revision: 2, updatedAt: 2, status: 'CANCELLED_UNSIGNED' }), { code: 'MAKER_V8_PLAYER_CAS_CONFLICT' });
+    assert.deepEqual(await persistence.load(original.actionId), original);
+    assert.equal(await persistence.resolveActive(original.scopeKey), original.actionId);
+    assert.equal(await persistence.resolveRootActive({ rootId, signer }), original.actionId);
+  }
+});

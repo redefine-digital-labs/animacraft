@@ -19,7 +19,7 @@ import {
 import {
   MAKER_V8_PRODUCT_RUNTIME_SCHEMA,
 } from './maker-v8-product-runtime.js';
-import { assertMakerV8Runtime } from './maker-v8-runtime.js';
+import { MAKER_V8_CLOCK_OBJECT_ID, assertMakerV8Runtime } from './maker-v8-runtime.js';
 import { makerV8PlayerRecipeConstraintIssue } from './maker-v8-player-recipe-constraints.js';
 import { assertMakerV8NativeCompletionInputV8 } from './maker-v8-native-completion.js';
 import { assertMakerV8NativeContentEvidenceV8 } from './maker-v8-native-content-evidence.js';
@@ -57,7 +57,7 @@ const ACTION_VALUES = new Set(Object.values(MAKER_V8_PLAYER_ACTIONS));
 const ACTION_STATUSES = new Set([
   'PREPARED', 'SIGNING', 'SIGNING_UNKNOWN', 'SIGNED', 'BROADCAST_ACCEPTED',
   'OUTCOME_UNKNOWN', 'FINALIZED_UNCERTIFIED', 'FINALIZED_SUCCESS',
-  'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND',
+  'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'CANCELLED_UNSIGNED',
 ]);
 const EXACT_ID = /^0x[0-9a-f]{64}$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -371,8 +371,37 @@ export function makerV8PlayerRecipeCommitmentV8(recipe) {
   return hashValue(recipe);
 }
 
+function canonicalPlayerClock(clock) {
+  const u64 = value => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value)
+    && BigInt(value) <= 18446744073709551615n;
+  return plain(clock) && clock.objectId === MAKER_V8_CLOCK_OBJECT_ID
+    && clock.type === `0x${'0'.repeat(63)}2::clock::Clock`
+    && clock.owner?.kind === 'SHARED' && u64(clock.owner.initialSharedVersion)
+    && BigInt(clock.owner.initialSharedVersion) > 0n
+    && u64(clock.version) && u64(clock.fields?.timestamp_ms);
+}
+
 export function makerV8PlayerContextCommitmentV8(context) {
-  return hashValue(context);
+  const clock = context?.builderInput?.objects?.clock;
+  if (context?.schemaVersion !== MAKER_V8_PLAYER_CONTEXT_SCHEMA || !canonicalPlayerClock(clock)) return hashValue(context);
+  // Clock's transaction authority is its identity and initial shared version.
+  // Its observed version/digest/time advance independently of the user's plan.
+  const { version, digest, ...identity } = clock;
+  const { timestamp_ms, ...fields } = clock.fields;
+  return hashValue({ ...context, builderInput: { ...context.builderInput,
+    objects: { ...context.builderInput.objects, clock: { ...identity, fields } } } });
+}
+
+export function makerV8PlayerContextsMatchAfterClockProgressV8(fresh, previous) {
+  if (sameCanonical(fresh, previous)) return true;
+  const before = previous?.builderInput?.objects?.clock, after = fresh?.builderInput?.objects?.clock;
+  if (!canonicalPlayerClock(before) || !canonicalPlayerClock(after)
+    || !sameCanonical(before.owner, after.owner) || BigInt(after.version) <= BigInt(before.version)
+    || BigInt(after.fields.timestamp_ms) < BigInt(before.fields.timestamp_ms)) return false;
+  const comparableClock = { ...after, version: before.version, digest: before.digest,
+    fields: { ...after.fields, timestamp_ms: before.fields.timestamp_ms } };
+  return sameCanonical(previous, { ...fresh, builderInput: { ...fresh.builderInput,
+    objects: { ...fresh.builderInput.objects, clock: comparableClock } } });
 }
 
 function sameCanonical(left, right) {
@@ -1001,6 +1030,10 @@ function assertBuiltTransaction(built, plan, runtime) {
     || typeof built.transactionDigest !== 'string') {
     fail('MAKER_V8_PLAYER_BUILD_INVALID', 'Exact boundary returned an invalid build.', 'BUILD');
   }
+  if (built.custodyContext !== undefined
+    && makerV8PlayerContextCommitmentV8(built.custodyContext) !== plan.contextCommitment) {
+    fail('MAKER_V8_PLAYER_CONTEXT_DRIFT', 'Durable custody snapshot differs from the plan.', 'BUILD');
+  }
   const bytes = canonicalTransactionBytes(built.transactionBytes);
   const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
   const snapshot = TransactionDataBuilder.fromBytes(bytes).snapshot();
@@ -1250,7 +1283,7 @@ function assertActionRecord(record, runtime = null) {
   const hasCertificate = record.certificate !== null;
   const hasError = record.error !== null;
   const invalid = (() => {
-    if (record.status === 'PREPARED') {
+    if (['PREPARED', 'CANCELLED_UNSIGNED'].includes(record.status)) {
       return hasIntent || hasSignature || hasBroadcast || hasQuery || hasCertificate;
     }
     if (record.status === 'SIGNING') {
@@ -1816,13 +1849,15 @@ export function createMakerV8PlayerControllerV8({
     const context = await liveContext({
       action: record.action, player, recipe, loadout, input, account,
     });
-    if (makerV8PlayerContextCommitmentV8(context) !== record.plan.contextCommitment) {
+    if (makerV8PlayerContextCommitmentV8(context) !== record.plan.contextCommitment
+      || record.transaction.build.custodyContext !== undefined
+        && !makerV8PlayerContextsMatchAfterClockProgressV8(context, record.transaction.build.custodyContext)) {
       fail('MAKER_V8_PLAYER_CONTEXT_DRIFT', 'Live Player custody context differs from the signed plan.', 'CONTEXT');
     }
     let fresh;
     try {
       fresh = await compiler.assertPlayerActionFresh({
-        plan: clone(record.plan), player: clone(player), recipe: clone(recipe),
+        action: record.action, plan: clone(record.plan), player: clone(player), recipe: clone(recipe),
         loadout: clone(loadout), input: clone(input), account, context,
       });
     } catch (cause) {
@@ -2055,7 +2090,14 @@ export function createMakerV8PlayerControllerV8({
       // A prior signed acquisition may already have changed live ownership.
       // Resolve its durable scope before a new-purchase custody preflight.
       try {
-        return await controller.recoverActivePlayerAction({ action, input: checkedInput });
+        const pending = await controller.recoverActivePlayerAction({ action, input: checkedInput });
+        const original = await readRecord(pending.actionId);
+        if (original.status !== 'PREPARED' || original.transaction.build.custodyContext !== undefined
+          || original.plan.descriptor.schemaVersion !== 'animacraft.maker-v8-player-descriptor.v2') return pending;
+        // The previous writer did not retain a custody snapshot. It cannot be
+        // re-authorized safely. Explicit preparation may retire only a record
+        // that never entered signing; CAS preserves all original plan/bytes.
+        await persistCas(original, { status: 'CANCELLED_UNSIGNED', error: null });
       } catch (error) {
         if (error?.code !== 'MAKER_V8_PLAYER_ACTIVE_ACTION_NOT_FOUND') throw error;
       }
@@ -2150,7 +2192,7 @@ export function createMakerV8PlayerControllerV8({
         input: clone(checkedInput),
         plan: clone(plan),
         transaction: {
-          build: clone(transaction.build),
+          build: { ...clone(transaction.build), custodyContext: clone(live.context) },
           bytes: transaction.bytes,
           digest: transaction.digest,
           targets: clone(transaction.targets),
@@ -2299,6 +2341,7 @@ export function createMakerV8PlayerControllerV8({
         fail('MAKER_V8_PLAYER_RECOVERY_OPTIONS_INVALID', 'replayIfNotFound must be boolean.', 'RECOVERY');
       }
       let record = await readRecord(actionId);
+      if (record.status === 'CANCELLED_UNSIGNED') return actionView(record, 'CANCELLED_UNSIGNED');
       if (record.status === 'PREPARED') return actionView(record, 'AWAITING_SIGNATURE');
       if (['SIGNING', 'SIGNING_UNKNOWN'].includes(record.status)) {
         return actionView(record, 'SIGNATURE_OUTCOME_UNKNOWN');

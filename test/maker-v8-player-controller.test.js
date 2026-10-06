@@ -251,7 +251,7 @@ function memoryPersistence(calls) {
         throw error;
       }
       records.set(actionId, clone(next));
-      if (['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(next.status)) {
+      if (['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'CANCELLED_UNSIGNED'].includes(next.status)) {
         active.delete(next.scopeKey);
       } else active.set(next.scopeKey, actionId);
       return clone(next);
@@ -293,6 +293,9 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
   };
   const controls = {
     expirationOverride: makerV8PublicationExpiration('100'),
+    contextReads: 0,
+    clockProgress: false,
+    contextMutation: null,
     catalogError: null,
     catalogRead: null,
     chainIdentifier: CHAIN,
@@ -363,7 +366,8 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
         },
       };
     },
-    async assertPlayerActionFresh() {
+    async assertPlayerActionFresh(request) {
+      assert.equal(request.action, request.plan.action, 'Real compiler requires the action during signature preflight');
       calls.fresh += 1;
       calls.order.push('compiler:fresh');
       if (controls.freshError) throw controls.freshError;
@@ -388,7 +392,11 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
         actionEligible: true,
         protectedContentRequired: controls.protectedContentRequired,
         recipeCommitment: makerV8PlayerRecipeCommitmentV8(recipe),
-        builderInput: { exact: true },
+        builderInput: { exact: true, ...(controls.clockProgress ? { objects: { clock: {
+          objectId: id(6), type: `${id(2)}::clock::Clock`, owner: { kind: 'SHARED', initialSharedVersion: '1' },
+          version: String(100 + controls.contextReads++), digest: GAS_DIGEST,
+          fields: { timestamp_ms: String(1000 + controls.contextReads) },
+        }, treasury: { version: '1' } } } : {}), ...(controls.contextMutation ?? {}) },
       };
     },
     async assertPlayerContext() {
@@ -1540,4 +1548,99 @@ test('Player controller rejects expiration chain/window/timestamp drift before s
       { code: 'MAKER_V8_PLAYER_TRANSACTION_DRIFT' });
     assert.equal(h.calls.dryRun, 0); assert.equal(h.calls.sign, 0); assert.equal(h.calls.broadcast, 0);
   }
+});
+
+
+test('Clock advancement survives preparation, signature preflight and cold recovery with exact transaction bytes', async () => {
+  const h = harness(); h.controls.clockProgress = true;
+  await h.controller.loadPlayer(h.player.rootId);
+  const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+  const original = h.persistence.inspect(prepared.actionId).transaction;
+  const cold = createMakerV8PlayerControllerV8({ productRuntime: h.productRuntime,
+    compiler: h.compiler, custody: h.custody, boundary: h.boundary, wallet: h.wallet,
+    rpc: h.rpc, persistence: h.persistence, execution: { allowWalletSignature: true, allowBroadcast: true } });
+  await cold.loadPlayer(h.player.rootId);
+  const restored = await cold.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+  assert.equal(restored.actionId, prepared.actionId);
+  const completed = await cold.executePlayerAction(prepared.actionId);
+  assert.equal(completed.status, 'FINALIZED_SUCCESS');
+  assert.deepEqual(h.persistence.inspect(prepared.actionId).transaction, original);
+  assert.equal(h.calls.sign, 1); assert.equal(h.calls.broadcast, 1);
+});
+
+
+test('Clock normalization retains ownership, fees and all nonvolatile fields, and blocks backward clock before signing', async () => {
+  const mutations = [
+    c => { c.builderInput.objects.clock.version = '1'; },
+    c => { c.builderInput.objects.clock.fields.timestamp_ms = '1'; },
+    c => { c.builderInput.objects.clock.owner.initialSharedVersion = '2'; },
+    c => { c.builderInput.objects.clock.objectId = id(99); },
+    c => { c.builderInput.objects.clock.type = `${id(2)}::fake::Clock`; },
+    c => { c.builderInput.objects.clock.fields.extra = true; },
+    c => { c.builderInput.objects.treasury.version = '2'; },
+    c => { c.builderInput.fee = '1'; },
+  ];
+  for (const mutate of mutations) {
+    const h = harness(); h.controls.clockProgress = true;
+    await h.controller.loadPlayer(h.player.rootId);
+    const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+    const load = h.custody.loadPlayerContext;
+    h.custody.loadPlayerContext = async request => { const c = await load(request); mutate(c); return c; };
+    await assert.rejects(h.controller.executePlayerAction(prepared.actionId), { code: 'MAKER_V8_PLAYER_CONTEXT_DRIFT' });
+    assert.equal(h.calls.sign, 0); assert.equal(h.calls.broadcast, 0);
+    assert.equal(h.persistence.inspect(prepared.actionId).status, 'PREPARED');
+  }
+});
+
+test('explicit preparation retains and retires only unsigned records missing the original custody snapshot', async () => {
+  const source = harness(); source.controls.clockProgress = true;
+  const compiler = source.compiler.preparePlayerAction;
+  source.compiler.preparePlayerAction = async request => { const result = await compiler(request);
+    result.plan.descriptor.schemaVersion = 'animacraft.maker-v8-player-descriptor.v2'; return result; };
+  await source.controller.loadPlayer(source.player.rootId);
+  const prepared = await source.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+  const legacy = source.persistence.inspect(prepared.actionId);
+  delete legacy.transaction.build.custodyContext;
+  legacy.plan.contextCommitment = hash('ca');
+  legacy.actionId = makerV8PlayerContextCommitmentV8({ plan: legacy.plan, digest: legacy.transaction.digest });
+  const cold = harness(); cold.controls.clockProgress = true;
+  await cold.persistence.create(legacy);
+  await cold.controller.loadPlayer(cold.player.rootId);
+  const next = await cold.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+  assert.notEqual(next.actionId, legacy.actionId);
+  const retained = cold.persistence.inspect(legacy.actionId);
+  assert.equal(retained.status, 'CANCELLED_UNSIGNED');
+  assert.deepEqual(retained.plan, legacy.plan); assert.deepEqual(retained.transaction, legacy.transaction);
+  assert.equal(cold.calls.sign, 0); assert.equal(cold.calls.broadcast, 0);
+  assert.equal(cold.persistence.inspect(next.actionId).status, 'PREPARED');
+});
+
+
+test('cold preparation never replaces legacy signed or uncertain records without custody snapshots', async t => {
+  for (const signingUnknown of [false, true]) await t.test(signingUnknown ? 'signature outcome unknown' : 'broadcast outcome unknown', async () => {
+    const h = harness();
+    const compile = h.compiler.preparePlayerAction;
+    h.compiler.preparePlayerAction = async request => { const result = await compile(request);
+      result.plan.descriptor.schemaVersion = 'animacraft.maker-v8-player-descriptor.v2'; return result; };
+    await h.controller.loadPlayer(h.player.rootId);
+    const prepared = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+    h.persistence.mutate(prepared.actionId, record => { delete record.transaction.build.custodyContext; });
+    if (signingUnknown) h.controls.signError = new Error('wallet response lost');
+    else h.controls.broadcastError = new Error('broadcast response lost');
+    await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+    const original = h.persistence.inspect(prepared.actionId);
+    const counts = { compile: h.calls.compile, create: h.calls.create, sign: h.calls.sign, broadcast: h.calls.broadcast };
+    if (!signingUnknown) h.controls.queryResults.push(notFound(original.transaction.digest));
+    const cold = createMakerV8PlayerControllerV8({ productRuntime: h.productRuntime,
+      compiler: h.compiler, custody: h.custody, boundary: h.boundary, wallet: h.wallet,
+      rpc: h.rpc, persistence: h.persistence, execution: { allowWalletSignature: true, allowBroadcast: true } });
+    await cold.loadPlayer(h.player.rootId);
+    const recovered = await cold.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+    assert.equal(recovered.actionId, original.actionId);
+    assert.equal(recovered.status, signingUnknown ? 'SIGNING_UNKNOWN' : 'OUTCOME_UNKNOWN');
+    const retained = h.persistence.inspect(original.actionId);
+    assert.deepEqual(retained.plan, original.plan); assert.deepEqual(retained.transaction, original.transaction);
+    assert.deepEqual(retained.signature, original.signature); assert.deepEqual(retained.signatureIntent, original.signatureIntent);
+    assert.deepEqual({ compile: h.calls.compile, create: h.calls.create, sign: h.calls.sign, broadcast: h.calls.broadcast }, counts);
+  });
 });
