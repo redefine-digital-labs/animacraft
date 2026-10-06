@@ -7762,7 +7762,7 @@ test('Player completion is single-flight and an edit invalidates the frozen proj
   profile.parent = mount;
   profile.value = 'New project B';
   await waitForEvent(mount.fire('change', { target: profile }));
-  assert.doesNotMatch(mount.innerHTML, /Preview ready/);
+  assert.match(mount.innerHTML, /Preview ready/, 'identity edit preserves recipe pixels, not completion authority');
   completion.resolve({ status: 'HANDOFF_READY', handoffUrl: '' });
   await Promise.all([waitForEvent(firstConfirmation), waitForEvent(duplicateConfirmation)]);
   assert.equal(harness.calls.completePlayerJourney.length, 1);
@@ -7804,10 +7804,9 @@ test('an irreversible completion stays globally single-flight after an edit and 
   await completionEntered.promise;
   assert.equal(harness.calls.completePlayerJourney.length, 1);
 
-  const profile = new FakeTarget(harness.doc, { dataset: { action: 'player-profile-world' } });
+  const profile = new FakeTarget(harness.doc, { dataset: { action: 'player-reset' } });
   profile.parent = mount;
-  profile.value = 'A newer generation';
-  mount.fire('change', { target: profile });
+  mount.fire('click', { target: profile });
   const preview = new FakeTarget(harness.doc, { dataset: { action: 'player-preview-export' } });
   preview.parent = mount;
   const previewEvent = mount.fire('click', { target: preview });
@@ -8721,4 +8720,65 @@ test('Library Preview fences late draft and canvas reads across navigation, wall
       } finally { gate.resolve(canonicalPreview()); await app.destroy(); }
     });
   }
+});
+
+for (const action of ['player-profile-name', 'player-profile-world', 'player-profile-description', 'player-profile-tags', 'player-soul-document']) {
+  test(`metadata edit ${action} preserves ready pixels while invalidating final export`, async () => {
+    const storageMap = new Map();
+    const harness = browserHarness({
+      connection: { account: { address: `0x${'8a'.repeat(32)}`, chains: ['sui:mainnet'] } },
+      templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+      playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(),
+      nativeCompletionConfigured: true, completePlayerJourneyResult: { status: 'HANDOFF_READY', handoffUrl: '' }, storageMap,
+    });
+    const app = createOriginalProductApp(harness);
+    await app.ready;
+    await app.openPlayer(ROOT_ONE);
+    const mount = harness.doc.getElementById('makerV4PlayerMount');
+    const previews = harness.calls.renderPlayerPreview.length;
+    const control = new FakeTarget(harness.doc, { dataset: { action, soulKey: 'soulMd' } });
+    control.parent = mount;
+    control.value = 'Updated character identity';
+    await waitForEvent(mount.fire('change', { target: control }));
+    assert.match(mount.innerHTML, /Preview ready/);
+    assert.doesNotMatch(mount.innerHTML, /data-action="player-complete"[^>]*disabled/);
+    assert.equal(harness.calls.renderPlayerPreview.length, previews, 'metadata does not change recipe pixels');
+    const key = [...storageMap.keys()].find(key => key.startsWith('animacraft:maker-v8-player-project:v1:') && !key.includes(':wal:'));
+    const saved = JSON.parse(storageMap.get(key));
+    assert.match(JSON.stringify(saved.session), /Updated character identity/);
+    assert.equal(saved.session.render, null, 'metadata edit requires a fresh final export binding');
+    assert.equal(harness.calls.completePlayerJourney.length, 0);
+    app.destroy();
+  });
+}
+
+test('metadata edited during initial preview installs the new generation and ignores late pixels', async () => {
+  const firstEntered = deferred(), firstResult = deferred();
+  const harness = browserHarness({
+    connection: { account: { address: `0x${'8a'.repeat(32)}`, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult: playerSession(ROOT_ONE),
+    renderPlayerPreviewResult: (_root, call) => {
+      if (call === 1) { firstEntered.resolve(); return firstResult.promise; }
+      return canonicalPreview();
+    },
+    nativeCompletionConfigured: true,
+    completePlayerJourneyResult: { status: 'HANDOFF_READY', handoffUrl: '' },
+  });
+  const app = createOriginalProductApp(harness);
+  await app.ready;
+  const opening = app.openPlayer(ROOT_ONE);
+  await firstEntered.promise;
+  const mount = harness.doc.getElementById('makerV4PlayerMount');
+  const name = new FakeTarget(harness.doc, { dataset: { action: 'player-profile-name' } });
+  name.parent = mount; name.value = 'New identity while loading';
+  await waitForEvent(mount.fire('change', { target: name }));
+  assert.match(mount.innerHTML, /Preview ready/);
+  assert.doesNotMatch(mount.innerHTML, /data-action="player-complete"[^>]*disabled/);
+  firstResult.resolve(canonicalPreview({ sha256: 'ee'.repeat(32) }));
+  await opening;
+  assert.match(mount.innerHTML, /New identity while loading/);
+  assert.match(mount.innerHTML, /Preview ready/);
+  assert.equal(harness.calls.completePlayerJourney.length, 0);
+  app.destroy();
 });
