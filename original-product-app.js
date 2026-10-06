@@ -3820,6 +3820,15 @@ export function createOriginalProductApp({
     return queuePlayerProjectSave({ generation });
   }
 
+  async function savePlayerMetadataEdit(generation) {
+    // Text changes keep verified pixels, but a render already in flight belongs
+    // to the previous project generation and cannot install its late result.
+    if (state.playerRecipeMutationPending > 0) return state.playerMutationQueue;
+    if (!state.playerRenderRecord) await requestPlayerCanonicalPreview();
+    if (generation !== state.playerProjectGeneration) return null;
+    return savePlayerProjectAfterLocalEdit(generation);
+  }
+
   function updatePlayerProfile(control) {
     if (!state.playerUi || control?.disabled) return;
     const action = String(control.dataset.action || '');
@@ -3830,18 +3839,18 @@ export function createOriginalProductApp({
       'player-profile-tags': 'tags',
     }[action];
     if (profileKey) {
-      const generation = invalidatePlayerProject();
+      const generation = invalidatePlayerProject({ preservePreview: true });
       state.playerUi.profile[profileKey] = String(control.value || '');
       renderPlayer();
-      return savePlayerProjectAfterLocalEdit(generation).catch(() => null);
+      return savePlayerMetadataEdit(generation).catch(() => null);
     }
     if (action === 'player-soul-document') {
       const key = String(control.dataset.soulKey || '');
       if (!['soulMd', 'memoryMd', 'skillMd'].includes(key)) return;
-      const generation = invalidatePlayerProject();
+      const generation = invalidatePlayerProject({ preservePreview: true });
       state.playerUi.soul.documents[key] = String(control.value || '');
       renderPlayer();
-      return savePlayerProjectAfterLocalEdit(generation).catch(() => null);
+      return savePlayerMetadataEdit(generation).catch(() => null);
     }
   }
 
@@ -4127,15 +4136,15 @@ export function createOriginalProductApp({
     } else if (action === 'player-reset-soul-document') {
       const key = String(control.dataset.soulKey || '');
       if (!['soulMd', 'memoryMd', 'skillMd'].includes(key)) return;
-      const generation = invalidatePlayerProject();
+      const generation = invalidatePlayerProject({ preservePreview: true });
       delete state.playerUi.soul.documents[key];
       renderPlayer();
-      await savePlayerProjectAfterLocalEdit(generation);
+      await savePlayerMetadataEdit(generation);
     } else if (action === 'player-reset-all-soul') {
-      const generation = invalidatePlayerProject();
+      const generation = invalidatePlayerProject({ preservePreview: true });
       state.playerUi.soul.documents = {};
       renderPlayer();
-      await savePlayerProjectAfterLocalEdit(generation);
+      await savePlayerMetadataEdit(generation);
     } else if (action === 'player-select-recovery') {
       const branchId = String(control.dataset.writerId || '');
       if (!state.playerUi.recoveryBranches.some((branch) => branch.branchId === branchId)) return;
