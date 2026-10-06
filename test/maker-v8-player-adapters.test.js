@@ -757,6 +757,35 @@ function overviewReadFixture({ packKind = null, ownedAccess = false, assetized =
   return { custody, request, source, objects, ownedRows, types, controls, reads, client };
 }
 
+test('completion quote accepts canonical gRPC Base64 commitments without changing the quote', async () => {
+  const h = overviewReadFixture({ ownedAccess: true, assetized: true });
+  const expected = await h.custody.quotePlayerCompletion(h.request);
+  const grpcHashes = value => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key.includes('commitment') && typeof child === 'string' && /^[0-9a-f]{64}$/.test(child)) {
+        value[key] = toBase64(Buffer.from(child, 'hex'));
+      } else grpcHashes(child);
+    }
+  };
+  for (const object of h.objects.values()) grpcHashes(object.fields);
+  for (const object of h.ownedRows) grpcHashes(object.fields);
+  assert.deepEqual(await h.custody.quotePlayerCompletion(h.request), expected);
+});
+
+test('completion quote rejects malformed gRPC hashes and validly encoded commitment drift', async () => {
+  const valid = toBase64(Buffer.alloc(32, 4));
+  for (const value of [toBase64(Buffer.alloc(31)), toBase64(Buffer.alloc(33)),
+    valid.slice(0, -1), ` ${valid}`, `${valid}\n`, 'not-a-hash']) {
+    const h = overviewReadFixture({ ownedAccess: true });
+    h.objects.get(rootId).fields.publication.sealed_base_registry_commitment = value;
+    await assert.rejects(h.custody.quotePlayerCompletion(h.request), { code: 'MAKER_V8_PLAYER_HASH_INVALID' });
+  }
+  const h = overviewReadFixture({ ownedAccess: true });
+  h.objects.get(rootId).fields.content.content_commitment = toBase64(Buffer.alloc(32, 0xff));
+  await assert.rejects(h.custody.quotePlayerCompletion(h.request), { code: 'MAKER_V8_PLAYER_ROOT_DRIFT' });
+});
+
 test('current Player custody resolves attachment-only Packs and validates their scoped slots', async () => {
   const h = overviewReadFixture({ packKind: 0, ownedAccess: true });
   h.request.recipe = structuredClone(recipe);
