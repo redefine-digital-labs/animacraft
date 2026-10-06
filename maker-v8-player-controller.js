@@ -982,15 +982,20 @@ function normalizeTarget(target) {
   return `${exactId(pieces[0], 'target.package')}::${pieces[1]}::${pieces[2]}`;
 }
 
-function assertActionTargets(action, targets, runtime) {
+function actionPackageRoles(action, runtime) {
   const packageRoles = new Map(Object.entries(runtime.roles)
     .map(([role, identity]) => [identity.callablePackageId, role]));
-  const allowed = ACTION_TARGETS[action];
   if (action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT && runtime.nativeSoulIntegration) {
     packageRoles.set(runtime.nativeSoulIntegration.soulidityCallablePackageId, 'nativeSoul');
     packageRoles.set(runtime.nativeSoulIntegration.kioskPackageId, 'nativeKiosk');
     packageRoles.set(`0x${'0'.repeat(63)}2`, 'framework');
   }
+  return packageRoles;
+}
+
+function assertActionTargets(action, targets, runtime) {
+  const packageRoles = actionPackageRoles(action, runtime);
+  const allowed = ACTION_TARGETS[action];
   return targets.map((raw) => {
     const target = normalizeTarget(raw);
     const [packageId, moduleName, functionName] = target.split('::');
@@ -1059,10 +1064,9 @@ function assertBuiltTransaction(built, plan, runtime) {
       'BUILD',
     );
   }
-  const makerPackages = new Set(Object.values(runtime.roles)
-    .map((identity) => identity.callablePackageId));
+  const actionPackages = actionPackageRoles(plan.action, runtime);
   const observedTargets = snapshot.commands.map((command) => command?.MoveCall)
-    .filter((call) => call && makerPackages.has(String(call.package).toLowerCase()))
+    .filter((call) => call && actionPackages.has(String(call.package).toLowerCase()))
     .map((call) => normalizeTarget(
       `${call.package}::${call.module}::${call.function}`,
     ));
