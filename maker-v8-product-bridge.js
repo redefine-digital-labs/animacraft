@@ -1829,6 +1829,10 @@ export function createMakerV8ProductBridge({
       }
     };
     bridge.getPlayerSnapshot = async (...args) => {
+      // A recipe read takes precedence over pixels for the previous recipe.
+      // Cancel that render before awaiting: otherwise its post-render authority
+      // check can supersede this read and reject the user's current edit.
+      invalidatePlayerRender();
       const ownership = capturePlayerContextOwnership();
       const snapshot = await readPlayerSnapshot(...args);
       if (!ownership) return snapshot;
