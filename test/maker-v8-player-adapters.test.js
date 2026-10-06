@@ -2718,3 +2718,47 @@ test('boundary persists one canonical V1 TransactionData and cold rebuild return
     ].includes(error.code),
   );
 });
+
+test('custody certification accepts only canonical system Clock progress and rejects real state drift', async () => {
+  const check = async (mutate, accepted) => {
+    const request = requestFor(MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS);
+    const state = request.context.builderInput;
+    state.objects.clock.type = normalizeStructTag('0x2::clock::Clock');
+    state.objects.clock.fields = { id: runtime.clockObjectId, timestamp_ms: '1000' };
+    let reads = 0;
+    const custody = createMakerV8PlayerCustodyAdapterV8({
+      client: clientFixture(), runtime, loadRuntimeAttestation: async () => ({ runtime }),
+      loadPlayerState: async () => {
+        const next = structuredClone(state);
+        if (reads++ > 0) {
+          next.objects.clock.version = '8';
+          next.objects.clock.digest = digest(33);
+          next.objects.clock.fields.timestamp_ms = '1001';
+          mutate(next);
+        }
+        return next;
+      }, assertTransport() {},
+    });
+    const { context: ignored, ...input } = request;
+    const context = await custody.loadPlayerContext(input);
+    const operation = custody.assertPlayerContext({ ...input, context });
+    if (accepted) assert.deepEqual(await operation, { certified: true });
+    else await assert.rejects(operation, { code: 'MAKER_V8_PLAYER_CUSTODY_DRIFT' });
+  };
+  await check(() => {}, true);
+  await check(s => { s.objects.clock.fields.timestamp_ms = '1000'; }, true);
+  for (const mutate of [
+    s => { s.objects.clock.objectId = id(99); },
+    s => { s.objects.clock.type = `${id(1)}::fake::Clock`; },
+    s => { s.objects.clock.owner.initialSharedVersion = '2'; },
+    s => { s.objects.clock.fields.timestamp_ms = '999'; },
+    s => { s.objects.clock.fields.timestamp_ms = 'invalid'; },
+    s => { delete s.objects.clock.fields.timestamp_ms; },
+    s => { s.objects.clock.version = '6'; },
+    s => { s.objects.clock.version = '7'; },
+    s => { s.objects.clock.fields.extra = true; },
+    s => { s.objects.root.fields.creator = id(99); },
+    s => { s.objects.protocolConfig.version = '8'; },
+    s => { s.objects.makerTreasury.digest = digest(34); },
+  ]) await check(mutate, false);
+});
