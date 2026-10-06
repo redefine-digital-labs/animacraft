@@ -2318,6 +2318,36 @@ test('Pack Style authority is point-read from its exact Release Table with canon
   { code: 'MAKER_V8_PLAYER_PACK_STYLE_BCS_INVALID' });
 });
 
+test('first Complete treats only exact SDK notFound counter objects as zero', async () => {
+  const tableId = id(410), releaseId = id(412);
+  const request = {
+    runtime, outputRegistry: { fields: { complete_by_wallet: { id: tableId } } },
+    releases: [{ objectId: releaseId, fields: { complete_by_wallet: { id: id(411) } } }],
+    account: { address: signer },
+  };
+  let makeError = objectId => new ObjectError('notExists', 'Object not found', { reason: 'notFound', objectId });
+  const client = {
+    async getChainIdentifier() { return { chainIdentifier: MAKER_V8_MAINNET_GENESIS_DIGEST }; },
+    async getDynamicField({ parentId, name }) {
+      throw makeError(deriveDynamicFieldID(parentId, name.type, fromBase64(name.bcsBase64)));
+    },
+  };
+  assert.deepEqual(await readMakerV8CompleteCountersV8({ ...request, client }), {
+    baseOrdinal: '0', packOrdinals: { [releaseId]: '0' },
+  });
+  for (const factory of [
+    objectId => Object.assign(new Error('not found'), { code: 'notExists', reason: 'notFound', objectId }),
+    () => new ObjectError('notExists', 'wrong object', { reason: 'notFound', objectId: id(999) }),
+    objectId => new ObjectError('notExists', 'unknown', { reason: 'unknown', objectId }),
+    objectId => new ObjectError('UNAVAILABLE', 'transport failed', { reason: 'notFound', objectId }),
+    () => new ObjectError('notExists', 'missing identity', { reason: 'notFound' }),
+  ]) {
+    let thrown;
+    makeError = objectId => (thrown = factory(objectId));
+    await assert.rejects(readMakerV8CompleteCountersV8({ ...request, client }), error => error === thrown);
+  }
+});
+
 test('Complete quota counters are exact holder-scoped gRPC dynamic-field u64 point reads', async () => {
   const outputTableId = id(410);
   const packTableId = id(411);

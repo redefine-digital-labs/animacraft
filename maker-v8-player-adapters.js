@@ -1,4 +1,5 @@
 import { bcs } from '@mysten/sui/bcs';
+import { ObjectError } from '@mysten/sui/client';
 import { readMakerV8PackDefinitions, findMakerV8PackDefinitions } from './maker-v8-pack-definition-reader.js';
 import { deriveMakerV8PackProfiles } from './maker-v8-profile-wire.js';
 import { makerV8PackAttachmentOrder } from './maker-v8-player-slot-layout.js';
@@ -1856,6 +1857,11 @@ async function readDynamicU64(client, parentId, keyType, keyBytes, label) {
     });
   } catch (error) {
     if (dynamicFieldNotFound(error)) return '0';
+    // Current SDK point reads wrap absence in ObjectError. Only the requested
+    // holder's exact dynamic-field ID may stand for an uninitialized counter.
+    if (error instanceof ObjectError && error.code === 'notExists'
+      && error.reason === 'notFound'
+      && error.objectId === deriveDynamicFieldID(parentId, keyType, keyBytes)) return '0';
     throw error;
   }
   if (!plain(field) || field.kind !== 'DynamicField'
