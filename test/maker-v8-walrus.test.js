@@ -311,3 +311,67 @@ test('fresh v8 Walrus IndexedDB is strict CAS and never opens a legacy database'
   assert.equal(store.capabilities.legacy, false);
   await store.close();
 });
+
+async function layoutFixture() {
+  const store = createMakerV8WalrusPersistenceV8(new IDBFactory(), {
+    storageManager: { async persisted() { return true; }, async persist() { return true; } },
+  });
+  const value = harness(store);
+  for (const uploadId of ['layout-a', 'layout-b', 'layout-c']) {
+    await value.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(value.bytes) });
+  }
+  const a = await store.load('layout-a');
+  const schemaVersion = 'animacraft.maker-v8-asset-layout.v1';
+  const source = ['a', 'b', 'c'].map(assetId => ({ assetId, uploadId: `layout-${assetId}`, mediaType: 'image/png', sha256: a.byteSha256 }));
+  const { createHash } = await import('node:crypto');
+  const sourceSha256 = createHash('sha256').update(JSON.stringify({ schemaVersion, owner: OWNER, source })).digest('hex');
+  return { store, value, binding: { schemaVersion, owner: OWNER, sourceSha256, source }, key: `${schemaVersion}:${sourceSha256}` };
+}
+
+test('BUG-014: real WAL atomic layout invalidates held reviews once and survives concurrent cold adoption', async () => {
+  const { store, value, binding, key } = await layoutFixture();
+  const oldReview = await value.publisher.prepareReview('layout-a');
+  const results = await Promise.all([value.publisher.bindAssetLayout(key, binding), value.publisher.bindAssetLayout(key, binding)]);
+  assert.deepEqual(results[0], results[1]); assert.deepEqual(results[0].members, ['a', 'b', 'c']);
+  assert.equal((await store.load('layout-a')).revision, oldReview.revision + 1);
+  await assert.rejects(value.publisher.signReviewed('layout-a', oldReview), { code: 'MAKER_V8_WALRUS_CONTEXT_CHANGED' });
+  assert.equal(value.calls.filter(([name]) => name === 'sign').length, 0);
+  const freshReview = await value.publisher.prepareReview('layout-a');
+  await store.close();
+  assert.deepEqual(await value.publisher.bindAssetLayout(key, binding), results[0]);
+  assert.equal((await store.load('layout-a')).revision, freshReview.revision);
+  await value.publisher.signReviewed('layout-a', freshReview);
+  assert.equal(value.calls.filter(([name]) => name === 'sign').length, 1, 'later intentional standalone review stays usable');
+  assert.deepEqual((await value.publisher.bindAssetLayout(key, binding)).members, ['a', 'b', 'c']);
+  await store.close();
+});
+
+test('layout adoption honors a standalone signature that won before the atomic decision', async () => {
+  const { store, value, binding, key } = await layoutFixture();
+  const review = await value.publisher.prepareReview('layout-a');
+  await value.publisher.signReviewed('layout-a', review);
+  const signed = await store.load('layout-a');
+  const chosen = await value.publisher.bindAssetLayout(key, binding);
+  assert.deepEqual(chosen.members, ['b', 'c']);
+  assert.deepEqual(await store.load('layout-a'), signed);
+  await store.close();
+});
+
+test('layout binding write failure rolls back every review invalidation', async () => {
+  const { store, value, binding, key } = await layoutFixture();
+  const before = await store.load('layout-a');
+  const { IDBObjectStore } = await import('fake-indexeddb');
+  const original = IDBObjectStore.prototype.add;
+  IDBObjectStore.prototype.add = function (...args) {
+    if (this.name === 'publication-bindings') throw new Error('injected binding write failure');
+    return original.apply(this, args);
+  };
+  try { await assert.rejects(value.publisher.bindAssetLayout(key, binding), /injected binding/); }
+  finally { IDBObjectStore.prototype.add = original; }
+  assert.deepEqual(await store.load('layout-a'), before);
+  assert.equal(await store.loadPublicationBinding(key), null);
+  const chosen = await value.publisher.bindAssetLayout(key, binding);
+  assert.deepEqual(chosen.members, ['a', 'b', 'c']);
+  assert.equal((await store.load('layout-a')).revision, before.revision + 1);
+  await store.close();
+});

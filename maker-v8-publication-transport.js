@@ -10,6 +10,7 @@ import {
   assertMakerV8ProtectedAssetV8,
 } from './maker-v8-protected-transport.js';
 import { makerV8WalrusUploadIdV8 } from './maker-v8-walrus.js';
+import { createMakerV8AssetQuiltV8 } from './maker-v8-asset-quilt.js';
 
 export const MAKER_V8_PUBLICATION_TRANSPORT_SCHEMA =
   'animacraft.maker-v8-publication-transport.v1';
@@ -310,6 +311,14 @@ export function createMakerV8PublicationTransportV8({
     return freeze({ upload, content });
   };
 
+  const assetQuilt = createMakerV8AssetQuiltV8({ publisher });
+
+  const advance = async (upload, operation) => {
+    if (operation === 'SIGN' && upload.status === 'SIGNATURE_REQUIRED') return publisher.requestSignature(upload.uploadId);
+    if (operation === 'RECOVER' && upload.status === 'RECOVERY_REQUIRED') return publisher.resume(upload.uploadId);
+    return upload;
+  };
+
   const inspect = async (input, operation = 'INSPECT') => {
     const checked = preparedInput(input);
     const protectedAssets = checked.assets.filter((asset) => asset.protected);
@@ -370,46 +379,45 @@ export function createMakerV8PublicationTransportV8({
         );
       }
     }
-    const assetTransports = [];
+    // Resolve immutable bytes first. WAL status decides the layout only once;
+    // a stale tab finishing a standalone upload must never replace a signed quilt.
+    const resolvedAssets = [];
     for (const asset of checked.assets) {
-      let content = {
-        mediaType: asset.mediaType,
-        bytesBase64: asset.bytesBase64,
-      };
-      let upload;
+      let content = { mediaType: asset.mediaType, bytesBase64: asset.bytesBase64 };
+      let upload = null;
       if (asset.protected) {
-        const durable = await protectedUpload({
-          checked,
-          asset,
-          identity: protectedIdentities.get(asset.assetId),
-        });
+        const durable = await protectedUpload({ checked, asset, identity: protectedIdentities.get(asset.assetId) });
         upload = durable.upload;
         content = durable.content;
-      } else {
-        upload = await ensureUpload({
-          uploadId: asset.uploadId,
-          owner: checked.signerAddress,
-          mediaType: asset.mediaType,
-          bytesBase64: asset.bytesBase64,
-        });
+      } else if (checked.assets.length === 1 || await publisher.load(asset.uploadId)) {
+        upload = await ensureUpload({ uploadId: asset.uploadId, owner: checked.signerAddress,
+          mediaType: asset.mediaType, bytesBase64: asset.bytesBase64 });
       }
-      if (upload.status !== 'COMPLETE') {
-        if (operation === 'SIGN' && upload.status === 'SIGNATURE_REQUIRED') {
-          upload = await publisher.requestSignature(upload.uploadId);
-        } else if (operation === 'RECOVER' && upload.status === 'RECOVERY_REQUIRED') {
-          upload = await publisher.resume(upload.uploadId);
-        }
-        if (upload.status !== 'COMPLETE') {
-          return stageView('ASSET', upload, { assetId: asset.assetId, completedAssets: assetTransports.length });
-        }
-      }
-      assetTransports.push(freeze({
-        assetId: asset.assetId,
-        blobId: upload.blobId,
-        mediaType: content.mediaType,
-        bytesBase64: content.bytesBase64,
-      }));
+      resolvedAssets.push({ assetId: asset.assetId, mediaType: content.mediaType,
+        bytesBase64: content.bytesBase64, uploadId: upload?.uploadId ?? asset.uploadId, upload });
     }
+    const groupIds = await assetQuilt.selectMembers({ owner: checked.signerAddress, assets: resolvedAssets });
+    const grouped = new Set(groupIds);
+    const assetTransports = [];
+    const pendingAssets = [];
+    for (const asset of resolvedAssets) {
+      const content = { assetId: asset.assetId, mediaType: asset.mediaType, bytesBase64: asset.bytesBase64 };
+      if (grouped.has(asset.assetId)) { pendingAssets.push(content); continue; }
+      let upload = asset.upload ?? await ensureUpload({ uploadId: asset.uploadId, owner: checked.signerAddress, ...content });
+      if (upload.status !== 'COMPLETE') upload = await advance(upload, operation);
+      if (upload.status !== 'COMPLETE') return stageView('ASSET', upload,
+        { assetId: asset.assetId, completedAssets: assetTransports.length });
+      assetTransports.push(freeze({ ...content, blobId: upload.blobId }));
+    }
+    if (pendingAssets.length > 1) {
+      const group = await assetQuilt.prepare({ owner: checked.signerAddress, assets: pendingAssets });
+      const upload = group.upload.status === 'COMPLETE' ? group.upload : await advance(group.upload, operation);
+      if (upload.status !== 'COMPLETE') return stageView('ASSET', upload, {
+        assetId: null, assetCount: pendingAssets.length, completedAssets: assetTransports.length,
+      });
+      assetTransports.push(...group.assets);
+    }
+    assetTransports.sort((left, right) => left.assetId < right.assetId ? -1 : left.assetId > right.assetId ? 1 : 0);
 
     const preparedManifest = await compiler.prepareTransportManifest({
       document: structuredClone(checked.document),

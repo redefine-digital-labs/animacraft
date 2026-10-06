@@ -556,7 +556,8 @@ export function normalizeMakerV8RawPackageObject(object, expectedReference = nul
     sdkMessage(row, GrpcTypes.Linkage, `package.linkage[${index}]`);
     return Object.freeze({ originalId: address(row.originalId, 'package.linkage.originalId'),
       upgradedId: address(row.upgradedId, 'package.linkage.upgradedId'),
-      upgradedVersion: uint64(row.upgradedVersion, 'package.linkage.upgradedVersion', { positive: true }).toString() });
+      // Sui system packages explicitly encode dependency linkage versions as zero.
+      upgradedVersion: uint64(row.upgradedVersion, 'package.linkage.upgradedVersion').toString() });
   });
   if (new Set(typeOriginTable.map(row => `${row.moduleName}::${row.datatypeName}`)).size !== typeOriginTable.length
     || new Set(linkageTable.map(row => row.originalId)).size !== linkageTable.length) {

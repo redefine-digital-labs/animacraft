@@ -526,7 +526,7 @@ function isBaseAppend(descriptor) {
     && descriptor.lane === 'BASE' && descriptor.action === 'APPEND';
 }
 function isActivationFinalize(descriptor) {
-  return descriptor.kind === 'ACTIVATION_CHUNK' && descriptor.phase === 'ACTIVATION_FINALIZE'
+  return descriptor.kind === 'ACTIVATION_CHUNK' && ['ACTIVATION_FINALIZE', MAKER_V8_PUBLICATION_TOPOLOGY.activation.compactPhase].includes(descriptor.phase)
     && descriptor.lane === 'FINALIZE' && descriptor.action === 'FINALIZE';
 }
 const isWalrusEpochCandidate = target => /^0x[0-9a-f]{64}::system::epoch$/.test(target);
@@ -902,15 +902,17 @@ function validateTopologyEntry(entry, label = 'Publication transaction') {
     localIndex = checkpoint.index;
     final = checkpoint.final;
     const phaseIndex = topology.activation.phases.indexOf(entry.phase);
+    const compact = entry.phase === topology.activation.compactPhase;
+    const finalPhase = compact || entry.phase === 'ACTIVATION_FINALIZE';
     const match = /^ACTIVATION_(SEAL|RUNTIME|OUTPUT|PHYSICAL)_(APPEND|SEAL)$/.exec(entry.phase);
-    const lane = entry.phase === 'ACTIVATION_FINALIZE' ? 'FINALIZE' : match?.[1];
-    const action = entry.phase === 'ACTIVATION_FINALIZE' ? 'FINALIZE' : match?.[2];
-    if (phaseIndex < 0 || entry.lane !== lane || entry.action !== action
+    const lane = finalPhase ? 'FINALIZE' : match?.[1];
+    const action = finalPhase ? 'FINALIZE' : match?.[2];
+    if ((!compact && phaseIndex < 0) || (compact && localIndex !== 0) || entry.lane !== lane || entry.action !== action
       || checkpoint.schemaVersion !== topology.activation.checkpointSchema
       || checkpoint.phase !== entry.phase || checkpoint.lane !== lane || checkpoint.action !== action
       || checkpoint.startSequence !== entry.startSequence
       || checkpoint.endSequence !== entry.endSequence
-      || checkpoint.final !== (entry.phase === 'ACTIVATION_FINALIZE')
+      || checkpoint.final !== finalPhase
       || (action === 'APPEND' ? end <= start
         : action === 'SEAL' ? start !== end : start !== 0n || end !== 0n)
       || !plain(checkpoint.expected) || !plain(checkpoint.metrics)) {
@@ -957,7 +959,8 @@ function validateTopologyTransition(previous, next, label = 'Publication transac
   } else if (previousTopology.kind === 'COMPANION_OBJECTS') {
     const phase = MAKER_V8_PUBLICATION_TOPOLOGY.activation.phases.indexOf(nextTopology.phase);
     if (nextTopology.kind !== 'ACTIVATION_CHUNK' || nextTopology.localIndex !== 0
-      || nextTopology.start !== 0n || ![0, 1].includes(phase)) {
+      || nextTopology.start !== 0n
+      || (![0, 1].includes(phase) && nextTopology.phase !== MAKER_V8_PUBLICATION_TOPOLOGY.activation.compactPhase)) {
       fail('MAKER_V8_PUBLICATION_TOPOLOGY_INVALID', 'Companion creation must be followed by the first Seal activation chunk.');
     }
   } else if (previousTopology.kind === 'ACTIVATION_CHUNK') {
@@ -2112,7 +2115,7 @@ function validateBundleClosure(plan, checkpoints, attempts) {
 function assertFinalActivationPlanState(plan, checkpoint) {
   const topology = checkpoint ? validateTopologyEntry(checkpoint, 'Durable publication head') : null;
   const finalized = topology?.kind === 'ACTIVATION_CHUNK'
-    && topology.phase === 'ACTIVATION_FINALIZE' && topology.final === true;
+    && ['ACTIVATION_FINALIZE', MAKER_V8_PUBLICATION_TOPOLOGY.activation.compactPhase].includes(topology.phase) && topology.final === true;
   if (finalized) {
     if (plan.status !== 'COMPLETE' || plan.current !== null
       || plan.nextPreparation !== null || plan.terminal?.status !== 'COMPLETE') {

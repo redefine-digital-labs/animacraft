@@ -825,6 +825,8 @@ test('view imports only current authority and hash-exact approved pure donor hel
     'recoveryCopyRetry', 'playerOutputSelection',
     'publicationThreeStageTitle',
     'publicationThreeStageCopy',
+    'publicationAssetBatch',
+    'publicationBatchQuoteScope',
     'publicationUploadAndCertify',
     'publicationCurrentResource',
     'publicationCheckTransaction',
@@ -916,5 +918,21 @@ test('signed resource recovery has truthful copy, action and no empty quotation 
       assert.doesNotMatch(html, /data-action="publication-sign"/);
       assert.match(html, /saved-only/);
     }
+  }
+});
+
+
+test('batch publication shows exact file count and batch quote without inventing completed resources', () => {
+  for (const locale of MAKER_WORKSPACE_LOCALES) {
+    const dictionary = makerWorkspaceDictionary(locale);
+    const html = render({ locale, publicationSigningEnabled: true, publicationReview: { review: {
+      reviewId: 'batch', scope: {}, stage: 'ASSET', status: 'TRANSPORT_SIGNATURE_REQUIRED', nextAction: 'SIGN',
+      progress: { completed: 1, total: 11, currentKind: 'ASSET', currentCount: 9, currentLabel: '' },
+      step: { stage: 'REGISTER', quote: { verified: true, walrusTotalCostFrost: '100' } },
+    } } });
+    assert.ok(html.includes(dictionary.publicationAssetBatch.replace('{count}', '9')));
+    assert.ok(html.includes(dictionary.publicationBatchQuoteScope.replace('{count}', '9')));
+    assert.match(html, /1 \/ 11/);
+    assert.doesNotMatch(html, /Quilt|quilt/);
   }
 });

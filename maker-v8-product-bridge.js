@@ -1547,7 +1547,9 @@ export function createMakerV8ProductBridge({
           : stage === 'ASSET' && Number.isSafeInteger(transport.completedAssets)
             ? Math.min(totalResources - 1, 1 + Math.max(0, transport.completedAssets)) : null;
       const progress = { completed: completedResources, total: totalResources,
-        currentKind: plan ? 'PUBLICATION' : stage, currentLabel: transport?.assetId ?? '' };
+        currentKind: plan ? 'PUBLICATION' : stage, currentLabel: transport?.assetId ?? '',
+        ...(!plan && stage === 'ASSET' && Number.isSafeInteger(transport?.assetCount) && transport.assetCount > 1
+          ? { currentCount: transport.assetCount } : {}) };
       const reviewId = hash({ scope, generation, bindingRevision: binding.revision, step, status });
       const dto = freeze({ schemaVersion: 'animacraft.maker-v8-publication-review.v1',
         reviewId, scope, status, stage, nextAction, step, attemptId: plan?.attemptId ?? null,

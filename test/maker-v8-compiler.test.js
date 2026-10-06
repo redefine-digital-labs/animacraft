@@ -334,8 +334,10 @@ async function publicationHistoricalBridge(publication, transaction, objects, mu
 }
 
 test('publication browser historical readbacks cross scaffold, Base, companion and activation compiler certificate boundaries', async () => {
-  const context = await trustedContext(fixture.document, fixture.assets);
-  const publication = await compileMakerV8Publication(fixture.document, context);
+  const document = clone(fixture.document);
+  document.outputs = Array.from({ length: 64 }, (_, index) => ({ ...clone(document.outputs[0]), key: `large-output-${index}` }));
+  const context = await trustedContext(document, fixture.assets);
+  const publication = await compileMakerV8Publication(document, context);
   const seed = await scaffoldReadback(publication);
   const transaction = buildMakerV8ScaffoldTransaction(publication);
   const bridge = await publicationHistoricalBridge(publication, transaction, seed);
@@ -553,11 +555,49 @@ test('independent Maker cover survives compilation and manifest certification wi
   assert.equal(manifest.document.assets.some((asset) => asset.id === cover.assetId), true);
 });
 
+test('atomic activation cannot certify omitted lane writes or forged cold checkpoints', async () => {
+  const path = await compilePath();
+  const build = await buildMakerV8ActivationChunkTransaction(path.publication, path.base, path.companion);
+  assert.equal(build.checkpoint.phase, 'ACTIVATION_COMPLETE');
+  assert.equal(build.checkpoint.final, true);
+  const data = build.transaction.getData();
+  const rootInput = data.inputs.find(input => input.Object?.SharedObject?.objectId === nid(fixture.ids.root));
+  assert.equal(rootInput.Object.SharedObject.mutable, true);
+  const raw = await activationChunkRaw(build, path.companion);
+  Object.assign(raw, { makerKey: path.publication.document.lineage.makerKey,
+    versionCommitment: path.publication.commitments.version, manifestSha256: path.publication.manifest.sha256,
+    contentCommitment: path.publication.commitments.content,
+    protocolConfigCommitment: path.publication.context.protocolConfig.fields.commitment,
+    productBindingCommitment: path.publication.context._derived.productBindingCommitment,
+    callCapSetCommitment: path.publication.context._derived.callCapSetCommitment });
+  const recovered = await rehydrateMakerV8ActivationChunkCertificateV8(path.publication, path.base,
+    path.companion, { checkpoint: build.checkpoint, readback: raw });
+  assert.equal(recovered.lifecycle, 'ACTIVE');
+  for (const mutate of [cp => { cp.index = 1; }, cp => { cp.final = false; }, cp => { cp.lane = 'OUTPUT'; }]) {
+    const checkpoint = clone(build.checkpoint); mutate(checkpoint);
+    await assert.rejects(rehydrateMakerV8ActivationChunkCertificateV8(path.publication, path.base,
+      path.companion, { checkpoint, readback: raw }), { code: 'MAKER_V8_ACTIVATION_PROGRESS_INVALID' });
+  }
+  const kind = bcs.TransactionKind.parse(await build.transaction.build({ onlyTransactionKind: true }));
+  const commands = kind.ProgrammableTransaction.commands;
+  const index = commands.findIndex(command => command.MoveCall?.function === 'seal_runtime_definitions_v8');
+  assert.ok(index >= 0);
+  commands.splice(index, 1);
+  const omitted = bcs.TransactionKind.serialize(kind).toBytes();
+  const forged = { ...raw, transactionKindBytesBase64: toBase64(omitted), transactionKindSha256: await hashBytes(omitted) };
+  await assert.rejects(certifyMakerV8ActivationChunkReadback(path.publication, path.base,
+    path.companion, build, forged), { code: 'MAKER_V8_TRANSACTION_KIND_MISMATCH' });
+  await assert.rejects(buildMakerV8ActivationChunkTransaction(path.publication, path.base, path.companion,
+    null, 'ACTIVATION_OUTPUT_SEAL'), { code: 'MAKER_V8_ACTIVATION_PROGRESS_INVALID' });
+});
+
 test('author finalization uses one actual storage certificate and the complete companion chain', async () => {
   const path = await compilePath();
   const finalBuild = (await allActivationBuilds(path)).at(-1);
   const transaction = finalBuild.transaction;
-  const calls = moves(transaction);
+  const allCalls = moves(transaction);
+  const offset = allCalls.length - 9;
+  const calls = allCalls.slice(offset);
   assert.deepEqual(calls.map(call => [call.function, call.arguments.length]), [
     ['seal_market_registry_v8', 8],
     ['new_living_content_binding_v8', 5],
@@ -571,13 +611,13 @@ test('author finalization uses one actual storage certificate and the complete c
   ]);
   // Each single-use result is passed through the real downstream function,
   // not replaced with a caller-authored byte vector or a second authority.
-  assert.equal(calls[2].arguments[5].Result, 1);
-  assert.equal(calls[3].arguments[7].Result, 2);
-  assert.equal(calls[4].arguments[0].Result, 3);
-  assert.equal(calls[5].arguments[0].Result, 4);
-  assert.equal(calls[5].arguments[8].Result, 2);
-  assert.equal(calls[6].arguments[7].Result, 2);
-  assert.equal(calls[7].arguments[0].Result, 2);
+  assert.equal(calls[2].arguments[5].Result, offset + 1);
+  assert.equal(calls[3].arguments[7].Result, offset + 2);
+  assert.equal(calls[4].arguments[0].Result, offset + 3);
+  assert.equal(calls[5].arguments[0].Result, offset + 4);
+  assert.equal(calls[5].arguments[8].Result, offset + 2);
+  assert.equal(calls[6].arguments[7].Result, offset + 2);
+  assert.equal(calls[7].arguments[0].Result, offset + 2);
   const authority = path.context.activationAuthority;
   for (const [callIndex, argIndex, object] of [
     [2, 2, authority.walrusPolicy], [2, 3, path.base.root],
@@ -593,7 +633,7 @@ test('author finalization uses one actual storage certificate and the complete c
   assert.equal(argumentObjectId(path.companionBuild.transaction, marketCreate.arguments[2]), nid(path.context.protocolConfig.reference.objectId));
   assert.equal(argumentObjectId(path.companionBuild.transaction, marketCreate.arguments[4]), authority.replacement.reference.objectId);
   const bytes = await transaction.build({ onlyTransactionKind: true });
-  assert.equal(bcs.TransactionKind.parse(bytes).ProgrammableTransaction.commands.length, 9);
+  assert.equal(bcs.TransactionKind.parse(bytes).ProgrammableTransaction.commands.length, allCalls.length);
   for (const mutate of [
     commands => { commands.pop(); },
     commands => { commands.at(-1).MoveCall.package = authority.walrusPolicy.reference.objectId; },
@@ -800,7 +840,7 @@ async function baseChunkRaw(publication, scaffold, build, digest = DIGEST) {
 async function activationChunkRaw(build, companion, digest = DIGEST) {
   const phase = build.checkpoint.phase.replace('ACTIVATION_', '');
   const lane = build.checkpoint.lane;
-  if (phase === 'FINALIZE') return {
+  if (build.checkpoint.final) return {
     schemaVersion: MAKER_V8_ACTIVATION_READBACK_SCHEMA,
     source: 'FINALIZED_RPC',
     transactionDigest: digest,
@@ -888,7 +928,7 @@ test('finalized Base output AdminCap reference advances the next real Base build
   }
 });
 
-async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } = {}) {
+async function assertCompletePublicationRecovery({ legacyUnsignedBase = false, durableSerialActivation = false } = {}) {
   const path = await compilePath();
   const indexedDB = new IDBFactory();
   const databaseName = 'compiler-finalize-durable';
@@ -953,7 +993,7 @@ async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } 
   let finalizedAdminReference = null;
   while (plan.status !== 'COMPLETE') {
     phases.push(plan.current.phase);
-    const complete = plan.current.phase === 'ACTIVATION_FINALIZE';
+    const complete = plan.current.kind === 'ACTIVATION_CHUNK' && plan.current.compilerCheckpoint.final;
     const coldStore = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName });
     const coldPlan = await coldStore.loadPlan(plan.attemptId);
     const coldAdapter = createMakerV8PublicationCompilerAdapterV8({ persistence: coldStore, compilerRpc,
@@ -965,9 +1005,10 @@ async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } 
     if (finalizedAdminReference) assert.deepEqual(adminInputReference(historical.transaction), finalizedAdminReference,
       `${plan.current.phase} must consume the preceding finalized AdminCap output`);
     if (complete) {
-      const expected = (await allActivationBuilds(attested.compilerState)).at(-1);
+      const expected = durableSerialActivation ? await buildMakerV8ActivationChunkTransaction(attested.compilerState.publication, attested.compilerState.base, attested.compilerState.companion, attested.compilerState.priorActivation, plan.current.phase) : (await allActivationBuilds(attested.compilerState)).at(-1);
       assert.equal(attested.transactionKindBytes, (await transactionKindProof(expected)).transactionKindBytesBase64);
-      assert.equal(plan.current.commandCount, 9, 'complete activation transaction, not an epoch-only substitute');
+      assert.equal(plan.current.commandCount, moves(expected.transaction).length, 'complete activation transaction, not an epoch-only substitute');
+      assert.equal(plan.current.commandCount > 9, !durableSerialActivation, 'new checkpoints batch lanes; durable serial checkpoints retain their exact bytes');
       assert.match(plan.current.targets.at(-1), /::system::epoch$/);
     }
     const transaction = attested.transaction;
@@ -1031,7 +1072,24 @@ async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } 
     if (complete) break;
     attested = await adapter.prepareSuccessor({ plan, head: await store.loadHead(plan.attemptId), requireFreshAuthority: true });
     let blob = await makerV8Base64BlobV8(attested.transactionKindBytes);
-    const nextDescriptor = clone(attested.descriptor);
+    let nextDescriptor = clone(attested.descriptor);
+    if (durableSerialActivation && nextDescriptor.phase === 'ACTIVATION_COMPLETE') {
+      const state = attested.compilerState;
+      const serial = await buildMakerV8ActivationChunkTransaction(state.publication,
+        state.base, state.companion, null, 'ACTIVATION_SEAL_SEAL');
+      const cp = serial.checkpoint;
+      blob = await makerV8Base64BlobV8(toBase64(await serial.transaction.build({ onlyTransactionKind: true })));
+      nextDescriptor = { ...nextDescriptor, phase: cp.phase, lane: cp.lane, action: cp.action,
+        startSequence: cp.startSequence, endSequence: cp.endSequence,
+        compilerCheckpoint: clone(cp), transactionKindSha256: blob.sha256,
+        targets: [...exactMakerV8TransactionTargets(serial.transaction)],
+        commandCount: moves(serial.transaction).length,
+        rowCommitments: [{ lane: cp.lane, commitment: cp.expected.rollingCommitment }],
+        postState: { ...nextDescriptor.postState, phase: cp.phase, lane: cp.lane,
+          startSequence: cp.startSequence, endSequence: cp.endSequence, final: cp.final,
+          expectedCommitment: (await makerV8Utf8BlobV8(canonicalMakerV8Json(cp.expected))).sha256 },
+      };
+    }
     const repairLegacy = legacyUnsignedBase && nextDescriptor.phase === 'BASE_SEAL';
     if (repairLegacy) {
       const parsed = bcs.TransactionKind.parse(Buffer.from(blob.data, 'base64'));
@@ -1043,6 +1101,10 @@ async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } 
     }
     await save({ current: { ...nextDescriptor, transactionKindRef: makerV8BlobRefV8(blob),
       fullTransactionRef: null, signatureRef: null, outcome: { status: 'READY' } }, nextPreparation: null }, { blobs: [blob] });
+    if (durableSerialActivation) {
+      attested = await adapter.rehydrate({ plan, head: await store.loadHead(plan.attemptId),
+        transactionKindBytes: blob.data, purpose: 'RESUME_READY', requireFreshAuthority: false });
+    }
     if (repairLegacy) {
       const oldHead = await store.loadHead(plan.attemptId);
       const oldHistory = clone(plan.attemptHistory);
@@ -1097,7 +1159,7 @@ async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } 
       repairedLegacyCursor = true;
     }
   }
-  assert.ok(phases.includes('BASE_SEAL') && phases.includes('COMPANION_OBJECTS') && phases.includes('ACTIVATION_PHYSICAL_SEAL'));
+  assert.ok(phases.includes('BASE_SEAL') && phases.includes('COMPANION_OBJECTS') && phases.includes(durableSerialActivation ? 'ACTIVATION_PHYSICAL_SEAL' : 'ACTIVATION_COMPLETE'));
   const coldStore = createMakerV8PublicationPersistenceV8(indexedDB, { databaseName });
   const restored = await coldStore.loadPlan(plan.attemptId);
   assert.deepEqual(restored, plan);
@@ -1106,7 +1168,7 @@ async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } 
   const finalHead = await coldStore.loadHead(plan.attemptId);
   const recovered = await cold.describeFinalized(restored, finalHead);
   assert.equal(recovered.complete, true);
-  assert.equal(finalHead.phase, 'ACTIVATION_FINALIZE');
+  assert.equal(finalHead.phase, durableSerialActivation ? 'ACTIVATION_FINALIZE' : 'ACTIVATION_COMPLETE');
   assert.deepEqual(finalHead.readback.compiler.milestones.progress.readback.adminCap.reference,
     { kind: 'owned', ...finalizedAdminReference });
   assert.equal((await coldStore.getBlob(finalHead.transactionKindRef.sha256)).data, attested.transactionKindBytes);
@@ -1114,6 +1176,8 @@ async function assertCompletePublicationRecovery({ legacyUnsignedBase = false } 
 }
 
 test('real compiler FINALIZE persists through the complete checkpoint chain and cold IndexedDB recovery', () => assertCompletePublicationRecovery());
+test('durable first serial activation retains exact bytes and cold recovery after batching is enabled',
+  () => assertCompletePublicationRecovery({ durableSerialActivation: true }));
 test('legacy successful Base proof repairs only the unsigned stale BaseSeal before cold full publication recovery',
   () => assertCompletePublicationRecovery({ legacyUnsignedBase: true }));
 
@@ -1146,8 +1210,10 @@ test('fresh fixture compiles canonical certified bytes into executable bounded s
   assert.ok(moves(baseBuild.transaction).filter(move => move.function.startsWith('append_')).every(move => JSON.stringify(move.typeArguments) === JSON.stringify([ntype(COIN)])));
   assert.deepEqual(suffixes(path.companionBuild.transaction), ['seal_v8::new_seal_registry_v8', 'seal_v8::share_seal_registry_v8', 'runtime_v8::new_runtime_registries_v8', 'runtime_v8::share_runtime_definition_registry_v8', 'runtime_v8::share_pack_registry_v8', 'runtime_v8::transfer_pack_admission_authority_v8', 'output_v8::new_output_registries_v8', 'output_v8::share_output_registries_v8', 'physical_v8::new_physical_registry_v8', 'physical_v8::share_physical_registry_v8', 'market_v8::new_market_objects_v8', 'market_v8::share_market_registry_v8', 'market_v8::share_market_treasury_v8']);
   assert.deepEqual(moves(path.companionBuild.transaction).map((move) => move.typeArguments.length), [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1]);
-  assert.deepEqual(suffixes(activationBuild.transaction), ['seal_v8::seal_registry_v8']);
-  const allTargets = [scaffoldTx, baseBuild.transaction, path.companionBuild.transaction, activationBuild.transaction].flatMap(exactMakerV8TransactionTargets).filter(target => !target.startsWith(nid('0x1') + '::option::'));
+  assert.equal(activationBuild.checkpoint.phase, 'ACTIVATION_COMPLETE');
+  assert.equal(suffixes(activationBuild.transaction)[0], 'seal_v8::seal_registry_v8');
+  assert.equal(suffixes(activationBuild.transaction).at(-3), 'release_v8::seal_and_activate_maker_v8');
+  const allTargets = [scaffoldTx, baseBuild.transaction, path.companionBuild.transaction, activationBuild.transaction].flatMap(exactMakerV8TransactionTargets).filter(target => !target.startsWith(nid('0x1') + '::option::') && target !== `${path.context.activationAuthority.walrusExecution.package.reference.objectId}::system::epoch`);
   assert.deepEqual(new Set(allTargets.map((target) => MAKER_V8_ROLE_ORDER.find((role) => target.startsWith(nid(fixture.packageRoles[role][1]))))), new Set(MAKER_V8_ROLE_ORDER));
   const modulesByRole = Object.freeze({
     core: ['maker_v8', 'base_registry_v8', 'core_v8'], seal: ['seal_v8'],
@@ -1314,7 +1380,7 @@ test('publication topology, Activation append-to-seal cursors, and the exact 61-
     payload: { fixture: 'abi-complete' },
   }];
   const outputTemplate = document.outputs[0];
-  document.outputs = Array.from({ length: 17 }, (_, index) => ({
+  document.outputs = Array.from({ length: 64 }, (_, index) => ({
     ...clone(outputTemplate),
     key: `output${String(index).padStart(2, '0')}`,
     label: `Output ${index}`,
@@ -1359,6 +1425,7 @@ test('publication topology, Activation append-to-seal cursors, and the exact 61-
   assert.deepEqual(appendSealBoundaries, ['SEAL', 'RUNTIME', 'OUTPUT', 'PHYSICAL']);
 
   const nativeDocument = clone(fixture.document);
+  nativeDocument.outputs = clone(document.outputs);
   addVisibilityTarget(nativeDocument);
   nativeDocument.parts[0].items[0].styles[0].visibleWhen = { op: 'selected', source: 'BASE', sourceKey: null, partKey: 'visibility-target', itemKey: 'body', styleKey: null };
   const nativePath = await compilePath(nativeDocument);
@@ -1366,7 +1433,7 @@ test('publication topology, Activation append-to-seal cursors, and the exact 61-
   const nativeActivationBuilds = await allActivationBuilds(nativePath);
   const emptySealExpected = MAKER_V8_PUBLICATION_TOPOLOGY.activation.phases
     .filter((phase) => phase !== 'ACTIVATION_SEAL_APPEND');
-  assert.deepEqual(nativeActivationBuilds.map((build) => build.checkpoint.phase), emptySealExpected);
+  assert.deepEqual([...new Set(nativeActivationBuilds.map((build) => build.checkpoint.phase))], emptySealExpected);
   assert.equal(nativeActivationBuilds.some((build) => build.checkpoint.phase === 'ACTIVATION_SEAL_APPEND'), false);
   assert.equal(nativeActivationBuilds.some((build) => build.checkpoint.phase === 'ACTIVATION_SEAL_SEAL'), true);
   const transactions = [
@@ -1541,7 +1608,8 @@ test('license-wrapped protected Base uses only Release certification wrappers an
   assert.equal(rightsCall.arguments.length, rightsParameters.length, 'license calls also track actual Move ABI, not the native-only branch');
   assert.deepEqual(rightsCall.arguments.slice(0, 4).map(argument => argumentObjectId(scaffoldTx, argument)), [fixture.ids.protocolConfig, fixture.ids.catalog, path.context.activationAuthority.replacement.reference.objectId, fixture.ids.releaseConfig].map(nid));
   assert.equal(suffixes(scaffoldTx).includes('maker_v8::new_onchain_native_rights_snapshot_v8'), false);
-  assert.deepEqual(suffixes(activationTx), ['release_v8::certify_base_ciphertext_v8', 'seal_v8::append_protected_asset_v8']);
+  assert.equal(activationBuild.checkpoint.phase, 'ACTIVATION_COMPLETE');
+  assert.deepEqual(suffixes(activationTx).slice(0, 3), ['release_v8::certify_base_ciphertext_v8', 'seal_v8::append_protected_asset_v8', 'seal_v8::seal_registry_v8']);
   const [certify, append] = moves(activationTx);
   assert.equal(certify.arguments.length, 12);
   assert.deepEqual(argKinds(certify), Array(12).fill('Input'));
@@ -1851,7 +1919,7 @@ test('bounded chunks require exact prior finalized certificates and certify ACTI
       await assert.rejects(rehydrateMakerV8ActivationChunkCertificateV8(publication, certificate.base, companion, tampered), (error) => error.code === 'MAKER_V8_ACTIVATION_PROGRESS_INVALID');
     } else activationPrior = activationCertificate;
   } while (!activationBuild.checkpoint.final);
-  assert.deepEqual(phases, ['ACTIVATION_SEAL_SEAL', 'ACTIVATION_RUNTIME_APPEND', 'ACTIVATION_RUNTIME_SEAL', 'ACTIVATION_OUTPUT_APPEND', 'ACTIVATION_OUTPUT_SEAL', 'ACTIVATION_PHYSICAL_APPEND', 'ACTIVATION_PHYSICAL_SEAL', 'ACTIVATION_FINALIZE']);
+  assert.deepEqual(phases, ['ACTIVATION_COMPLETE']);
   assert.equal(activationCertificate.lifecycle, 'ACTIVE');
   await assert.rejects(buildMakerV8ActivationChunkTransaction(publication, certificate.base, companion, clone(activationCertificate)), (error) => error.code === 'MAKER_V8_ACTIVATION_CHUNK_CERTIFICATE_REQUIRED');
 });

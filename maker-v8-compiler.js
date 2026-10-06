@@ -57,6 +57,7 @@ export const MAKER_V8_PUBLICATION_TOPOLOGY = Object.freeze({
     checkpointSchema: 'animacraft.maker-v8-companion-checkpoint.v1',
   }),
   activation: Object.freeze({
+    compactPhase: 'ACTIVATION_COMPLETE',
     kind: 'ACTIVATION_CHUNK', checkpointSchema: 'animacraft.maker-v8-activation-checkpoint.v1',
     phases: Object.freeze([
       'ACTIVATION_SEAL_APPEND', 'ACTIVATION_SEAL_SEAL',
@@ -889,8 +890,8 @@ export async function certifyMakerV8CompanionReadback(publication, base, readbac
 
 const ACTIVATION_PHASES = Object.freeze(MAKER_V8_PUBLICATION_TOPOLOGY.activation.phases.map((phase) => phase.replace(/^ACTIVATION_/, '')));
 function activationRows(publication, companion, lane) { if (lane === 'SEAL') return companion.expected.seal.rows; if (lane === 'RUNTIME') return publication.runtime.profiles; if (lane === 'OUTPUT') return companion.expected.output.rows; if (lane === 'PHYSICAL') return companion.expected.physical.rows; return []; }
-function makeActivationPhaseTransaction(publication, base, companion, phase, rows, sealPhase, adminCap) {
-  const tx = new Transaction(); const c = publication.context; tx.setSender(c.signerAddress); const coin = coinType(publication); const root = objectArg(tx, base.root, phase === 'FINALIZE'); const admin = objectArg(tx, adminCap, false); const baseRegistry = objectArg(tx, base.baseRegistry, false); const catalog = objectArg(tx, c.catalog, false);
+function makeActivationPhaseTransaction(publication, base, companion, phase, rows, sealPhase, adminCap, transaction = null) {
+  const tx = transaction ?? new Transaction(); const c = publication.context; tx.setSender(c.signerAddress); const coin = coinType(publication); const root = objectArg(tx, base.root, phase === 'FINALIZE'); const admin = objectArg(tx, adminCap, false); const baseRegistry = objectArg(tx, base.baseRegistry, false); const catalog = objectArg(tx, c.catalog, false);
   if (phase === 'SEAL') { const registry = objectArg(tx, companion.sealRegistry, true); const policy = objectArg(tx, c.configs.seal, false); const protocol = objectArg(tx, c.protocolConfig, false); const releaseConfig = objectArg(tx, c.configs.release, false); for (const row of rows) { const certification = call(tx, publication, 'release', 'release_v8', 'certify_base_ciphertext_v8', [protocol, catalog, releaseConfig, policy, root, tx.pure.string(row.scope_key), pureBytes(tx, row.scope_commitment), tx.pure.string(row.asset_key), pureBytes(tx, row.asset_content_commitment), tx.pure.string(row.ciphertext_blob_id), pureBytes(tx, row.ciphertext_sha256), pureBytes(tx, row.ciphertext_blob_commitment)], coin); call(tx, publication, 'seal', 'seal_v8', 'append_protected_asset_v8', [registry, root, admin, policy, tx.pure.u64(row.sequence), certification], coin); } if (sealPhase) call(tx, publication, 'seal', 'seal_v8', 'seal_registry_v8', [registry, root, admin, policy], coin); }
   if (phase === 'RUNTIME') { const definitions = objectArg(tx, companion.runtimeDefinitions, true); for (const profile of rows) call(tx, publication, 'runtime', 'runtime_v8', 'append_part_profile_v8', [definitions, root, admin, baseRegistry, tx.pure.u64(profile.sequence), tx.pure.string(profile.partKey), tx.pure.u8(profile.wardrobeMode), tx.pure.u8(profile.behavior), tx.pure.u64(profile.capacity)], coin); if (sealPhase) call(tx, publication, 'runtime', 'runtime_v8', 'seal_runtime_definitions_v8', [definitions, root, admin, baseRegistry], coin); }
   if (phase === 'OUTPUT') { const output = objectArg(tx, companion.outputRegistry, true); for (const row of rows) call(tx, publication, 'output', 'output_v8', 'append_output_policy_v8', [output, root, admin, tx.pure.u64(row.sequence), tx.pure.string(row.outputKey), tx.pure.bool(row.protected), tx.pure.string(row.scopeKey), pureBytes(tx, row.rendererSchemaCommitment), tx.pure.u8(row.policyKind), tx.pure.vector('string', row.packIds), pureBytes(tx, row.rowCommitment)], coin); if (sealPhase) call(tx, publication, 'output', 'output_v8', 'seal_output_registry_v8', [output, root, admin], coin); }
@@ -957,6 +958,43 @@ function activationExpected(companion, publication, phase, end, sealed) {
   return Object.freeze({ objectKey: 'root', lifecycle: 'ACTIVE' });
 }
 
+// A single atomic activation is preferable when every lane fits the same
+// measured budgets. No intermediate registry state is represented as finalized.
+async function buildCompleteActivation(publication, base, companion, adminCap) {
+  const rows = Object.fromEntries(['SEAL', 'RUNTIME', 'OUTPUT', 'PHYSICAL']
+    .map(lane => [lane, activationRows(publication, companion, lane)]));
+  const commandCount = rows.SEAL.length * 2 + rows.RUNTIME.length
+    + rows.OUTPUT.length + rows.PHYSICAL.length + 4 + 9;
+  if (commandCount > MAKER_V8_TRANSACTION_LIMITS.maxCommands) return null;
+  const transaction = new Transaction();
+  transaction.setSender(publication.context.signerAddress);
+  // Set the final mutability before any lane borrows the same shared Root.
+  objectArg(transaction, base.root, true);
+  for (const lane of ['SEAL', 'RUNTIME', 'OUTPUT', 'PHYSICAL']) {
+    makeActivationPhaseTransaction(publication, base, companion, lane,
+      rows[lane], true, adminCap, transaction);
+  }
+  makeActivationPhaseTransaction(publication, base, companion, 'FINALIZE', [], false, adminCap, transaction);
+  const data = transaction.getData();
+  if (data.inputs.length > MAKER_V8_TRANSACTION_LIMITS.maxInputs
+    || data.inputs.reduce((total, input) => total + (input.Pure ? fromBase64(input.Pure.bytes).length : 0), 0)
+      > MAKER_V8_TRANSACTION_LIMITS.maxKindBytes) return null;
+  const metrics = await transactionMetrics(transaction);
+  if (!transactionFits(metrics)) return null;
+  const checkpoint = Object.freeze({
+    schemaVersion: MAKER_V8_PUBLICATION_TOPOLOGY.activation.checkpointSchema,
+    phase: MAKER_V8_PUBLICATION_TOPOLOGY.activation.compactPhase,
+    lane: 'FINALIZE', action: 'FINALIZE', index: 0,
+    startSequence: '0', endSequence: '0', final: true,
+    expected: activationExpected(companion, publication, 'FINALIZE', 0, true), metrics,
+  });
+  const result = Object.freeze({ transaction, checkpoint });
+  activationChunkBuilds.set(result, Object.freeze({ publication, base, companion, adminCap,
+    phase: 'COMPLETE', lane: 'FINALIZE', action: 'FINALIZE', index: 0, start: 0, end: 0,
+    final: true, nextPhaseIndex: ACTIVATION_PHASES.length, nextStart: 0, expected: checkpoint.expected }));
+  return result;
+}
+
 async function buildActivationChunkAt(publication, base, companion, { phaseIndex, start, index, adminCap = companion.adminCap }) {
   while (ACTIVATION_PHASES[phaseIndex]?.endsWith('_APPEND')) { const lane = ACTIVATION_PHASES[phaseIndex].split('_')[0]; if (activationRows(publication, companion, lane).length) break; phaseIndex += 1; start = 0; }
   const phase = ACTIVATION_PHASES[phaseIndex]; if (!phase) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Activation progress is invalid.'); const final = phase === 'FINALIZE'; const [lane, action = 'FINALIZE'] = final ? ['FINALIZE', 'FINALIZE'] : phase.split('_'); const allRows = activationRows(publication, companion, lane); const sealPhase = action === 'SEAL'; let end = final ? 0 : sealPhase ? allRows.length : Math.min(allRows.length, start + MAKER_V8_TRANSACTION_LIMITS.maxRowsPerChunk); let transaction; let metrics;
@@ -964,10 +1002,21 @@ async function buildActivationChunkAt(publication, base, companion, { phaseIndex
   if (!transactionFits(metrics)) fail('MAKER_V8_TRANSACTION_LIMIT_UNSATISFIABLE', 'An Activation checkpoint exceeds the pinned Sui transaction limits.', { phase, startSequence: String(start), metrics }); const appendComplete = action === 'APPEND' && end === allRows.length; const nextPhaseIndex = final ? ACTIVATION_PHASES.length : sealPhase || appendComplete ? phaseIndex + 1 : phaseIndex; const nextStart = final || sealPhase ? 0 : end; const expected = activationExpected(companion, publication, lane, end, sealPhase); const checkpoint = Object.freeze({ schemaVersion: MAKER_V8_PUBLICATION_TOPOLOGY.activation.checkpointSchema, phase: `ACTIVATION_${phase}`, lane, action, index, startSequence: String(start), endSequence: String(end), final, expected, metrics }); const result = Object.freeze({ transaction, checkpoint }); activationChunkBuilds.set(result, Object.freeze({ publication, base, companion, adminCap, phase, lane, action, phaseIndex, index, start, end, final, nextPhaseIndex, nextStart, expected })); return result;
 }
 
-export async function buildMakerV8ActivationChunkTransaction(publication, base, companion, priorCertificate = null) {
+export async function buildMakerV8ActivationChunkTransaction(publication, base, companion, priorCertificate = null, expectedPhase = null) {
   requireCompiled(publication); if (!baseSet.has(base)) fail('MAKER_V8_BASE_CONTEXT_REQUIRED', 'Verified Base readback is required.'); if (!companionSet.has(companion)) fail('MAKER_V8_COMPANION_CONTEXT_REQUIRED', 'Verified companion readback is required.'); let phaseIndex = 0; let start = 0; let index = 0;
   if (priorCertificate !== null) { const prior = activationChunkCertificates.get(priorCertificate); if (!prior || prior.publication !== publication || prior.base !== base || prior.companion !== companion) fail('MAKER_V8_ACTIVATION_CHUNK_CERTIFICATE_REQUIRED', 'The exact prior finalized Activation chunk certificate is required.'); if (prior.final) fail('MAKER_V8_ACTIVATION_ALREADY_COMPLETE', 'Activation is already certified.'); phaseIndex = prior.nextPhaseIndex; start = prior.nextStart; index = prior.index + 1; }
-  return buildActivationChunkAt(publication, base, companion, { phaseIndex, start, index, adminCap: priorCertificate?.adminCap ?? companion.adminCap });
+  // A durable first checkpoint keeps its exact topology, including already
+  // signed transactions. Only a newly prepared checkpoint may choose batching.
+  if (priorCertificate === null && (expectedPhase === null
+    || expectedPhase === MAKER_V8_PUBLICATION_TOPOLOGY.activation.compactPhase)) {
+    const complete = await buildCompleteActivation(publication, base, companion, companion.adminCap);
+    if (complete) return complete;
+  }
+  const build = await buildActivationChunkAt(publication, base, companion,
+    { phaseIndex, start, index, adminCap: priorCertificate?.adminCap ?? companion.adminCap });
+  if (expectedPhase !== null && build.checkpoint.phase !== expectedPhase)
+    fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation phase is not the exact next checkpoint.');
+  return build;
 }
 
 function verifyActivationChunkObject(publication, base, companion, metadata, object) {
@@ -980,7 +1029,7 @@ function verifyActivationChunkObject(publication, base, companion, metadata, obj
 }
 
 export async function certifyMakerV8ActivationReadback(publication, base, companion, build, readback) {
-  requireCompiled(publication); const metadata = activationChunkBuilds.get(build); if (!metadata || metadata.publication !== publication || metadata.base !== base || metadata.companion !== companion || metadata.phase !== 'FINALIZE') fail('MAKER_V8_ACTIVATION_BUILD_REQUIRED', 'The exact compiler-produced final Activation build is required.'); const value = snapshot(readback, 'activationReadback'); exact(value, ['schemaVersion', 'source', 'transactionDigest', 'transactionKindBytesBase64', 'transactionKindSha256', 'rootId', 'makerVersion', 'lifecycle', 'makerKey', 'versionCommitment', 'manifestSha256', 'contentCommitment', 'protocolConfigCommitment', 'productBindingCommitment', 'callCapSetCommitment', 'inputAdminCap', 'adminCap'], 'activationReadback'); if (value.schemaVersion !== MAKER_V8_ACTIVATION_READBACK_SCHEMA || value.source !== 'FINALIZED_RPC' || typeof value.transactionDigest !== 'string' || !value.transactionDigest || value.lifecycle !== 'ACTIVE' || value.makerVersion !== publication.document.lineage.version) fail('MAKER_V8_ACTIVATION_READBACK_INVALID', 'Activation readback must be exact finalized ACTIVE v8 state.'); const transactionKind = await verifyFinalizedTransactionKind(build, value, 'Activation'); const expected = { rootId: oid(base.root), makerKey: publication.document.lineage.makerKey, versionCommitment: publication.commitments.version, manifestSha256: publication.manifest.sha256, contentCommitment: publication.commitments.content, protocolConfigCommitment: publication.context.protocolConfig.fields.commitment, productBindingCommitment: publication.context._derived.productBindingCommitment, callCapSetCommitment: publication.context._derived.callCapSetCommitment }; for (const [key, wanted] of Object.entries(expected)) same(key === 'rootId' ? normId(value[key]) : key.endsWith('Commitment') || key.endsWith('Sha256') ? hashHex(value[key]) : String(value[key]), wanted, 'MAKER_V8_ACTIVATION_READBACK_MISMATCH', `Activation ${key}`); value.adminCap = verifyAdminCapProgress(publication, base.adminCap, value, metadata.adminCap); delete value.inputAdminCap; value.transactionKind = transactionKind; delete value.transactionKindBytesBase64; freeze(value); activationSet.add(value); return value;
+  requireCompiled(publication); const metadata = activationChunkBuilds.get(build); if (!metadata || metadata.publication !== publication || metadata.base !== base || metadata.companion !== companion || !['FINALIZE', 'COMPLETE'].includes(metadata.phase)) fail('MAKER_V8_ACTIVATION_BUILD_REQUIRED', 'The exact compiler-produced final Activation build is required.'); const value = snapshot(readback, 'activationReadback'); exact(value, ['schemaVersion', 'source', 'transactionDigest', 'transactionKindBytesBase64', 'transactionKindSha256', 'rootId', 'makerVersion', 'lifecycle', 'makerKey', 'versionCommitment', 'manifestSha256', 'contentCommitment', 'protocolConfigCommitment', 'productBindingCommitment', 'callCapSetCommitment', 'inputAdminCap', 'adminCap'], 'activationReadback'); if (value.schemaVersion !== MAKER_V8_ACTIVATION_READBACK_SCHEMA || value.source !== 'FINALIZED_RPC' || typeof value.transactionDigest !== 'string' || !value.transactionDigest || value.lifecycle !== 'ACTIVE' || value.makerVersion !== publication.document.lineage.version) fail('MAKER_V8_ACTIVATION_READBACK_INVALID', 'Activation readback must be exact finalized ACTIVE v8 state.'); const transactionKind = await verifyFinalizedTransactionKind(build, value, 'Activation'); const expected = { rootId: oid(base.root), makerKey: publication.document.lineage.makerKey, versionCommitment: publication.commitments.version, manifestSha256: publication.manifest.sha256, contentCommitment: publication.commitments.content, protocolConfigCommitment: publication.context.protocolConfig.fields.commitment, productBindingCommitment: publication.context._derived.productBindingCommitment, callCapSetCommitment: publication.context._derived.callCapSetCommitment }; for (const [key, wanted] of Object.entries(expected)) same(key === 'rootId' ? normId(value[key]) : key.endsWith('Commitment') || key.endsWith('Sha256') ? hashHex(value[key]) : String(value[key]), wanted, 'MAKER_V8_ACTIVATION_READBACK_MISMATCH', `Activation ${key}`); value.adminCap = verifyAdminCapProgress(publication, base.adminCap, value, metadata.adminCap); delete value.inputAdminCap; value.transactionKind = transactionKind; delete value.transactionKindBytesBase64; freeze(value); activationSet.add(value); return value;
 }
 
 export async function certifyMakerV8ActivationChunkReadback(publication, base, companion, build, readback) {
@@ -988,7 +1037,14 @@ export async function certifyMakerV8ActivationChunkReadback(publication, base, c
 }
 
 export async function rehydrateMakerV8ActivationChunkCertificateV8(publication, base, companion, durable) {
-  requireCompiled(publication); if (!baseSet.has(base)) fail('MAKER_V8_BASE_CONTEXT_REQUIRED', 'Verified Base readback is required.'); if (!companionSet.has(companion)) fail('MAKER_V8_COMPANION_CONTEXT_REQUIRED', 'Verified companion readback is required.'); const value = snapshot(durable, 'durableActivationCertificate'); exact(value, ['checkpoint', 'readback'], 'durableActivationCertificate'); const checkpoint = value.checkpoint; if (!plain(checkpoint) || checkpoint.schemaVersion !== MAKER_V8_PUBLICATION_TOPOLOGY.activation.checkpointSchema || typeof checkpoint.phase !== 'string') fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation checkpoint schema is invalid.'); const phaseName = checkpoint.phase.replace(/^ACTIVATION_/, ''); const phaseIndex = ACTIVATION_PHASES.indexOf(phaseName); if (phaseIndex < 0) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation phase is invalid.'); const build = await buildActivationChunkAt(publication, base, companion, { phaseIndex, start: Number(u64(checkpoint.startSequence, 'Activation startSequence')), index: Number(u64(checkpoint.index, 'Activation index')), adminCap: historicalAdminCap(publication, base.adminCap, value.readback.inputAdminCap) }); if (canonicalMakerV8Json(build.checkpoint) !== canonicalMakerV8Json(checkpoint)) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation checkpoint differs from deterministic compiler output.'); return certifyMakerV8ActivationChunkReadback(publication, base, companion, build, value.readback);
+  requireCompiled(publication); if (!baseSet.has(base)) fail('MAKER_V8_BASE_CONTEXT_REQUIRED', 'Verified Base readback is required.'); if (!companionSet.has(companion)) fail('MAKER_V8_COMPANION_CONTEXT_REQUIRED', 'Verified companion readback is required.'); const value = snapshot(durable, 'durableActivationCertificate'); exact(value, ['checkpoint', 'readback'], 'durableActivationCertificate'); const checkpoint = value.checkpoint; if (!plain(checkpoint) || checkpoint.schemaVersion !== MAKER_V8_PUBLICATION_TOPOLOGY.activation.checkpointSchema || typeof checkpoint.phase !== 'string') fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation checkpoint schema is invalid.'); if (checkpoint.phase === MAKER_V8_PUBLICATION_TOPOLOGY.activation.compactPhase) {
+    const build = await buildCompleteActivation(publication, base, companion,
+      historicalAdminCap(publication, base.adminCap, value.readback.inputAdminCap));
+    if (!build || canonicalMakerV8Json(build.checkpoint) !== canonicalMakerV8Json(checkpoint))
+      fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Atomic Activation checkpoint differs from deterministic compiler output.');
+    return certifyMakerV8ActivationChunkReadback(publication, base, companion, build, value.readback);
+  }
+  const phaseName = checkpoint.phase.replace(/^ACTIVATION_/, ''); const phaseIndex = ACTIVATION_PHASES.indexOf(phaseName); if (phaseIndex < 0) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation phase is invalid.'); const build = await buildActivationChunkAt(publication, base, companion, { phaseIndex, start: Number(u64(checkpoint.startSequence, 'Activation startSequence')), index: Number(u64(checkpoint.index, 'Activation index')), adminCap: historicalAdminCap(publication, base.adminCap, value.readback.inputAdminCap) }); if (canonicalMakerV8Json(build.checkpoint) !== canonicalMakerV8Json(checkpoint)) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation checkpoint differs from deterministic compiler output.'); return certifyMakerV8ActivationChunkReadback(publication, base, companion, build, value.readback);
 }
 
 export function exactMakerV8TransactionTargets(transaction) {

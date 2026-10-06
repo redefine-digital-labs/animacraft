@@ -78,6 +78,19 @@ jobs:
           MOVE_HOME: ${{ runner.temp }}/native-soul-external-sources
         run: npm run check
 
+      - name: Bind checked paired sources to this CI attempt
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/write-pair-receipt.mjs ac "$GITHUB_WORKSPACE" "$SOULIDITY_WORKSPACE" "$RUNNER_TEMP/paired-source.json"
+
+      - name: Retain paired source identity
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: paired-source-ac-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/paired-source.json
+          if-no-files-found: error
+          retention-days: 30
+
   move:
     name: Paired eight-package Move gates
     runs-on: ubuntu-24.04

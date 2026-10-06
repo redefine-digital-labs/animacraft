@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { validateLocaleDeltas } from '../scripts/check-workflow-locales.mjs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -39,45 +40,8 @@ test('workflow locale deltas preserve every other historical key and translation
     JSON.stringify(pathToFileURL(join(ROOT, 'expansion-pack-lifecycle-i18n.js')).href));
   const historical = await import(`data:text/javascript;base64,${Buffer.from(historicalSource).toString('base64')}`);
   const current = await import(pathToFileURL(join(ROOT, file)).href);
-  const changed = ['versionHistoryCopy', 'wardrobeSetupCopy', 'wardrobePartSlotCopy'];
-  const added = `playerOutputSelection playerPackPaid playerPackTransactionFinalized
-    playerPackAtomicUnits playerPackEntryOnly playerPackConfirm playerPackRecover playerPackDismiss
-    playerCommerceNotQuoted playerControlUnavailable playerStepMakerAccess playerStepPackAccess playerStepStartAnother
-    playerStepOpenSoul playerStepStartAnotherCopy playerStepRecoveredOtherDraft playerStepBaseItem
-    playerStepLoadout playerStepComplete playerStepRenderUpload playerStepNativeUpload playerStepEnvelopes
-    playerStepGasBudget playerEnvelopeRecoveryExport playerEnvelopeRecoveryImport playerEnvelopeRecoveryClear
-    playerEnvelopeRecoveryCopy playerStepEnvelopesCopy playerStepConfirm playerStepCancel playerStepCancelCopy
-    playerStepStorageCopy playerStepEntryCopy playerStepNoBusinessFee playerStepFreeRemaining
-    playerStepTotalRemaining playerStepPolicyPrice playerStepRightsCopy playerStepQuoteCopy
-    playerOverviewTitle playerOverviewEntry playerOverviewComplete playerOverviewTotal playerOverviewEntryNeeded
-    playerOverviewEntryHeld playerOverviewContinue playerOverviewCopy playerOverviewRightsCopy
-    saveRecoveryCopy savingRecoveryCopy localRecoveryCopy saveRecoveryCopyHint recoveryCopyRetry
-    playerSlotCapacityFull
-    publicationReview publicationCopy publicationSign publicationContinue publicationRefresh
-    publicationUnknown publicationGas publicationStorage publicationRelay publicationTerms
-    publicationWallet publicationStage publicationAssets publicationStale publicationUnavailable
-    publicationComplete publicationLoading publicationEarlier publicationGasPrice publicationOpen
-    publicationFlowCopy publicationResourceProgress publicationQuoteScope publicationRecoveryCopy
-    publicationInProgress
-    publicationThreeStageTitle publicationThreeStageCopy publicationUploadAndCertify publicationCurrentResource publicationCheckTransaction publicationContinuePublish publicationContinueCertify publicationContinueUpload publicationContinueRegister publicationResultPending publicationPublishSaved publicationCertifySaved publicationUploadReady publicationRegisterSaved publicationPublishReview publicationCertifyReview publicationRegisterReview publicationSignPublish publicationSignCertify publicationSignRegister publicationResourceReady publicationContinueResources
-    chainHistory chainCopy chainLocal chainCurrentUnpublished chainNext chainRevisions
-    chainArchiveReview chainArchiveSign chainArchiveRecover chainSuccessor chainArchiveDigest
-    chainLoading chainUnavailable chainEmpty chainPreparing chainArchiveImpact chainArchiveSaved
-    chainSuccessorReady`.trim().split(/\s+/).sort();
-  assert.deepEqual(current.MAKER_WORKSPACE_LOCALES, historical.MAKER_WORKSPACE_LOCALES);
-  const placeholders = text => [...text.matchAll(/\{([^}]+)\}/g)].map(match => match[1]).sort();
-  for (const locale of historical.MAKER_WORKSPACE_LOCALES) {
-    const before = historical.makerWorkspaceDictionary(locale), after = current.makerWorkspaceDictionary(locale);
-    assert.deepEqual(Object.keys(before).filter(key => !(key in after)), ['playerCommerceFree']);
-    assert.deepEqual(Object.keys(before).filter(key => key in after && before[key] !== after[key]).sort(), [...changed].sort());
-    assert.deepEqual(Object.keys(after).filter(key => !(key in before)).sort(), added);
-    assert.match(after.versionHistoryCopy, /100/, 'Retained checkpoint limit must stay visible.');
-    for (const key of [...changed, ...added]) {
-      assert.equal(typeof after[key], 'string');
-      assert.ok(after[key].trim().length > 0, `${locale}/${key} is missing`);
-      assert.deepEqual(placeholders(after[key]), placeholders(current.makerWorkspaceDictionary('en')[key]), `${locale}/${key} placeholders`);
-    }
-  }
+  const approved = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/approved-ui-donors/workflow-locale-deltas.json')));
+  validateLocaleDeltas(historical, current, approved);
 });
 
 test('approved original pure-view sources pass Node syntax checks and imports', async () => {
