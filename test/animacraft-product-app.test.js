@@ -52,7 +52,7 @@ test('Player production authority is resolved only when a Player journey request
   const calls = [];
   const controller = Object.fromEntries([
     'getSnapshot', 'loadPlayer', 'setRecipe', 'updateRecipe', 'resetRecipe', 'preparePlayerAction',
-    'executePlayerAction', 'recoverPlayerAction', 'recoverActivePlayerAction', 'getPlayerAction', 'quotePlayerCompletion',
+    'executePlayerAction', 'recoverPlayerAction', 'recoverActivePlayerAction', 'getPlayerAction', 'quotePlayerCompletion', 'reuseCommittedPlayerLoadout',
   ].map((name) => [name, async (...args) => { calls.push([name, args]); return { name, args }; }]));
   const player = createLazyMakerV8PlayerFacade(async () => {
     resolutions += 1;
@@ -65,7 +65,8 @@ test('Player production authority is resolved only when a Player journey request
   const scope = { action: 'acquireMakerAccess', input: {} };
   assert.deepEqual((await player.recoverActivePlayerAction(scope)).args, [scope]);
   assert.deepEqual((await player.quotePlayerCompletion()).args, []);
-  assert.deepEqual(calls.map(([name]) => name), ['loadPlayer', 'updateRecipe', 'recoverActivePlayerAction', 'quotePlayerCompletion']);
+  assert.deepEqual((await player.reuseCommittedPlayerLoadout()).args, []);
+  assert.deepEqual(calls.map(([name]) => name), ['loadPlayer', 'updateRecipe', 'recoverActivePlayerAction', 'quotePlayerCompletion', 'reuseCommittedPlayerLoadout']);
   assert.equal(resolutions, 1);
 });
 

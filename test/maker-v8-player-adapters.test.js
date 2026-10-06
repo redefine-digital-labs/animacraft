@@ -2839,3 +2839,40 @@ test('WAL retirement rejects signed or uncertain artifacts and preserves both ac
     assert.equal(await persistence.resolveRootActive({ rootId, signer }), original.actionId);
   }
 });
+
+
+test('committed Loadout reuse requires exact certified live custody and actual selection identity', async () => {
+  for (const mode of ['match', 'absent', 'different', 'access', 'forged', 'drift', 'clock']) {
+    const request = requestFor(MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT);
+    const state = request.context.builderInput;
+    if (mode !== 'absent') {
+      const committed = playerState({ action: request.action, makerLoadout: owned(id(361), { revision: '1' }) });
+      state.objects.makerLoadout = committed.objects.makerLoadout;
+      state.currentSelections = committed.currentSelections;
+    }
+    if (mode === 'different') state.currentSelections[0].itemKey = 'another-item';
+    if (mode === 'access') state.currentSelections[0].accessSubject = id(999);
+    state.objects.clock.type = normalizeStructTag('0x2::clock::Clock');
+    state.objects.clock.fields = { id: runtime.clockObjectId, timestamp_ms: '1000' };
+    let reads = 0;
+    const custody = createMakerV8PlayerCustodyAdapterV8({ client: clientFixture(), runtime,
+      loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {},
+      loadPlayerState: async () => {
+        const next = structuredClone(state);
+        if (reads++ > 0 && mode === 'drift') next.objects.makerLoadout.version = '9';
+        if (reads > 1 && mode === 'clock') {
+          next.objects.clock.version = '8'; next.objects.clock.digest = digest(33);
+          next.objects.clock.fields.timestamp_ms = '1001';
+        }
+        return next;
+      },
+    });
+    const { context: ignored, ...input } = request;
+    const context = await custody.loadPlayerContext(input);
+    const operation = custody.matchesCommittedPlayerLoadout({ ...input,
+      context: mode === 'forged' ? structuredClone(context) : context });
+    if (mode === 'forged') await assert.rejects(operation, { code: 'MAKER_V8_PLAYER_CUSTODY_PROOF_REQUIRED' });
+    else if (mode === 'drift') await assert.rejects(operation, { code: 'MAKER_V8_PLAYER_CUSTODY_DRIFT' });
+    else assert.equal(await operation, ['match', 'clock'].includes(mode), mode);
+  }
+});

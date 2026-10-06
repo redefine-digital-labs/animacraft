@@ -2077,6 +2077,85 @@ export function createMakerV8PlayerControllerV8({
       return assertProtectedRenderIdentity(identity, player, recipe, account);
     },
 
+    async reuseCommittedPlayerLoadout() {
+      requireWrite();
+      if (state.status !== 'READY' || !state.player || !state.recipe || !state.loadout) {
+        fail('MAKER_V8_PLAYER_NOT_READY', 'Load the exact Player before checking its committed Loadout.');
+      }
+      requireMethod(custody, 'matchesCommittedPlayerLoadout', 'custody');
+      requireMethod(wallet, 'subscribe', 'wallet');
+      const snapshot = state;
+      const recipe = normalizeRecipe(snapshot.player.document, snapshot.recipe, snapshot.player);
+      const loadout = loadoutFor(snapshot.player, recipe);
+      let revision, changed = false;
+      const unsubscribe = wallet.subscribe(value => {
+        if (!Number.isSafeInteger(value?.revision) || value.revision < 0) changed = true;
+        else if (revision === undefined) revision = value.revision;
+        else if (revision !== value.revision) changed = true;
+      });
+      const assertCurrent = () => {
+        if (state !== snapshot || changed || revision === undefined) {
+          fail('MAKER_V8_PLAYER_LOADOUT_REUSE_STALE', 'Wallet or Player changed while checking the committed Loadout.', 'RECOVERY');
+        }
+      };
+      try {
+        if (typeof unsubscribe !== 'function') {
+          fail('MAKER_V8_PLAYER_LOADOUT_REUSE_STALE', 'Wallet change observation is unavailable.', 'RECOVERY');
+        }
+        assertCurrent();
+        const account = await exactChainAndAccount();
+        assertCurrent();
+        const rootScope = { rootId: snapshot.player.rootId, signer: account.address };
+        const activeId = await persistence.resolveRootActive(rootScope);
+        const active = activeId === null ? null : await readRecord(activeId);
+        const scopeKey = playerActionScope({ action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT,
+          signer: account.address, playerIdentity: { rootId: snapshot.player.rootId,
+            makerVersion: snapshot.player.makerVersion,
+            rootContentCommitment: snapshot.player.evidence.contentCommitment },
+          recipeCommitment: loadout.recipeCommitment, input: {} });
+        // Signed/uncertain or differently scoped work must recover through its
+        // original action. Only a never-signed duplicate may be retired below.
+        if (active && (active.status !== 'PREPARED' || active.scopeKey !== scopeKey
+          || active.action !== MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT
+          || [active.signatureIntent, active.signature, active.broadcast,
+            active.query, active.certificate].some(value => value !== null))) return false;
+        const live = await createContext({ action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT,
+          player: snapshot.player, recipe, loadout, input: {} });
+        assertCurrent();
+        if (live.account.address !== account.address) {
+          fail('MAKER_V8_PLAYER_ACCOUNT_DRIFT', 'Loadout reuse belongs to another wallet.', 'WALLET');
+        }
+        const matches = await custody.matchesCommittedPlayerLoadout({
+          action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT, player: clone(live.player),
+          recipe: clone(recipe), loadout: clone(loadout), input: {},
+          account: live.account, context: live.context,
+        });
+        assertCurrent();
+        if (typeof matches !== 'boolean') {
+          fail('MAKER_V8_PLAYER_CUSTODY_DRIFT', 'Committed Loadout comparison lacks exact custody evidence.', 'CUSTODY');
+        }
+        const after = await exactChainAndAccount();
+        assertCurrent();
+        if (after.address !== account.address) {
+          fail('MAKER_V8_PLAYER_ACCOUNT_DRIFT', 'Wallet changed while checking the committed Loadout.', 'WALLET');
+        }
+        if (await persistence.resolveRootActive(rootScope) !== activeId) {
+          fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'Durable action changed during Loadout reuse.', 'RECOVERY');
+        }
+        if (!matches) return false;
+        if (active) {
+          await persistence.requirePersistentStorage();
+          await persistence.preflightQuota(1_048_576);
+          assertCurrent();
+          // The persistence CAS independently rejects any concurrent signing
+          // intent/artifact and preserves the original plan and transaction.
+          await persistCas(active, { status: 'CANCELLED_UNSIGNED', error: null });
+        }
+        assertCurrent();
+        return true;
+      } finally { if (typeof unsubscribe === 'function') unsubscribe(); }
+    },
+
     async preparePlayerAction({ action, input = {} } = {}) {
       requireWrite();
       if (state.status !== 'READY' || !state.player || !state.recipe || !state.loadout) {

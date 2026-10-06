@@ -7593,7 +7593,7 @@ test('production Native service through real journey and bridge enables only con
     win: { crypto, navigator: { locks: { request: forbidden } } },
     receiver: methods(['open', 'preflight', 'sync', 'dispose']) });
   const journey = createMakerV8PlayerJourneyV8({ nativeContent: provider, walrus,
-    player: methods(['getSnapshot', 'loadPlayer', 'setRecipe', 'preparePlayerAction', 'executePlayerAction', 'recoverPlayerAction']),
+    player: methods(['getSnapshot', 'loadPlayer', 'setRecipe', 'preparePlayerAction', 'executePlayerAction', 'recoverPlayerAction', 'reuseCommittedPlayerLoadout']),
     productRuntime: { inventory: { load: forbidden } } });
   const bridgeFor = execution => createMakerV8ProductBridge({ execution, playerJourney: journey,
     productRuntime: { ready: forbidden, catalog: methods(['loadPlaza', 'loadPlayer']), wallet: methods(['getCurrentAccount', 'reconnect']) },

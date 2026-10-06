@@ -227,6 +227,13 @@ export function createLazyMakerV8PlayerFacade(resolvePlayer) {
       }
       return value.decryptProtectedSelection(...args);
     },
+    reuseCommittedPlayerLoadout: async (...args) => {
+      const player = await load();
+      if (typeof player.reuseCommittedPlayerLoadout !== 'function') {
+        fail('ANIMACRAFT_PLAYER_ADAPTER_INVALID', 'Player adapter cannot verify a committed Loadout.', 'CONFIGURATION');
+      }
+      return player.reuseCommittedPlayerLoadout(...args);
+    },
     preparePlayerAction: async (...args) => (await load()).preparePlayerAction(...args),
     executePlayerAction: async (...args) => (await load()).executePlayerAction(...args),
     recoverPlayerAction: async (...args) => (await load()).recoverPlayerAction(...args),

@@ -2802,6 +2802,26 @@ export function createMakerV8PlayerCustodyAdapterV8({
       await pinnedMainnet(client);
       return result;
     },
+    async matchesCommittedPlayerLoadout(input) {
+      const request = { action: input.action, player: input.player, recipe: input.recipe,
+        loadout: input.loadout, input: input.input, account: input.account };
+      const certificate = STATE_CERTIFICATES.get(input.context);
+      if (request.action !== MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT
+        || !certificate || !same(certificate.input, request)) {
+        fail('MAKER_V8_PLAYER_CUSTODY_PROOF_REQUIRED', 'Loadout reuse requires this exact live custody certificate.');
+      }
+      const fresh = await load(request);
+      if (!makerV8PlayerContextsMatchAfterClockProgressV8(fresh, input.context)) {
+        fail('MAKER_V8_PLAYER_CUSTODY_DRIFT', 'Player custody changed while checking the committed Loadout.');
+      }
+      const state = STATE_CERTIFICATES.get(fresh).state;
+      if (state.objects.makerLoadout === null) return false;
+      try { return assertCommittedLoadout(state, request); }
+      catch (cause) {
+        if (cause?.code === 'MAKER_V8_PLAYER_LOADOUT_DRIFT') return false;
+        throw cause;
+      }
+    },
     async assertPlayerContext(input) {
       const context = input.context;
       const request = {

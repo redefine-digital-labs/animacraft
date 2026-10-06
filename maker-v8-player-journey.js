@@ -927,7 +927,7 @@ export function createMakerV8PlayerJourneyV8({
 } = {}) {
   for (const name of [
     'getSnapshot', 'loadPlayer', 'setRecipe', 'preparePlayerAction',
-    'executePlayerAction', 'recoverPlayerAction',
+    'executePlayerAction', 'recoverPlayerAction', 'reuseCommittedPlayerLoadout',
   ]) requireMethod(player, name, 'player');
   const loadInventory = requireMethod(productRuntime?.inventory, 'load', 'productRuntime.inventory');
   const publisher = walrus?.publisher;
@@ -1332,8 +1332,15 @@ export function createMakerV8PlayerJourneyV8({
         if (pending) return freeze({ status: 'RECOVERY_REQUIRED', stage: 'PACK_ACCESS', ...pending });
         packPasses.add(selection.releaseId);
       }
-      const committed = await advance(MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT);
-      if (committed) return freeze({ status: 'RECOVERY_REQUIRED', stage: 'LOADOUT', ...committed });
+      const reused = await player.reuseCommittedPlayerLoadout();
+      await assertCurrentVisibleIntent();
+      if (reused !== true && reused !== false) {
+        fail('MAKER_V8_PLAYER_JOURNEY_LOADOUT_REUSE_INVALID', 'Committed Loadout reuse lacks exact live evidence.', 'PLAYER');
+      }
+      if (!reused) {
+        const committed = await advance(MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT);
+        if (committed) return freeze({ status: 'RECOVERY_REQUIRED', stage: 'LOADOUT', ...committed });
+      }
       if (outputProtected) {
         renderResult = await protectRender({
           protectedTransport,
