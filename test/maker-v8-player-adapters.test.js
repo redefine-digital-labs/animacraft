@@ -763,8 +763,10 @@ test('completion quote accepts canonical gRPC Base64 commitments without changin
   const grpcHashes = value => {
     if (!value || typeof value !== 'object') return;
     for (const [key, child] of Object.entries(value)) {
-      if (key.includes('commitment') && typeof child === 'string' && /^[0-9a-f]{64}$/.test(child)) {
-        value[key] = toBase64(Buffer.from(child, 'hex'));
+      if (key.includes('commitment') || key.endsWith('_sha256')) {
+        if (typeof child === 'string' && /^[0-9a-f]{64}$/.test(child)) value[key] = toBase64(Buffer.from(child, 'hex'));
+        else if (Array.isArray(child) && child.every(x => Number.isInteger(x) && x >= 0 && x <= 255)) value[key] = toBase64(Uint8Array.from(child));
+        else grpcHashes(child);
       } else grpcHashes(child);
     }
   };
@@ -1240,6 +1242,36 @@ test('Complete transaction encodes the selected alternate Output rather than a d
   const begin = data.commands.map(row => row.MoveCall).find(row => row?.function === 'begin_complete_v8');
   assert.ok(begin);
   assert.equal(bcs.string().parse(fromBase64(data.inputs[begin.arguments[1].Input].Pure.bytes)), 'alternate-output');
+});
+
+test('Complete preparation preserves gRPC empty and populated optional rights hashes', async () => {
+  const client = clientFixture();
+  const compiler = createMakerV8PlayerCompilerAdapterV8({ client, runtime,
+    loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {} });
+  for (const value of ['', toBase64(Buffer.alloc(32, 0xcc))]) {
+    const request = await certifiedRequest(client, MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT, state => {
+      Object.assign(state.objects.root.fields.rights, { evidence_sha256: value, terms_commitment: value,
+        commitment: toBase64(Buffer.from(commitment('a'), 'hex')) });
+    });
+    const result = await compiler.preparePlayerAction(request);
+    const rights = result.plan.descriptor.expected.completePaymentQuote.rights;
+    assert.equal(rights.evidenceSha256, value === '' ? null : 'cc'.repeat(32));
+    assert.equal(rights.termsCommitment, value === '' ? null : 'cc'.repeat(32));
+    assert.equal(rights.commitment, commitment('a'));
+  }
+  for (const key of ['evidence_sha256', 'terms_commitment']) {
+    for (const value of [undefined, null, ' ', toBase64(Buffer.alloc(31)), toBase64(Buffer.alloc(33))]) {
+      const request = await certifiedRequest(client, MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT,
+        state => {
+          if (value === undefined) delete state.objects.root.fields.rights[key];
+          else state.objects.root.fields.rights[key] = value;
+        });
+      await assert.rejects(compiler.preparePlayerAction(request), { code: 'MAKER_V8_PLAYER_HASH_INVALID' });
+    }
+  }
+  const missingRequired = await certifiedRequest(client, MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT,
+    state => { state.objects.root.fields.rights.commitment = ''; });
+  await assert.rejects(compiler.preparePlayerAction(missingRequired), { code: 'MAKER_V8_PLAYER_HASH_INVALID' });
 });
 
 test('Complete quote separates true total limits from wallet quota and preserves exact Root rights', async () => {

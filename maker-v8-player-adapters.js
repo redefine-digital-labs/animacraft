@@ -1255,7 +1255,10 @@ function completeRightsQuote(root) {
     const value = moveOption(rights[key], `Root.rights.${key}`);
     return value === null ? null : parse(value, `Root.rights.${key}`);
   };
-  const emptyHash = (value, label) => Array.isArray(value) && value.length === 0 ? null : hex(value, label);
+  // gRPC encodes an empty vector<u8> as empty Base64, not an empty array.
+  // Only these optional rights fields permit it; required hashes stay strict.
+  const emptyHash = (value, label) => value === '' || (Array.isArray(value) && value.length === 0)
+    ? null : hex(value, label);
   const text = (value, label) => value === '' ? '' : moveText(value, label);
   const bps = (key) => {
     const value = decimal(rights[key], `Root.rights.${key}`);
