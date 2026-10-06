@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
+import { createMakerV8SuiGrpcTransport } from '../maker-v8-sui-grpc.js';
 import { TestTransport } from '@protobuf-ts/runtime-rpc';
 import { MAKER_V8_PACK_DEFINITIONS_BCS, packDefinitionCommitmentV8 } from '../maker-v8-pack-definition-wire.js';
 import { deriveMakerV8PackProfiles } from '../maker-v8-profile-wire.js';
@@ -39,6 +41,7 @@ import {
   assertMakerV8PlayerCompleteReadbackV8,
   assertMakerV8PlayerOwnedItemReadbackV8,
   assertMakerV8PlayerLoadoutLayoutV8,
+  createProductionMakerV8PlayerAdaptersV8,
   createMakerV8PlayerBoundaryAdapterV8,
   createMakerV8PlayerCompilerAdapterV8,
   createMakerV8PlayerCustodyAdapterV8,
@@ -2875,4 +2878,45 @@ test('committed Loadout reuse requires exact certified live custody and actual s
     else if (mode === 'drift') await assert.rejects(operation, { code: 'MAKER_V8_PLAYER_CUSTODY_DRIFT' });
     else assert.equal(await operation, ['match', 'clock'].includes(mode), mode);
   }
+});
+
+
+test('production Player composition exposes certified committed Loadout reuse without signing', async () => {
+  const fallback = new TestTransport();
+  const grpc = new SuiGrpcClient({ network: 'mainnet', transport: {
+    mergeOptions: options => fallback.mergeOptions(options),
+    unary(method, input, options) {
+      assert.equal(method.service.typeName, 'sui.rpc.v2.LedgerService');
+      assert.equal(method.name, 'GetServiceInfo');
+      const response = method.O.create({ chainId: MAKER_V8_MAINNET_GENESIS_DIGEST,
+        chain: 'mainnet', epoch: 41n, checkpointHeight: 100n,
+        lowestAvailableCheckpoint: 1n, lowestAvailableCheckpointObjects: 1n, server: 'test' });
+      return new TestTransport({ response }).unary(method, input, options);
+    },
+    serverStreaming() { throw Error('Unexpected RPC'); },
+    clientStreaming() { throw Error('Unexpected RPC'); }, duplex() { throw Error('Unexpected RPC'); },
+  } });
+  grpc.core.getCurrentSystemState = async () => ({ systemState: { epoch: '41' } });
+  const client = createMakerV8SuiGrpcTransport({ grpcClient: grpc,
+    graphqlClient: new SuiGraphQLClient({ network: 'mainnet', url: 'https://graphql.mainnet.sui.io/graphql',
+      fetch: async () => { throw Error('Unexpected discovery'); } }) });
+  const request = requestFor(MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT);
+  const state = playerState({ action: request.action, makerLoadout: owned(id(361), { revision: '1' }) });
+  let signatures = 0;
+  const forbidden = async () => { signatures++; throw Error('No signing in production composition readback'); };
+  const adapters = await createProductionMakerV8PlayerAdaptersV8({ client, runtime,
+    productRuntime: { schemaVersion: 'animacraft.maker-v8-product-runtime.v1', runtime,
+      catalog: { async loadPlayer() { throw Error('not reached'); } } },
+    execution: { allowWalletSignature: true, allowBroadcast: true },
+    indexedDB: new IDBFactory(), persistenceOptions: { storageManager: storageManager() },
+    walletAdapter: { async getCurrentAccount() { return request.account; }, reconnect: forbidden,
+      signExactTransaction: forbidden, verifyExactSignature: forbidden,
+      subscribe(listener) { listener({ revision: 0, account: request.account }); return () => {}; }, dispose() {} },
+    loadRuntimeAttestation: async () => ({ runtime }),
+    loadPlayerState: async () => structuredClone(state),
+  });
+  const { context: ignored, ...input } = request;
+  const context = await adapters.custody.loadPlayerContext(input);
+  assert.equal(await adapters.custody.matchesCommittedPlayerLoadout({ ...input, context }), true);
+  assert.equal(signatures, 0);
 });

@@ -5572,6 +5572,7 @@ export async function createProductionMakerV8PlayerAdaptersV8({
     schemaVersion: MAKER_V8_PLAYER_ADAPTERS_SCHEMA,
     quotePlayerCompletion: (input) => custodyBase.quotePlayerCompletion(input),
     loadPlayerContext: (input) => custodyBase.loadPlayerContext(input),
+    matchesCommittedPlayerLoadout: (input) => custodyBase.matchesCommittedPlayerLoadout(input),
     resolveProtectedOutputIdentity: (input) => custodyBase.resolveProtectedOutputIdentity(input),
     resolveProtectedSelectionApproval: (input) => custodyBase.resolveProtectedSelectionApproval(input),
     assertPlayerContext: (input) => custodyBase.assertPlayerContext(input),
