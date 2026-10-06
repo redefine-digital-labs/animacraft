@@ -200,7 +200,7 @@ test('publication automatically finishes signed work, stops at the next signatur
 });
 
 test('signed publication drains changing checkpoints and stops on stable, unknown or next-signature results', async t => {
-  for (const ending of ['next-signature', 'stable', 'unknown', 'failure']) await t.test(ending, async () => {
+  for (const ending of ['next-signature', 'stable', 'unknown', 'failure', 'deadline']) await t.test(ending, async () => {
     const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
     const scope = { draftId: 'approved-maker', draftRevision: 1, signerAddress: ROOT_ONE, network: 'mainnet' };
     const base = { schemaVersion: 'animacraft.maker-v8-publication-review.v1', scope, stage: 'BASE_CHUNK',
@@ -215,6 +215,7 @@ test('signed publication drains changing checkpoints and stops on stable, unknow
       continued.push(reviewId);
       if (continued.length === 1) return pending;
       if (ending === 'failure') throw Error('Network unavailable after saved signature');
+      if (ending === 'deadline') throw Object.assign(Error('Sui RPC timeout while waiting for GetTransaction'), { code: 'DEADLINE_EXCEEDED' });
       return ending === 'next-signature' ? { ...base, reviewId: 'next', stage: 'COMPANION_OBJECTS' }
         : ending === 'unknown' ? { ...pending, reviewId: 'unknown', status: 'OUTCOME_UNKNOWN' }
           : { ...pending, reviewId: 'new-token-same-checkpoint' };
@@ -233,8 +234,10 @@ test('signed publication drains changing checkpoints and stops on stable, unknow
       await fire('publish'); await fire('publication-sign', 'ready');
       assert.equal(signs, 1); assert.deepEqual(continued, ['signed', 'pending']);
       if (ending === 'next-signature') assert.match(mount.innerHTML, /data-publication-review="next"/);
-      else if (ending === 'failure') {
-        assert.match(mount.innerHTML, /Network unavailable after saved signature/);
+      else if (ending === 'failure' || ending === 'deadline') {
+        assert.match(mount.innerHTML, ending === 'deadline' ? /Sui RPC timeout/ : /Network unavailable after saved signature/);
+        assert.match(mount.innerHTML, /data-action="publication-refresh"(?! disabled)/);
+        assert.match(mount.innerHTML, /NETWORK_UNAVAILABLE/);
         assert.doesNotMatch(mount.innerHTML, /data-action="publication-sign"/);
       } else assert.match(mount.innerHTML, /data-action="publication-continue"/);
     } finally { app.destroy(); }

@@ -1726,7 +1726,9 @@ function publicationReview(view) {
     + (review ? '<p style="overflow-wrap:anywhere"><strong>' + value(review.frozenMakerName) + '</strong></p>' : '')
     + (scope.publishingEarlierRevision && !newVersionRequired ? '<p role="alert">' + escapeHtml(tr(view, 'publicationEarlier', { frozen: scope.draftRevision, current: scope.currentSavedRevision })) + '</p>' : '')
     + resourceProgress + (newVersionRequired ? '' : quotePanel + gasPanel) + '<div class="v4-chain-status' + (state.busy ? ' busy' : '') + '" role="status" aria-live="polite">'
-    + (state.busy ? '<i aria-hidden="true"></i>' : '') + '<span>' + escapeHtml(state.busy ? tr(view, 'publicationLoading')
+    + (state.busy ? '<i aria-hidden="true"></i>' : '') + '<span>' + escapeHtml(state.busy ?
+      (continuing ? tr(view, 'publicationContinuingSigned') : tr(view, 'publicationLoading'))
+        + (review?.stage ? ' · ' + makerPublicationStageText(view.locale, review.stage) : '')
       : currentStatus) + '</span>'
     + (state.busy ? '<small>' + escapeHtml(tr(view, 'publishWorking')) + '</small>' : '') + '</div>'
     + errorPanel + technical + '<footer><button type="button" data-action="publication-refresh"' + disabled + '>'

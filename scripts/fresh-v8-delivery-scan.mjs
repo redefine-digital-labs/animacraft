@@ -15,6 +15,7 @@ const allowedDependencies = new Map([
   ['@mysten/walrus-wasm', '0.3.1'],
   ['@noble/hashes', '2.2.0'],
   ['@protobuf-ts/runtime-rpc', '2.11.1'],
+  ['@protobuf-ts/grpcweb-transport', '2.11.1'],
 ]);
 const allowedDevDependencies = new Map([
   ['fake-indexeddb', '6.2.5'],

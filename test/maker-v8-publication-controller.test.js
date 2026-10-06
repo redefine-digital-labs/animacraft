@@ -740,3 +740,20 @@ test('canonical TransactionData proof used by the fixture embeds the exact durab
   assert.equal(parsed.V1.sender, fixture.signer);
   assert.equal(parsed.V1.gasData.owner, fixture.signer);
 });
+
+test('RPC deadline keeps the signed digest unknown and recovers success without another broadcast', async () => {
+  const value = await harness('rpc-deadline-recovery');
+  const { signed } = await preparedAndSigned(value);
+  value.controls.queryResults.push(Object.assign(new Error('Sui RPC timeout'), { code: 'DEADLINE_EXCEEDED' }));
+  const unknown = await value.controller.replayExact(signed.attemptId);
+  assert.equal(unknown.current.outcome.status, 'OUTCOME_UNKNOWN');
+  assert.equal(unknown.current.outcome.digest, signed.current.outcome.digest);
+  assert.deepEqual(unknown.current.fullTransactionRef, signed.current.fullTransactionRef);
+  assert.deepEqual(unknown.current.signatureRef, signed.current.signatureRef);
+  assert.equal(value.calls.broadcast.length, 0);
+  value.controls.queryResults.push(finalized('FINALIZED_SUCCESS', signed.current.outcome.digest));
+  const recovered = await value.controller.replayExact(signed.attemptId);
+  assert.equal(recovered.current, null);
+  assert.equal(recovered.head.digest, signed.current.outcome.digest);
+  assert.equal(value.calls.broadcast.length, 0);
+});

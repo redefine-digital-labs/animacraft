@@ -4008,3 +4008,11 @@ Object.entries({
   ko: '슬롯이 가득 찼습니다(용량 {capacity}). 다른 아이템을 추가하려면 먼저 하나를 제거하세요.',
   vi: 'Ô đã đầy (sức chứa {capacity}). Hãy gỡ một vật phẩm trước khi thêm vật phẩm khác.',
 }).forEach(([locale, message]) => { dictionaries[locale].playerSlotCapacityFull = message; });
+
+Object.entries({
+  en: 'Continuing the saved signed transaction…',
+  zh: '正在继续已保存的签名交易…',
+  ja: '保存済みの署名付き取引を続行中…',
+  ko: '저장된 서명 거래를 계속 진행 중…',
+  vi: 'Đang tiếp tục giao dịch đã ký và lưu…',
+}).forEach(([locale, text]) => { dictionaries[locale].publicationContinuingSigned = text; });

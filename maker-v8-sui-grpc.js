@@ -17,6 +17,8 @@ import {
 } from '@mysten/sui/utils';
 import { blake2b } from '@noble/hashes/blake2.js';
 import { RpcError } from '@protobuf-ts/runtime-rpc';
+import { GrpcWebFetchTransport } from '@protobuf-ts/grpcweb-transport';
+import { makerV8RpcDeadline } from './maker-v8-rpc-deadline.js';
 
 export const MAKER_V8_SUI_GRPC_SCHEMA = 'animacraft.maker-v8-sui-grpc.v1';
 export const MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT = 'https://fullnode.mainnet.sui.io:443';
@@ -2010,7 +2012,11 @@ export function createProductionMakerV8SuiGrpcTransport({
 } = {}) {
   const authoritativeEndpoint = endpoint(grpcEndpoint, 'grpcEndpoint');
   const discoveryEndpoint = endpoint(graphqlEndpoint, 'graphqlEndpoint');
-  const grpcClient = new SuiGrpcClient({ network: 'mainnet', baseUrl: authoritativeEndpoint });
+  // Sui 2.26's default constructor only forwards baseUrl/fetchInit. Supply
+  // the official transport explicitly so the deadline interceptor is used.
+  const grpcClient = new SuiGrpcClient({ network: 'mainnet',
+    transport: new GrpcWebFetchTransport({ baseUrl: authoritativeEndpoint,
+      interceptors: [makerV8RpcDeadline()] }) });
   const graphqlClient = new SuiGraphQLClient({
     network: 'mainnet',
     url: discoveryEndpoint,

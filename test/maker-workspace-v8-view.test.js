@@ -850,7 +850,7 @@ test('view imports only current authority and hash-exact approved pure donor hel
     'publicationReview', 'publicationCopy', 'publicationSign', 'publicationContinue', 'publicationRefresh',
     'publicationUnknown', 'publicationGas', 'publicationStorage', 'publicationRelay', 'publicationTerms',
     'publicationWallet', 'publicationStage', 'publicationAssets', 'publicationStale', 'publicationUnavailable',
-    'publicationComplete', 'publicationLoading',
+    'publicationComplete', 'publicationLoading', 'publicationContinuingSigned',
     'publicationEarlier', 'publicationGasPrice',
     'publicationOpen',
     'publicationFlowCopy', 'publicationResourceProgress', 'publicationQuoteScope', 'publicationRecoveryCopy', 'publicationInProgress',
@@ -934,5 +934,21 @@ test('batch publication shows exact file count and batch quote without inventing
     assert.ok(html.includes(dictionary.publicationBatchQuoteScope.replace('{count}', '9')));
     assert.match(html, /1 \/ 11/);
     assert.doesNotMatch(html, /Quilt|quilt/);
+  }
+});
+
+
+test('busy signed publication shows continuation and current stage in every locale', () => {
+  for (const locale of MAKER_WORKSPACE_LOCALES) {
+    const dictionary = makerWorkspaceDictionary(locale);
+    const html = render({ locale, publicationReview: { busy: true, review: {
+      scope: {}, stage: 'BASE_CHUNK', status: 'SIGNED', nextAction: 'CONTINUE',
+      step: { digest: 'saved-digest', revision: 20 },
+    } } });
+    assert.ok(html.includes(dictionary.publicationContinuingSigned));
+    assert.ok(!html.includes(dictionary.publicationLoading));
+    assert.match(html, /saved-digest/);
+    assert.match(html, /data-action="publication-refresh" disabled/);
+    assert.doesNotMatch(html, /data-action="publication-sign"/);
   }
 });
