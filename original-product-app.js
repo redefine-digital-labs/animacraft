@@ -3686,6 +3686,18 @@ export function createOriginalProductApp({
         'acquireBaseItem', 'commitLoadout'].includes(step.action)) {
         throw new TypeError('Unknown completion transaction step.');
       }
+    } else if (step.kind === 'STORAGE_BATCH') {
+      const review = step.review;
+      if (step.purpose !== 'RENDER_AND_NATIVE' || typeof step.batchKey !== 'string' || review?.id !== step.batchKey
+        || !['REGISTER', 'CERTIFY'].includes(review.stage) || review.status !== 'SIGNATURE_REQUIRED'
+        || review.quote?.verified !== true || !/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(review.digest || '')
+        || !Array.isArray(step.memberIds) || step.memberIds.length < 2 || step.memberIds.length > 4 || new Set(step.memberIds).size !== step.memberIds.length
+        || step.memberIds.some(id => typeof id !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,127}$/.test(id))
+        || canonicalJson(step.memberIds) !== canonicalJson(review.memberIds)
+        || !/^[1-9][0-9]{0,19}$/.test(review.gasBudgetMist || '') || BigInt(review.gasBudgetMist) > 0xffffffffffffffffn
+        || ['walrusTotalCostFrost', 'relayTipMist'].some(field => !/^(0|[1-9][0-9]*)$/.test(review.quote[field] ?? ''))) {
+        throw new TypeError('An exact storage batch and verified quote are required.');
+      }
     } else if (step.kind !== 'STORAGE_UPLOAD' || !['RENDER', 'NATIVE_CONTENT'].includes(step.purpose)
       || typeof step.uploadId !== 'string' || !step.uploadId
       || !Number.isSafeInteger(step.byteLength) || step.byteLength < 0

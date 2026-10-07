@@ -8782,3 +8782,44 @@ test('metadata edited during initial preview installs the new generation and ign
   assert.equal(harness.calls.completePlayerJourney.length, 0);
   app.destroy();
 });
+
+
+test('Complete host displays the persisted four-file quote and requires the current batch-stage button', async () => {
+  const address = `0x${'85'.repeat(32)}`, approvals = [];
+  const memberIds = ['render', 'soul', 'memory', 'skill'];
+  const harness = browserHarness({
+    connection: { account: { address, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
+    completePlayerJourneyResult: async (_input, _count, { confirmStep }) => {
+      for (const stage of ['REGISTER', 'CERTIFY']) {
+        const approved = await confirmStep({ kind: 'STORAGE_BATCH', purpose: 'RENDER_AND_NATIVE',
+          rootId: ROOT_ONE, signer: address, batchKey: 'fixed-batch', memberIds,
+          review: { id: 'fixed-batch', status: 'SIGNATURE_REQUIRED', stage, memberIds, digest: '7'.repeat(44),
+            gasBudgetMist: '1234567', quote: { verified: true, walrusTotalCostFrost: stage === 'REGISTER' ? '9007199254740993' : '0',
+              relayTipMist: stage === 'REGISTER' ? '1028' : '0' } } });
+        approvals.push({ stage, approved }); if (!approved) return { status: 'RECOVERY_REQUIRED', stage: 'STORAGE_BATCH' };
+      }
+      return { status: 'RECOVERY_REQUIRED', stage: 'SOUL_COMPLETION' };
+    },
+  });
+  const app = createOriginalProductApp(harness); await app.ready; await app.openPlayer(ROOT_ONE);
+  const mount = harness.doc.getElementById('makerV4PlayerMount');
+  const fire = (action, confirmationId) => {
+    const control = new FakeTarget(harness.doc, { dataset: { action, confirmationId } });
+    control.parent = mount; return { control, event: mount.fire('click', { target: control }) };
+  };
+  const completion = fire('player-confirm-complete').event;
+  const first = await waitForJourneyConfirmation(mount);
+  assert.match(mount.innerHTML, /9007199254740993 FROST/); assert.deepEqual(approvals, []);
+  const registerButton = fire('player-confirm-journey-step', first);
+  await waitForCompletionEvent(registerButton.event);
+  const second = await waitForJourneyConfirmation(mount, first);
+  assert.match(mount.innerHTML, /0 FROST/);
+  await waitForCompletionEvent(mount.fire('click', { target: registerButton.control }));
+  assert.deepEqual(approvals, [{ stage: 'REGISTER', approved: true }]);
+  await waitForCompletionEvent(fire('player-cancel-journey-step', second).event);
+  await waitForCompletionEvent(completion);
+  assert.deepEqual(approvals, [{ stage: 'REGISTER', approved: true }, { stage: 'CERTIFY', approved: false }]);
+  app.destroy();
+});

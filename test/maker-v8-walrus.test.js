@@ -158,6 +158,86 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
   return { publisher, bytes, calls, queries, walrusClient };
 }
 
+async function preparedBatch(h, persistence) {
+  const ids = ['batch-render', 'batch-soul', 'batch-memory', 'batch-skill'];
+  for (const uploadId of ids) await h.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'application/octet-stream', bytesBase64: toBase64(h.bytes) });
+  return { owner: OWNER, rootId: PACKAGE, members: await Promise.all(ids.map(async uploadId => {
+    const row = await persistence.load(uploadId);
+    return { uploadId, byteSha256: row.byteSha256, epochs: row.epochs, blobId: row.encoded.blobId,
+      rootHash: row.encoded.rootHash, nonce: row.encoded.nonce };
+  })) };
+}
+
+test('four-member batch adoption atomically invalidates standalone reviews and survives cold concurrent claims', async () => {
+  const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  const h = harness(persistence); const proposal = await preparedBatch(h, persistence);
+  const review = await h.publisher.prepareReview('batch-render');
+  const [first, second] = await Promise.all([persistence.claimBlobBatch(proposal), persistence.claimBlobBatch(proposal)]);
+  assert.deepEqual(first, second); assert.equal(first.status, 'ENCODED');
+  await assert.rejects(h.publisher.signReviewed('batch-render', review), { code: 'MAKER_V8_WALRUS_BATCH_REQUIRED' });
+  await assert.rejects(h.publisher.requestSignature('batch-memory'), { code: 'MAKER_V8_WALRUS_BATCH_REQUIRED' });
+  assert.equal(h.calls.some(call => call[0] === 'sign'), false);
+  for (const member of proposal.members) assert.equal((await persistence.load(member.uploadId)).batchKey, first.key);
+  const cold = harness(persistence);
+  assert.deepEqual(await persistence.claimBlobBatch(proposal), first);
+  await assert.rejects(cold.publisher.requestSignature('batch-soul'), { code: 'MAKER_V8_WALRUS_BATCH_REQUIRED' });
+  await assert.rejects(persistence.claimBlobBatch({ ...proposal, rootId: OBJECT }), { code: 'MAKER_V8_WALRUS_BATCH_INVALID' });
+  await persistence.close();
+});
+
+test('a standalone signature that wins batch adoption keeps exact bytes and permanently selects serial recovery', async () => {
+  const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  const h = harness(persistence); const proposal = await preparedBatch(h, persistence);
+  const review = await h.publisher.prepareReview('batch-render');
+  await h.publisher.signReviewed('batch-render', review);
+  const signed = await persistence.load('batch-render');
+  const legacy = await persistence.claimBlobBatch(proposal);
+  assert.equal(legacy.status, 'LEGACY');
+  assert.deepEqual(await persistence.load('batch-render'), signed);
+  assert.equal((await persistence.load('batch-memory')).batchKey, undefined);
+  assert.deepEqual(await persistence.claimBlobBatch(proposal), legacy);
+  assert.equal(h.calls.filter(call => call[0] === 'sign').length, 1);
+  await persistence.close();
+});
+
+test('batch membership drift aborts without consuming any standalone upload or review', async () => {
+  const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  const h = harness(persistence); const proposal = await preparedBatch(h, persistence);
+  const before = await Promise.all(proposal.members.map(member => persistence.load(member.uploadId)));
+  for (const patch of [{ owner: OBJECT }, { rootId: OWNER, members: proposal.members.slice(0, 1) },
+    { members: proposal.members.map((member, i) => i === 1 ? { ...member, byteSha256: 'ff'.repeat(32) } : member) }]) {
+    await assert.rejects(persistence.claimBlobBatch({ ...proposal, ...patch }), { code: 'MAKER_V8_WALRUS_BATCH_INVALID' });
+  }
+  assert.deepEqual(await Promise.all(proposal.members.map(member => persistence.load(member.uploadId))), before);
+  assert.equal(h.calls.some(call => call[0] === 'sign'), false);
+  await persistence.close();
+});
+
+test('failure writing a batch claim rolls back all four member claims and retained standalone reviews', async () => {
+  const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  const h = harness(persistence); const proposal = await preparedBatch(h, persistence);
+  const before = await Promise.all(proposal.members.map(member => persistence.load(member.uploadId)));
+  const { IDBObjectStore } = await import('fake-indexeddb'); const original = IDBObjectStore.prototype.add;
+  IDBObjectStore.prototype.add = function (...args) {
+    if (this.name === 'publication-bindings') throw new Error('batch claim disk failure');
+    return original.apply(this, args);
+  };
+  try { await assert.rejects(persistence.claimBlobBatch(proposal), /batch claim disk failure/); }
+  finally { IDBObjectStore.prototype.add = original; }
+  assert.deepEqual(await Promise.all(proposal.members.map(member => persistence.load(member.uploadId))), before);
+  const claimed = await persistence.claimBlobBatch(proposal); assert.equal(claimed.status, 'ENCODED');
+  assert.equal(h.calls.some(call => call[0] === 'sign'), false);
+  await persistence.close();
+});
+
 test('cold certified checkpoint validates SDK u256 identity and recovers without another payment', async () => {
   const persistence = memoryPersistence(), setup = harness(persistence);
   const uploadId = 'certified-readback';

@@ -144,13 +144,28 @@ test('production preflight refuses namespace, Seal and wallet drift before any u
 
 test('production preparation rechecks the wallet around each final signature guard', async () => {
   const f = setup();
+  let signatureRequests = 0;
+  f.options.walrus.publisher.requestSignature = async () => { signatureRequests++; assert.fail('Changed wallet must not reach signing'); };
   const load = f.options.walrus.publisher.load;
   f.options.walrus.publisher.load = async key => (await load(key)) ? { status: 'SIGNATURE_REQUIRED' } : null;
   await assert.rejects(f.provider.prepare({ rootId, signer, project: project(),
     assertBeforeSignature: async () => { f.state.account.address = id(999); },
   }), { code: 'MAKER_V8_NATIVE_CONTENT_WALLET_CHANGED' });
-  // The fixture's requestSignature throws an assertion if reached.
-  assert.equal(f.calls.filter(row => row[0] === 'upload').length, 1);
+  // Publisher.prepare only persists ciphertext. All three are now prepared
+  // before the first guard, while a changed wallet still cannot sign any.
+  assert.equal(f.calls.filter(row => row[0] === 'upload').length, 3);
+  assert.equal(signatureRequests, 0);
+  await f.provider.dispose();
+});
+
+test('production wrapper preserves deferred preparation and never invokes a final signature guard', async () => {
+  const f = setup();
+  const prepared = await f.provider.prepare({ rootId, signer, project: project(), deferStorage: true,
+    assertBeforeSignature: async () => assert.fail('Deferred production preparation must not request a signature') });
+  assert.equal(prepared.status, 'STORAGE_PREPARED');
+  assert.equal(prepared.uploads.length, 3);
+  assert.equal(f.calls.filter(row => row[0] === 'upload').length, 3);
+  assert.ok(prepared.uploads.every(row => row.owner === signer && row.mediaType === 'application/octet-stream'));
   await f.provider.dispose();
 });
 

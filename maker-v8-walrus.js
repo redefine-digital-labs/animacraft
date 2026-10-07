@@ -1,10 +1,13 @@
 import { WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt } from '@mysten/walrus';
 import { bcs } from '@mysten/sui/bcs';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import { TransactionDataBuilder } from '@mysten/sui/transactions';
+import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64, normalizeStructTag } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
+import { MakerV8DAppKitWalletError } from './maker-v8-dapp-kit-wallet.js';
+import { MakerV8BrowserError } from './maker-v8-browser.js';
+import { readMakerV8WalrusBatchObjectsV1, assertMakerV8WalrusBatchObjectsV1 } from './maker-v8-walrus-execution.js';
 
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
@@ -16,6 +19,7 @@ import {
 
 export const MAKER_V8_WALRUS_SCHEMA = 'animacraft.maker-v8-walrus-upload.v1';
 export const MAKER_V8_WALRUS_STORE_SCHEMA = 'animacraft.maker-v8-walrus-store.v1';
+export const MAKER_V8_WALRUS_BATCH_SCHEMA = 'animacraft.maker-v8-walrus-blob-batch.v1';
 export const MAKER_V8_WALRUS_MAINNET_RELAY = 'https://upload-relay.mainnet.walrus.space';
 // Per-blob ceiling, not a fixed fee or the total publication budget. The SDK
 // quotes the relay dynamically; gas and WAL storage are separate costs.
@@ -219,6 +223,7 @@ function assertRecord(value) {
     'schemaVersion', 'uploadId', 'revision', 'createdAt', 'updatedAt', 'status',
     'owner', 'mediaType', 'bytesBase64', 'byteLength', 'byteSha256', 'epochs',
     'deletable', 'encoded', 'transaction', 'upload', 'readback', 'error',
+    ...(Object.hasOwn(value, 'batchKey') ? ['batchKey'] : []),
   ], 'Walrus upload record');
   if (value.schemaVersion !== MAKER_V8_WALRUS_SCHEMA || !Number.isSafeInteger(value.revision)
     || value.revision < 1 || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
@@ -226,6 +231,9 @@ function assertRecord(value) {
     fail('MAKER_V8_WALRUS_RECORD_INVALID', 'Walrus upload record revision or time is invalid.', 'PERSISTENCE');
   }
   id(value.uploadId);
+  if (Object.hasOwn(value, 'batchKey') && !/^blob-batch:[0-9a-f]{64}$/.test(value.batchKey)) {
+    fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Upload batch identity is invalid.', 'PERSISTENCE');
+  }
   suiId(value.owner, 'owner');
   const bytes = canonicalBase64(value.bytesBase64, 'upload bytes', { empty: true });
   if (value.byteLength !== bytes.length || value.byteSha256 !== hashBytes(bytes)
@@ -244,6 +252,91 @@ function assertRecord(value) {
   }
   canonical(value);
   return value;
+}
+
+function batchIdentity({ owner, rootId, members }) {
+  suiId(owner, 'batch owner'); suiId(rootId, 'batch Root');
+  if (!Array.isArray(members) || members.length < 2 || members.length > 4 || new Set(members.map(member => member.uploadId)).size !== members.length) {
+    fail('MAKER_V8_WALRUS_BATCH_INVALID', 'A Player storage batch requires two to four fixed unpaid members.', 'VALIDATION');
+  }
+  members.forEach(member => {
+    exact(member, ['uploadId', 'byteSha256', 'epochs', 'blobId', 'rootHash', 'nonce'], 'batch member');
+    id(member.uploadId);
+    if (!HASH.test(member.byteSha256) || !Number.isInteger(member.epochs) || member.epochs < 1 || member.epochs > 53
+      || !BLOB_ID.test(member.blobId) || canonicalBase64(member.rootHash, 'batch root hash').length !== 32
+      || canonicalBase64(member.nonce, 'batch nonce').length !== 32) {
+      fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch member bytes or retention are invalid.', 'VALIDATION');
+    }
+  });
+  return `blob-batch:${digestFor({ schemaVersion: MAKER_V8_WALRUS_BATCH_SCHEMA, owner, rootId, members })}`;
+}
+
+function assertBatch(batch) {
+  exact(batch, ['schemaVersion', 'key', 'revision', 'owner', 'rootId', 'members', 'status', 'transaction',
+    'review', 'registration', 'uploads', 'readbacks', 'error'], 'Blob batch');
+  if (batch.schemaVersion !== MAKER_V8_WALRUS_BATCH_SCHEMA || batch.key !== batchIdentity(batch)
+    || !Number.isSafeInteger(batch.revision) || batch.revision < 1 || ![
+      'LEGACY', 'ENCODED', 'REGISTER_PREPARED', 'REGISTER_SIGNING', 'REGISTER_SIGNED', 'REGISTER_FINALIZED',
+      'UPLOADED', 'CERTIFY_PREPARED', 'CERTIFY_SIGNING', 'CERTIFY_SIGNED', 'COMPLETE', 'FAILED',
+    ].includes(batch.status) || !plain(batch.uploads) || !plain(batch.readbacks)) {
+    fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Durable batch identity or stage is invalid.', 'PERSISTENCE');
+  }
+  if (batch.transaction) {
+    const t = batch.transaction;
+    exact(t, ['stage', 'bytes', 'digest', 'kindSha256', 'signature', 'signedAt', 'broadcastAt'], 'Batch transaction');
+    transactionProof(t.bytes, { owner: batch.owner, digest: t.digest, kindSha256: t.kindSha256 });
+    if (!['REGISTER', 'CERTIFY'].includes(t.stage)) fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch transaction stage is invalid.', 'PERSISTENCE');
+    if (t.signature !== null) canonicalBase64(t.signature, 'batch signature');
+  }
+  const stage = batch.status.startsWith('REGISTER') ? 'REGISTER'
+    : batch.status.startsWith('CERTIFY') || batch.status === 'COMPLETE' ? 'CERTIFY' : null;
+  if (stage && batch.transaction?.stage !== stage
+    || ['ENCODED', 'LEGACY', 'UPLOADED'].includes(batch.status) && batch.transaction !== null
+    || /_(PREPARED|SIGNING)$/.test(batch.status) && (batch.transaction.signature !== null || batch.transaction.signedAt !== null)
+    || (batch.status.endsWith('_SIGNED') || ['REGISTER_FINALIZED', 'COMPLETE'].includes(batch.status))
+      && (!batch.transaction.signature || !Number.isSafeInteger(batch.transaction.signedAt))) {
+    fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch stage does not match its signed artifact.', 'PERSISTENCE');
+  }
+  if (stage && batch.status !== 'COMPLETE' && (!plain(batch.review) || batch.review.digest !== batch.transaction.digest
+    || batch.review.stage !== stage || canonical(batch.review.memberIds) !== canonical(batch.members.map(member => member.uploadId)))) {
+    fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch review does not match its transaction.', 'PERSISTENCE');
+  }
+  canonical(batch); return batch;
+}
+
+function assertBatchTransition(current, next) {
+  const transitions = {
+    ENCODED: ['REGISTER_PREPARED'], REGISTER_PREPARED: ['ENCODED', 'REGISTER_SIGNING'],
+    REGISTER_SIGNING: ['REGISTER_PREPARED', 'REGISTER_SIGNED', 'FAILED'],
+    REGISTER_SIGNED: ['REGISTER_FINALIZED', 'FAILED'], REGISTER_FINALIZED: ['UPLOADED'],
+    UPLOADED: ['CERTIFY_PREPARED'], CERTIFY_PREPARED: ['UPLOADED', 'CERTIFY_SIGNING'],
+    CERTIFY_SIGNING: ['CERTIFY_PREPARED', 'CERTIFY_SIGNED', 'FAILED'], CERTIFY_SIGNED: ['COMPLETE', 'FAILED'],
+    COMPLETE: [], FAILED: [], LEGACY: [],
+  };
+  if (next.status !== current.status && !transitions[current.status].includes(next.status)
+    || ['COMPLETE', 'FAILED', 'LEGACY'].includes(current.status)) {
+    fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch cannot skip or reopen a transaction stage.', 'PERSISTENCE');
+  }
+  const preservesBytes = /_(SIGNING|SIGNED)$/.test(current.status) || current.status === 'REGISTER_FINALIZED';
+  if (preservesBytes && next.transaction !== null && ['stage', 'bytes', 'digest', 'kindSha256'].some(field =>
+    current.transaction[field] !== next.transaction[field])
+    || current.transaction?.signature && next.transaction !== null && current.transaction.signature !== next.transaction.signature
+    || current.registration && canonical(current.registration) !== canonical(next.registration)
+    || Object.keys(current.uploads).some(key => canonical(current.uploads[key]) !== canonical(next.uploads[key] ?? null))) {
+    fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Signed bytes or completed member evidence cannot be replaced.', 'PERSISTENCE');
+  }
+}
+
+function batchView(batch) {
+  assertBatch(batch);
+  return freeze({ key: batch.key, revision: batch.revision, rootId: batch.rootId, owner: batch.owner,
+    memberIds: batch.members.map(member => member.uploadId),
+    status: ['ENCODED', 'REGISTER_PREPARED', 'UPLOADED', 'CERTIFY_PREPARED'].includes(batch.status) ? 'SIGNATURE_REQUIRED'
+      : ['REGISTER_SIGNING', 'REGISTER_SIGNED', 'REGISTER_FINALIZED', 'CERTIFY_SIGNING', 'CERTIFY_SIGNED'].includes(batch.status)
+        ? 'RECOVERY_REQUIRED' : batch.status,
+    stage: batch.status.startsWith('CERTIFY') || ['UPLOADED', 'COMPLETE'].includes(batch.status) ? 'CERTIFY' : 'REGISTER',
+    reason: batch.status.endsWith('_SIGNING') ? 'SIGNATURE_OUTCOME_UNKNOWN' : batch.error?.code ?? null,
+    transactionDigest: batch.transaction?.digest ?? null });
 }
 
 /** Dedicated fresh-v8 IndexedDB store. No pre-v8 database is opened or upgraded. */
@@ -302,6 +395,92 @@ export function createMakerV8WalrusPersistenceV8(indexedDB = globalThis.indexedD
     create: (record) => write('create', null, record),
     load: read,
     compareAndSwap: (current, next) => write('cas', current, next),
+    async claimBlobBatch({ owner, rootId, members }) {
+      await persistent();
+      const key = batchIdentity({ owner, rootId, members });
+      const db = await database();
+      const tx = db.transaction([STORE, BINDING_STORE], 'readwrite', { durability: 'strict' });
+      const done = transactionDone(tx), uploads = tx.objectStore(STORE), bindings = tx.objectStore(BINDING_STORE);
+      try {
+        const current = await requestResult(bindings.get(key));
+        if (current) {
+          if (current.schemaVersion !== MAKER_V8_WALRUS_BATCH_SCHEMA || current.owner !== owner
+            || current.rootId !== rootId || canonical(current.members) !== canonical(members)) {
+            fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Durable batch membership drifted.', 'PERSISTENCE');
+          }
+          await done; return freeze(current);
+        }
+        const records = await Promise.all(members.map(member => requestResult(uploads.get(member.uploadId))));
+        records.forEach((record, i) => {
+          if (!record) fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Prepare every member before claiming a batch.', 'PERSISTENCE');
+          assertRecord(record);
+          const member = members[i];
+          if (record.owner !== owner || record.byteSha256 !== member.byteSha256 || record.epochs !== member.epochs
+            || record.encoded.blobId !== member.blobId || record.encoded.rootHash !== member.rootHash
+            || record.encoded.nonce !== member.nonce || record.batchKey) {
+            fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch differs from fixed uploads or another batch already owns a member.', 'PERSISTENCE');
+          }
+        });
+        // The selection and invalidation of held standalone reviews are one
+        // transaction. Signed/paid members permanently retain serial topology.
+        const status = records.every(record => record.status === 'ENCODED' && record.transaction === null) ? 'ENCODED' : 'LEGACY';
+        const batch = assertBatch({ schemaVersion: MAKER_V8_WALRUS_BATCH_SCHEMA, key, revision: 1, owner, rootId,
+          members: clone(members), status, transaction: null, review: null, registration: null, uploads: {}, readbacks: {}, error: null });
+        if (status === 'ENCODED') records.forEach(record => uploads.put(clone(nextRecord(record, record.updatedAt, { batchKey: key }))));
+        bindings.add(batch);
+        await done;
+        const reread = await this.loadPublicationBinding(key);
+        if (canonical(reread) !== canonical(batch)) fail('MAKER_V8_WALRUS_DURABLE_REREAD_FAILED', 'Batch claim was not durably observed.', 'PERSISTENCE');
+        return freeze(reread);
+      } catch (error) {
+        try { tx.abort(); } catch { /* Already terminal. */ }
+        await done.catch(() => {}); throw error;
+      }
+    },
+    async compareAndSwapBlobBatch(current, next) {
+      await persistent(); assertBatch(current); assertBatch(next);
+      assertBatchTransition(current, next);
+      if (current.key !== next.key || current.owner !== next.owner || current.rootId !== next.rootId
+        || canonical(current.members) !== canonical(next.members) || next.revision !== current.revision + 1) {
+        fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch identity cannot be replaced.', 'PERSISTENCE');
+      }
+      const db = await database();
+      const tx = db.transaction([STORE, BINDING_STORE], 'readwrite', { durability: 'strict' });
+      const done = transactionDone(tx), uploads = tx.objectStore(STORE), bindings = tx.objectStore(BINDING_STORE);
+      try {
+        const stored = await requestResult(bindings.get(current.key));
+        if (!stored || canonical(stored) !== canonical(current)) fail('MAKER_V8_WALRUS_CAS_MISMATCH', 'Batch changed in another tab.', 'PERSISTENCE');
+        const records = await Promise.all(next.members.map(member => requestResult(uploads.get(member.uploadId))));
+        records.forEach((record, i) => {
+          const member = next.members[i];
+          if (!record || record.batchKey !== next.key || record.owner !== next.owner
+            || record.byteSha256 !== member.byteSha256 || record.epochs !== member.epochs
+            || canonical(record.encoded) !== canonical({ blobId: member.blobId, rootHash: member.rootHash,
+              nonce: member.nonce, unencodedSize: record.byteLength })) {
+            fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch member changed before durable write.', 'PERSISTENCE');
+          }
+          assertRecord(record);
+          if (next.status === 'COMPLETE') {
+            const upload = next.uploads[member.uploadId], proof = next.readbacks[member.uploadId];
+            if (!upload || !proof || proof.blobId !== member.blobId || proof.sha256 !== member.byteSha256
+              || proof.byteLength !== record.byteLength || proof.blobObjectId !== upload.blobObjectId
+              || next.transaction?.stage !== 'CERTIFY' || !next.transaction.signature) {
+              fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Complete batch lacks a certified member.', 'PERSISTENCE');
+            }
+            const transaction = { ...clone(next.transaction) };
+            uploads.put(clone(nextRecord(record, record.updatedAt, { status: 'COMPLETE', upload, readback: proof,
+              transaction, error: null })));
+          }
+        });
+        bindings.put(clone(next)); await done;
+        const reread = await this.loadPublicationBinding(next.key);
+        if (canonical(reread) !== canonical(next)) fail('MAKER_V8_WALRUS_DURABLE_REREAD_FAILED', 'Batch write was not observed.', 'PERSISTENCE');
+        return freeze(assertBatch(reread));
+      } catch (error) {
+        try { tx.abort(); } catch { /* Already terminal. */ }
+        await done.catch(() => {}); throw error;
+      }
+    },
     async bindAssetLayout(key, { schemaVersion, owner, sourceSha256, source }) {
       await persistent();
       const expectedHash = hashBytes(encoder.encode(JSON.stringify({ schemaVersion, owner, source })));
@@ -326,6 +505,7 @@ export function createMakerV8WalrusPersistenceV8(indexedDB = globalThis.indexedD
         records.forEach((record, i) => {
           if (!record) return;
           assertRecord(record);
+          if (record.batchKey) fail('MAKER_V8_WALRUS_BATCH_REQUIRED', 'A fixed Blob batch cannot become a Quilt layout.', 'PERSISTENCE');
           if (record.owner !== owner || record.byteSha256 !== source[i].sha256 || record.mediaType !== source[i].mediaType) {
             fail('MAKER_V8_WALRUS_LAYOUT_INVALID', 'Asset layout differs from durable upload bytes.', 'PERSISTENCE');
           }
@@ -405,7 +585,7 @@ const unknownQuote = quotedAt => ({ quotedAt, walrusStorageCostFrost: null,
  * or withdrawal reservation maxima. Unknown SDK shapes deliberately stay unknown.
  * Authority is read by the same SDK/client that built the transaction. */
 export function makerV8WalrusTransactionQuote({ bytesBase64, stage, authority, owner,
-  epochs, byteLength, blobObjectId = null, quotedAt }) {
+  epochs, byteLength, blobObjectId = null, members = null, quotedAt }) {
   const unknown = freeze(unknownQuote(quotedAt));
   try {
     const parsed = bcs.TransactionData.parse(fromBase64(bytesBase64));
@@ -417,6 +597,9 @@ export function makerV8WalrusTransactionQuote({ bytesBase64, stage, authority, o
     const { inputs, commands } = data.kind.ProgrammableTransaction;
     const pkg = authority.system.package_id;
     const require = condition => { if (!condition) throw new Error('unproven payment'); };
+    const expected = members ?? [{ epochs, byteLength, blobObjectId }];
+    require(Array.isArray(expected) && expected.length >= 1 && expected.length <= 4);
+    if (members) require(expected.length > 1 && new Set(expected.map(member => member.blobId)).size === expected.length);
     const pure = (arg, codec) => {
       const bytes = fromBase64(inputs[arg?.Input]?.Pure?.bytes ?? '');
       const value = codec.parse(bytes);
@@ -480,39 +663,51 @@ export function makerV8WalrusTransactionQuote({ bytesBase64, stage, authority, o
       } else require(Boolean(command.SplitCoins || command.MergeCoins || command.TransferObjects));
     }
     if (stage === 'CERTIFY') {
-      require(commands.length === 1 && systemCalls.length === 1
-        && systemCalls[0].call.function === 'certify_blob'
-        && objectId(systemCalls[0].call.arguments[1]) === blobObjectId);
+      require(commands.length === expected.length && systemCalls.length === expected.length
+        && expected.every(member => SUI_ID.test(member.blobObjectId ?? '') && !/^0x0+$/.test(member.blobObjectId))
+        && new Set(expected.map(member => member.blobObjectId)).size === expected.length);
+      systemCalls.forEach(({ call }, index) => require(call.function === 'certify_blob'
+        && objectId(call.arguments[1]) === expected[index].blobObjectId));
       return freeze({ quotedAt, walrusStorageCostFrost: '0', walrusWriteCostFrost: '0',
         walrusTotalCostFrost: '0', relayTipMist: '0', verified: true });
     }
-    require(stage === 'REGISTER' && systemCalls.length === 2);
-    const storage = systemCalls.find(({ call }) => call.function === 'reserve_space');
-    const register = systemCalls.find(({ call }) => call.function === 'register_blob');
-    require(storage && register && storage.index < register.index
-      && same(register.call.arguments[1], { Result: storage.index })
-      && String(pure(storage.call.arguments[2], bcs.u32())) === String(epochs)
-      && String(pure(register.call.arguments[4], bcs.u64())) === String(byteLength)
-      && pure(register.call.arguments[6], bcs.bool()) === false);
+    require(stage === 'REGISTER' && systemCalls.length === expected.length * 2);
+    const stores = systemCalls.filter(({ call }) => call.function === 'reserve_space');
+    const registers = systemCalls.filter(({ call }) => call.function === 'register_blob');
+    require(stores.length === expected.length && registers.length === expected.length);
     const walType = normalizeStructTag(authority.walCoinType);
     require(walType !== SUI_TYPE);
-    const storageCost = amount(storage.call.arguments[3], storage.index, walType, true);
-    const writeCost = amount(register.call.arguments[7], register.index, walType, true);
-    require(!same(storage.call.arguments[3], register.call.arguments[7]));
-    let relayTip = 0n, tips = 0, blobs = 0;
+    let storageCost = 0n, writeCost = 0n;
+    for (const [index, member] of expected.entries()) {
+      const storage = stores[index], register = registers[index];
+      require(storage.index < register.index
+        && same(register.call.arguments[1], { Result: storage.index })
+        && String(pure(storage.call.arguments[2], bcs.u32())) === String(member.epochs)
+        && String(pure(register.call.arguments[4], bcs.u64())) === String(member.byteLength)
+        && pure(register.call.arguments[6], bcs.bool()) === false);
+      if (members) require(blobIdFromInt(pure(register.call.arguments[2], bcs.u256())) === member.blobId
+        && toBase64(bcs.u256().serialize(pure(register.call.arguments[3], bcs.u256())).toBytes()) === member.rootHash);
+      storageCost += amount(storage.call.arguments[3], storage.index, walType, true);
+      writeCost += amount(register.call.arguments[7], register.index, walType, true);
+      require(!same(storage.call.arguments[3], register.call.arguments[7]));
+    }
+    let relayTip = 0n, tips = 0;
+    const transferredBlobs = new Set();
     for (const [index, command] of commands.entries()) {
       if (!command.TransferObjects) continue;
       const transfer = command.TransferObjects;
       require(transfer.objects.length === 1);
-      if (same(transfer.objects[0], { Result: register.index })) {
-        require(pure(transfer.address, bcs.Address) === owner); blobs += 1;
+      const registered = registers.find(register => same(transfer.objects[0], { Result: register.index }));
+      if (registered) {
+        require(pure(transfer.address, bcs.Address) === owner && !transferredBlobs.has(registered.index));
+        transferredBlobs.add(registered.index);
       } else {
         require(SUI_ID.test(authority.relayAddress ?? '')
           && pure(transfer.address, bcs.Address) === authority.relayAddress);
         relayTip += amount(transfer.objects[0], index, SUI_TYPE, false); tips += 1;
       }
     }
-    require(blobs === 1 && (authority.relayAddress === null ? tips === 0 : tips === 1));
+    require(transferredBlobs.size === expected.length && (authority.relayAddress === null ? tips === 0 : tips === expected.length));
     return freeze({ quotedAt, walrusStorageCostFrost: storageCost.toString(),
       walrusWriteCostFrost: writeCost.toString(), walrusTotalCostFrost: (storageCost + writeCost).toString(),
       relayTipMist: relayTip.toString(), verified: true });
@@ -571,6 +766,7 @@ export function createMakerV8WalrusPublisherV8({
   aggregator = MAKER_V8_WALRUS_MAINNET_AGGREGATOR,
   now = () => Date.now(),
   quoteAuthority = null,
+  locks = globalThis.navigator?.locks,
 } = {}) {
   for (const method of [
     'computeBlobMetadata', 'writeBlobFlow', 'certifyBlobTransaction',
@@ -687,7 +883,7 @@ export function createMakerV8WalrusPublisherV8({
       digest: transaction.digest,
       signer: record.owner,
     });
-    if (!verified || verified.verified === false
+    if (!verified || verified.verified !== true
       || verified.bytes && verified.bytes !== transaction.bytes
       || verified.digest && verified.digest !== transaction.digest
       || verified.signer && verified.signer !== record.owner) {
@@ -720,7 +916,7 @@ export function createMakerV8WalrusPublisherV8({
     return transaction;
   };
 
-  const upload = async (record) => {
+  const upload = async (record, blobObjectId = null) => {
     const { bytes } = await reconstructMetadata(record);
     const transaction = record.transaction;
     const flow = walrusClient.writeBlobFlow({
@@ -730,11 +926,13 @@ export function createMakerV8WalrusPublisherV8({
         blobId: record.encoded.blobId,
         txDigest: transaction.digest,
         nonce: record.encoded.nonce,
+        ...(blobObjectId ? { blobObjectId } : {}),
       },
     });
     await flow.encode();
     const result = await flow.upload({ digest: transaction.digest, deletable: false });
     if (result.blobId !== record.encoded.blobId || typeof result.blobObjectId !== 'string'
+      || blobObjectId && result.blobObjectId !== blobObjectId
       || typeof result.certificate !== 'string') {
       fail('MAKER_V8_WALRUS_RELAY_RESULT_INVALID', 'Walrus relay returned invalid upload evidence.', 'UPLOAD');
     }
@@ -836,6 +1034,121 @@ export function createMakerV8WalrusPublisherV8({
   };
 
   const reviews = new Map();
+  const batchExclusive = async (key, operation) => {
+    requireMethod(locks, 'request', 'batch locks');
+    return locks.request(key, { mode: 'exclusive', ifAvailable: true }, lock => {
+      if (!lock) fail('MAKER_V8_WALRUS_BATCH_BUSY', 'This batch is already signing or recovering in another tab.', 'CONTEXT');
+      return operation();
+    });
+  };
+  const saveBatch = async (batch, patch) => {
+    requireMethod(persistence, 'compareAndSwapBlobBatch', 'persistence');
+    return persistence.compareAndSwapBlobBatch(batch, assertBatch({ ...clone(batch), ...clone(patch), revision: batch.revision + 1 }));
+  };
+  const loadBatchRecords = async batch => {
+    assertBatch(batch);
+    if (batch.status === 'LEGACY') fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch retains existing serial topology.', 'CONTEXT');
+    const records = await Promise.all(batch.members.map(member => persistence.load(member.uploadId)));
+    records.forEach((record, index) => {
+      const member = batch.members[index];
+      if (!record || record.batchKey !== batch.key || record.owner !== batch.owner
+        || record.byteSha256 !== member.byteSha256 || record.epochs !== member.epochs
+        || record.encoded.blobId !== member.blobId || record.encoded.rootHash !== member.rootHash
+        || record.encoded.nonce !== member.nonce) {
+        fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch member identity changed.', 'CONTEXT');
+      }
+    });
+    return records;
+  };
+  const settleBatch = async input => {
+    let batch = input;
+    const records = await loadBatchRecords(batch);
+    if (batch.status.endsWith('_SIGNING') || batch.status.endsWith('_SIGNED')) {
+      if (batch.status.endsWith('_SIGNED')) await verifySigned(batch);
+      await assertPinned();
+      const query = await rpc.queryTransaction({ digest: batch.transaction.digest });
+      if (!plain(query) || query.digest !== batch.transaction.digest) fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Batch query returned another digest.', 'RECOVERY');
+      if (query.status === 'FINALIZED_FAILURE') return saveBatch(batch, { status: 'FAILED',
+        error: { code: 'MAKER_V8_WALRUS_TRANSACTION_FAILED', message: query.error?.message ?? 'Batch transaction failed.' } });
+      if (query.status === 'NOT_FOUND') {
+        if (query.absence?.chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER) fail('MAKER_V8_WALRUS_ABSENCE_INVALID', 'Batch replay requires exact Mainnet absence.', 'RECOVERY');
+        if (batch.status.endsWith('_SIGNING')) return batch; // Unknown signature: never request a replacement.
+        await broadcast(batch);
+        if (batch.transaction.broadcastAt === null) batch = await saveBatch(batch, { transaction: {
+          ...clone(batch.transaction), broadcastAt: clock(),
+        } });
+        return batch;
+      }
+      if (query.status !== 'FINALIZED_SUCCESS') fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Unsupported batch finality.', 'RECOVERY');
+      if (batch.status.endsWith('_SIGNING')) {
+        const transport = await rpc.getSuiClient();
+        const evidence = await transport.getFinalizedTransactionEvidence({ digest: batch.transaction.digest });
+        if (evidence.digest !== batch.transaction.digest || !UINT.test(String(evidence.checkpoint ?? ''))
+          || evidence.transactionBcsBase64 !== batch.transaction.bytes || evidence.effectsStatus?.success !== true) {
+          fail('MAKER_V8_WALRUS_TRANSACTION_DRIFT', 'Unknown signature finalized with different bytes.', 'RECOVERY');
+        }
+        let signature = null;
+        for (const candidate of evidence.signatures ?? []) {
+          try {
+            await verifySigned({ owner: batch.owner, transaction: { ...batch.transaction, signature: candidate } });
+            signature = candidate; break;
+          } catch { /* Try only the signatures in this exact finalized transaction. */ }
+        }
+        if (!signature) fail('MAKER_V8_WALRUS_SIGNATURE_INVALID', 'Finalized batch lacks this owner signature.', 'RECOVERY');
+        batch = await saveBatch(batch, { status: `${batch.transaction.stage}_SIGNED`,
+          transaction: { ...clone(batch.transaction), signature, signedAt: clock() } });
+        await verifySigned(batch);
+      }
+      if (batch.status === 'REGISTER_SIGNED') {
+        const transport = await rpc.getSuiClient();
+        const mapped = await readMakerV8WalrusBatchObjectsV1({ transport, transactionDigest: batch.transaction.digest,
+          transactionBytesBase64: batch.transaction.bytes, owner: batch.owner,
+          members: records.map(record => ({ uploadId: record.uploadId, blobId: record.encoded.blobId,
+            byteLength: record.byteLength, epochs: record.epochs })) });
+        batch = await saveBatch(batch, { status: 'REGISTER_FINALIZED',
+          registration: { transaction: clone(batch.transaction), ...clone(mapped) }, error: null });
+      } else if (batch.status === 'CERTIFY_SIGNED') {
+        await validateBatchUploads(batch, records, { complete: true });
+        const readbacks = {};
+        for (const record of records) readbacks[record.uploadId] = await readback({ ...record, upload: batch.uploads[record.uploadId] });
+        return saveBatch(batch, { status: 'COMPLETE', readbacks, error: null });
+      }
+    }
+    if (batch.status === 'REGISTER_FINALIZED') {
+      const mapping = await validateBatchUploads(batch, records);
+      for (const record of records) {
+        if (batch.uploads[record.uploadId]) continue;
+        const objectId = mapping.find(member => member.uploadId === record.uploadId).blobObjectId;
+        const uploaded = await upload({ ...record, transaction: batch.registration.transaction }, objectId);
+        batch = await saveBatch(batch, { uploads: { ...clone(batch.uploads), [record.uploadId]: uploaded } });
+      }
+      batch = await saveBatch(batch, { status: 'UPLOADED', transaction: null, review: null, error: null });
+    }
+    return batch;
+  };
+  const validateBatchUploads = async (batch, records, { complete = false } = {}) => {
+    if (!batch.registration) fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch upload requires exact registration evidence.', 'RECOVERY');
+    await verifySigned({ owner: batch.owner, transaction: batch.registration.transaction });
+    const mapping = assertMakerV8WalrusBatchObjectsV1(batch.registration.evidence, {
+      transactionDigest: batch.registration.transaction.digest, owner: batch.owner,
+      members: records.map(record => ({ uploadId: record.uploadId, blobId: record.encoded.blobId,
+        byteLength: record.byteLength, epochs: record.epochs })),
+    });
+    if (canonical(mapping) !== canonical(batch.registration.mapping)
+      || Object.keys(batch.uploads).some(key => !records.some(record => record.uploadId === key))) {
+      fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Batch registration or upload membership drifted.', 'RECOVERY');
+    }
+    for (const [index, record] of records.entries()) {
+      const uploaded = batch.uploads[record.uploadId];
+      if (!uploaded && !complete) continue;
+      if (!uploaded || uploaded.blobObjectId !== mapping[index].blobObjectId
+        || uploaded.registrationDigest !== batch.registration.transaction.digest
+        || typeof uploaded.certificate !== 'string' || !uploaded.certificate) {
+        fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Cached relay certificate belongs to another member.', 'RECOVERY');
+      }
+    }
+    return mapping;
+  };
   const api = {
     schemaVersion: MAKER_V8_WALRUS_SCHEMA,
     async getNumShards() { return (await walrusClient.systemState()).committee.n_shards; },
@@ -853,8 +1166,147 @@ export function createMakerV8WalrusPublisherV8({
       return persistence.bindAssetLayout(...args);
     },
 
+    async prepareBatch({ rootId, owner, uploadIds }) {
+      requireMethod(persistence, 'claimBlobBatch', 'persistence');
+      if (!Array.isArray(uploadIds) || uploadIds.length !== 4 || new Set(uploadIds).size !== 4) {
+        fail('MAKER_V8_WALRUS_BATCH_INVALID', 'The Player batch must name exactly four uploads.', 'VALIDATION');
+      }
+      const records = await Promise.all(uploadIds.map(uploadId => persistence.load(id(uploadId))));
+      if (records.some(record => !record || record.owner !== owner)
+        || new Set(records.map(record => record.encoded.blobId)).size !== 4) {
+        fail('MAKER_V8_WALRUS_BATCH_INVALID', 'Prepare four distinct exact-owner Blobs before batching.', 'PERSISTENCE');
+      }
+      const members = records.map(record => ({ uploadId: record.uploadId, byteSha256: record.byteSha256,
+        epochs: record.epochs, blobId: record.encoded.blobId, rootHash: record.encoded.rootHash, nonce: record.encoded.nonce }));
+      // Retain a previously chosen topology, including a legacy signed WAL.
+      const original = await persistence.loadPublicationBinding(batchIdentity({ owner, rootId, members }));
+      if (original) return freeze(assertBatch(original));
+      // A certified render (or native file) needs no second storage payment.
+      // Its original COMPLETE record stays untouched; group only unpaid members.
+      const unpaid = members.filter((_, index) => records[index].status !== 'COMPLETE');
+      if (unpaid.length < 2) return freeze({ status: 'LEGACY' });
+      return persistence.claimBlobBatch({ owner, rootId, members: unpaid });
+    },
+
+    async prepareBatchReview(key) {
+      requireMethod(persistence, 'loadPublicationBinding', 'persistence');
+      let batch = await persistence.loadPublicationBinding(key);
+      const records = await loadBatchRecords(batch);
+      if (['REGISTER_PREPARED', 'CERTIFY_PREPARED'].includes(batch.status)) {
+        const data = bcs.TransactionData.parse(fromBase64(batch.transaction.bytes)).V1;
+        const epoch = integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch');
+        if (BigInt(epoch) <= BigInt(data.expiration.ValidDuring?.maxEpoch ?? '-1')) {
+          return freeze({ ...clone(batch.review), revision: batch.revision });
+        }
+        // Only a conclusively unsigned review can be rebuilt. SIGNING/SIGNED
+        // always retain the original bytes, including an expired envelope.
+        batch = await saveBatch(batch, { status: batch.transaction.stage === 'REGISTER' ? 'ENCODED' : 'UPLOADED',
+          transaction: null, review: null });
+      }
+      if (!['ENCODED', 'UPLOADED'].includes(batch.status)) return null;
+      if (batch.status === 'UPLOADED') await validateBatchUploads(batch, records, { complete: true });
+      for (const method of ['registerBlobTransaction', 'sendUploadRelayTip']) requireMethod(walrusClient, method, 'walrusClient');
+      const transaction = new Transaction(); transaction.setSender(batch.owner);
+      for (const record of records) {
+        if (batch.status === 'ENCODED') {
+          if (record.status !== 'ENCODED' || record.transaction !== null) {
+            fail('MAKER_V8_WALRUS_BATCH_INVALID', 'A claimed unsigned member acquired standalone transaction state.', 'CONTEXT');
+          }
+          const { metadata } = await reconstructMetadata(record);
+          transaction.add(walrusClient.sendUploadRelayTip({ size: record.byteLength,
+            blobDigest: metadata.blobDigest, nonce: metadata.nonce }));
+          walrusClient.registerBlobTransaction({ transaction, size: record.byteLength, epochs: record.epochs,
+            owner: record.owner, blobId: metadata.blobId, rootHash: metadata.rootHash, deletable: false,
+            attributes: { contentType: record.mediaType, sha256: record.byteSha256 } });
+        } else {
+          const uploaded = batch.uploads[record.uploadId];
+          if (!uploaded?.certificate || !uploaded?.blobObjectId) fail('MAKER_V8_WALRUS_UPLOAD_EVIDENCE_REQUIRED', 'Every batch certificate is required.', 'UPLOAD');
+          walrusClient.certifyBlobTransaction({ transaction, blobId: record.encoded.blobId,
+            blobObjectId: uploaded.blobObjectId, certificate: uploaded.certificate, deletable: false });
+        }
+      }
+      await expiration(transaction, batch.owner);
+      const bytes = toBase64(await transaction.build({ client: buildClient }));
+      const stage = batch.status === 'ENCODED' ? 'REGISTER' : 'CERTIFY';
+      const proof = transactionProof(bytes, { owner: batch.owner });
+      const build = freeze({ stage, bytes, digest: proof.digest, kindSha256: proof.kindSha256 });
+      const quotedAt = new Date(clock()).toISOString();
+      const members = records.map(record => ({ ...record.encoded, byteLength: record.byteLength,
+        epochs: record.epochs, blobObjectId: batch.uploads[record.uploadId]?.blobObjectId ?? null }));
+      let quote = freeze(unknownQuote(quotedAt));
+      if (typeof quoteAuthority === 'function') quote = makerV8WalrusTransactionQuote({ bytesBase64: bytes,
+        stage, authority: await quoteAuthority(stage), owner: batch.owner, members, quotedAt });
+      const data = bcs.TransactionData.parse(fromBase64(bytes)).V1;
+      const reread = await persistence.loadPublicationBinding(key);
+      if (canonical(batch) !== canonical(reread)) fail('MAKER_V8_WALRUS_REVIEW_STALE', 'Batch changed during review.', 'CONTEXT');
+      const review = freeze({ id: key, revision: batch.revision + 1, stage, status: 'SIGNATURE_REQUIRED',
+        digest: build.digest, memberIds: records.map(record => record.uploadId),
+        gasBudgetMist: String(data.gasData.budget), gasPriceMist: String(data.gasData.price),
+        storageCostAtomic: quote.walrusStorageCostFrost, relayTipMist: quote.relayTipMist, quote });
+      batch = await saveBatch(batch, { status: `${stage}_PREPARED`, review,
+        transaction: { ...clone(build), signature: null, signedAt: null, broadcastAt: null } });
+      return review;
+    },
+
+    async loadBatch(key) {
+      const batch = await persistence.loadPublicationBinding(key);
+      return batch ? batchView(batch) : null;
+    },
+
+    async signBatchReviewed(key, review, assertCurrent) {
+      if (typeof assertCurrent !== 'function') fail('MAKER_V8_WALRUS_SIGNATURE_GUARD_REQUIRED', 'Batch signing requires the current visible intent guard.', 'SIGNING');
+      return batchExclusive(key, async () => {
+        await persistence.requirePersistentStorage();
+        let batch = await persistence.loadPublicationBinding(key);
+        await loadBatchRecords(batch);
+        if (!['REGISTER_PREPARED', 'CERTIFY_PREPARED'].includes(batch.status)
+          || canonical({ ...batch.review, revision: batch.revision }) !== canonical(review)
+          || batch.review.quote.verified !== true) fail('MAKER_V8_WALRUS_REVIEW_STALE', 'Review the exact verified batch again.', 'CONTEXT');
+        await assertPinned(); await assertCurrent();
+        if (batch.transaction.stage === 'CERTIFY') await validateBatchUploads(batch, await loadBatchRecords(batch), { complete: true });
+        const account = await wallet.getCurrentAccount();
+        if (account?.address !== batch.owner || account?.network !== 'mainnet') fail('MAKER_V8_WALRUS_ACCOUNT_DRIFT', 'Batch owner differs from current wallet.', 'CONTEXT');
+        const data = bcs.TransactionData.parse(fromBase64(batch.transaction.bytes)).V1;
+        const epoch = integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch');
+        if (BigInt(epoch) > BigInt(data.expiration.ValidDuring?.maxEpoch ?? '-1')) fail('MAKER_V8_WALRUS_REVIEW_EXPIRED', 'This unsigned batch review expired; prepare a new review before signing.', 'CONTEXT');
+        await assertCurrent();
+        batch = await saveBatch(batch, { status: `${batch.transaction.stage}_SIGNING` });
+        let signed;
+        try {
+          signed = await wallet.signExactTransaction({ bytes: batch.transaction.bytes,
+            digest: batch.transaction.digest, signer: batch.owner });
+        } catch (error) {
+          const rejected = (error instanceof MakerV8DAppKitWalletError && error.code === 'MAKER_V8_DAPP_KIT_WALLET_REQUEST_REJECTED')
+            || (error instanceof MakerV8BrowserError && error.code === 'MAKER_V8_BROWSER_WALLET_REQUEST_REJECTED');
+          if (rejected && error.definitiveRejection === true && error.signedArtifactCreated === false) {
+            batch = await saveBatch(batch, { status: `${batch.transaction.stage}_PREPARED` });
+          }
+          throw error;
+        }
+        if (!plain(signed) || signed.bytes !== batch.transaction.bytes || signed.digest !== batch.transaction.digest
+          || signed.signer !== batch.owner || typeof signed.signature !== 'string') fail('MAKER_V8_WALRUS_SIGNED_ARTIFACT_DRIFT', 'Wallet changed the exact batch.', 'SIGNING');
+        const transaction = signedTransaction(batch, batch.transaction.stage, signed.bytes, signed.signature, clock());
+        await verifySigned({ owner: batch.owner, transaction });
+        batch = await saveBatch(batch, { status: `${transaction.stage}_SIGNED`, transaction });
+        const cold = assertBatch(await persistence.loadPublicationBinding(key));
+        if (canonical(cold) !== canonical(batch)) fail('MAKER_V8_WALRUS_DURABLE_REREAD_FAILED', 'Signed batch was not durably observed.', 'PERSISTENCE');
+        await verifySigned(cold);
+        return batchView(cold); // Signing never hides a broadcast in the wallet operation.
+      });
+    },
+
+    async resumeBatch(key) {
+      return batchExclusive(key, async () => {
+        await persistence.requirePersistentStorage();
+        const batch = assertBatch(await persistence.loadPublicationBinding(key));
+        if (['COMPLETE', 'FAILED', 'LEGACY'].includes(batch.status)) return batchView(batch);
+        return batchView(await settleBatch(batch));
+      });
+    },
+
     async prepareReview(uploadId) {
       const record = await persistence.load(id(uploadId));
+      if (record?.batchKey) fail('MAKER_V8_WALRUS_BATCH_REQUIRED', 'Review the fixed batch instead of one member.', 'CONTEXT');
       if (!record || !['ENCODED', 'UPLOADED'].includes(record.status)) return null;
       const build = record.status === 'ENCODED' ? await buildRegister(record) : await buildCertify(record);
       assertExpectedUpload(await persistence.load(uploadId), { ...recordView(record), status: publicStatus(record) });
@@ -930,6 +1382,7 @@ export function createMakerV8WalrusPublisherV8({
       await persistence.requirePersistentStorage();
       let record = await persistence.load(id(uploadId));
       if (!record) fail('MAKER_V8_WALRUS_NOT_FOUND', 'Walrus upload was not found.', 'PERSISTENCE');
+      if (record.batchKey) fail('MAKER_V8_WALRUS_BATCH_REQUIRED', 'Sign the fixed batch instead of one member.', 'CONTEXT');
       assertExpectedUpload(record, expected);
       if (record.status.endsWith('_SIGNED')) return api.resume(uploadId);
       if (record.status === 'COMPLETE' || record.status === 'FAILED') return recordView(record);
@@ -972,6 +1425,7 @@ export function createMakerV8WalrusPublisherV8({
       await persistence.requirePersistentStorage();
       let record = await persistence.load(id(uploadId));
       if (!record) fail('MAKER_V8_WALRUS_NOT_FOUND', 'Walrus upload was not found.', 'PERSISTENCE');
+      if (record.batchKey) fail('MAKER_V8_WALRUS_BATCH_REQUIRED', 'Recover the fixed batch instead of one member.', 'CONTEXT');
       assertExpectedUpload(record, expected);
       if (record.status === 'REGISTER_FINALIZED') {
         const uploaded = await upload(record);

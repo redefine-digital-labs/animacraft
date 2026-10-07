@@ -274,6 +274,8 @@ function harness({
   inventory = [],
   inventoryLoader = null,
   uploadStatus = 'COMPLETE',
+  storageTopology = 'LEGACY',
+  waitForBatchFinality = async () => {},
   playerData = playerFixture(),
   selections = [structuredClone(BASE_SELECTION)],
   colors = [],
@@ -361,9 +363,17 @@ function harness({
   };
   let durable = null;
   let currentUpload = null;
+  let batchState = null;
+  nativeJournal.renderBindings ??= new Map();
   const walrus = {
     publisher: {
       async load() { return currentUpload; },
+      async loadPublicationBinding(key) { return structuredClone(nativeJournal.renderBindings.get(key) ?? null); },
+      async savePublicationBinding(key, expectedRevision, value) {
+        assert.equal(nativeJournal.renderBindings.get(key)?.revision ?? null, expectedRevision);
+        const row = { ...structuredClone(value), key, revision: (expectedRevision ?? 0) + 1 };
+        nativeJournal.renderBindings.set(key, row); return structuredClone(row);
+      },
       async prepare(input) {
         const bytes = fromBase64(input.bytesBase64);
         const byteSha256 = [...sha256(bytes)]
@@ -388,6 +398,34 @@ function harness({
         return currentUpload;
       },
       async resume() { return currentUpload; },
+      // This fixture's render is already paid/complete; retain serial recovery.
+      async prepareBatch(input) {
+        if (storageTopology === 'LEGACY') return { status: 'LEGACY' };
+        assert.equal(input.uploadIds.length, 4);
+        assert.ok(calls.includes('native:prepared'), 'Native three files must be prepared before batch selection.');
+        calls.push({ batch: structuredClone(input) });
+        batchState ??= { key: 'fixed-batch', status: 'SIGNATURE_REQUIRED', stage: 'REGISTER', revision: 1, memberIds: input.uploadIds };
+        return structuredClone(batchState);
+      },
+      async loadBatch() { return structuredClone(batchState); },
+      async prepareBatchReview() {
+        return { id: batchState.key, stage: batchState.stage, digest: DIGEST, status: 'SIGNATURE_REQUIRED',
+          revision: batchState.revision, memberIds: [...batchState.memberIds], gasBudgetMist: '1000',
+          quote: { verified: true, walrusTotalCostFrost: '40', relayTipMist: '4' } };
+      },
+      async signBatchReviewed(key, review, guard) {
+        await guard(); assert.equal(key, batchState.key); assert.equal(review.revision, batchState.revision);
+        calls.push(`batch:sign:${review.stage}`);
+        batchState = { ...batchState, status: 'RECOVERY_REQUIRED', revision: batchState.revision + 1 };
+        return structuredClone(batchState);
+      },
+      async resumeBatch() {
+        calls.push(`batch:resume:${batchState.stage}`);
+        batchState = { ...batchState, status: batchState.stage === 'REGISTER' ? 'SIGNATURE_REQUIRED' : 'COMPLETE',
+          stage: 'CERTIFY', revision: batchState.revision + 1 };
+        if (batchState.status === 'COMPLETE') currentUpload = { ...currentUpload, status: 'COMPLETE' };
+        return structuredClone(batchState);
+      },
     },
     persistence: { async load() { return durable; } },
   };
@@ -405,7 +443,7 @@ function harness({
   const journey = createMakerV8PlayerJourneyV8({
     player,
     productRuntime,
-    walrus,
+    walrus, waitForBatchFinality,
     protectedTransport,
     // Orchestration fixture only: this does not upload or certify native content.
     nativeContent: nativeContentOverride === undefined ? {
@@ -423,8 +461,11 @@ function harness({
         calls.push(`retire:${actionId}`);
         nativeJournal.completion = null;
       },
-      async prepare({ assertBeforeSignature }) {
-        await assertBeforeSignature({ kind: 'STORAGE_UPLOAD', purpose: 'NATIVE_CONTENT',
+      async prepare({ assertBeforeSignature, deferStorage }) {
+        if (deferStorage) { calls.push('native:prepared'); return { status: 'STORAGE_PREPARED', uploads: ['soul', 'memory', 'skill'].map(kind => ({
+          uploadId: `native-${kind}`, owner: SIGNER, mediaType: 'application/octet-stream', bytesBase64: RENDER_BYTES,
+        })) }; }
+        if (storageTopology === 'LEGACY') await assertBeforeSignature({ kind: 'STORAGE_UPLOAD', purpose: 'NATIVE_CONTENT',
           uploadId: 'native-test-content', byteLength: 4, byteSha256: RENDER_HASH });
         return { status: nativeContentStatus, nativeSoul: nativeInitialInputFixture({
           name: 'Nova', description: 'A test character', currentKioskId: null, currentKioskCapOnChainId: null,
@@ -825,11 +866,12 @@ test('protected Output uploads only exact server-produced ciphertext before Comp
   let ciphertext = null;
   let ciphertextHash = null;
   let request = null;
+  let encryptions = 0;
   const { journey, calls, project } = harness({
-    playerData,
+    playerData, storageTopology: 'BATCH', uploadStatus: 'SIGNATURE_REQUIRED',
     protectedTransport: {
       async protect(value) {
-        request = value;
+        request = value; encryptions++;
         const derived = deriveMakerV8SealEncryptionIdentityV8(value.identity);
         const bytes = EncryptedObject.serialize({
           version: 0,
@@ -846,7 +888,7 @@ test('protected Output uploads only exact server-produced ciphertext before Comp
           },
           ciphertext: {
             Aes256Gcm: {
-              blob: new Uint8Array([5, 6, 7, 8]),
+              blob: new Uint8Array([5, 6, 7, encryptions + 7]),
               aad: fromBase64(derived.aadBase64),
             },
           },
@@ -867,13 +909,15 @@ test('protected Output uploads only exact server-produced ciphertext before Comp
       },
     },
   });
-  const result = await journey.complete({
-    rootId: ROOT,
-    signer: SIGNER,
-    selections: [BASE_SELECTION],
-    project: project(),
-  });
+  const input = { rootId: ROOT, signer: SIGNER, selections: [BASE_SELECTION], project: project() };
+  await assert.rejects(journey.complete(input, { confirmStep: async step =>
+    step.kind !== 'STORAGE_BATCH' || step.review.stage !== 'CERTIFY' }),
+    { code: 'MAKER_V8_PLAYER_JOURNEY_CONFIRMATION_CANCELLED' });
+  const firstCiphertext = ciphertext;
+  const result = await journey.complete(input);
   assert.equal(result.status, 'HANDOFF_READY');
+  assert.equal(encryptions, 1, 'Random Seal encryption is durably reused across cancelled certification.');
+  assert.equal(ciphertext, firstCiphertext);
   assert.equal(request.identity.scopeKey, 'complete/portrait');
   assert.equal(request.identity.assetKey, `receipt-${SIGNER.slice(2)}-0`);
   assert.equal(request.render.bytesBase64, RENDER_BYTES);
@@ -1177,6 +1221,8 @@ test('completion never acquires or signs when the contextual ownership inventory
     walrus: {
       publisher: {
         async prepare() {}, async requestSignature() {}, async resume() {}, async load() {},
+        async prepareBatch() { assert.fail('Inventory must be complete before batch preparation'); },
+        async loadBatch() {}, async prepareBatchReview() {}, async signBatchReviewed() {}, async resumeBatch() {},
       },
       persistence: { async load() {} },
     },
@@ -2055,4 +2101,104 @@ test('visible intent change during committed selection check cannot reach storag
     selections: [BASE_SELECTION], project: current.project() }, { confirmStep: async () => true }));
   assert.equal(current.calls.some(call => call?.upload), false);
   assert.equal(current.calls.includes('prepare:completeOutput'), false);
+});
+
+
+test('fresh Complete prepares render and three native files before two batch confirmations, then hands off the same Soul', async () => {
+  const current = harness({ storageTopology: 'BATCH', uploadStatus: 'SIGNATURE_REQUIRED' });
+  const storage = [];
+  const result = await current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() }, { confirmStep: async step => {
+      if (step.kind === 'STORAGE_BATCH') {
+        assert.ok(current.calls.some(call => call?.upload));
+        assert.ok(current.calls.includes('native:prepared'));
+        assert.equal(step.memberIds.length, 4); storage.push(step);
+      }
+      return true;
+    } });
+  assert.equal(result.status, 'HANDOFF_READY'); assert.equal(result.soulId, SOUL);
+  assert.deepEqual(storage.map(step => step.review.stage), ['REGISTER', 'CERTIFY']);
+  assert.equal(storage[0].batchKey, storage[1].batchKey);
+  assert.deepEqual(storage[0].memberIds, storage[1].memberIds);
+  assert.deepEqual(current.calls.filter(call => typeof call === 'string' && call.startsWith('batch:sign:')),
+    ['batch:sign:REGISTER', 'batch:sign:CERTIFY']);
+  assert.equal(current.calls.includes('upload:requestSignature'), false);
+});
+
+test('cancelling batch certification retains the original registration and retries only certification before mint', async () => {
+  const current = harness({ storageTopology: 'BATCH', uploadStatus: 'SIGNATURE_REQUIRED' });
+  const input = { rootId: ROOT, signer: SIGNER, selections: [BASE_SELECTION], project: current.project() };
+  await assert.rejects(current.journey.complete(input, { confirmStep: async step =>
+    step.kind !== 'STORAGE_BATCH' || step.review.stage !== 'CERTIFY' }),
+    { code: 'MAKER_V8_PLAYER_JOURNEY_CONFIRMATION_CANCELLED' });
+  assert.equal(current.calls.includes('execute:completeOutput-id'), false);
+  assert.deepEqual(current.calls.filter(call => typeof call === 'string' && call.startsWith('batch:sign:')), ['batch:sign:REGISTER']);
+  const result = await current.journey.complete(input);
+  assert.equal(result.status, 'HANDOFF_READY');
+  assert.deepEqual(current.calls.filter(call => typeof call === 'string' && call.startsWith('batch:sign:')),
+    ['batch:sign:REGISTER', 'batch:sign:CERTIFY']);
+});
+
+test('an edit during the visible batch review prevents its signature and Soul mint', async () => {
+  const current = harness({ storageTopology: 'BATCH', uploadStatus: 'SIGNATURE_REQUIRED' });
+  await assert.rejects(current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() }, { confirmStep: async step => {
+      if (step.kind === 'STORAGE_BATCH') current.mutateRecipe({ colors: [{ channelKey: 'primary', swatchKey: 'green' }] });
+      return true;
+    } }));
+  assert.equal(current.calls.some(call => typeof call === 'string' && call.startsWith('batch:sign:')), false);
+  assert.equal(current.calls.includes('execute:completeOutput-id'), false);
+});
+
+test('an unknown batch signature waits for query recovery without falling back to individual payments or mint', async () => {
+  const current = harness({ storageTopology: 'BATCH', uploadStatus: 'SIGNATURE_REQUIRED' });
+  current.walrus.publisher.signBatchReviewed = async (_key, _review, guard) => {
+    await guard(); return { status: 'RECOVERY_REQUIRED', revision: 4, reason: 'SIGNATURE_OUTCOME_UNKNOWN' };
+  };
+  current.walrus.publisher.loadBatch = async () => ({ status: 'RECOVERY_REQUIRED', revision: 4, reason: 'SIGNATURE_OUTCOME_UNKNOWN' });
+  current.walrus.publisher.resumeBatch = async () => ({ status: 'RECOVERY_REQUIRED', revision: 4, reason: 'SIGNATURE_OUTCOME_UNKNOWN' });
+  const result = await current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() });
+  assert.equal(result.status, 'RECOVERY_REQUIRED'); assert.equal(result.stage, 'STORAGE_BATCH');
+  assert.equal(current.calls.includes('upload:requestSignature'), false);
+  assert.equal(current.calls.includes('execute:completeOutput-id'), false);
+});
+
+
+test('missing batch runtime fails before any entry, selection or storage payment', async () => {
+  const current = harness(); delete current.walrus.publisher.prepareBatch;
+  await assert.rejects(current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() }));
+  assert.equal(current.calls.some(call => typeof call === 'string' && call.startsWith('execute:')), false);
+  assert.equal(current.calls.some(call => call?.upload), false);
+});
+
+test('delayed batch finality continues query automatically without another confirmation or standalone signature', async () => {
+  let waits = 0;
+  const current = harness({ storageTopology: 'BATCH', uploadStatus: 'SIGNATURE_REQUIRED',
+    waitForBatchFinality: async ms => { assert.equal(ms, 1000); waits++; } });
+  const load = current.walrus.publisher.loadBatch, resume = current.walrus.publisher.resumeBatch;
+  let reads = 0;
+  current.walrus.publisher.resumeBatch = async () => {
+    reads++; const view = await load();
+    return reads < 3 ? view : resume();
+  };
+  const approvals = [];
+  const result = await current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() }, { confirmStep: async step => {
+    if (step.kind === 'STORAGE_BATCH') approvals.push(step.review.stage); return true;
+  } });
+  assert.equal(result.status, 'HANDOFF_READY'); assert.equal(waits, 2);
+  assert.deepEqual(approvals, ['REGISTER', 'CERTIFY']);
+  assert.equal(current.calls.includes('upload:requestSignature'), false);
+});
+
+
+test('definitively failed batch reports failure without minting or issuing replacement individual payments', async () => {
+  const current = harness({ storageTopology: 'BATCH', uploadStatus: 'SIGNATURE_REQUIRED' });
+  current.walrus.publisher.loadBatch = async () => ({ status: 'FAILED', revision: 4, reason: 'MAKER_V8_WALRUS_TRANSACTION_FAILED' });
+  await assert.rejects(current.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: current.project() }), { code: 'MAKER_V8_PLAYER_JOURNEY_UPLOAD_FAILED' });
+  assert.equal(current.calls.includes('upload:requestSignature'), false);
+  assert.equal(current.calls.includes('execute:completeOutput-id'), false);
 });

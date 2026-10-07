@@ -861,7 +861,7 @@ function handoffUrl({ rootId, signer, action }) {
   return url.toString();
 }
 
-async function protectRender({ protectedTransport, player, recipe, signer, renderResult }) {
+async function protectRender({ protectedTransport, player, recipe, signer, renderResult, publisher }) {
   if (typeof protectedTransport?.protect !== 'function') {
     fail(
       'MAKER_V8_PLAYER_PROTECTED_TRANSPORT_REQUIRED',
@@ -884,7 +884,7 @@ async function protectRender({ protectedTransport, player, recipe, signer, rende
       'PROTECTION',
     );
   }
-  const value = await protectedTransport.protect(freeze({
+  const request = freeze({
     schemaVersion: MAKER_V8_PROTECTED_RENDER_REQUEST_SCHEMA,
     identity,
     render: freeze({
@@ -893,7 +893,27 @@ async function protectRender({ protectedTransport, player, recipe, signer, rende
       byteLength: renderResult.byteLength,
       sha256: renderResult.sha256,
     }),
-  }));
+  });
+  for (const method of ['loadPublicationBinding', 'savePublicationBinding']) requireMethod(publisher, method, 'walrus.publisher');
+  const schemaVersion = 'animacraft.maker-v8-protected-completion-render.v1';
+  const source = { identity: structuredClone(identity), mediaType: renderResult.mediaType,
+    byteLength: renderResult.byteLength, sha256: renderResult.sha256 };
+  const key = `protected-render:${hex(sha256(encoder.encode(canonicalMakerV8Json(source))))}`;
+  let cached = await publisher.loadPublicationBinding(key);
+  if (!cached) {
+    const ciphertext = await protectedTransport.protect(request);
+    // Verify before persisting, retaining only ciphertext and public identity.
+    assertMakerV8ProtectedRenderV8(ciphertext, identity);
+    try { cached = await publisher.savePublicationBinding(key, null, { schemaVersion, source, ciphertext }); }
+    catch (error) {
+      if (error?.code !== 'MAKER_V8_WALRUS_CAS_MISMATCH') throw error;
+      cached = await publisher.loadPublicationBinding(key);
+    }
+  }
+  if (cached?.schemaVersion !== schemaVersion || cached.key !== key || !sameCanonical(cached.source, source)) {
+    fail('MAKER_V8_PLAYER_PROTECTED_TRANSPORT_INVALID', 'Saved protected render belongs to another exact intent.', 'PROTECTION');
+  }
+  const value = cached.ciphertext;
   try {
     const checked = assertMakerV8ProtectedRenderV8(value, identity);
     if (checked.sha256 === renderResult.sha256) {
@@ -924,6 +944,7 @@ export function createMakerV8PlayerJourneyV8({
   render = renderMakerV8PlayerRecipePngV8,
   protectedTransport = null,
   nativeContent = null,
+  waitForBatchFinality = milliseconds => new Promise(resolve => globalThis.setTimeout(resolve, milliseconds)),
 } = {}) {
   for (const name of [
     'getSnapshot', 'loadPlayer', 'setRecipe', 'preparePlayerAction',
@@ -965,12 +986,7 @@ export function createMakerV8PlayerJourneyV8({
     return freeze({ pending: true, action: current });
   };
 
-  const settleUpload = async ({
-    signer,
-    renderResult,
-    rootId,
-    assertBeforeSignature = null,
-  }) => {
+  const prepareRenderUpload = async ({ signer, renderResult, rootId }) => {
     const uploadId = `render-${hex(sha256(encoder.encode(`${rootId}\u0000${signer}\u0000${renderResult.sha256}`)))}`;
     let view = await publisher.load(uploadId);
     if (view === null) {
@@ -985,6 +1001,13 @@ export function createMakerV8PlayerJourneyV8({
     if (view.byteSha256 !== renderResult.sha256 || view.byteLength !== renderResult.byteLength) {
       fail('MAKER_V8_PLAYER_JOURNEY_UPLOAD_DRIFT', 'Durable render transport differs from the exact PNG.', 'WALRUS');
     }
+    return { uploadId, view };
+  };
+
+  const settleUpload = async ({ signer, renderResult, rootId, assertBeforeSignature = null }) => {
+    const prepared = await prepareRenderUpload({ signer, renderResult, rootId });
+    const { uploadId } = prepared;
+    let view = prepared.view;
     for (let step = 0; step < 8 && view.status !== 'COMPLETE'; step++) {
       const previous = view;
       if (view.status === 'SIGNATURE_REQUIRED') {
@@ -1017,6 +1040,51 @@ export function createMakerV8PlayerJourneyV8({
         byteLength: renderResult.byteLength,
       }),
     });
+  };
+
+  const settleStorageBatch = async ({ rootId, signer, renderResult, project, assertCurrent, requestConfirmation }) => {
+    const { uploadId } = await prepareRenderUpload({ rootId, signer, renderResult });
+    await assertCurrent();
+    const native = await nativeContent.prepare({ rootId, signer, project, deferStorage: true });
+    await assertCurrent();
+    if (native?.status !== 'STORAGE_PREPARED' || !Array.isArray(native.uploads) || native.uploads.length !== 3
+      || native.uploads.some(input => input.owner !== signer || !input.uploadId)
+      || new Set([uploadId, ...native.uploads.map(input => input.uploadId)]).size !== 4) {
+      fail('MAKER_V8_PLAYER_NATIVE_CONTENT_INVALID', 'Prepare all three exact native files before any storage payment.', 'WALRUS');
+    }
+    for (const method of ['prepareBatch', 'loadBatch', 'prepareBatchReview', 'signBatchReviewed', 'resumeBatch']) {
+      requireMethod(publisher, method, 'walrus.publisher');
+    }
+    const batch = await publisher.prepareBatch({ rootId, owner: signer,
+      uploadIds: [uploadId, ...native.uploads.map(input => input.uploadId)] });
+    if (batch.status === 'LEGACY') return null; // Preserve pre-existing signed/paid individual WALs.
+    let view = await publisher.loadBatch(batch.key);
+    let unchangedQueries = 0;
+    for (let step = 0; step < 20 && view.status !== 'COMPLETE'; step++) {
+      await assertCurrent();
+      const previous = view;
+      if (view.status === 'SIGNATURE_REQUIRED') {
+        const review = await publisher.prepareBatchReview(batch.key);
+        if (!review || review.quote?.verified !== true) {
+          fail('MAKER_V8_PLAYER_JOURNEY_UPLOAD_DRIFT', 'Batch needs an exact verified storage quote before confirmation.', 'WALRUS');
+        }
+        await assertCurrent();
+        await requestConfirmation(freeze({ kind: 'STORAGE_BATCH', purpose: 'RENDER_AND_NATIVE', rootId, signer,
+          batchKey: batch.key, review, memberIds: [...review.memberIds] }));
+        await assertCurrent();
+        view = await publisher.signBatchReviewed(batch.key, review, assertCurrent);
+      } else if (view.status === 'RECOVERY_REQUIRED') view = await publisher.resumeBatch(batch.key);
+      else break;
+      if (view.status === previous.status && view.revision === previous.revision) {
+        if (view.status !== 'RECOVERY_REQUIRED' || view.reason === 'SIGNATURE_OUTCOME_UNKNOWN' || unchangedQueries++ >= 5) break;
+        // Finality/index visibility can lag a successful broadcast. Continue
+        // querying this exact signed batch without asking the user to Continue.
+        await waitForBatchFinality(1000);
+        await assertCurrent();
+      } else unchangedQueries = 0;
+    }
+    if (view.status === 'FAILED') fail('MAKER_V8_PLAYER_JOURNEY_UPLOAD_FAILED', 'The exact storage batch definitively failed.', 'WALRUS', { upload: view });
+    return view.status === 'COMPLETE' ? null : freeze({ status: 'RECOVERY_REQUIRED', stage: 'STORAGE_BATCH', upload: view });
   };
 
   const finishNativeComplete = async ({ rootId, signer, project, action, recovered = false, confirmEnvelopes, recoveryJson }) => {
@@ -1192,6 +1260,9 @@ export function createMakerV8PlayerJourneyV8({
             'The prior completion definitively failed or expired; its recovery pointer was retired.', 'FINALITY', { action });
         } else return freeze({ status: 'RECOVERY_REQUIRED', stage: 'SOUL_COMPLETION', action });
       }
+      for (const method of ['prepareBatch', 'loadBatch', 'prepareBatchReview', 'signBatchReviewed', 'resumeBatch']) {
+        requireMethod(publisher, method, 'walrus.publisher');
+      }
       let { snapshot, visibleIntent } = await loadActiveIntent();
       const recipe = structuredClone(visibleIntent.recipe);
       const output = snapshot.player.document.outputs?.find(
@@ -1348,8 +1419,13 @@ export function createMakerV8PlayerJourneyV8({
           recipe: snapshot.recipe,
           signer,
           renderResult,
+          publisher,
         });
       }
+      await assertCurrentVisibleIntent();
+      const batchPending = await settleStorageBatch({ rootId, signer, renderResult, project: submittedProject,
+        assertCurrent: assertCurrentVisibleIntent, requestConfirmation });
+      if (batchPending) return batchPending;
       await assertCurrentVisibleIntent();
       const upload = await settleUpload({
         signer,

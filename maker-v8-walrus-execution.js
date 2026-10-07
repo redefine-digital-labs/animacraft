@@ -1,6 +1,6 @@
 import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
 import { fromBase64, toBase64, toBase58, fromBase58, toHex, normalizeStructTag } from '@mysten/sui/utils';
-import { MAINNET_WALRUS_PACKAGE_CONFIG } from '@mysten/walrus';
+import { MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt } from '@mysten/walrus';
 import { blake2b } from '@noble/hashes/blake2.js';
 
 export const MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID = '0xfdc88f7d7cf30afab2f82e8380d11ee8f70efb90e863d1de8616fae1bb09ea77';
@@ -17,6 +17,83 @@ const freeze = value => {
   if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
   return value;
 };
+
+// Layout of the pinned Walrus SDK's raw Blob object. Batch mapping uses full
+// historical Object BCS and effects, never the SDK's first-created-blob lookup.
+export const MakerV8WalrusBlobBcs = bcs.struct('Blob', {
+  id: bcs.Address, registered_epoch: bcs.u32(), blob_id: bcs.u256(), size: bcs.u64(), encoding_type: bcs.u8(),
+  certified_epoch: bcs.option(bcs.u32()), storage: bcs.struct('Storage', {
+    id: bcs.Address, start_epoch: bcs.u32(), end_epoch: bcs.u32(), storage_size: bcs.u64(),
+  }), deletable: bcs.bool(),
+});
+
+export function assertMakerV8WalrusBatchObjectsV1(evidence, { transactionDigest, owner, members }) {
+  try {
+    id(owner);
+    check(Array.isArray(members) && members.length >= 2 && members.length <= 4
+      && new Set(members.map(member => member.uploadId)).size === members.length
+      && new Set(members.map(member => member.blobId)).size === members.length, 'two to four distinct batch members');
+    const { parsed } = decode(bcs.TransactionEffects, evidence.effectsBcsBase64, 16 * 1024 * 1024);
+    const effects = parsed.V2;
+    check(effects?.transactionDigest === transactionDigest && effects.status.$kind === 'Success', 'batch finalized effects');
+    check(Array.isArray(evidence.objects) && evidence.objects.length === members.length, 'every historical Blob object');
+    const byBlobId = new Map(), objectIds = new Set();
+    for (const entry of evidence.objects) {
+      const object = fullObject(entry), move = object.data.Move;
+      const objectId = entry.reference.objectId;
+      const changes = effects.changedObjects.filter(([key]) => key === objectId);
+      check(changes.length === 1 && changes[0][1].idOperation.$kind === 'Created'
+        && changes[0][1].inputState.$kind === 'NotExist', 'new Blob, not a prior mutation');
+      const write = changes[0][1].outputState.ObjectWrite;
+      check(write?.[0] === entry.reference.digest && write[1].AddressOwner === owner
+        && object.owner.AddressOwner === owner && object.previousTransaction === transactionDigest
+        && move?.version === effects.lamportVersion && move.version === entry.reference.version
+        && move.type.Other && normalizeStructTag(TypeTagSerializer.tagToString({ struct: move.type.Other }))
+          === `${MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID}::blob::Blob`, 'exact created Blob owner/type/version/digest');
+      const blob = decode(MakerV8WalrusBlobBcs, toBase64(move.contents), 256).parsed;
+      const blobId = blobIdFromInt(blob.blob_id), member = members.find(member => member.blobId === blobId);
+      check(member && blob.id === objectId && blob.size === String(member.byteLength) && blob.encoding_type === 1
+        && blob.deletable === false && blob.certified_epoch === null
+        && blob.storage.start_epoch === blob.registered_epoch
+        && blob.storage.end_epoch - blob.storage.start_epoch === member.epochs
+        && !byBlobId.has(blobId) && !objectIds.has(objectId), 'exact Blob identity/size/retention and unique mapping');
+      objectIds.add(objectId); byBlobId.set(blobId, { uploadId: member.uploadId, blobId, blobObjectId: objectId,
+        registrationDigest: transactionDigest });
+    }
+    check(byBlobId.size === members.length, 'complete batch mapping');
+    return freeze(members.map(member => byBlobId.get(member.blobId)));
+  } catch (error) {
+    if (error?.code === 'MAKER_V8_WALRUS_EXECUTION_INVALID') throw error;
+    check(false, 'malformed batch mapping evidence');
+  }
+}
+
+export async function readMakerV8WalrusBatchObjectsV1({ transport, transactionDigest, transactionBytesBase64, owner, members }) {
+  check(typeof transport?.getFinalizedTransactionEvidence === 'function'
+    && typeof transport?.getHistoricalObject === 'function', 'batch historical transport');
+  const finalized = await transport.getFinalizedTransactionEvidence({ digest: transactionDigest });
+  check(finalized.digest === transactionDigest && finalized.effectsStatus?.success === true
+    && finalized.checkpoint != null && finalized.transactionBcsBase64 === transactionBytesBase64, 'exact finalized batch transaction');
+  const { parsed } = decode(bcs.TransactionEffects, finalized.effectsBcsBase64, 16 * 1024 * 1024);
+  const effects = parsed.V2;
+  check(effects?.transactionDigest === transactionDigest && effects.status.$kind === 'Success', 'batch effects');
+  const created = effects.changedObjects.filter(([, change]) => change.idOperation.$kind === 'Created'
+    && change.inputState.$kind === 'NotExist' && change.outputState.ObjectWrite?.[1].AddressOwner === owner);
+  check(created.length >= members.length && created.length <= 32, 'bounded created owner objects');
+  const objects = [];
+  for (const [objectId, change] of created) {
+    const historical = await transport.getHistoricalObject({ objectId, version: BigInt(effects.lamportVersion) });
+    check(historical.objectId === objectId && historical.version === effects.lamportVersion
+      && historical.digest === change.outputState.ObjectWrite[0], 'historical created reference');
+    const entry = { reference: { objectId, version: historical.version, digest: historical.digest },
+      objectBcsBase64: toBase64(historical.objectBcs) };
+    const object = fullObject(entry), move = object.data.Move;
+    if (move?.type.Other && normalizeStructTag(TypeTagSerializer.tagToString({ struct: move.type.Other }))
+      === `${MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID}::blob::Blob`) objects.push(entry);
+  }
+  const evidence = { effectsBcsBase64: finalized.effectsBcsBase64, objects };
+  return freeze({ mapping: assertMakerV8WalrusBatchObjectsV1(evidence, { transactionDigest, owner, members }), evidence });
+}
 function check(ok, label) {
   if (!ok) throw Object.assign(new Error(`Invalid Walrus execution evidence: ${label}`), { code: 'MAKER_V8_WALRUS_EXECUTION_INVALID' });
 }
