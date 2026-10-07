@@ -1088,7 +1088,8 @@ function renderCompletionConfirmation(view) {
   const record = step.record;
   const isOverview = step.kind === 'COMPLETION_OVERVIEW';
   const stageKey = isOverview ? 'playerOverviewTitle' : step.kind === 'NATIVE_ENVELOPES' ? 'playerStepEnvelopes'
-    : step.kind === 'NEW_COMPLETION' ? 'playerStepStartAnother' : step.kind === 'STORAGE_UPLOAD'
+    : step.kind === 'NEW_COMPLETION' ? 'playerStepStartAnother' : step.kind === 'STORAGE_BATCH'
+    ? step.review?.stage === 'REGISTER' ? 'playerStepBatchRegister' : 'playerStepBatchCertify' : step.kind === 'STORAGE_UPLOAD'
     ? step.purpose === 'RENDER' ? 'playerStepRenderUpload' : 'playerStepNativeUpload'
     : { acquireMakerAccess: 'playerStepMakerAccess', acquirePackAccess: 'playerStepPackAccess',
       acquireBaseItem: 'playerStepBaseItem', commitLoadout: 'playerStepLoadout', completeOutput: 'playerStepComplete' }[step.action];
@@ -1106,6 +1107,9 @@ function renderCompletionConfirmation(view) {
     details = `<p>${escapeHtml(tr(view, 'playerStepStartAnotherCopy'))}</p><dl>${row('Soul ID', step.soulId)}${row('Action ID', step.actionId)}${row('Transaction digest', step.transactionDigest)}</dl>`;
   } else if (step.kind === 'NATIVE_ENVELOPES') {
     details = `<p>${escapeHtml(tr(view, 'playerStepEnvelopesCopy'))}</p><dl>${row('Soul ID', step.soulId)}${row('State ID', step.stateId)}${row('Transaction digest', step.transactionDigest)}${row(tr(view, 'playerStepGasBudget'), `${step.gasBudgetMist} MIST`)}${row('Envelopes', step.envelopeCount)}</dl>`;
+  } else if (step.kind === 'STORAGE_BATCH') {
+    const review = step.review;
+    details = `<p>${escapeHtml(tr(view, 'playerStepBatchCopy'))}</p><dl>${row('Files', step.memberIds.length)}${row(tr(view, 'walrusTotalEstimate'), `${review.quote.walrusTotalCostFrost} FROST`)}${row(tr(view, 'relayTipEstimate'), `${review.quote.relayTipMist} MIST`)}${row(tr(view, 'playerStepGasBudget'), `${review.gasBudgetMist} MIST`)}</dl><details><summary>${escapeHtml(tr(view, 'technicalDetails'))}</summary><dl>${row('Batch ID', step.batchKey)}${row('Transaction digest', review.digest)}${step.memberIds.map(id => row('Upload ID', id)).join('')}</dl></details>`;
   } else if (step.kind === 'STORAGE_UPLOAD') {
     details = `<p>${escapeHtml(tr(view, 'playerStepStorageCopy'))}</p><dl>${row('Upload ID', step.uploadId)}${row('Bytes', step.byteLength)}${row('SHA-256', step.byteSha256)}</dl>`;
   } else if (isOverview || step.action === 'completeOutput') {

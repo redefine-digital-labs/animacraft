@@ -806,63 +806,14 @@ test('view imports only current authority and hash-exact approved pure donor hel
     ko: ['Soul 옷장을 켠 뒤 장비 Slot으로 만들 Part를 선택하고 용량을 설정합니다. 기존 Part와 새 Part는 기본적으로 고정됩니다.', '설정한 용량의 장비 Slot이며 필수 Slot에는 포함 fallback이 필요합니다.'],
     vi: ['Bật tủ đồ Soul rồi chọn Part làm Slot trang bị và đặt sức chứa. Part cũ và Part mới mặc định vẫn cố định.', 'Slot trang bị dùng sức chứa đã đặt; Slot bắt buộc phải có fallback tích hợp.'],
   };
-  // Player entry/Complete replaces the misleading Free label and adds these keys.
-  const playerAdditions = [
-    'playerPackPaid', 'playerPackTransactionFinalized', 'playerPackAtomicUnits', 'playerPackEntryOnly',
-    'playerPackConfirm', 'playerPackRecover', 'playerPackDismiss', 'playerCommerceNotQuoted', 'playerControlUnavailable',
-    'playerStepMakerAccess', 'playerStepPackAccess', 'playerStepStartAnother', 'playerStepOpenSoul',
-    'playerStepStartAnotherCopy', 'playerStepRecoveredOtherDraft', 'playerStepBaseItem', 'playerStepLoadout',
-    'playerStepComplete', 'playerStepRenderUpload', 'playerStepNativeUpload', 'playerStepConfirm',
-    'playerStepEnvelopes', 'playerStepEnvelopesCopy', 'playerStepGasBudget',
-    'playerEnvelopeRecoveryExport', 'playerEnvelopeRecoveryImport', 'playerEnvelopeRecoveryCopy',
-    'playerEnvelopeRecoveryClear',
-    'playerStepCancel', 'playerStepCancelCopy', 'playerStepStorageCopy', 'playerStepEntryCopy',
-    'playerStepNoBusinessFee', 'playerStepFreeRemaining', 'playerStepTotalRemaining', 'playerStepPolicyPrice',
-    'playerStepRightsCopy', 'playerStepQuoteCopy', 'playerOverviewTitle', 'playerOverviewEntry',
-    'playerOverviewComplete', 'playerOverviewTotal', 'playerOverviewEntryNeeded', 'playerOverviewEntryHeld',
-    'playerOverviewContinue', 'playerOverviewCopy', 'playerOverviewRightsCopy', 'playerSlotCapacityFull',
-    'saveRecoveryCopy', 'saveRecoveryCopyHint', 'savingRecoveryCopy', 'localRecoveryCopy',
-    'recoveryCopyRetry', 'playerOutputSelection',
-    'publicationThreeStageTitle',
-    'publicationThreeStageCopy',
-    'publicationAssetBatch',
-    'publicationBatchQuoteScope',
-    'publicationUploadAndCertify',
-    'publicationCurrentResource',
-    'publicationCheckTransaction',
-    'publicationContinuePublish',
-    'publicationContinueCertify',
-    'publicationContinueUpload',
-    'publicationContinueRegister',
-    'publicationResultPending',
-    'publicationPublishSaved',
-    'publicationCertifySaved',
-    'publicationUploadReady',
-    'publicationRegisterSaved',
-    'publicationPublishReview',
-    'publicationCertifyReview',
-    'publicationRegisterReview',
-    'publicationSignPublish',
-    'publicationSignCertify',
-    'publicationSignRegister',
-    'publicationResourceReady',
-    'publicationContinueResources',
-    'publicationReview', 'publicationCopy', 'publicationSign', 'publicationContinue', 'publicationRefresh',
-    'publicationUnknown', 'publicationGas', 'publicationStorage', 'publicationRelay', 'publicationTerms',
-    'publicationWallet', 'publicationStage', 'publicationAssets', 'publicationStale', 'publicationUnavailable',
-    'publicationComplete', 'publicationLoading', 'publicationContinuingSigned',
-    'publicationEarlier', 'publicationGasPrice',
-    'publicationOpen',
-    'publicationFlowCopy', 'publicationResourceProgress', 'publicationQuoteScope', 'publicationRecoveryCopy', 'publicationInProgress',
-    'chainHistory', 'chainCopy', 'chainLocal', 'chainCurrentUnpublished', 'chainNext', 'chainRevisions',
-    'chainArchiveReview', 'chainArchiveSign', 'chainArchiveRecover', 'chainSuccessor', 'chainArchiveDigest',
-    'chainLoading', 'chainUnavailable', 'chainEmpty', 'chainPreparing', 'chainArchiveImpact', 'chainArchiveSaved', 'chainSuccessorReady',
-  ].sort();
+  // All workflow additions use the single approved manifest; no mirrored key list.
+  const approvedLocaleDelta = JSON.parse(await readFile(new URL('./fixtures/approved-ui-donors/workflow-locale-deltas.json', import.meta.url), 'utf8'));
+  const playerAdditions = [...approvedLocaleDelta.added].sort();
   assert.deepEqual(MAKER_WORKSPACE_LOCALES, donorI18n.MAKER_WORKSPACE_LOCALES);
   for (const locale of MAKER_WORKSPACE_LOCALES) {
     const original = donorI18n.makerWorkspaceDictionary(locale);
     const current = makerWorkspaceDictionary(locale);
-    assert.deepEqual(Object.keys(original).filter(key => !Object.hasOwn(current, key)), ['playerCommerceFree']);
+    assert.deepEqual(Object.keys(original).filter(key => !Object.hasOwn(current, key)).sort(), [...approvedLocaleDelta.removed].sort());
     assert.deepEqual(Object.keys(current).filter(key => !Object.hasOwn(original, key)).sort(), playerAdditions);
     for (const [key, value] of Object.entries(original)) {
       const approvedCopy = {

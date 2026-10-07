@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source": "approved workflow deltas through PR82 c11be34; no translation or UI change in this extraction",
+  "source": "approved workflow deltas through PR82 c11be34; no translation or UI change in this extraction; BUG006 exact four-file batch REGISTER/CERTIFY confirmation copy, user-authorized flow repair",
   "historicalSha256": "29f4250b6cb59db1e41e26c63c512eb671b72373ca5f47b0d90257dd5a2eb514",
   "changed": [
     "versionHistoryCopy",
@@ -52,6 +52,9 @@
     "playerPackTransactionFinalized",
     "playerSlotCapacityFull",
     "playerStepBaseItem",
+    "playerStepBatchCertify",
+    "playerStepBatchCopy",
+    "playerStepBatchRegister",
     "playerStepCancel",
     "playerStepCancelCopy",
     "playerStepComplete",
@@ -89,6 +92,7 @@
     "publicationContinueRegister",
     "publicationContinueResources",
     "publicationContinueUpload",
+    "publicationContinuingSigned",
     "publicationCopy",
     "publicationCurrentResource",
     "publicationEarlier",
@@ -97,7 +101,6 @@
     "publicationGasPrice",
     "publicationInProgress",
     "publicationLoading",
-    "publicationContinuingSigned",
     "publicationOpen",
     "publicationPublishReview",
     "publicationPublishSaved",

@@ -76,7 +76,7 @@ export function createMakerV8NativeContentProviderV8({ store, walrus, resolveAut
     return clone(intent);
   }
   const save = (key, row, data) => store.compareAndSwap(key, row.revision, data);
-  async function prepareUpload(file, signer, assertBeforeSignature, persistPrepared) {
+  async function prepareUpload(file, signer, persistPrepared) {
     const publisher = walrus.publisher;
     let view = await publisher.load(file.uploadId);
     if (view === null) {
@@ -85,9 +85,17 @@ export function createMakerV8NativeContentProviderV8({ store, walrus, resolveAut
       view = await publisher.load(file.uploadId); // prepare returns internal ENCODED, load exposes SIGNATURE_REQUIRED.
     }
     const content = await publisher.loadContent(file.uploadId);
-    if (!content || content.owner !== signer || content.bytesBase64 !== file.ciphertextBase64
+    if (!content || content.owner !== signer || content.mediaType !== 'application/octet-stream'
+      || content.bytesBase64 !== file.ciphertextBase64
       || content.byteSha256 !== hash(fromBase64(file.ciphertextBase64))) fail('MAKER_V8_NATIVE_CONTENT_UPLOAD_DRIFT');
+    if (!['COMPLETE', 'SIGNATURE_REQUIRED', 'RECOVERY_REQUIRED', 'REGISTER_FINALIZED'].includes(view?.status)) {
+      fail('MAKER_V8_NATIVE_CONTENT_UPLOAD_STATE_INVALID');
+    }
     if (!file.uploadPrepared) await persistPrepared();
+    return view;
+  }
+  async function settleUpload(file, signer, assertBeforeSignature, view) {
+    const publisher = walrus.publisher;
     for (let step = 0; step < 8; step++) {
       if (view?.status === 'COMPLETE') {
         scope(view.blobObjectId, signer);
@@ -121,7 +129,7 @@ export function createMakerV8NativeContentProviderV8({ store, walrus, resolveAut
       await intentFor(project); await authority(rootId, signer); await store.load(scope(rootId, signer));
       return Object.freeze({ ready: true });
     },
-    async prepare({ rootId, signer, project, assertBeforeSignature }) {
+    async prepare({ rootId, signer, project, assertBeforeSignature, deferStorage = false }) {
       const key = scope(rootId, signer); const submitted = clone(project);
       return exclusive(key, async () => {
         const intent = await intentFor(submitted); const auth = await authority(rootId, signer);
@@ -160,14 +168,27 @@ export function createMakerV8NativeContentProviderV8({ store, walrus, resolveAut
           const data = clone(row.data); data.files[index].sidecar = sidecar;
           row = await save(key, row, data);
         }
+        const views = [];
         for (let index = 0; index < row.data.files.length; index++) {
           const file = row.data.files[index]; const source = intent.files[index];
           const encrypted = await encryptMakerV8NativeContentV8({ plaintext: fromBase64(source.bytesBase64), mimeType: source.mimeType, fileName: source.fileName, material: file.material });
           if (toBase64(encrypted.ciphertext) !== file.ciphertextBase64) fail('MAKER_V8_NATIVE_CONTENT_CIPHERTEXT_DRIFT');
-          const blobObjectId = await prepareUpload(file, signer, assertBeforeSignature, async () => {
+          views.push(await prepareUpload(file, signer, async () => {
             const data = clone(row.data); data.files[index].uploadPrepared = true;
             row = await save(key, row, data);
-          });
+          }));
+        }
+        // Prepare every durable member before any wallet prompt. The caller can
+        // now join the final render to this fixed set without exposing raw DEKs.
+        // Existing signed WALs retain their topology; preparation never settles
+        // or replaces them, and the batching controller must query them first.
+        if (deferStorage) return Object.freeze({ status: 'STORAGE_PREPARED', uploads: row.data.files.map(file => ({
+          uploadId: file.uploadId, owner: signer, mediaType: 'application/octet-stream',
+          bytesBase64: file.ciphertextBase64,
+        })) });
+        for (let index = 0; index < row.data.files.length; index++) {
+          const file = row.data.files[index];
+          const blobObjectId = await settleUpload(file, signer, assertBeforeSignature, views[index]);
           if (blobObjectId === null) return Object.freeze({ status: 'RECOVERY_REQUIRED' });
           if (file.blobObjectId !== null && file.blobObjectId !== blobObjectId) fail('MAKER_V8_NATIVE_CONTENT_UPLOAD_DRIFT');
           if (file.blobObjectId === null) {

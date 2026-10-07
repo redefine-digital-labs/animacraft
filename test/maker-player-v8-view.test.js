@@ -1441,3 +1441,22 @@ test('view rejects incomplete bridge records and never exposes wallet, transacti
   );
   assert.doesNotMatch(viewSource, /addEventListener|requestSignature|broadcastExactTransaction|fetch\(|XMLHttpRequest|Wallet Standard|listWardrobe/);
 });
+
+
+test('four-file batch confirmation distinguishes registration and certification and shows exact units in five locales', () => {
+  const session = sessionFixture(); session.execution.writeEnabled = true;
+  for (const locale of ['en', 'zh', 'ja', 'ko', 'vi']) for (const stage of ['REGISTER', 'CERTIFY']) {
+    const step = { kind: 'STORAGE_BATCH', purpose: 'RENDER_AND_NATIVE', batchKey: 'fixed-batch',
+      memberIds: ['render', 'soul', 'memory', 'skill'], review: { stage, digest: 'exact-batch-digest',
+        gasBudgetMist: '1234567', quote: { verified: true, walrusTotalCostFrost: stage === 'REGISTER' ? '9007199254740993' : '0',
+          relayTipMist: stage === 'REGISTER' ? '1028' : '0' } } };
+    const html = renderApprovedMakerV8Player(projectMakerV8PlayerView(session, fullState({ locale,
+      export: { open: true }, completionConfirmation: { id: `batch-${stage}`, step },
+    }), { default: true }));
+    assert.ok(html.includes(makerWorkspaceText(locale, stage === 'REGISTER' ? 'playerStepBatchRegister' : 'playerStepBatchCertify')));
+    assert.ok(html.includes(makerWorkspaceText(locale, 'playerStepBatchCopy')));
+    assert.match(html, stage === 'REGISTER' ? /9007199254740993 FROST/ : /0 FROST/);
+    assert.match(html, /1234567 MIST/); assert.match(html, /exact-batch-digest/);
+    assert.equal(actionCount(html, 'player-confirm-journey-step'), 1);
+  }
+});

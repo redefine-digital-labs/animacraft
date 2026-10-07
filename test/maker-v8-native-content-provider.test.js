@@ -91,6 +91,87 @@ function completed(input, actionId = 'action-one') {
     } } };
 }
 
+test('batch preparation persists all native ciphertext and Seal envelopes without paying before the render joins', async () => {
+  const h = harness();
+  const args = { rootId, signer, project: project(), deferStorage: true,
+    assertBeforeSignature: async () => { h.calls.push('guard'); } };
+  const prepared = await h.provider.prepare(args);
+  assert.equal(h.calls.filter(c => c === 'sign').length, 0,
+    'Preparing the three native members must not sign six serial transactions before the render joins the batch.');
+  assert.equal(h.calls.filter(c => c === 'upload').length, 0);
+  assert.equal(h.calls.filter(c => c === 'guard').length, 0);
+  assert.equal(h.calls.filter(c => c === 'seal').length, 3);
+  assert.equal(prepared.status, 'STORAGE_PREPARED');
+  assert.equal(prepared.uploads.length, 3);
+  assert.equal(new Set(prepared.uploads.map(file => file.uploadId)).size, 3);
+  for (const file of prepared.uploads) {
+    assert.equal(file.owner, signer);
+    assert.equal(file.mediaType, 'application/octet-stream');
+    assert.ok(file.bytesBase64.length > 0);
+    assert.equal(Object.hasOwn(file, 'material'), false, 'Raw encryption material stays in private storage.');
+  }
+  // A cold provider must recover the same ciphertext, nonce, IDs and sidecars
+  // before the common batch asks for its first signature.
+  const recovered = await createMakerV8NativeContentProviderV8(h.dependencies).prepare(args);
+  assert.deepEqual(recovered, prepared);
+  assert.equal(h.calls.filter(c => c === 'seal').length, 3);
+  assert.equal(h.calls.filter(c => c === 'sign').length, 0);
+  await h.store.close();
+});
+
+test('deferred preparation keeps a signed member byte-for-byte and never queries or replaces its payment', async () => {
+  const h = harness(); const args = { rootId, signer, project: project(), deferStorage: true };
+  const prepared = await h.provider.prepare(args);
+  const publisher = h.dependencies.walrus.publisher;
+  const uploadId = prepared.uploads[0].uploadId;
+  const review = await publisher.prepareReview(uploadId);
+  await publisher.signReviewed(uploadId, review);
+  const signed = await h.dependencies.walrus.persistence.load(uploadId);
+  assert.equal(signed.status, 'REGISTER_SIGNED');
+  const before = [...h.calls];
+  assert.deepEqual(await createMakerV8NativeContentProviderV8(h.dependencies).prepare(args), prepared);
+  assert.deepEqual(await h.dependencies.walrus.persistence.load(uploadId), signed);
+  assert.deepEqual(h.calls, before);
+  await h.store.close();
+});
+
+test('failure persisting the final native member blocks all payment, and retry uses the same encryption attempt', async () => {
+  const h = harness(); const publisher = h.dependencies.walrus.publisher;
+  const noLastMember = { ...publisher, async prepare(input) {
+    if (input.uploadId.endsWith('-2')) throw new Error('disk full');
+    return publisher.prepare(input);
+  } };
+  const args = { rootId, signer, project: project(), assertBeforeSignature: async () => h.calls.push('guard') };
+  await assert.rejects(createMakerV8NativeContentProviderV8({ ...h.dependencies,
+    walrus: { ...h.dependencies.walrus, publisher: noLastMember } }).prepare(args), /disk full/);
+  assert.equal(h.calls.filter(c => ['sign', 'guard', 'upload'].includes(c)).length, 0);
+  const before = (await h.store.load(`native-content/${rootId}/${signer}`)).data;
+  const prepared = await h.provider.prepare({ ...args, deferStorage: true });
+  const after = (await h.store.load(`native-content/${rootId}/${signer}`)).data;
+  assert.equal(after.attemptId, before.attemptId);
+  assert.equal(after.mintNonce, before.mintNonce);
+  assert.deepEqual(after.files.map(f => [f.uploadId, f.material, f.ciphertextBase64, f.sidecar]),
+    before.files.map(f => [f.uploadId, f.material, f.ciphertextBase64, f.sidecar]));
+  assert.equal(prepared.uploads.length, 3);
+  assert.equal(h.calls.filter(c => c === 'seal').length, 3);
+  assert.equal(h.calls.filter(c => ['sign', 'guard', 'upload'].includes(c)).length, 0);
+  await h.store.close();
+});
+
+test('deferred preparation rejects ciphertext or owner drift before returning batch members', async () => {
+  const h = harness(); const args = { rootId, signer, project: project(), deferStorage: true };
+  await h.provider.prepare(args);
+  for (const patch of [{ owner: id(99) }, { mediaType: 'text/plain' }, { bytesBase64: toBase64(new Uint8Array([1])) }]) {
+    const publisher = h.dependencies.walrus.publisher;
+    const bad = { ...publisher, async loadContent(uploadId) { return { ...await publisher.loadContent(uploadId), ...patch }; } };
+    await assert.rejects(createMakerV8NativeContentProviderV8({ ...h.dependencies,
+      walrus: { ...h.dependencies.walrus, publisher: bad } }).prepare(args),
+    { code: 'MAKER_V8_NATIVE_CONTENT_UPLOAD_DRIFT' });
+  }
+  assert.equal(h.calls.filter(c => ['sign', 'guard', 'upload'].includes(c)).length, 0);
+  await h.store.close();
+});
+
 test('real crypto/private IDB/actual Walrus state machine survives retry and never publishes raw material', async () => {
   const h = harness(); const args = { rootId, signer, project: project(), assertBeforeSignature: async () => { h.calls.push('guard'); } };
   await h.provider.preflight(args);
