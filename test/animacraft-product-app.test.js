@@ -12,6 +12,7 @@ import {
   createMainnetWalrusManifestFetcher,
   renderAnimacraftBootstrapFailure,
 } from '../app.js';
+import { createMakerV8ManifestAdapter } from '../maker-v8-manifest-adapter.js';
 
 test('public execution config is projected to the exact chain-boundary authority', () => {
   assert.deepEqual(createAnimacraftChainExecutionV8({
@@ -169,6 +170,19 @@ test('Walrus reader rejects credentialed endpoints, traversal ids, and unavailab
   await assert.rejects(
     reader({ blobId: 'valid-blob' }),
     (error) => error.code === 'ANIMACRAFT_WALRUS_READ_FAILED' && error.details.status === 503,
+  );
+});
+
+test('a Walrus 404 remains identifiable through the production manifest adapter', async () => {
+  const fetcher = createMainnetWalrusManifestFetcher({
+    fetcher: async () => new Response(null, { status: 404 }),
+  });
+  const manifest = createMakerV8ManifestAdapter({ fetcher });
+  await assert.rejects(
+    manifest.load({ blobId: 'certified_blob-1', sha256: '01'.repeat(32) }),
+    (error) => error.code === 'MAKER_V8_MANIFEST_BLOB_UNAVAILABLE'
+      && error.details.status === 404
+      && error.message.includes('unavailable on Walrus'),
   );
 });
 

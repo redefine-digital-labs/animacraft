@@ -348,6 +348,24 @@ test('native personal Kiosk reader uses exact introduced registry key and verifi
   await assert.rejects(readMakerV8NativePersonalKiosk(f.rpc, f.config, f.integration, wallet));
 });
 
+test('native personal Kiosk accepts the production gRPC decimal Balance only when it matches BCS', async () => {
+  const f = await personalKioskFixture();
+  const amount = '18446744073709551615';
+  f.values[0].profits.value = amount;
+  const setProjection = (value) => {
+    f.encode(0);
+    f.objects.get(sid(700)).data.content.fields.profits = value;
+  };
+  setProjection(amount);
+  assert.deepEqual(await readMakerV8NativePersonalKiosk(f.rpc, f.attested, f.integration, wallet), {
+    currentKioskId: sid(700), currentKioskCapOnChainId: sid(701),
+  });
+  for (const invalid of ['0', '0' + amount, '18446744073709551616']) {
+    setProjection(invalid);
+    await assert.rejects(readMakerV8NativePersonalKiosk(f.rpc, f.attested, f.integration, wallet));
+  }
+});
+
 test('native personal Kiosk treats only exact official notFound as a new wallet', async () => {
   const f = await personalKioskFixture();
   const missing = objectId => new ObjectError('NOT_FOUND', 'absent', { reason: 'notFound', objectId });

@@ -75,6 +75,21 @@ export const MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE = Object.freeze({
 });
 export const MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT = 'bf6c019eae80bac3824e07fad65b2f983f5e74e69d0b6c46779078c752738fa7';
 
+// Each commitment comes from a boundary replay against the measured Base module.
+const MAKER_V8_MEASURED_SUI_PROTOCOLS = new Map([
+  ['137', { profile: MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE, commitment: MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT }],
+  ['141', {
+    profile: Object.freeze({ ...MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE, protocolVersion: '141' }),
+    commitment: 'a5ce613acce0bd130b002ebdf04c9d5862fd43a43c82c1db82e47358b65345c2',
+  }],
+]);
+
+export function measuredMakerV8SuiProtocolCommitment(profile) {
+  const measured = MAKER_V8_MEASURED_SUI_PROTOCOLS.get(profile.protocolVersion);
+  if (!measured || canonicalMakerV8Json(profile) !== canonicalMakerV8Json(measured.profile)) return null;
+  return measured.commitment;
+}
+
 const VERSION = 8n;
 const U64_MAX = (1n << 64n) - 1n;
 const HASH = /^[0-9a-f]{64}$/;
@@ -331,9 +346,10 @@ export async function certifyMakerV8TrustedContext(value) {
   exact(c.protocolProfile, ['protocolVersion', 'objectRuntimeMaxNumCachedObjects', 'objectRuntimeMaxNumStoreEntries'], 'protocolProfile');
   if (Object.values(c.protocolProfile).some((amount) => typeof amount !== 'string')) fail('MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID', 'Trusted Sui protocol profile values must be exact RPC u64 strings.');
   c.protocolProfile = Object.fromEntries(Object.entries(c.protocolProfile).map(([key, amount]) => [key, u64(amount, `protocolProfile.${key}`).toString()]));
-  if (canonicalMakerV8Json(c.protocolProfile) !== canonicalMakerV8Json(MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE)) fail('MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED', 'The live Sui protocol profile has not been approved by the Maker v8 seal-cap harness.', { expected: MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE, actual: c.protocolProfile });
+  const measuredProtocolCommitment = measuredMakerV8SuiProtocolCommitment(c.protocolProfile);
+  if (!measuredProtocolCommitment) fail('MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED', 'The live Sui protocol profile has not been approved by the Maker v8 seal-cap harness.', { actual: c.protocolProfile });
   const protocolProfileCommitment = await hashJson({ schemaVersion: 'animacraft.maker-v8-sui-protocol-profile.v1', ...c.protocolProfile });
-  same(protocolProfileCommitment, MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT, 'MAKER_V8_SUI_PROTOCOL_PROFILE_COMMITMENT_MISMATCH', 'Approved Sui protocol profile');
+  same(protocolProfileCommitment, measuredProtocolCommitment, 'MAKER_V8_SUI_PROTOCOL_PROFILE_COMMITMENT_MISMATCH', 'Approved Sui protocol profile');
   exact(c.coreArtifact, ['callablePackageId', 'packageDigest', 'baseRegistryModuleSha256'], 'coreArtifact'); c.coreArtifact.callablePackageId = normId(c.coreArtifact.callablePackageId); c.coreArtifact.packageDigest = suiDigest(c.coreArtifact.packageDigest, 'coreArtifact.packageDigest'); c.coreArtifact.baseRegistryModuleSha256 = hashHex(c.coreArtifact.baseRegistryModuleSha256, 'coreArtifact.baseRegistryModuleSha256');
   for (const key of ['clock', 'protocolConfig', 'protocolTreasury', 'catalog']) requireReferenceKind(validateRef(c[key], key), 'shared', key);
   const cf = c.catalog.fields; exact(cf, ['version', 'protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment', 'nativeCapabilityMask', 'productBindingCommitment', 'callCapSetCommitment', 'roles', 'authorities'], 'catalog.fields'); if (cf.version !== 8 || u64(cf.nativeCapabilityMask) !== 127n) fail('MAKER_V8_CATALOG_VERSION_INVALID', 'Catalog is not the complete v8 tuple.');

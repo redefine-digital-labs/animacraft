@@ -209,7 +209,7 @@ export function assertMakerV8WalrusExecutionV1(evidence, { minimumDependency } =
       && normalizeStructTag(TypeTagSerializer.tagToString({ struct: move.type.Other }))
         === normalizeStructTag(`${MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID}::system::System`), 'System type/version');
     const system = decode(MakerV8WalrusSystemBcs, toBase64(move.contents), 256).parsed;
-    check(system.id === e.system.reference.objectId && ['2', '3'].includes(system.version), 'supported System schema');
+    check(system.id === e.system.reference.objectId && ['2', '3', '4'].includes(system.version), 'supported System schema');
     id(system.package_id);
     if (system.new_package_id !== null) id(system.new_package_id);
     check(packageObject.data.$kind === 'Package' && packageObject.owner.$kind === 'Immutable', 'immutable Package');
