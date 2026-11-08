@@ -7258,6 +7258,50 @@ test('cold Player preview displays the saved mint receipt without running Comple
   }
 });
 
+test('cold Player can verify a supplied original digest without a saved action or starting Complete', async () => {
+  const digest = '7'.repeat(44);
+  const lookups = [];
+  const harness = browserHarness({
+    connection: { account: { address: ROOT_TWO, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(),
+    completePlayerJourneyResult: () => assert.fail('Read-only lookup must not run Complete'),
+    async readPlayerCompletionReceipt() { return null; },
+  });
+  harness.bridge.lookupPlayerCompletionReceipt = async input => {
+    lookups.push(input);
+    return { soulId: ROOT_TWO, transactionDigest: input.transactionDigest === digest ? digest : '9'.repeat(44) };
+  };
+  const app = createOriginalProductApp(harness);
+  try {
+    await app.ready;
+    await app.openPlayer(ROOT_ONE);
+    const mount = harness.doc.getElementById('makerV4PlayerMount');
+    const preview = new FakeTarget(harness.doc, { dataset: { action: 'player-preview-export' } });
+    preview.parent = mount;
+    await waitForCompletionEvent(mount.fire('click', { target: preview }));
+    assert.match(mount.innerHTML, /Look up original receipt/);
+    assert.doesNotMatch(mount.innerHTML, /data-player-verified-receipt/);
+    const submit = transactionDigest => {
+      const form = {
+        closest: selector => selector === '[data-player-receipt-lookup]' ? form : null,
+        elements: { namedItem: name => name === 'transactionDigest' ? { value: transactionDigest } : null },
+      };
+      return waitForCompletionEvent(mount.fire('submit', { target: form }));
+    };
+    await submit(digest);
+    assert.deepEqual(lookups, [{ rootId: ROOT_ONE, transactionDigest: digest }]);
+    assert.match(mount.innerHTML, new RegExp(`<dt>Soul ID</dt><dd>${ROOT_TWO}</dd>`));
+    assert.match(mount.innerHTML, /data-action="player-download-png"[^>]*disabled/);
+    await submit('8'.repeat(44));
+    assert.doesNotMatch(mount.innerHTML, /data-player-verified-receipt/);
+    assert.match(mount.innerHTML, /Could not verify a finalized Complete receipt/);
+    assert.equal(harness.calls.completePlayerJourney.length, 0);
+  } finally {
+    await app.destroy();
+  }
+});
+
 test('recovered foreign-draft Soul does not unlock the current PNG and starting another is explicit', async () => {
   const address = `0x${'85'.repeat(32)}`;
   const approvals = [];

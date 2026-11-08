@@ -967,6 +967,7 @@ export function createOriginalProductApp({
   const openPlayerReception = optionalMethod(bridge, 'openPlayerReception');
   const exportPlayerEnvelopeRecovery = optionalMethod(bridge, 'exportPlayerEnvelopeRecovery');
   const readPlayerCompletionReceipt = optionalMethod(bridge, 'readPlayerCompletionReceipt');
+  const lookupPlayerCompletionReceipt = optionalMethod(bridge, 'lookupPlayerCompletionReceipt');
   // Separate from playerUi/project autosave and diagnostic snapshots. Signed
   // envelope recovery is exported only through an explicit local download.
   const envelopeRecoveryByScope = new Map();
@@ -2577,6 +2578,7 @@ export function createOriginalProductApp({
         ? [] : [String(session.execution.disabledReason || '')].filter(Boolean),
       completionStatus: null,
       savedMintReceipt: null,
+      receiptLookup: lookupPlayerCompletionReceipt ? { digest: '', status: 'idle', receipt: null } : null,
       render: {
         state: 'pending',
         message: '',
@@ -3651,6 +3653,33 @@ export function createOriginalProductApp({
     }
   }
 
+  async function lookupOriginalPlayerReceipt(digestInput) {
+    const { playerUi, playerSession } = state;
+    if (!lookupPlayerCompletionReceipt || !state.connection.connected || state.localPlayer
+      || !playerUi?.export.open || !playerUi.receiptLookup || playerUi.receiptLookup.status === 'loading'
+      || !playerSession?.rootId || state.playerCompletionFlight) return;
+    const wallet = state.connection.address;
+    const digest = String(digestInput ?? '').trim();
+    const lookup = { digest, status: 'loading', receipt: null };
+    playerUi.receiptLookup = lookup;
+    renderPlayer({ drawPreview: false });
+    const current = () => !state.destroyed && state.playerUi === playerUi && state.playerSession?.rootId === playerSession.rootId
+      && playerUi.export.open && playerUi.receiptLookup === lookup && state.connection.address === wallet;
+    try {
+      const receipt = await lookupPlayerCompletionReceipt({ rootId: playerSession.rootId, transactionDigest: digest });
+      if (!receipt || !EXACT_OBJECT_ID.test(receipt.soulId) || receipt.transactionDigest !== digest) {
+        throw new TypeError('Complete receipt does not match the requested digest.');
+      }
+      if (!current()) return;
+      lookup.status = 'ready';
+      lookup.receipt = receipt;
+    } catch {
+      if (!current()) return;
+      lookup.status = 'error';
+    }
+    renderPlayer({ drawPreview: false });
+  }
+
   async function openPlayerExport() {
     if (!state.playerUi || !state.playerSession
       || (state.playerCompletionFlight && !state.playerCompletionFlight.abort.signal.aborted)) return null;
@@ -3690,6 +3719,9 @@ export function createOriginalProductApp({
     state.playerUi.export.open = false;
     state.playerUi.export.state = 'idle';
     state.playerUi.export.error = '';
+    if (state.playerUi.receiptLookup?.status === 'loading') {
+      state.playerUi.receiptLookup = { digest: state.playerUi.receiptLookup.digest, status: 'idle', receipt: null };
+    }
     releasePlayerExportUrl();
     renderPlayer();
   }
@@ -8211,6 +8243,12 @@ export function createOriginalProductApp({
     if (control.dataset.action === 'player-expansion-v8') return;
     return handlePlayerAction(String(control.dataset.action || ''), control, event.target).catch(() => {});
   });
+  listen(playerMount, 'submit', (event) => {
+    const form = event.target?.closest?.('[data-player-receipt-lookup]');
+    if (!form) return;
+    event.preventDefault();
+    return lookupOriginalPlayerReceipt(form.elements.namedItem('transactionDigest')?.value);
+  });
   listen(playerMount, 'change', (event) => {
     const control = event.target?.closest?.('[data-action]');
     if (!control || !playerMount.contains?.(control)) return;
@@ -8229,6 +8267,10 @@ export function createOriginalProductApp({
     return updatePlayerProfile(control);
   });
   listen(playerMount, 'input', (event) => {
+    if (event.target?.closest?.('[data-player-receipt-digest]') && state.playerUi?.receiptLookup) {
+      state.playerUi.receiptLookup.digest = event.target.value;
+      return;
+    }
     if (!state.localPlayer || event.isComposing) return;
     const control = event.target?.closest?.('[data-action]');
     if (!control || control.disabled || !playerMount.contains?.(control)
