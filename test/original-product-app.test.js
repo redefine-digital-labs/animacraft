@@ -8216,6 +8216,83 @@ test('Player projects save and restore by exact wallet/Root commitment, expose C
   secondApp.destroy();
 });
 
+test('published Player uses certified Living Content defaults and preserves complete legacy project text', async () => {
+  const address = `0x${'8b'.repeat(32)}`;
+  const session = structuredClone(playerSession(ROOT_ONE));
+  const defaults = {
+    soulMd: '# Certified QA soul {{OC_NAME}}\n',
+    memoryMd: '# Certified QA memory\n',
+    skillMd: '---\nname: certified-qa\n---\n# Certified QA skill\n',
+  };
+  Object.assign(session.player.document.livingContent, defaults);
+  const storageMap = new Map();
+  const open = async () => {
+    const harness = browserHarness({
+      connection: { account: { address, chains: ['sui:mainnet'] } },
+      templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+      playerSessionResult: session,
+      renderPlayerPreviewResult: canonicalPreview(),
+      storageMap,
+    });
+    const app = createOriginalProductApp(harness);
+    await app.ready;
+    await app.openPlayer(ROOT_ONE);
+    return { app, harness, mount: harness.doc.getElementById('makerV4PlayerMount') };
+  };
+  const saveName = async ({ harness, mount }, value) => {
+    const profile = new FakeTarget(harness.doc, { dataset: { action: 'player-profile-name' } });
+    profile.parent = mount;
+    profile.value = value;
+    await waitForEvent(mount.fire('change', { target: profile }));
+  };
+  const fresh = await open();
+  assert.match(fresh.mount.innerHTML, /# Certified QA soul \{\{OC_NAME\}\}/);
+  assert.match(fresh.mount.innerHTML, /# Certified QA memory/);
+  assert.match(fresh.mount.innerHTML, /name: certified-qa/);
+  await saveName(fresh, 'QA Player');
+  const projectKey = [...storageMap.keys()].find(key => key.includes(ROOT_ONE) && !key.includes(':wal:'));
+  const record = JSON.parse(storageMap.get(projectKey));
+  assert.deepEqual(record.session.soul, { defaults, documents: {} });
+  fresh.app.destroy();
+
+  const custom = '# Saved player text\r\n{{OC_NAME}}\n';
+  record.session.soul = { defaults: {}, documents: { soulMd: custom } };
+  record.projectHash = await exactProjectHash(record.session);
+  storageMap.set(projectKey, JSON.stringify(record));
+  const partial = await open();
+  assert.match(partial.mount.innerHTML, /# Saved player text/);
+  assert.match(partial.mount.innerHTML, /# Certified QA memory/);
+  assert.match(partial.mount.innerHTML, /name: certified-qa/);
+  assert.equal(JSON.parse(storageMap.get(projectKey)).projectHash, record.projectHash, 'opening alone preserves the durable project');
+  await saveName(partial, 'Restored QA Player');
+  assert.deepEqual(JSON.parse(storageMap.get(projectKey)).session.soul, {
+    defaults: { memoryMd: defaults.memoryMd, skillMd: defaults.skillMd },
+    documents: { soulMd: custom },
+  });
+  partial.app.destroy();
+
+  const legacy = JSON.parse(storageMap.get(projectKey));
+  legacy.session.soul = { defaults: {}, documents: { ...defaults, soulMd: custom } };
+  legacy.projectHash = await exactProjectHash(legacy.session);
+  storageMap.set(projectKey, JSON.stringify(legacy));
+  const complete = await open();
+  assert.match(complete.mount.innerHTML, /# Saved player text/);
+  await saveName(complete, 'Restored QA Player');
+  const restored = JSON.parse(storageMap.get(projectKey));
+  assert.equal(restored.projectHash, legacy.projectHash, 'a complete old project retains its exact completion hash');
+  assert.deepEqual(restored.session.soul, legacy.session.soul);
+  const restoreDefault = new FakeTarget(complete.harness.doc, {
+    dataset: { action: 'player-reset-soul-document', soulKey: 'soulMd' },
+  });
+  restoreDefault.parent = complete.mount;
+  await waitForEvent(complete.mount.fire('click', { target: restoreDefault }));
+  const reset = JSON.parse(storageMap.get(projectKey));
+  assert.equal(reset.session.soul.defaults.soulMd, defaults.soulMd);
+  assert.equal(reset.session.soul.documents.soulMd, undefined);
+  assert.equal(reset.session.soul.documents.memoryMd, legacy.session.soul.documents.memoryMd);
+  complete.app.destroy();
+});
+
 test('a different writer with different content at the acknowledged revision fails closed into Player recovery', async () => {
   const address = `0x${'8d'.repeat(32)}`;
   const maker = certifiedMaker();

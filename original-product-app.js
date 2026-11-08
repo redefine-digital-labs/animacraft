@@ -2544,6 +2544,22 @@ export function createOriginalProductApp({
     }
   }
 
+  function playerSoulWithMakerDefaults(document, soul = { defaults: {}, documents: {} }) {
+    const documents = soul.documents ?? soul;
+    const missingDefaults = {};
+    for (const key of MAKER_V8_LIVING_CONTENT_KEYS) {
+      const makerText = document.livingContent?.[key];
+      if ((documents[key] ?? soul.defaults?.[key]) == null && typeof makerText === 'string' && makerText.trim()) {
+        missingDefaults[key] = makerText;
+      }
+    }
+    // Keep the exact project identity when an older draft already has all the
+    // text needed for a prepared or completed transaction.
+    return Object.keys(missingDefaults).length
+      ? { ...soul, defaults: { ...soul.defaults, ...missingDefaults } }
+      : soul;
+  }
+
   function initialPlayerUi(session) {
     const selectedPartKey = session.player.document.parts
       .find((part) => part.visible === true)?.key || '';
@@ -2566,7 +2582,7 @@ export function createOriginalProductApp({
       },
       save: { state: 'idle', savedAt: '', error: '' },
       profile: { name: '', world: '', description: '', tags: '' },
-      soul: { defaults: {}, documents: {} },
+      soul: playerSoulWithMakerDefaults(session.player.document),
       export: {
         open: false,
         state: 'idle',
@@ -3150,7 +3166,9 @@ export function createOriginalProductApp({
       state.playerProjectGeneration += 1;
       state.playerUi.profile = structuredClone(record.session.profile);
       state.playerUi.enabledPackReleaseIds = [...record.session.enabledPackReleaseIds];
-      state.playerUi.soul = structuredClone(record.session.soul);
+      state.playerUi.soul = playerSoulWithMakerDefaults(
+        state.playerSession.player.document, structuredClone(record.session.soul ?? undefined),
+      );
       Object.assign(state.playerUi.export, record.session.imageExport);
       state.playerUi.save = {
         state: 'saved',
@@ -4194,11 +4212,13 @@ export function createOriginalProductApp({
       if (!['soulMd', 'memoryMd', 'skillMd'].includes(key)) return;
       const generation = invalidatePlayerProject({ preservePreview: true });
       delete state.playerUi.soul.documents[key];
+      state.playerUi.soul = playerSoulWithMakerDefaults(state.playerSession.player.document, state.playerUi.soul);
       renderPlayer();
       await savePlayerMetadataEdit(generation);
     } else if (action === 'player-reset-all-soul') {
       const generation = invalidatePlayerProject({ preservePreview: true });
       state.playerUi.soul.documents = {};
+      state.playerUi.soul = playerSoulWithMakerDefaults(state.playerSession.player.document, state.playerUi.soul);
       renderPlayer();
       await savePlayerMetadataEdit(generation);
     } else if (action === 'player-select-recovery') {
