@@ -2042,7 +2042,8 @@ test('Pack review signs only the reviewed stage and recovers the saved digest on
       return { draft: structuredClone(draft), transport: {
         stage: 'ASSET',
         status: signed ? 'TRANSPORT_RECOVERY_REQUIRED' : 'TRANSPORT_SIGNATURE_REQUIRED',
-        upload: { stage: 'REGISTER', transactionDigest: signed ? step.digest : null },
+        upload: { stage: 'REGISTER', transactionDigest: signed ? step.digest : null,
+          ...(signed ? { reason: 'SIGNATURE_OUTCOME_UNKNOWN' } : {}) },
         step: signed ? null : { ...step, quote: { verified } },
       } };
     },
@@ -2080,6 +2081,7 @@ test('Pack review signs only the reviewed stage and recovers the saved digest on
     const result = await bridge.advancePackPublication({ reviewId: review.id, action: 'SIGN' });
     assert.equal(result.review.nextAction, 'RECOVER');
     assert.equal(result.review.digest, step.digest);
+    assert.equal(result.review.signatureOutcomeUnknown, true);
     ({ review } = await reopened.reviewPackPublication(read));
     assert.equal(review.nextAction, 'RECOVER');
     assert.equal(review.digest, step.digest);
