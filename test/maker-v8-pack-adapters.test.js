@@ -9,7 +9,13 @@ import { toBase58, toBase64 } from '@mysten/sui/utils';
 import {
   MAKER_V8_PACK_STUDIO_SCHEMA,
   createMakerV8PackStudioV8,
+  createProductionMakerV8PackAdaptersV8,
 } from '../maker-v8-pack-adapters.js';
+import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
+import {
+  MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA, MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA,
+} from '../maker-v8-pack-controller.js';
+import { currentRuntimeAuthorityFixture } from './fixtures/maker-v8-current-runtime-authority.js';
 import { createMakerV8PackPersistenceV8 } from '../maker-v8-pack-persistence.js';
 import { createMakerV8DraftPersistence } from '../maker-v8-draft-store.js';
 import { createCharacterMakerV8Starter } from '../maker-v8-document.js';
@@ -25,6 +31,30 @@ const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const digest = (value) => toBase58(new Uint8Array(32).fill(value));
 const hash = (value) => value.repeat(64).slice(0, 64);
 const ref = (value) => ({ objectId: id(value), version: String(value), digest: digest(value) });
+
+test('production Pack Studio accepts the browser chain execution configuration', async () => {
+  const { config, rpc } = currentRuntimeAuthorityFixture();
+  const transactionOperation = () => assert.fail('Adapter initialization must not start a transaction');
+  const publication = { schemaVersion: MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA,
+    prepare: transactionOperation, resume: transactionOperation, requestSignature: transactionOperation,
+    recoverOutcome: transactionOperation, replayExact: transactionOperation };
+  const compiler = { authority: {}, compilePack: transactionOperation };
+  for (const enabled of [false, true]) {
+    const gates = { allowWalletSignature: enabled, allowBroadcast: enabled };
+    const lifecycle = { schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA, execution: gates,
+      build: transactionOperation, prepare: transactionOperation, recover: transactionOperation };
+    const { controller, persistence } = await createProductionMakerV8PackAdaptersV8({
+      runtime: config, client: rpc, wallet: { getCurrentAccount: transactionOperation },
+      execution: { network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, ...gates },
+      indexedDB, compiler, publication, lifecycle,
+    });
+    try {
+      assert.deepEqual(controller.execution, gates);
+    } finally {
+      persistence.close();
+    }
+  }
+});
 
 function bindings() {
   const rootId = id(1);

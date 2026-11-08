@@ -683,7 +683,10 @@ export async function createProductionMakerV8PackAdaptersV8({
     publication: exactPublication,
     transport,
     lifecycle: exactLifecycle,
-    execution,
+    execution: {
+      allowWalletSignature: execution.allowWalletSignature,
+      allowBroadcast: execution.allowBroadcast,
+    },
     now,
   });
   return freeze({
