@@ -4,12 +4,11 @@ import {
 import { bcs } from '@mysten/sui/bcs';
 import { sha256 } from '@noble/hashes/sha2.js';
 import {
-  MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE,
-  MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT,
   MAKER_V8_BYTE_BUDGETS,
   MAKER_V8_PUBLICATION_COMPILER_ABI,
   MAKER_V8_PUBLICATION_TOPOLOGY,
   MAKER_V8_TRANSACTION_LIMITS,
+  measuredMakerV8SuiProtocolCommitment,
 } from './maker-v8-compiler.js';
 import { MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256 } from './maker-v8-chain.js';
 import { assertMakerV8WalrusExecutionV1, MAKER_V8_WALRUS_MINIMUM_DEPENDENCY } from './maker-v8-walrus-execution.js';
@@ -460,7 +459,7 @@ function validateCompilerAuthority(authority) {
       .some((field) => !HASH.test(authority.catalog[field]))) {
     fail('MAKER_V8_PUBLICATION_AUTHORITY_INVALID', 'Compiler authority has malformed protocol, Core, Catalog, or commitment fields.');
   }
-  if (canonical(authority.protocolProfile) !== canonical(MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE)
+  if (!measuredMakerV8SuiProtocolCommitment(authority.protocolProfile)
     || authority.coreArtifact.baseRegistryModuleSha256
       !== MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256) {
     fail('MAKER_V8_PUBLICATION_AUTHORITY_UNMEASURED', 'Compiler authority is not bound to the exact measured Sui protocol and Core artifact profile.');
@@ -718,9 +717,10 @@ function assertPlanIdentitySync(plan) {
   const authorityPayload = { ...plan.immutable.compilerAuthority };
   delete authorityPayload.trustedContextCommitment;
   const authorityCommitment = canonicalDigestSync(authorityPayload);
+  const protocolProfile = plan.immutable.compilerAuthority.protocolProfile;
   const protocolProfileCommitment = canonicalDigestSync({
     schemaVersion: 'animacraft.maker-v8-sui-protocol-profile.v1',
-    ...plan.immutable.compilerAuthority.protocolProfile,
+    ...protocolProfile,
   });
   const coreArtifactCommitment = canonicalDigestSync({
     schemaVersion: 'animacraft.maker-v8-core-artifact.v1',
@@ -730,7 +730,7 @@ function assertPlanIdentitySync(plan) {
     || blobRefsCommitment !== plan.immutable.blobRefsCommitment
     || authorityCommitment !== plan.immutable.compilerAuthority.trustedContextCommitment
     || protocolProfileCommitment !== plan.immutable.protocolProfileCommitment
-    || protocolProfileCommitment !== MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT
+    || protocolProfileCommitment !== measuredMakerV8SuiProtocolCommitment(protocolProfile)
     || coreArtifactCommitment !== plan.immutable.coreArtifactCommitment) {
     fail('MAKER_V8_PUBLICATION_AUTHORITY_COMMITMENT_MISMATCH', 'Immutable publication scope, blobs, or compiler authority commitments do not match their canonical evidence.');
   }
