@@ -521,7 +521,7 @@ async function certifiedRequest(client, action, mutateState = null, mutateReques
   return request;
 }
 
-async function externalCertifiedRequest(client, action, mutateState = null) {
+async function externalCertifiedRequest(client, action, mutateState = null, { removeEquipped = false } = {}) {
   const request = requestFor(action);
   const productId = id(390);
   const ownedItemId = id(391);
@@ -540,21 +540,24 @@ async function externalCertifiedRequest(client, action, mutateState = null) {
     externalProductId: productId,
     ownedExternalItemId: ownedItemId,
   };
-  request.recipe = {
-    ...structuredClone(recipe),
-    selections: [structuredClone(baseSelection), Object.fromEntries(
-      Object.entries(externalSelection).filter(([key]) => key !== 'selectionIndex' && key !== 'swatchKey'),
-    )],
-  };
-  request.loadout = {
-    ...structuredClone(loadout),
-    selections: [structuredClone(baseSelection), externalSelection],
-    recipeCommitment: makerV8PlayerRecipeCommitmentV8(request.recipe),
-  };
-  const committed = action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT;
+  if (!removeEquipped) {
+    request.recipe = {
+      ...structuredClone(recipe),
+      selections: [structuredClone(baseSelection), Object.fromEntries(
+        Object.entries(externalSelection).filter(([key]) => key !== 'selectionIndex' && key !== 'swatchKey'),
+      )],
+    };
+    request.loadout = {
+      ...structuredClone(loadout),
+      selections: [structuredClone(baseSelection), externalSelection],
+      recipeCommitment: makerV8PlayerRecipeCommitmentV8(request.recipe),
+    };
+  }
+  const committed = removeEquipped || action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT;
+  const revision = removeEquipped ? '2' : '1';
   const state = playerState({
     action,
-    makerLoadout: committed ? owned(id(361), { revision: '1' }) : null,
+    makerLoadout: committed ? owned(id(361), { revision }) : null,
   });
   const product = shared(productId, {
     version: '8', root_id: rootId, root_version: '1',
@@ -574,7 +577,7 @@ async function externalCertifiedRequest(client, action, mutateState = null) {
     product_content_commitment: commitment('a'),
     asset_content_commitment: commitment('8'), holder: signer,
     ownership_epoch: '0', transferable: true, equip_lock: committed
-      ? { loadout_id: id(361), equip_revision: '1', selection_index: '1' } : null,
+      ? { loadout_id: id(361), equip_revision: revision, selection_index: '1' } : null,
   });
   state.objects.externalProducts = [product];
   state.objects.ownedExternalItems = [item];
@@ -1886,6 +1889,38 @@ test('external wardrobe Items equip, unequip, and prove through exact owned-obje
     productContentCommitment: commitment('a'),
     assetContentCommitment: commitment('8'),
   }]);
+});
+
+test('saving removal of an equipped external Item uses the non-generic Move ABI', async () => {
+  const client = clientFixture();
+  const compiler = createMakerV8PlayerCompilerAdapterV8({
+    client,
+    runtime,
+    loadRuntimeAttestation: async () => ({ runtime }),
+    assertTransport() {},
+  });
+  const request = await externalCertifiedRequest(
+    client, MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT, null, { removeEquipped: true },
+  );
+  const { plan } = await compiler.preparePlayerAction(request);
+  const data = Transaction.fromKind(fromBase64(plan.descriptor.kindBytes)).getData();
+  const calls = data.commands.map((command) => command.MoveCall);
+  assert.deepEqual(calls.map((call) => call.function), [
+    'clear_non_external_selection_v8',
+    'unequip_external_style_v8',
+    'select_base_style_v8',
+  ]);
+  const removal = calls[1];
+  assert.deepEqual(removal.typeArguments, []);
+  assert.equal(removal.arguments.length, 3);
+  assert.equal(data.inputs[removal.arguments[0].Input].Object.ImmOrOwnedObject.objectId, id(361));
+  assert.equal(data.inputs[removal.arguments[1].Input].Object.ImmOrOwnedObject.objectId, id(391));
+  const revision = data.inputs[removal.arguments[2].Input].Pure.bytes;
+  assert.equal(bcs.u64().parse(fromBase64(revision)), '3');
+  assert.equal(plan.descriptor.expected.ownedItemTransitions.finalLoadoutRevision, '5');
+  const [releasedItem] = plan.descriptor.expected.ownedItemTransitions.items;
+  assert.equal(releasedItem.objectId, id(391));
+  assert.equal(releasedItem.expectedLock, null);
 });
 
 test('external Player authority rejects missing or unsafe certified render metadata before build', async () => {
