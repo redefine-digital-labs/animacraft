@@ -101,7 +101,7 @@ function fixtures() {
     id: packRegistryId, root_id: rootId, definition_registry_id: definitionsId,
     admission_authority_id: admissionId, revision: '9', external_admission_count: '0',
   });
-  const admissionAuthority = input(104, types.packAdmissionAuthority, { kind: 'SHARED', initialSharedVersion: '5' }, {
+  const admissionAuthority = input(104, types.packAdmissionAuthority, { kind: 'ADDRESS', address: signer }, {
     id: admissionId, root_id: rootId,
   });
   const makerAdmin = input(105, types.adminCap, { kind: 'ADDRESS', address: signer }, {
@@ -258,6 +258,8 @@ test('certified admission serializes the actual five-input certification ABI bef
     return (object.SharedObject ?? object.ImmOrOwnedObject).objectId;
   }), ['protocolConfig', 'catalog', 'replacement', 'runtimeConfig', 'product'].map(name => req.inputs[name].objectRef.objectId));
   assert.deepEqual(data.commands[1].MoveCall.arguments[6], { $kind: 'Result', Result: 0 });
+  const authorityArgument = data.commands[1].MoveCall.arguments[1];
+  assert.deepEqual(data.inputs[authorityArgument.Input].Object.ImmOrOwnedObject, req.inputs.admissionAuthority.objectRef);
 });
 
 for (const changed of ['protocol-id', 'protocol-type', 'protocol-owner', 'replacement-id',
@@ -444,10 +446,18 @@ test('production Composable authority cold-reads exact Maker/product control and
   const all = Object.values(checked.inputs).filter(Boolean);
   const byId = Object.fromEntries(all.map((value) => [value.objectRef.objectId, value]));
   let drift = false;
+  let wrongAuthorityOwner = false;
+  const readObject = objectId => {
+    const value = structuredClone(byId[objectId]);
+    if (wrongAuthorityOwner && objectId === checked.inputs.admissionAuthority.objectRef.objectId) {
+      value.owner.address = id(999);
+    }
+    return value;
+  };
   const client = {
-    async getObject({ id: objectId }) { return currentResponse(byId[objectId]); },
+    async getObject({ id: objectId }) { return currentResponse(readObject(objectId)); },
     async getHistoricalObject({ objectId }) {
-      const value = byId[objectId];
+      const value = readObject(objectId);
       const parsed = structuredClone(value.fields);
       if (drift && objectId === checked.inputs.packRegistry.objectRef.objectId) parsed.revision = '10';
       return historicalValue(value, parsed);
@@ -470,10 +480,19 @@ test('production Composable authority cold-reads exact Maker/product control and
   };
   const observed = await load(raw);
   assert.equal(observed.product.packRegistryRevision, '9');
+  assert.deepEqual(observed.inputs.admissionAuthority.owner, { kind: 'ADDRESS', address: signer });
   const ignoredOverrides = await load({ ...raw, protocolConfigId: id(998), replacementBindingId: id(999) });
   assert.equal(ignoredOverrides.inputs.protocolConfig.objectRef.objectId, runtime.protocolConfigId);
   assert.equal(ignoredOverrides.inputs.replacement.objectRef.objectId, makerV8AttestedReplacement(runtime).objectId);
   assert.equal(ignoredOverrides.inputs.replacement.owner.kind, 'IMMUTABLE');
+  const revoke = await load({ ...raw, action: 'REVOKE_ADMISSION', requestId: 'revoke-admission' });
+  assert.equal(revoke.product.productId, raw.productId);
+  assert.equal(revoke.inputs.product, null);
+  assert.deepEqual(revoke.inputs.admissionAuthority.owner, { kind: 'ADDRESS', address: signer });
+  assert.deepEqual(await load(revoke), revoke);
+  wrongAuthorityOwner = true;
+  await assert.rejects(load(raw), { code: 'MAKER_V8_COMPOSABLE_AUTHORITY_DRIFT' });
+  wrongAuthorityOwner = false;
   drift = true;
   await assert.rejects(load(raw), { code: 'MAKER_V8_COMPOSABLE_CURRENT_BCS_DRIFT' });
 });
