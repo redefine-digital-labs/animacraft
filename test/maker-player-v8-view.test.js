@@ -1458,5 +1458,7 @@ test('four-file batch confirmation distinguishes registration and certification 
     assert.match(html, stage === 'REGISTER' ? /9007199254740993 FROST/ : /0 FROST/);
     assert.match(html, /1234567 MIST/); assert.match(html, /exact-batch-digest/);
     assert.equal(actionCount(html, 'player-confirm-journey-step'), 1);
+    assert.ok(html.includes(`>${makerWorkspaceText(locale, 'completeOc')}</button>`));
+    assert.match(html, new RegExp(`data-action="player-confirm-complete"[^>]*disabled[^>]*>${makerWorkspaceText(locale, 'completeOc')}</button>`));
   }
 });

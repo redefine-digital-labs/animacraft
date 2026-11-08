@@ -71,6 +71,13 @@ let playerWriterSequence = 0;
 // with the approved Creator renderer and is intentionally not duplicated here.
 const ORIGINAL_GLOBAL_I18N = Object.freeze({
   en: Object.freeze({
+    creatorMakerActivity: 'Published Makers', creatorMakerActivityCopy: 'On-chain releases created or currently owned by this wallet.',
+    creatorMakerLoading: 'Reading published Makers…', creatorMakerEmpty: 'This wallet has no published Makers.',
+    creatorMakerReadFailed: 'Couldn’t read published Makers. Refresh to try again.', creatorMakerPartial: 'Some Maker details are unavailable. Refresh to try again.',
+    creatorMakerActive: 'Active', creatorMakerPaused: 'Paused', creatorMakerArchived: 'Archived',
+    creatorMakerVersion: 'Version {version}', creatorMakerCount: 'OCs completed: {count}',
+    creatorMakerCountUnavailable: 'OC completion count unavailable',
+    creatorLocalDrafts: 'Drafts on this device', creatorNoLocalDrafts: 'No local drafts yet. Create an OC Maker to start.',
     brandTagline: 'The Fully Onchain Character Maker & Creator',
     mainNavAria: 'Animacraft sections', navTemplates: 'Templates', navDocs: 'Docs',
     walletConnect: 'Connect wallet', walletConnected: 'Wallet connected',
@@ -125,6 +132,13 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     discoverySetupNote: 'Configure the published package ID to enable the public on-chain Maker gallery.',
   }),
   zh: Object.freeze({
+    creatorMakerActivity: '已发布的 Maker', creatorMakerActivityCopy: '此钱包创建或当前持有的链上 Maker。',
+    creatorMakerLoading: '正在读取已发布的 Maker…', creatorMakerEmpty: '此钱包还没有已发布的 Maker。',
+    creatorMakerReadFailed: '暂时无法读取已发布的 Maker，请刷新重试。', creatorMakerPartial: '部分 Maker 信息暂时无法读取，请刷新重试。',
+    creatorMakerActive: '已上线', creatorMakerPaused: '已暂停', creatorMakerArchived: '已归档',
+    creatorMakerVersion: '版本 {version}', creatorMakerCount: '已完成 OC：{count}',
+    creatorMakerCountUnavailable: '暂时无法读取 OC 完成数',
+    creatorLocalDrafts: '本机草稿', creatorNoLocalDrafts: '还没有本机草稿。新建一个 OC Maker 即可开始。',
     brandTagline: 'The Fully Onchain Character Maker & Creator',
     mainNavAria: 'Animacraft 导航', navTemplates: '模板广场', navDocs: '文档',
     walletConnect: '连接钱包', walletConnected: '钱包已连接',
@@ -173,6 +187,13 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     discoverySetupNote: '请配置已发布的合约包 ID，以启用公开链上 Maker 广场。',
   }),
   ja: Object.freeze({
+    creatorMakerActivity: '公開済み Maker', creatorMakerActivityCopy: 'このウォレットが作成した、または現在所有するオンチェーンの Maker。',
+    creatorMakerLoading: '公開済み Maker を読み込み中…', creatorMakerEmpty: 'このウォレットには公開済み Maker がありません。',
+    creatorMakerReadFailed: '公開済み Maker を読み込めませんでした。更新して再試行してください。', creatorMakerPartial: '一部の Maker 情報を読み込めませんでした。更新して再試行してください。',
+    creatorMakerActive: '公開中', creatorMakerPaused: '一時停止', creatorMakerArchived: 'アーカイブ済み',
+    creatorMakerVersion: 'バージョン {version}', creatorMakerCount: '完成した OC：{count}',
+    creatorMakerCountUnavailable: 'OC の完成数を取得できません',
+    creatorLocalDrafts: 'この端末の下書き', creatorNoLocalDrafts: 'この端末に下書きはありません。OC Maker を新規作成してください。',
     brandTagline: 'The Fully Onchain Character Maker & Creator',
     mainNavAria: 'Animacraft セクション', navTemplates: 'テンプレート', navDocs: 'ドキュメント',
     walletConnect: 'ウォレット接続', walletConnected: '接続済み',
@@ -223,6 +244,13 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     discoverySetupNote: '公開パッケージ ID を設定してオンチェーン Maker 広場を有効にしてください。',
   }),
   ko: Object.freeze({
+    creatorMakerActivity: '게시된 Maker', creatorMakerActivityCopy: '이 지갑이 만들었거나 현재 소유한 온체인 Maker입니다.',
+    creatorMakerLoading: '게시된 Maker를 불러오는 중…', creatorMakerEmpty: '이 지갑에 게시된 Maker가 없습니다.',
+    creatorMakerReadFailed: '게시된 Maker를 읽을 수 없습니다. 새로고침해 다시 시도하세요.', creatorMakerPartial: '일부 Maker 정보를 읽을 수 없습니다. 새로고침해 다시 시도하세요.',
+    creatorMakerActive: '활성', creatorMakerPaused: '일시 중지', creatorMakerArchived: '보관됨',
+    creatorMakerVersion: '버전 {version}', creatorMakerCount: '완성된 OC: {count}',
+    creatorMakerCountUnavailable: 'OC 완성 수를 읽을 수 없습니다',
+    creatorLocalDrafts: '이 기기의 초안', creatorNoLocalDrafts: '이 기기에 초안이 없습니다. OC Maker를 만들어 시작하세요.',
     brandTagline: 'The Fully Onchain Character Maker & Creator',
     mainNavAria: 'Animacraft 섹션', navTemplates: '템플릿', navDocs: '문서',
     walletConnect: '지갑 연결', walletConnected: '지갑 연결됨',
@@ -273,6 +301,13 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     discoverySetupNote: '게시된 패키지 ID를 설정해 공개 온체인 Maker 갤러리를 활성화하세요.',
   }),
   vi: Object.freeze({
+    creatorMakerActivity: 'Maker đã phát hành', creatorMakerActivityCopy: 'Các Maker on-chain do ví này tạo hoặc đang sở hữu.',
+    creatorMakerLoading: 'Đang đọc các Maker đã phát hành…', creatorMakerEmpty: 'Ví này chưa có Maker đã phát hành.',
+    creatorMakerReadFailed: 'Không đọc được các Maker đã phát hành. Hãy tải lại để thử lại.', creatorMakerPartial: 'Một số thông tin Maker chưa có. Hãy tải lại để thử lại.',
+    creatorMakerActive: 'Đang hoạt động', creatorMakerPaused: 'Đã tạm dừng', creatorMakerArchived: 'Đã lưu trữ',
+    creatorMakerVersion: 'Phiên bản {version}', creatorMakerCount: 'OC đã hoàn tất: {count}',
+    creatorMakerCountUnavailable: 'Không đọc được số OC đã hoàn tất',
+    creatorLocalDrafts: 'Bản nháp trên thiết bị này', creatorNoLocalDrafts: 'Chưa có bản nháp trên thiết bị này. Hãy tạo OC Maker để bắt đầu.',
     brandTagline: 'The Fully Onchain Character Maker & Creator',
     mainNavAria: 'Các mục Animacraft', navTemplates: 'Mẫu', navDocs: 'Tài liệu',
     walletConnect: 'Kết nối ví', walletConnected: 'Đã kết nối ví',
@@ -909,6 +944,7 @@ export function createOriginalProductApp({
   const replaceDraftSnapshot = optionalMethod(bridge, 'replaceDraftSnapshot');
   const listDraftVersions = optionalMethod(bridge, 'listDraftVersions');
   const listMakerLineage = optionalMethod(bridge, 'listMakerLineage');
+  const listCreatorMakers = optionalMethod(bridge, 'listCreatorMakers');
   const createSuccessorDraft = optionalMethod(bridge, 'createSuccessorDraft');
   const restoreDraftVersion = optionalMethod(bridge, 'restoreDraftVersion');
   const getPlayerSnapshot = optionalMethod(bridge, 'getPlayerSnapshot');
@@ -995,6 +1031,9 @@ export function createOriginalProductApp({
     templatesStatus: 'loading',
     templates: [],
     templatesError: '',
+    creatorMakers: [],
+    creatorMakersStatus: 'idle',
+    creatorMakersRequest: 0,
     templateRefresh: 0,
     templateDetails: new Map(),
     templateCoverUrls: new Map(),
@@ -1856,6 +1895,7 @@ export function createOriginalProductApp({
       try { state.localPlayer.setLocale(state.locale); } catch { renderPlayer(); }
     }
     renderI18n();
+    renderCreatorMakers();
     renderTheme();
     renderConnection();
     renderTemplateCards();
@@ -4302,7 +4342,14 @@ export function createOriginalProductApp({
     if ((state.playerSession || state.playerPendingRootId || state.playerRecovery)
       && state.connection.address !== next.address) clearPlayerSession();
     state.connection = next;
-    if (walletChanged) renderCreatorLibrary();
+    if (walletChanged) {
+      state.creatorMakersRequest += 1;
+      state.creatorMakers = [];
+      state.creatorMakersStatus = 'idle';
+      renderCreatorLibrary();
+      renderCreatorMakers();
+      if (next.connected && state.route === 'creator') void refreshCreatorMakers();
+    }
     // Auto-connect can invalidate the initial list before it has any rows. Its
     // replacement must not depend on an already-discovered cover existing.
     if (restartDraftRead) {
@@ -4348,6 +4395,7 @@ export function createOriginalProductApp({
     // Also cancel an opening session before its asynchronous handle arrives.
     if (next !== 'make') closeLocalPlayer();
     state.route = next;
+    if (next === 'creator' && (previous !== next || state.creatorMakersStatus === 'idle')) void refreshCreatorMakers();
     if (libraryPreviewFlight) renderCreatorLibrary();
     if (previous === 'template' && next !== 'template') {
       if (state.playerPendingRootId) clearPlayerSession();
@@ -4402,6 +4450,58 @@ export function createOriginalProductApp({
     return width === height ? '1:1' : '9:16';
   }
 
+  function renderCreatorMakers() {
+    const section = byId('creatorMakerActivity');
+    if (!section) return;
+    section.hidden = !listCreatorMakers || !state.connection.connected;
+    const status = byId('creatorMakerActivityStatus');
+    const list = byId('creatorMakerActivityList');
+    const refresh = byId('refreshCreatorMakers');
+    const loading = state.creatorMakersStatus === 'loading';
+    if (refresh) refresh.disabled = section.hidden || loading;
+    const messages = { loading: 'creatorMakerLoading', empty: 'creatorMakerEmpty',
+      error: 'creatorMakerReadFailed', degraded: 'creatorMakerPartial' };
+    const message = messages[state.creatorMakersStatus];
+    if (status) {
+      status.hidden = !message;
+      status.textContent = message ? t(message) : '';
+    }
+    if (!list) return;
+    const lifecycleKeys = { ACTIVE: 'creatorMakerActive', PAUSED: 'creatorMakerPaused', ARCHIVED: 'creatorMakerArchived' };
+    list.innerHTML = state.creatorMakers.map((maker) => `
+      <article class="creator-maker-card" data-published-maker="${escapeHtml(maker.rootId)}">
+        <div class="maker-card-body">
+          <div class="maker-tags"><span class="maker-card-lifecycle ${maker.lifecycle.toLowerCase()}">${escapeHtml(t(lifecycleKeys[maker.lifecycle]))}</span><span>${escapeHtml(t('creatorMakerVersion', undefined, { version: maker.makerVersion }))}</span></div>
+          <h2>${escapeHtml(maker.title)}</h2>
+          <p>${escapeHtml(maker.completeCount === null ? t('creatorMakerCountUnavailable')
+    : t('creatorMakerCount', undefined, { count: new Intl.NumberFormat(state.locale).format(BigInt(maker.completeCount)) }))}</p>
+        </div>
+        ${maker.publicLinkAvailable ? `<div class="maker-card-actions"><a class="secondary" href="/maker/${escapeHtml(maker.rootId)}">${escapeHtml(t('viewMaker'))}</a></div>` : ''}
+      </article>`).join('');
+  }
+
+  async function refreshCreatorMakers({ replace = false } = {}) {
+    if (!listCreatorMakers || !state.connection.connected || state.route !== 'creator'
+      || (state.creatorMakersStatus === 'loading' && !replace)) return;
+    const request = ++state.creatorMakersRequest;
+    const current = () => !state.destroyed && request === state.creatorMakersRequest;
+    state.creatorMakersStatus = 'loading';
+    renderCreatorMakers();
+    try {
+      const result = await listCreatorMakers();
+      if (!current()) return;
+      state.creatorMakers = result.makers.filter((maker) => EXACT_OBJECT_ID.test(maker.rootId)
+        && ['ACTIVE', 'PAUSED', 'ARCHIVED'].includes(maker.lifecycle)
+        && (maker.completeCount === null || /^(0|[1-9][0-9]*)$/.test(maker.completeCount)));
+      state.creatorMakersStatus = result.status.toLowerCase();
+    } catch {
+      if (!current()) return;
+      state.creatorMakers = [];
+      state.creatorMakersStatus = 'error';
+    }
+    renderCreatorMakers();
+  }
+
   function renderCreatorLibrary() {
     const root = byId('imageMakerList');
     if (!root) return;
@@ -4444,7 +4544,7 @@ export function createOriginalProductApp({
             <button class="primary" type="button" data-edit-maker="${escapeHtml(record.draftId)}">${escapeHtml(t('edit', 'Edit'))}</button>
           </div>
         </article>`;
-    }).join('') : `<div class="empty-state">${escapeHtml(t('noOwnedMakers', 'No wallet-owned Makers yet. Create an OC Maker to begin your first local draft.'))}</div>`);
+    }).join('') : `<div class="empty-state">${escapeHtml(t('creatorNoLocalDrafts'))}</div>`);
   }
 
   function libraryPreviewCurrent(flight = libraryPreviewFlight) {
@@ -4686,6 +4786,7 @@ export function createOriginalProductApp({
       panel.classList.toggle('active', panel.dataset.creatorView === 'list');
     });
     renderCreatorLibrary();
+    void refreshCreatorMakers();
   }
 
   function creatorUncommittedInput() {
@@ -6940,6 +7041,7 @@ export function createOriginalProductApp({
         publishedMakers.set(JSON.stringify([address, draftId]), { complete: true, rootId: result.rootId,
           makerVersion: result.makerVersion, scope: result.scope });
         renderCreatorLibrary();
+        void refreshCreatorMakers({ replace: true });
         void refreshTemplates().catch(() => {});
       }
     } catch (error) {
@@ -7658,6 +7760,7 @@ export function createOriginalProductApp({
     });
   });
   listen(byId('backToMakerList'), 'click', showCreatorLibrary);
+  listen(byId('refreshCreatorMakers'), 'click', () => { void refreshCreatorMakers(); });
   listen(byId('templateGrid'), 'click', (event) => {
     const create = event.target?.closest?.('[data-create-first-maker]');
     if (create) {

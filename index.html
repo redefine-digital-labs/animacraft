@@ -278,13 +278,24 @@
             </div>
 
             <div class="creator-view active" data-creator-view="list">
+              <section class="image-maker-section" id="creatorMakerActivity" aria-labelledby="creatorMakerActivityTitle" hidden>
+                <div class="section-row">
+                  <div>
+                    <h2 id="creatorMakerActivityTitle" data-i18n="creatorMakerActivity">Published Makers</h2>
+                    <p data-i18n="creatorMakerActivityCopy">On-chain releases created or currently owned by this wallet.</p>
+                  </div>
+                  <button id="refreshCreatorMakers" class="secondary" type="button" data-i18n="refreshMakers">Refresh Makers</button>
+                </div>
+                <p id="creatorMakerActivityStatus" role="status"></p>
+                <div class="image-maker-list" id="creatorMakerActivityList"></div>
+              </section>
               <section class="image-maker-section">
                 <div class="section-row">
                   <div>
                     <p class="kicker" data-i18n="library">Library</p>
                     <h2 data-i18n="makerLibrary">OC Maker Library</h2>
                   </div>
-                    <span class="template-token" data-i18n="walletOwnedMakers">Wallet-owned Makers</span>
+                    <span class="template-token" data-i18n="creatorLocalDrafts">Drafts on this device</span>
                 </div>
                 <div class="image-maker-list" id="imageMakerList"></div>
               </section>
