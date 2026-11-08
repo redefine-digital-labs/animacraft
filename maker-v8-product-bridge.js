@@ -2108,6 +2108,7 @@ export function createMakerV8ProductBridge({
     const listPackDrafts = method(pack, 'list', 'pack', { optional: true });
     const upsertPackAsset = method(pack, 'upsertAsset', 'pack', { optional: true });
     const loadPackDraft = method(pack, 'load', 'pack');
+    const getPackTransportPin = method(pack, 'getTransportPin', 'pack', { optional: true });
     const preparePackPublication = method(pack, 'preparePublication', 'pack', { optional: true });
     const resumePackPublication = method(pack, 'resumePublication', 'pack');
     const signPackPublication = method(pack, 'requestPublicationSignature', 'pack');
@@ -2135,6 +2136,14 @@ export function createMakerV8ProductBridge({
     };
     if (listPackDrafts) bridge.listPackDrafts = listPackDrafts;
     bridge.loadPackDraft = loadPackDraft;
+    if (getPackTransportPin) bridge.getPackTransportPin = async (draftId) => {
+      const { address } = await requireConnected();
+      const draft = await loadPackDraft(exactDraftId(draftId));
+      if (draft.document.author.address !== address || (await requireConnected()).address !== address) {
+        fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Connect the Pack author wallet to inspect saved storage.', 'PACK');
+      }
+      return getPackTransportPin(draftId);
+    };
     const loadPackPreview = method(pack, 'loadPreview', 'pack', { optional: true });
     if (loadPackPreview) bridge.renderPackPreview = async ({ draftId, selection } = {}) => {
       const selected = selection === undefined ? null : structuredClone(selection);
@@ -2200,8 +2209,8 @@ export function createMakerV8ProductBridge({
         const reviewKind = transport ? 'WALRUS' : 'SUI';
         const step = transport?.step ?? result.step ?? null;
         const status = transport?.status ?? outcome?.status ?? plan?.status ?? draft.publication.status;
-        const stage = transport?.upload?.stage ?? step?.stage ?? plan?.current?.descriptor.stage
-          ?? plan?.head?.stage ?? null;
+        const stage = transport?.upload?.status === 'REGISTER_FINALIZED' ? 'UPLOAD'
+          : transport?.upload?.stage ?? step?.stage ?? plan?.current?.descriptor.stage ?? plan?.head?.stage ?? null;
         const canSign = step && (reviewKind === 'SUI' || stage === 'CERTIFY'
           || (stage === 'REGISTER' && step.quote?.verified === true));
         const canRecover = transport?.status === 'TRANSPORT_RECOVERY_REQUIRED'

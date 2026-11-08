@@ -138,7 +138,7 @@ function harness() {
       };
       uploads.set(value.uploadId, upload);
       calls.push(['prepare', value.mediaType]);
-      return upload;
+      return { ...upload, status: 'ENCODED' };
     },
     async requestSignature(uploadId) {
       const upload = { ...uploads.get(uploadId), status: 'RECOVERY_REQUIRED' };
@@ -213,7 +213,7 @@ test('Pack storage reviews exact bytes and resumes finalized registration before
     async load(uploadId) { return upload?.uploadId === uploadId ? upload : null; },
     async prepare({ uploadId }) {
       upload = { uploadId, status: 'SIGNATURE_REQUIRED', stage: 'REGISTER', revision: 1 };
-      return upload;
+      return { ...upload, status: 'ENCODED' };
     },
     async requestSignature() { assert.fail('The reviewed flow cannot use unreviewed signing'); },
     async prepareReview(uploadId) {

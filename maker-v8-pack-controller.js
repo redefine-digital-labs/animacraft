@@ -1261,16 +1261,30 @@ export function createMakerV8PackControllerV8({
       return collectMakerV8PackDraftIssuesV8(value, options);
     },
 
-    async preparePublication({ draftId, expectedRevision, context = null } = {}) {
+    async preparePublication({ draftId, expectedRevision, context = null, certifiedDocument = null } = {}) {
       requireDurablePublication();
-      const current = await loadRequired(draftId, 'COMPILE');
+      const current = await loadRequired(draftId, certifiedDocument === null ? 'COMPILE' : 'DRAFT');
       requireExpectedRevision(current, expectedRevision);
       if (current.publication.status !== 'UNPREPARED') {
         fail('PUBLICATION', 'MAKER_V8_PACK_PUBLICATION_EXISTS', 'This Pack already has a durable publication attempt.', {
           attemptId: current.publication.attemptId,
         });
       }
-      const { result, documentSha256 } = await compile(current, context);
+      const document = certifiedDocument === null ? current.document
+        : assertMakerV8PackDocumentV8(certifiedDocument, { mode: 'COMPILE' });
+      if (certifiedDocument !== null) {
+        const withoutTransport = value => ({
+          ...value, styles: value.styles.map(style => ({
+            ...style, asset: { assetId: style.asset.assetId, contentCommitment: style.asset.contentCommitment,
+              protected: style.asset.protected },
+          })),
+        });
+        if (canonicalMakerV8PackJson(withoutTransport(document)) !== canonicalMakerV8PackJson(withoutTransport(current.document))) {
+          fail('PUBLICATION', 'MAKER_V8_PACK_TRANSPORT_DOCUMENT_DRIFT', 'Certified storage differs from the saved Pack content.');
+        }
+        await checkAuthoring(document);
+      }
+      const { result, documentSha256 } = await compile({ ...snapshot(current), document }, context);
       if (!compiledProofs.has(result)) {
         fail('COMPILER', 'MAKER_V8_PACK_COMPILER_PROOF_REQUIRED', 'Publication requires the fresh in-process Pack compiler result.');
       }
@@ -1296,6 +1310,7 @@ export function createMakerV8PackControllerV8({
       const status = mapPlanStatus(plan);
       const next = cloneRecord({
         ...snapshot(current),
+        document,
         revision: current.revision + 1,
         updatedAt: at,
         publication: {

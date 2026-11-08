@@ -498,13 +498,19 @@ export function createMakerV8PackTransportV8({
   const ensureUpload = async ({ uploadId, owner: checkedOwner, mediaType, bytesBase64 }) => {
     let view = await publisher.load(uploadId);
     if (!view) {
-      view = await publisher.prepare({
-        uploadId,
-        owner: checkedOwner,
-        mediaType,
-        bytesBase64,
-        epochs: 3,
-      });
+      try {
+        await publisher.prepare({
+          uploadId,
+          owner: checkedOwner,
+          mediaType,
+          bytesBase64,
+          epochs: 3,
+        });
+      } catch (error) {
+        if (error?.code !== 'MAKER_V8_WALRUS_UPLOAD_EXISTS') throw error;
+      }
+      view = await publisher.load(uploadId);
+      if (!view) fail('MAKER_V8_PACK_TRANSPORT_UPLOAD_MISSING', 'Prepared Pack storage was not saved.', 'PERSISTENCE');
     }
     return view;
   };
@@ -532,16 +538,12 @@ export function createMakerV8PackTransportV8({
           sha256: asset.sha256,
         },
       }), identity);
-      try {
-        await ensureUpload({
-          uploadId,
-          owner: checked.owner,
-          mediaType: encrypted.mediaType,
-          bytesBase64: encrypted.bytesBase64,
-        });
-      } catch (error) {
-        if (error?.code !== 'MAKER_V8_WALRUS_UPLOAD_EXISTS') throw error;
-      }
+      await ensureUpload({
+        uploadId,
+        owner: checked.owner,
+        mediaType: encrypted.mediaType,
+        bytesBase64: encrypted.bytesBase64,
+      });
       content = await publisher.loadContent(uploadId);
     }
     const bytes = content === null ? null : canonicalBase64(
@@ -564,13 +566,15 @@ export function createMakerV8PackTransportV8({
     return freeze({ upload, content });
   };
 
-  const advanceUpload = async (upload, operation, review, assertCurrent) => {
+  const advanceUpload = async (upload, operation, review, assertCurrent, firstResource = false) => {
     if (operation === 'SIGN_REVIEWED') {
       if (!review || upload.status !== 'SIGNATURE_REQUIRED' || review.id !== upload.uploadId
         || review.revision !== upload.revision || review.stage !== upload.stage) {
         fail('MAKER_V8_PACK_TRANSPORT_REVIEW_STALE', 'Review the current Pack storage transaction again.', 'CONTEXT');
       }
-      return publisher.signReviewed(upload.uploadId, review, assertCurrent);
+      return publisher.signReviewed(upload.uploadId, review, () => assertCurrent?.({
+        firstRegistration: firstResource && upload.stage === 'REGISTER',
+      }));
     }
     if (operation === 'SIGN' && upload.status === 'SIGNATURE_REQUIRED') {
       return publisher.requestSignature(upload.uploadId);
@@ -659,7 +663,7 @@ export function createMakerV8PackTransportV8({
         });
       }
       if (upload.status !== 'COMPLETE') {
-        upload = await advanceUpload(upload, operation, review, assertCurrent);
+        upload = await advanceUpload(upload, operation, review, assertCurrent, uploadedAssets.length === 0);
         if (upload.status !== 'COMPLETE') {
           return pendingUpload('ASSET', upload, uploadedAssets.length, asset.assetId, operation);
         }

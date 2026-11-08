@@ -929,6 +929,7 @@ export function createOriginalProductApp({
   const recoverComposableAction = optionalMethod(bridge, 'recoverComposableAction');
   const composableArtworkStore = createMakerV8ComposableArtworkStore(win.indexedDB || globalThis.indexedDB);
   const loadPackDraft = optionalMethod(bridge, 'loadPackDraft');
+  const getPackTransportPin = optionalMethod(bridge, 'getPackTransportPin');
   const savePackDraft = optionalMethod(bridge, 'savePackDraft');
   const bindPackParent = optionalMethod(bridge, 'bindPackParent');
   const renderPackPreview = optionalMethod(bridge, 'renderPackPreview');
@@ -6189,7 +6190,8 @@ export function createOriginalProductApp({
             : review?.nextAction === 'SIGN' ? 'Review this transaction before opening your wallet.'
               : review?.nextAction === 'RECOVER' ? 'Continue the saved step. This can upload or send the previously signed transaction.'
                 : review?.status === 'FAILED' ? 'The saved Pack publication failed. Check the recorded transaction.'
-                  : 'Prepare the next Pack publication step.';
+                  : editor.transportPinned ? 'A saved storage attempt is available. Open its current step.'
+                    : 'Prepare the next Pack publication step.';
     const ready = review?.nextAction && !editor.publicationError;
     const next = review?.nextAction === 'SIGN' ? 'Review in wallet' : 'Continue saved step';
     return `<section class="v4-pack-boundary-note" data-pack-publication>
@@ -6210,7 +6212,8 @@ export function createOriginalProductApp({
     const parent = (row.document.authoringParent ?? row.document.bindings.parent).draft.document;
     const authored = packAuthoringDocument(row.document);
     const publishing = Boolean(editor.publicationBusy);
-    const editingLocked = (row.publication?.status ?? 'UNPREPARED') !== 'UNPREPARED' || Boolean(editor.publicationReview);
+    const editingLocked = (row.publication?.status ?? 'UNPREPARED') !== 'UNPREPARED' || editor.transportPinned
+      || Boolean(editor.publicationReview && !editor.publicationError);
     const disabled = packSaveFlight || packAssetFlight || publishing || editingLocked ? ' disabled' : '';
     const economics = { ...packEconomicFields(row.document), ...editor.economics };
     const economicControl = (key, label, options) => `<label>${escapeHtml(label)}${options
@@ -6387,6 +6390,10 @@ export function createOriginalProductApp({
     } catch (error) {
       if (currentPackEditor(editor)) editor.publicationError = String(error?.message || 'Pack publication review failed.');
     } finally {
+      if (currentPackEditor(editor) && getPackTransportPin) {
+        try { editor.transportPinned = Boolean(await getPackTransportPin(editor.draft.draftId)); }
+        catch { editor.transportPinned = true; }
+      }
       editor.publicationBusy = false;
       if (currentPackEditor(editor)) renderCreator();
     }
@@ -6429,13 +6436,13 @@ export function createOriginalProductApp({
     if (!await finishCreatorChanges()) return;
     const request = ++creatorPackRequest;
     try {
-      const draft = await loadPackDraft(key);
+      const [draft, pin] = await Promise.all([loadPackDraft(key), getPackTransportPin?.(key)]);
       if (request !== creatorPackRequest || !creatorDraftCurrent(generation, parentId)
         || connection !== creatorConnectionGeneration || address !== state.connection.address) return;
       if (draft.document.author.address !== address
         || (draft.document.authoringParent ?? draft.document.bindings.parent)?.draft.draftId !== parentId) throw new Error('Pack parent or author changed.');
       state.packEditor = { draft, parentId, generation, connection, address,
-        name: draft.document.metadata.name, dirty: false, error: '' };
+        name: draft.document.metadata.name, dirty: false, error: '', transportPinned: Boolean(pin) };
       renderCreator();
       void requestPackPreview();
     } catch (error) {

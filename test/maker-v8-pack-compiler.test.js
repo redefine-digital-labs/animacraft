@@ -178,11 +178,13 @@ function documentFixture(styles = 2, owner = id(90)) {
 }
 
 async function preparedTransport(document) {
+  const uploads = new Map();
   const transport = createMakerV8PackTransportV8({
     publisher: {
-      async load() { return null; },
-      async prepare({ mediaType }) {
-        return { status: 'COMPLETE', blobId: mediaType === 'application/json' ? 'walrus-manifest' : 'walrus-style' };
+      async load(uploadId) { return uploads.get(uploadId) ?? null; },
+      async prepare({ uploadId, mediaType }) {
+        uploads.set(uploadId, { status: 'COMPLETE', blobId: mediaType === 'application/json' ? 'walrus-manifest' : 'walrus-style' });
+        return { status: 'ENCODED' };
       },
       async requestSignature() { throw new Error('not used'); },
       async resume() { throw new Error('not used'); },
@@ -766,7 +768,7 @@ test('cold durable Pack signature reauthorization is required before exact gRPC 
           Transaction: {
             digest: transactionDigest, bcs: raw,
             status: { success: true },
-            effects: { transactionDigest, status: { success: true } },
+            effects: { transactionDigest: digest(222), status: { success: true } },
           },
         };
       },
@@ -792,6 +794,10 @@ test('cold durable Pack signature reauthorization is required before exact gRPC 
   const built = await boundary.buildExactTransaction({
     transaction: initial.transaction, descriptor: initial.descriptor, sender: owner,
   });
+  const expiry = bcs.TransactionData.parse(fromBase64(built.bytes)).V1.expiration.ValidDuring;
+  assert.equal(expiry.chain, MAKER_V8_SUI_MAINNET_GENESIS_DIGEST);
+  assert.equal(expiry.minEpoch, '7');
+  assert.equal(expiry.maxEpoch, '8');
   assert.deepEqual(await boundary.dryRunExactTransaction({
     transaction: initial.transaction,
     descriptor: initial.descriptor,

@@ -294,6 +294,9 @@ export function createMakerV8PackStudioV8({
 
   const continuePublication = async (input, operation) => {
     const checkedInput = plain(input) ? input : {};
+    if (operation === 'SIGN_REVIEWED' && (!execution.allowWalletSignature || !execution.allowBroadcast)) {
+      fail('MAKER_V8_PACK_EXECUTION_DISABLED', 'Pack signing and broadcast are disabled.', 'CONFIGURATION');
+    }
     if (operation === 'REVIEW') {
       const result = await controller.inspectPublication(checkedInput);
       if (result.plan || transport === null) return result;
@@ -323,25 +326,34 @@ export function createMakerV8PackStudioV8({
       && checkedInput.expectedRevision !== draft.revision) {
       fail('MAKER_V8_PACK_DRAFT_CAS_MISMATCH', 'Pack draft changed before transport recovery.', 'PERSISTENCE');
     }
-    const view = await transport[{
-      PREPARE: 'prepare', REVIEW: 'prepareReview', SIGN: 'requestSignature',
-      SIGN_REVIEWED: 'signReviewed', RECOVER: 'recover',
-    }[operation]](await transportInput(draft), checkedInput.review, checkedInput.assertCurrent);
+    let pin = null;
+    let firstRegistration = false;
+    const beforeWallet = async (step) => {
+      await checkedInput.assertCurrent?.();
+      firstRegistration = step.firstRegistration;
+      pin = await persistence.pinTransport({
+        draftId: draft.draftId, expectedRevision: draft.revision, digest: checkedInput.review.digest,
+      });
+    };
+    let view;
+    try {
+      view = await transport[{
+        PREPARE: 'prepare', REVIEW: 'prepareReview', SIGN: 'requestSignature',
+        SIGN_REVIEWED: 'signReviewed', RECOVER: 'recover',
+      }[operation]](await transportInput(draft), checkedInput.review, beforeWallet);
+    } catch (error) {
+      if (pin && firstRegistration && error?.definitiveRejection === true && error.signedArtifactCreated === false) {
+        await persistence.releaseTransportPin(pin);
+      }
+      throw error;
+    }
     if (view.status !== 'PUBLICATION_TRANSPORT_READY') {
       return freeze({ draft, transport: view, plan: null, execution: controller.execution });
     }
-    const preparedDocument = view.prepared?.document;
-    const sameDocument = canonicalMakerV8PackJson(preparedDocument)
-      === canonicalMakerV8PackJson(draft.document);
-    const saved = sameDocument ? draft : await controller.save({
+    const result = await controller.preparePublication({
       draftId: draft.draftId,
       expectedRevision: draft.revision,
-      document: preparedDocument,
-      updatedAt: draftTime(draft, now),
-    });
-    const result = await controller.preparePublication({
-      draftId: saved.draftId,
-      expectedRevision: saved.revision,
+      certifiedDocument: view.prepared.document,
       context: { transport: structuredClone(view.prepared) },
     });
     if (operation === 'REVIEW') return controller.inspectPublication({
@@ -368,6 +380,7 @@ export function createMakerV8PackStudioV8({
     subscribe: (listener) => controller.subscribe(listener),
     list: () => persistence.list(),
     load: (draftId) => controller.load(draftId),
+    getTransportPin: (draftId) => persistence.getTransportPin?.(draftId) ?? null,
     bindPublishedParent: input => controller.bindPublishedParent(input),
     async loadPreview(draftId) {
       const draft = await controller.load(draftId);

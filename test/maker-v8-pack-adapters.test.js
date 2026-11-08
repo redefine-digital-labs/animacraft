@@ -75,7 +75,7 @@ function bindings() {
   };
 }
 
-function harness({ loadParent = null, transport = null } = {}) {
+function harness({ loadParent = null, transport = null, execution } = {}) {
   const rootId = id(1);
   const calls = { discover: 0, context: 0, bindings: 0 };
   const chain = {
@@ -105,6 +105,7 @@ function harness({ loadParent = null, transport = null } = {}) {
     wallet,
     persistence,
     transport,
+    execution,
     now: () => time++,
   });
   return { studio, persistence, calls, rootId, wallet };
@@ -625,11 +626,58 @@ test('Pack Studio rejects wallet change during asset read before invoking transp
   } finally { persistence.close(); }
 });
 
+test('Pack storage pins the exact draft before wallet entry and only unlocks a definitive first rejection', async () => {
+  const registrationDigest = digest(99);
+  let walletError = Object.assign(new Error('Rejected'), {
+    definitiveRejection: true, signedArtifactCreated: false,
+  });
+  let beforeWallet = 0;
+  const transport = {
+    schemaVersion: 'animacraft.maker-v8-pack-transport.v1',
+    async prepare() { assert.fail('The reviewed path does not prepare another upload'); },
+    async requestSignature() { assert.fail('The reviewed path does not use legacy signing'); },
+    async signReviewed(_input, step, guard) {
+      assert.equal(step.digest, registrationDigest);
+      await guard({ firstRegistration: true });
+      beforeWallet++;
+      assert.equal((await studio.getTransportPin('pin-pack')).digest, registrationDigest);
+      throw walletError;
+    },
+    async recover() {
+      assert.equal((await studio.getTransportPin('pin-pack')).digest, registrationDigest);
+      return { status: 'TRANSPORT_RECOVERY_REQUIRED', upload: { transactionDigest: registrationDigest } };
+    },
+  };
+  const { studio, persistence, rootId } = harness({ transport,
+    execution: { allowWalletSignature: true, allowBroadcast: true } });
+  try {
+    const draft = await studio.createPackDraft({ draftId: 'pin-pack', rootId,
+      metadata: { semanticPackId: 'pin', name: 'Pinned Pack' } });
+    const request = { draftId: draft.draftId, expectedRevision: draft.revision, reviewKind: 'WALRUS',
+      review: { digest: registrationDigest } };
+    await assert.rejects(studio.signReviewedPublication(request), /Rejected/);
+    assert.equal(await studio.getTransportPin(draft.draftId), null);
+    const edited = await studio.save({ ...request, fields: { name: 'Still editable after rejection' } });
+    walletError = new Error('Wallet disconnected before result');
+    await assert.rejects(studio.signReviewedPublication({ ...request, expectedRevision: edited.revision }), /before result/);
+    await assert.rejects(studio.save({ draftId: edited.draftId, expectedRevision: edited.revision,
+      fields: { accessKind: 'PAID', accessPriceAtomic: '1000' } }), { code: 'MAKER_V8_PACK_TRANSPORT_LOCKED' });
+    const recovered = await studio.recoverPublicationOutcome({ draftId: edited.draftId, expectedRevision: edited.revision });
+    assert.equal(recovered.transport.upload.transactionDigest, registrationDigest);
+    assert.equal(beforeWallet, 2);
+  } finally { persistence.close(); }
+});
+
 test('replacing Pack artwork prepares only the current image while retaining the old local bytes', async () => {
   const uploads = [];
+  const stored = new Map();
   const transport = createMakerV8PackTransportV8({ publisher: {
-    load: async () => null,
-    prepare: async value => { uploads.push(value); return { uploadId: value.uploadId, status: 'SIGNATURE_REQUIRED' }; },
+    load: async uploadId => stored.get(uploadId) ?? null,
+    prepare: async value => {
+      uploads.push(value);
+      stored.set(value.uploadId, { uploadId: value.uploadId, status: 'SIGNATURE_REQUIRED' });
+      return { uploadId: value.uploadId, status: 'ENCODED' };
+    },
     requestSignature: async () => { throw Error('No wallet'); }, resume: async () => { throw Error('No network'); },
   } });
   const { studio, persistence, rootId } = harness({ transport });

@@ -583,6 +583,28 @@ test('publication compiles exact input, writes the WAL boundary first, and never
   );
 });
 
+test('certified Pack storage and its WAL attempt link in one draft revision', async () => {
+  const { controller, calls } = harness();
+  const certifiedDocument = documentFixture();
+  const original = structuredClone(certifiedDocument);
+  original.styles.forEach(style => { style.asset.blobId = null; });
+  const draft = await controller.createPackDraft({ draftId: 'one-transport-revision', document: original, createdAt: 10 });
+  const changed = structuredClone(certifiedDocument);
+  changed.access.kind = 'PAID';
+  changed.access.priceAtomic = '1000';
+  await assert.rejects(controller.preparePublication({
+    draftId: draft.draftId, expectedRevision: draft.revision, certifiedDocument: changed,
+  }), { code: 'MAKER_V8_PACK_TRANSPORT_DOCUMENT_DRIFT' });
+  assert.equal(calls.publicationPrepare, 0);
+  const result = await controller.preparePublication({
+    draftId: draft.draftId, expectedRevision: draft.revision, certifiedDocument,
+  });
+  assert.equal(result.draft.revision, draft.revision + 1);
+  assert.equal(result.draft.publication.status, 'READY');
+  assert.equal(result.draft.document.styles[0].asset.blobId, certifiedDocument.styles[0].asset.blobId);
+  assert.equal(calls.publicationPrepare, 1);
+});
+
 test('publication recovery is query-first, cold-linked, and exposes finalized state', async () => {
   const { controller, calls, order } = harness();
   const created = await controller.createPackDraft({

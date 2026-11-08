@@ -111,6 +111,32 @@ test('Pack local editing remains available when production attestation is unavai
   assert.equal(productionCalls, 2, 'release failures never fall back to local editing');
 });
 
+test('production Pack façade keeps pin reads local and routes reviewed actions to the attested Studio', async () => {
+  let productionCalls = 0;
+  const calls = [];
+  const methods = [
+    'createPackDraft', 'list', 'load', 'save', 'upsertAsset', 'preview', 'export',
+    'preparePublication', 'resumePublication', 'requestPublicationSignature',
+    'recoverPublicationOutcome', 'replayPackPublication', 'performLifecycle',
+    'reviewPublication', 'signReviewedPublication',
+  ];
+  const controller = Object.fromEntries(methods.map(name => [
+    name, async input => { calls.push([name, input]); return input; },
+  ]));
+  const pack = createLazyMakerV8PackFacade(async () => {
+    productionCalls++;
+    return controller;
+  }, async () => ({ async getTransportPin(draftId) { return { draftId }; } }));
+  assert.deepEqual(await pack.getTransportPin('qa-pack'), { draftId: 'qa-pack' });
+  assert.equal(productionCalls, 0);
+  const review = { draftId: 'qa-pack', expectedRevision: 4 };
+  await pack.reviewPublication(review);
+  const sign = { ...review, reviewKind: 'WALRUS', review: { digest: 'saved-digest' } };
+  await pack.signReviewedPublication(sign);
+  assert.deepEqual(calls, [['reviewPublication', review], ['signReviewedPublication', sign]]);
+  assert.equal(productionCalls, 1);
+});
+
 test('Composable write authority stays lazy until the approved Composable Items journey requests it', async () => {
   let resolutions = 0;
   const calls = [];
