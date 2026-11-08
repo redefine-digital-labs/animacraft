@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { IDBFactory } from 'fake-indexeddb';
 
 import { Transaction } from '@mysten/sui/transactions';
 import { toBase58, toBase64 } from '@mysten/sui/utils';
@@ -9,7 +10,9 @@ import {
   MAKER_V8_PACK_PUBLICATION_SCHEMA,
   createMakerV8PackPublicationControllerV8,
   createMakerV8PackPublicationMemoryPersistenceV8,
+  createMakerV8PackPublicationPersistenceV8,
 } from '../maker-v8-pack-publication.js';
+import { makerV8PublicationExpiration } from '../maker-v8-publication-expiration.js';
 import { MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA } from '../maker-v8-pack-controller.js';
 import { createCreatorCharacterStarter } from '../maker-v8-creator-structure.js';
 import { packPublicationAuthoringContent } from '../maker-v8-pack-authoring.js';
@@ -22,7 +25,7 @@ const SIGNER = id(9);
 const PACKAGE = id(77);
 const CHAIN = '35834a8a';
 
-function notFound(transactionDigest, checkpoint = 1) {
+function notFound(transactionDigest, checkpoint = 1, watermarkEpoch = '1') {
   return {
     status: 'NOT_FOUND', digest: transactionDigest,
     epoch: null, effectsFingerprint: null, eventsDigest: null, error: null,
@@ -34,7 +37,7 @@ function notFound(transactionDigest, checkpoint = 1) {
       grpcMethod: 'GetTransaction',
       requestedDigest: transactionDigest,
       chainIdentifier: CHAIN,
-      watermarkEpoch: '1',
+      watermarkEpoch,
       watermarkCheckpointSequence: String(checkpoint),
       watermarkCheckpointDigest: digest(checkpoint + 20),
     },
@@ -70,20 +73,20 @@ async function descriptor(stage, ordinal, definitionTransaction = null) {
   };
 }
 
-async function fullTransaction(kindBytes, gasBudget = 10_000_000) {
+async function fullTransaction(kindBytes, gasBudget = 10_000_000, finite = false) {
   const transaction = Transaction.fromKind(kindBytes);
   transaction.setSender(SIGNER);
   transaction.setGasPrice(1);
   transaction.setGasBudget(gasBudget);
   transaction.setGasPayment([{ objectId: id(500), version: '1', digest: digest(5) }]);
-  transaction.setExpiration({ Epoch: 99 });
+  transaction.setExpiration(finite ? makerV8PublicationExpiration('1') : { Epoch: 99 });
   return toBase64(await transaction.build());
 }
 
 async function harness({ durable = true, execution = true,
   stages = ['INIT', 'APPEND', 'FINALIZE'], buildDescriptor = descriptor, certify = null,
-  varyBuild = false } = {}) {
-  const persistence = createMakerV8PackPublicationMemoryPersistenceV8({ durable });
+  varyBuild = false, finite = false, startTime = 100,
+  persistence = createMakerV8PackPublicationMemoryPersistenceV8({ durable }) } = {}) {
   const authority = {};
   const order = [];
   const simulations = [];
@@ -124,7 +127,7 @@ async function harness({ durable = true, execution = true,
   const boundary = {
     async buildExactTransaction({ descriptor: value }) {
       order.push(`build:${value.stage}`);
-      const bytes = await fullTransaction(value.kindBytes, 10_000_000 + (varyBuild ? builds++ : 0));
+      const bytes = await fullTransaction(value.kindBytes, 10_000_000 + (varyBuild ? builds++ : 0), finite);
       const { TransactionDataBuilder } = await import('@mysten/sui/transactions');
       return { bytes, digest: TransactionDataBuilder.getDigestFromBytes((await import('@mysten/sui/utils')).fromBase64(bytes)) };
     },
@@ -154,13 +157,13 @@ async function harness({ durable = true, execution = true,
       return response ?? notFound(transactionDigest);
     },
   };
-  let time = 100;
+  let time = startTime;
   const reboot = () => createMakerV8PackPublicationControllerV8({
     persistence, compiler, boundary, wallet, rpc,
     execution: { allowWalletSignature: execution, allowBroadcast: execution },
     now: () => time++,
   });
-  return { controller: reboot(), reboot, persistence, responses, order, wallet, simulations };
+  return { controller: reboot(), reboot, persistence, responses, order, wallet, boundary, simulations };
 }
 
 const request = {
@@ -209,7 +212,7 @@ test('dedicated Pack WAL is query-first and advances INIT, APPEND, FINALIZE with
   }
   assert.equal(plan.status, 'COMPLETE');
   assert.equal(plan.terminal.chain.releaseId, id(100));
-  assert.equal((await persistence.listEvents(plan.attemptId)).length, 13);
+  assert.equal((await persistence.listEvents(plan.attemptId)).length, 16);
 });
 
 test('Pack publication reviews one simulated digest before signing its exact transaction', async () => {
@@ -267,8 +270,10 @@ test('a rejected Pack Sui review keeps the exact digest while it still simulates
     throw reject;
   };
   await assert.rejects(h.controller.requestSignature(ready.attemptId, { review }), error => error === reject);
-  assert.deepEqual(await h.persistence.load(ready.attemptId), ready);
-  assert.deepEqual(await h.controller.prepareReview(ready.attemptId), review);
+  const restored = await h.persistence.load(ready.attemptId);
+  assert.equal(restored.revision, ready.revision + 2);
+  assert.deepEqual(restored.current.outcome, ready.current.outcome);
+  assert.deepEqual(await h.controller.prepareReview(ready.attemptId), { ...review, revision: restored.revision });
   assert.equal(h.order.filter(step => step === 'build:INIT').length, 1);
 
   h.simulations.push('FAILURE');
@@ -276,8 +281,111 @@ test('a rejected Pack Sui review keeps the exact digest while it still simulates
   assert.notEqual(refreshed.digest, review.digest);
   await assert.rejects(h.controller.requestSignature(ready.attemptId, { review }),
     { code: 'MAKER_V8_PACK_PUBLICATION_REVIEW_STALE' });
-  assert.deepEqual(await h.persistence.load(ready.attemptId), ready);
+  assert.deepEqual(await h.persistence.load(ready.attemptId), restored);
   assert.equal(h.order.some(step => step.startsWith('broadcast:')), false);
+});
+
+test('cold Pack Sui wallet recovery keeps the durable unsigned digest and continues from exact finality', async () => {
+  const persistence = createMakerV8PackPublicationPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  const first = await harness({ persistence, finite: true });
+  const ready = await first.controller.prepare(request);
+  const review = await first.controller.prepareReview(ready.attemptId);
+  first.wallet.signExactTransaction = async ({ bytes, digest }) => {
+    const saved = await persistence.load(ready.attemptId);
+    assert.equal(saved.current.outcome.status, 'SIGNING');
+    assert.equal(saved.current.outcome.digest, digest);
+    assert.equal(saved.current.fullTransaction, bytes);
+    assert.equal(saved.current.signature, null);
+    throw new Error('Wallet response lost');
+  };
+  await assert.rejects(first.controller.requestSignature(ready.attemptId, { review }), /Wallet response lost/);
+  const saved = await persistence.load(ready.attemptId);
+  const cold = await harness({ persistence, finite: true, startTime: 200 });
+  await assert.rejects(cold.controller.prepareReview(ready.attemptId), { code: 'MAKER_V8_PACK_PUBLICATION_NOT_READY' });
+  cold.responses.push(new Error('Ledger unavailable'), notFound(review.digest, 2, '2'));
+  await assert.rejects(cold.controller.recoverOutcome(ready.attemptId), /Ledger unavailable/);
+  assert.deepEqual(await cold.controller.replayExact(ready.attemptId), saved);
+  const finalized = { status: 'FINALIZED_SUCCESS', digest: review.digest, epoch: '1',
+    effectsFingerprint: `0x${'4'.repeat(64)}`, eventsDigest: null, error: null, absence: null };
+  cold.responses.push(finalized);
+  cold.boundary.recoverFinalizedSignature = async ({ bytes, digest, signer, kindBytes, query }) => {
+    assert.equal(bytes, saved.current.fullTransaction);
+    assert.equal(digest, review.digest);
+    assert.equal(signer, SIGNER);
+    assert.equal(kindBytes, saved.current.descriptor.kindBytes);
+    assert.deepEqual(query, finalized);
+    return toBase64(Uint8Array.of(1, 2, 3));
+  };
+  const settled = await cold.controller.resume(ready.attemptId);
+  assert.equal(settled.head.digest, review.digest);
+  assert.equal(settled.nextPreparation.ordinal, 1);
+  assert.equal(cold.order.some(step => /^(sign|broadcast|build):/.test(step)), false);
+});
+
+test('Pack Sui retires an unsigned intent only after typed exact absence beyond expiration', async () => {
+  const h = await harness({ finite: true });
+  const ready = await h.controller.prepare(request);
+  const review = await h.controller.prepareReview(ready.attemptId);
+  h.wallet.signExactTransaction = async () => { throw new Error('Wallet response lost'); };
+  await assert.rejects(h.controller.requestSignature(ready.attemptId, { review }), /Wallet response lost/);
+  const cold = h.reboot();
+  h.responses.push(notFound(review.digest, 3, '2'), notFound(review.digest, 4, '3'));
+  assert.equal((await cold.recoverOutcome(ready.attemptId)).current.outcome.digest, review.digest);
+  const retired = await cold.replayExact(ready.attemptId);
+  assert.deepEqual(retired.current.outcome, { status: 'READY', retiredDigest: review.digest });
+  assert.notEqual((await cold.prepareReview(ready.attemptId)).digest, review.digest);
+  assert.equal(h.order.some(step => /^(sign|broadcast):/.test(step)), false);
+});
+
+test('a lost Pack Sui callback can recover a finalized failure without replaying the transaction', async () => {
+  const h = await harness();
+  const ready = await h.controller.prepare(request);
+  const review = await h.controller.prepareReview(ready.attemptId);
+  h.wallet.signExactTransaction = async () => { throw new Error('Wallet response lost'); };
+  await assert.rejects(h.controller.requestSignature(ready.attemptId, { review }), /Wallet response lost/);
+  h.responses.push({ status: 'FINALIZED_FAILURE', digest: review.digest, epoch: '1',
+    effectsFingerprint: `0x${'6'.repeat(64)}`, eventsDigest: null, error: { message: 'MoveAbort' }, absence: null });
+  const failed = await h.reboot().replayExact(ready.attemptId);
+  assert.equal(failed.status, 'FAILED');
+  assert.equal(failed.terminal.digest, review.digest);
+  assert.equal(failed.terminal.query.status, 'FINALIZED_FAILURE');
+  assert.equal(h.order.some(step => /^(sign|broadcast):/.test(step)), false);
+});
+
+test('only one tab can open the Pack Sui wallet for a saved cursor', async () => {
+  const persistence = createMakerV8PackPublicationPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  const first = await harness({ persistence });
+  const second = await harness({ persistence, startTime: 200 });
+  const ready = await first.controller.prepare(request);
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const sign = first.wallet.signExactTransaction;
+  first.wallet.signExactTransaction = async input => {
+    entered.resolve();
+    await release.promise;
+    return sign(input);
+  };
+  const signed = first.controller.requestSignature(ready.attemptId);
+  try {
+    await Promise.race([entered.promise, signed]);
+    const pending = await persistence.load(ready.attemptId);
+    assert.equal(pending.current.outcome.status, 'SIGNING');
+    await assert.rejects(second.controller.requestSignature(ready.attemptId), { code: 'MAKER_V8_PACK_PUBLICATION_NOT_READY' });
+    await assert.rejects(persistence.compareAndSwap(pending.attemptId, pending.revision, {
+      ...pending, revision: pending.revision + 1,
+      current: { ...pending.current, fullTransaction: null, outcome: { status: 'READY' } },
+    }), { code: 'MAKER_V8_PACK_PUBLICATION_EVENT_INVALID' });
+    assert.equal(second.order.some(step => /^(sign|broadcast):/.test(step)), false);
+    release.resolve();
+    assert.equal((await signed).current.outcome.digest, pending.current.outcome.digest);
+  } finally {
+    release.resolve();
+    await signed.catch(() => {});
+  }
 });
 
 test('Pack publication gates, compiler kind drift, and non-durable persistence fail closed', async () => {
