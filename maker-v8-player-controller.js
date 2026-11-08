@@ -2596,6 +2596,17 @@ export function createMakerV8PlayerControllerV8({
       return actionView(record);
     },
 
+    async readFinalizedCompletion({ rootId, signer, actionId }) {
+      if (!writeEnabled) return null;
+      const record = await readRecord(actionId);
+      if (record.action !== MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT
+        || record.playerIdentity.rootId !== rootId || record.plan.signer !== signer) {
+        fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'The completion belongs to a different wallet or Maker.', 'PERSISTENCE');
+      }
+      // readRecord verifies the stored finality, custody and native content evidence.
+      return record.status === 'FINALIZED_SUCCESS' ? actionView(record) : null;
+    },
+
     async getPlayerAction(actionId) {
       if (!writeEnabled) {
         fail('MAKER_V8_PLAYER_WRITES_DISABLED', state.execution.disabledReason, 'GATE');

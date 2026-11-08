@@ -360,6 +360,13 @@ function harness({
       calls.push(`recover:${actionId}`);
       return structuredClone(nativeJournal.actions.get(actionId));
     },
+    async readFinalizedCompletion({ rootId, signer, actionId }) {
+      assert.equal(rootId, ROOT);
+      assert.equal(signer, SIGNER);
+      calls.push(`readFinalized:${actionId}`);
+      const action = nativeJournal.actions.get(actionId);
+      return action?.status === 'FINALIZED_SUCCESS' ? structuredClone(action) : null;
+    },
   };
   let durable = null;
   let currentUpload = null;
@@ -1303,6 +1310,23 @@ test('pending encrypted content cannot mint; pending post-mint sidecars cannot a
     actionId: 'completeOutput-id', soulId: SOUL, transactionDigest: DIGEST,
     message: 'Soul mint is complete. Resume encrypted-content finalization; do not mint again.', reason: null });
   assert.equal(Object.hasOwn(sync, 'handoffUrl'), false);
+});
+
+test('cold receipt reads the original minted Soul without invoking completion or receiver', async () => {
+  const nativeJournal = { completion: null, actions: new Map() };
+  const first = harness({ nativeSyncStatus: 'RECOVERY_REQUIRED', nativeJournal });
+  assert.equal(await first.journey.readCompletionReceipt({ rootId: ROOT, signer: SIGNER }), null);
+  const pending = await first.journey.complete({ rootId: ROOT, signer: SIGNER,
+    selections: [BASE_SELECTION], project: first.project() });
+  assert.equal(pending.stage, 'NATIVE_CONTENT_SYNC');
+
+  const cold = harness({ nativeJournal, onNativeFinalize: () => assert.fail('Receipt must not contact the receiver') });
+  assert.deepEqual(await cold.journey.readCompletionReceipt({ rootId: ROOT, signer: SIGNER }),
+    { soulId: SOUL, transactionDigest: DIGEST });
+  assert.deepEqual(cold.calls, ['readFinalized:completeOutput-id']);
+  assert.equal(cold.inventoryLoads(), 0);
+  await assert.rejects(cold.journey.readCompletionReceipt({ rootId: ROOT, signer: id(99) }),
+    { code: 'MAKER_V8_PLAYER_NATIVE_CONTENT_INVALID' });
 });
 
 test('post-mint recovery in a new journey queries the saved action without preparing new content or another mint', async () => {
