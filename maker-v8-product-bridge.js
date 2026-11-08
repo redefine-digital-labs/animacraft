@@ -2351,21 +2351,27 @@ export function createMakerV8ProductBridge({
       };
     }
     if (composableTransport && typeof composable.load === 'function') {
-      bridge.createComposableUploadProduct = async ({ uploadId }) => {
+      bridge.createComposableUploadProduct = async ({ uploadId, review }) => {
         if (!gates.allowWalletSignature || !gates.allowBroadcast) {
           fail('MAKER_V8_PRODUCT_EXECUTION_DISABLED', 'Composable signing and broadcast are disabled.', 'COMPOSABLE');
         }
         await requireConnected();
         const prior = await composable.load({ requestId: uploadId, action: 'CREATE_PRODUCT' });
-        if (prior?.ticket) return prior.ticket;
         // Existing unsigned plans keep their exact authority snapshot. The engine
         // rechecks fresh authority before signing; never create a second attempt.
-        return prepareComposable(prior?.request || await bridge.reviewComposableUpload({ uploadId }));
+        const request = prior?.request || await bridge.reviewComposableUpload({
+          uploadId, bundle: review?.action === 'CREATE_ADMIT_MINT',
+        });
+        if (review && (review.requestId !== uploadId || review.action !== request.action
+          || review.documentSha256 !== request.documentSha256)) {
+          fail('MAKER_V8_COMPOSABLE_TICKET_DRIFT', 'The Product review changed. Read the saved attempt before signing.', 'COMPOSABLE');
+        }
+        return prior?.ticket || prepareComposable(request);
       };
       bridge.loadComposableUploadProduct = async ({ uploadId }) => {
         await requireConnected();
         const prior = await composable.load({ requestId: uploadId, action: 'CREATE_PRODUCT' });
-        return prior ? { status: prior.status, ticket: prior.ticket, readback: prior.readback } : null;
+        return prior ? { action: prior.request.action, status: prior.status, ticket: prior.ticket, readback: prior.readback } : null;
       };
     }
     if (composableTransport) bridge.advanceComposableUpload = async input => {
@@ -2483,31 +2489,34 @@ export function createMakerV8ProductBridge({
       }
       return request;
     };
-    bridge.reviewComposableAdmission = async ({ rootId, productId, action }) => {
-      if (!['ADMIT_OPEN', 'ADMIT_CERTIFIED', 'REVOKE_ADMISSION'].includes(action)) fail('MAKER_V8_COMPOSABLE_INPUT_INVALID', 'Unknown admission action.', 'COMPOSABLE');
-      const account = await requireConnected(), target = await bridge.getComposableMaker({ rootId });
+    const loadAdmissionInputs = async (account, target, action) => {
       if (!loadInventory) fail('MAKER_V8_COMPOSABLE_INVENTORY_UNAVAILABLE', 'Maker control inventory is unavailable.', 'COMPOSABLE');
       const inventory = await loadInventory({ address: account.address });
       if (inventory?.address !== account.address || !['READY', 'EMPTY'].includes(inventory.status)
         || !Array.isArray(inventory.items) || !Array.isArray(inventory.diagnostics) || inventory.diagnostics.length) {
         fail('MAKER_V8_COMPOSABLE_INVENTORY_INCOMPLETE', 'Maker control could not be read completely.', 'COMPOSABLE');
       }
-      const admins = inventory.items.filter(row => row.kind === 'MAKER_ADMIN' && row.rootId === rootId);
+      const admins = inventory.items.filter(row => row.kind === 'MAKER_ADMIN' && row.rootId === target.rootId);
       if (admins.length !== 1 || !target.definitionRegistryId || !target.packRegistryId || !target.admissionAuthorityId
         || (action === 'ADMIT_OPEN' && target.admission !== 'OPEN')
-        || (action === 'ADMIT_CERTIFIED' && target.admission === 'DISABLED')) {
+        || (['ADMIT_CERTIFIED', 'CREATE_ADMIT_MINT'].includes(action) && target.admission === 'DISABLED')) {
         fail('MAKER_V8_COMPOSABLE_ADMISSION_UNAVAILABLE', 'Current wallet or Maker policy does not authorize this admission action.', 'COMPOSABLE');
       }
+      return { makerAdminId: admins[0].id, definitionRegistryId: target.definitionRegistryId,
+        packRegistryId: target.packRegistryId, admissionAuthorityId: target.admissionAuthorityId };
+    };
+    bridge.reviewComposableAdmission = async ({ rootId, productId, action }) => {
+      if (!['ADMIT_OPEN', 'ADMIT_CERTIFIED', 'REVOKE_ADMISSION'].includes(action)) fail('MAKER_V8_COMPOSABLE_INPUT_INVALID', 'Unknown admission action.', 'COMPOSABLE');
+      const account = await requireConnected(), target = await bridge.getComposableMaker({ rootId });
       const request = await buildComposable({ action, requestId: `admission-${globalThis.crypto.randomUUID()}`,
-        rootId, productId, makerAdminId: admins[0].id, definitionRegistryId: target.definitionRegistryId,
-        packRegistryId: target.packRegistryId, admissionAuthorityId: target.admissionAuthorityId });
+        rootId, productId, ...await loadAdmissionInputs(account, target, action) });
       if ((await requireConnected()).address !== account.address || request.signer !== account.address) fail('MAKER_V8_COMPOSABLE_WALLET_CHANGED', 'Wallet changed during admission review.', 'COMPOSABLE');
       return request;
     };
     // rebuilds the request below; this result is not reusable signing authority.
-    if (composableTransport) bridge.reviewComposableUpload = async input => {
+    if (composableTransport) bridge.reviewComposableUpload = async ({ uploadId, bundle = false }) => {
       const account = await requireConnected();
-      const source = await composableTransport.productSource(input);
+      const source = await composableTransport.productSource({ uploadId });
       const target = await bridge.getComposableMaker({ rootId: source.binding.rootId });
       const p = source.payload;
       if (source.binding.address !== account.address || source.binding.makerVersion !== target.makerVersion
@@ -2520,10 +2529,12 @@ export function createMakerV8ProductBridge({
         fail('MAKER_V8_COMPOSABLE_TARGET_CHANGED', 'Certified source target changed or is unavailable.', 'COMPOSABLE');
       }
       if ((await requireConnected()).address !== account.address) fail('MAKER_V8_COMPOSABLE_WALLET_CHANGED', 'Wallet changed during Product review.', 'COMPOSABLE');
-      const request = await buildComposable({ action: 'CREATE_PRODUCT', requestId: source.uploadId,
+      const action = bundle ? 'CREATE_ADMIT_MINT' : 'CREATE_PRODUCT';
+      const request = await buildComposable({ action, requestId: source.uploadId,
         draftRevision: source.artworkRevision,
         rootId: target.rootId, definitionRegistryId: target.definitionRegistryId,
-        baseRegistryId: target.baseRegistryId, payload: p });
+        baseRegistryId: target.baseRegistryId, payload: p,
+        ...(bundle ? await loadAdmissionInputs(account, target, action) : {}) });
       if (request.signer !== account.address) fail('MAKER_V8_COMPOSABLE_WALLET_CHANGED', 'Product review signer differs.', 'COMPOSABLE');
       return request;
     };

@@ -6713,7 +6713,7 @@ export function createOriginalProductApp({
     }
     renderCreator();
   }
-  async function continueComposableUpload(uploadId, action) {
+  async function continueComposableUpload(uploadId, action, { bundle = false } = {}) {
     const history = state.composableUploadHistory;
     const handler = action === 'REVIEW' ? reviewComposableUpload : action === 'CREATE_PRODUCT'
       ? createComposableUploadProduct : action === 'RECOVER_PRODUCT' ? recoverComposableAction : advanceComposableUpload;
@@ -6726,7 +6726,8 @@ export function createOriginalProductApp({
       if (action === 'CREATE_PRODUCT' || action === 'RECOVER_PRODUCT') {
         if (action === 'CREATE_PRODUCT') {
           if (!createComposableUploadProduct) throw new Error('Product creation is unavailable.');
-          await createComposableUploadProduct({ uploadId });
+          const review = history.productReview?.requestId === uploadId ? history.productReview : undefined;
+          await createComposableUploadProduct({ uploadId, ...(review ? { review } : {}) });
         } else {
           if (!recoverComposableAction || !row.productAttempt?.ticket) throw new Error('Saved Product recovery ticket is unavailable.');
           await recoverComposableAction(row.productAttempt.ticket);
@@ -6735,7 +6736,7 @@ export function createOriginalProductApp({
         return;
       }
       if (action === 'REVIEW') {
-        const request = await reviewComposableUpload({ uploadId });
+        const request = await reviewComposableUpload({ uploadId, ...(bundle ? { bundle } : {}) });
         if (generation === state.creatorDraftGeneration && connection === creatorConnectionGeneration) {
           state.composableUploadHistory = { ...history, busy: false, actionError: '', productReview: request };
           renderCreator();
@@ -7491,7 +7492,7 @@ export function createOriginalProductApp({
     } else if (action === 'create-composable-product' || action === 'recover-composable-product') {
       await continueComposableUpload(String(control.dataset.uploadId || ''), action === 'create-composable-product' ? 'CREATE_PRODUCT' : 'RECOVER_PRODUCT');
     } else if (action === 'review-composable-upload') {
-      await continueComposableUpload(String(control.dataset.uploadId || ''), 'REVIEW');
+      await continueComposableUpload(String(control.dataset.uploadId || ''), 'REVIEW', { bundle: control.dataset.uploadBundle === 'true' });
     } else if (action === 'continue-composable-upload') {
       await continueComposableUpload(String(control.dataset.uploadId || ''), String(control.dataset.uploadAction || ''));
     } else if (action === 'prepare-composable-storage') {

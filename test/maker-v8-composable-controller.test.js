@@ -163,13 +163,18 @@ function request(action = MAKER_V8_COMPOSABLE_ACTIONS.PAUSE_PRODUCT) {
   const f = fixtures();
   const inputs = emptyInputs();
   const payload = emptyPayload();
-  if (action === 'CREATE_PRODUCT') {
+  const createsProduct = ['CREATE_PRODUCT', 'CREATE_ADMIT_MINT'].includes(action);
+  if (createsProduct) {
     Object.assign(inputs, { root: f.root, definitionRegistry: f.definitionRegistry, baseRegistry: f.baseRegistry });
     Object.assign(payload, {
       partKey: 'outfit', itemKey: 'cape', styleKey: 'default', layerTrackKey: 'outfit',
       colorChannelKey: null, defaultSwatchKey: null, assetBlobId: 'walrus-composable-1',
       assetSha256: ZERO, assetMediaType: 'image/png', assetByteLength: '4',
       assetContentCommitment: ZERO, transferable: true,
+    });
+    if (action === 'CREATE_ADMIT_MINT') Object.assign(inputs, {
+      packRegistry: f.packRegistry, admissionAuthority: f.admissionAuthority, makerAdmin: f.makerAdmin,
+      catalog: f.catalog, runtimeConfig: f.runtimeConfig, protocolConfig: f.protocolConfig, replacement: f.replacement,
     });
   } else if (['ADMIT_OPEN', 'ADMIT_CERTIFIED'].includes(action)) {
     Object.assign(inputs, {
@@ -197,14 +202,14 @@ function request(action = MAKER_V8_COMPOSABLE_ACTIONS.PAUSE_PRODUCT) {
     inputs,
     product: {
       rootId: f.rootId,
-      productId: action === 'CREATE_PRODUCT' ? null : f.productId,
+      productId: createsProduct ? null : f.productId,
       adminCapId: ['PAUSE_PRODUCT', 'RESUME_PRODUCT', 'ARCHIVE_PRODUCT', 'TRANSFER_CONTROL', 'MINT_ITEM'].includes(action)
         ? f.externalAdminId : null,
       sourceLifecycle: ['PAUSE_PRODUCT', 'TRANSFER_CONTROL', 'MINT_ITEM'].includes(action) ? 0
         : action === 'RESUME_PRODUCT' || action === 'ARCHIVE_PRODUCT' ? 1 : null,
       controlEpoch: ['PAUSE_PRODUCT', 'RESUME_PRODUCT', 'ARCHIVE_PRODUCT', 'TRANSFER_CONTROL', 'MINT_ITEM'].includes(action)
         ? '0' : null,
-      packRegistryRevision: ['ADMIT_OPEN', 'ADMIT_CERTIFIED', 'REVOKE_ADMISSION'].includes(action) ? '9' : null,
+      packRegistryRevision: ['ADMIT_OPEN', 'ADMIT_CERTIFIED', 'REVOKE_ADMISSION', 'CREATE_ADMIT_MINT'].includes(action) ? '9' : null,
     },
     payload,
   });
@@ -213,6 +218,9 @@ function request(action = MAKER_V8_COMPOSABLE_ACTIONS.PAUSE_PRODUCT) {
 test('Composable compiler covers the exact external author, admission, lifecycle, transfer and mint ABI', async () => {
   const expected = {
     CREATE_PRODUCT: ['new_external_item_product_v8', 'share_external_item_product_v8', 'transfer_external_item_admin_cap_v8'],
+    CREATE_ADMIT_MINT: ['new_external_item_product_v8', 'certify_external_item_product_v8', 'admit_certified_external_product_v8',
+      'mint_owned_external_item_v8', 'share_external_item_product_v8', 'transfer_external_item_admin_cap_v8',
+      'transfer_new_owned_item_to_holder_v8'],
     ADMIT_OPEN: ['admit_open_external_product_v8'],
     ADMIT_CERTIFIED: ['certify_external_item_product_v8', 'admit_certified_external_product_v8'],
     REVOKE_ADMISSION: ['revoke_external_product_v8'],
@@ -227,6 +235,23 @@ test('Composable compiler covers the exact external author, admission, lifecycle
     assert.deepEqual(built.targets.map((target) => target.split('::').at(-1)), suffixes);
     assert.equal(typeof built.kindSha256, 'string');
   }
+});
+
+test('combined publication consumes the newly created Product and sends the newly minted Item to the Maker wallet', async () => {
+  const checked = request('CREATE_ADMIT_MINT');
+  const built = await buildMakerV8ComposableTransactionV8(runtime, checked);
+  const data = Transaction.fromKind(fromBase64(built.kindBytes)).getData();
+  const [, certify, admit, mint, share, transferCap, transferItem] = data.commands.map(row => row.MoveCall.arguments);
+  const createdProduct = { $kind: 'NestedResult', NestedResult: [0, 0] };
+  const createdCap = { $kind: 'NestedResult', NestedResult: [0, 1] };
+  assert.deepEqual(certify[4], createdProduct);
+  assert.deepEqual(admit[5], createdProduct);
+  assert.deepEqual(admit[6], { $kind: 'Result', Result: 1 });
+  assert.deepEqual(mint.slice(0, 2), [createdProduct, createdCap]);
+  assert.equal(bcs.Address.fromBase64(data.inputs[mint[2].Input].Pure.bytes), signer);
+  assert.deepEqual(share, [createdProduct]);
+  assert.deepEqual(transferCap[0], createdCap);
+  assert.deepEqual(transferItem, [{ $kind: 'Result', Result: 3 }]);
 });
 
 test('Composable request rejects invalid lifecycle, authority, unused fields and transfer-to-self', () => {
@@ -252,6 +277,8 @@ test('certified admission serializes the actual five-input certification ABI bef
   assert.equal(call.function, 'certify_external_item_product_v8');
   assert.equal(call.arguments.length, 5);
   assert.deepEqual(call.typeArguments, []);
+  assert.deepEqual(call.arguments.map(argument => argument.Input), [0, 1, 2, 3, 4],
+    'the existing certification kind preserves its original input order');
   assert.deepEqual(call.arguments.map(arg => {
     assert.equal(arg.$kind, 'Input');
     const object = data.inputs[arg.Input].Object;
@@ -395,6 +422,29 @@ test('Composable staged requests reopen from IndexedDB without inventory or sign
   assert.deepEqual(second.order, []);
 });
 
+test('combined and Product-only publication share one upload journal across cold opens', async () => {
+  const idb = new IDBFactory(), options = { storageManager: { persisted: async () => true, persist: async () => true } };
+  const persistence = createMakerV8ComposablePersistenceV8(idb, options);
+  const bundled = controllerHarness({ action: 'CREATE_ADMIT_MINT', unknown: true, persistence });
+  const combined = request('CREATE_ADMIT_MINT');
+  const separate = structuredClone(request('CREATE_PRODUCT'));
+  delete separate.documentSha256;
+  separate.requestId = separate.draftId = combined.requestId;
+  const ticket = await bundled.controller.prepare(combined);
+  const reopened = controllerHarness({ action: 'CREATE_ADMIT_MINT', unknown: true,
+    persistence: createMakerV8ComposablePersistenceV8(idb, options), startTime: 200 });
+  const prior = await reopened.controller.load({ requestId: combined.requestId, action: 'CREATE_PRODUCT' });
+  assert.deepEqual(prior.ticket, ticket);
+  assert.equal(prior.request.action, 'CREATE_ADMIT_MINT');
+  await assert.rejects(reopened.controller.stage(buildMakerV8ComposableRequestV8(separate)),
+    { code: 'MAKER_V8_PACK_PUBLICATION_COLLISION' });
+  const recovery = await reopened.controller.recover(ticket);
+  assert.equal(recovery.status, 'OUTCOME_UNKNOWN');
+  assert.equal(recovery.digest, ticket.digest);
+  assert.deepEqual(reopened.order, ['query']);
+  assert.equal(bundled.order.filter(step => step === 'sign').length, 1);
+});
+
 test('Composable unknown outcome never fabricates readback or broadcasts', async () => {
   const persistence = createMakerV8PackPublicationMemoryPersistenceV8();
   const fixture = controllerHarness({ unknown: true, persistence });
@@ -499,7 +549,9 @@ test('production Composable authority cold-reads exact Maker/product control and
 
 test('admission bridge composes real authority loader and durable controller without mock build replies', async () => {
   const checked = request('ADMIT_CERTIFIED');
-  const byId = Object.fromEntries(Object.values(checked.inputs).filter(Boolean).map(value => [value.objectRef.objectId, value]));
+  const combined = request('CREATE_ADMIT_MINT');
+  const byId = Object.fromEntries([...Object.values(checked.inputs), combined.inputs.baseRegistry]
+    .filter(Boolean).map(value => [value.objectRef.objectId, value]));
   let makerControlMoved = false;
   const readObject = objectId => {
     const value = structuredClone(byId[objectId]);
@@ -515,6 +567,7 @@ test('admission bridge composes real authority loader and durable controller wit
   const record = await seedMinimalArtworkDraft(drafts, { draftId: 'admission-integration', name: 'Admission integration' });
   const document = structuredClone(record.document);
   document.composition = { mode: 'COMPOSABLE', thirdPartyAdmission: 'CERTIFIED', itemAssetization: true };
+  document.parts[0].wardrobeMode = 'SLOT';
   const rootId = checked.product.rootId;
   const productRuntime = {
     ready: async () => true, wallet,
@@ -524,12 +577,25 @@ test('admission bridge composes real authority loader and durable controller wit
       loadPlayer: async () => ({ status: 'READY', diagnostics: [], player: { rootId, makerVersion: '1', lifecycle: 'ACTIVE', document,
         evidence: { rootId, makerVersion: '1', contentCommitment: 'a'.repeat(64) }, composableBinding: {
           definitionRegistryId: checked.inputs.definitionRegistry.objectRef.objectId,
+          baseRegistryId: combined.inputs.baseRegistry.objectRef.objectId,
           packRegistryId: checked.inputs.packRegistry.objectRef.objectId,
           admissionAuthorityId: checked.inputs.admissionAuthority.objectRef.objectId } } }) },
   };
   const bridge = createMakerV8ProductBridge({ productRuntime, drafts, composable: fixture.controller,
+    composableTransport: { productSource: async ({ uploadId }) => ({ uploadId, artworkRevision: 2,
+      binding: { address: signer, rootId, makerVersion: '1', contentCommitment: 'a'.repeat(64) },
+      payload: { ...combined.payload, partKey: document.parts[0].key,
+        layerTrackKey: document.tracks[0].key } }) },
     execution: { allowWalletSignature: true, allowBroadcast: true } });
   try {
+    const uploadId = 'certified-equipment-upload';
+    const bundle = await bridge.reviewComposableUpload({ uploadId, bundle: true });
+    assert.equal(bundle.action, 'CREATE_ADMIT_MINT');
+    assert.equal(bundle.inputs.product, null);
+    assert.equal(bundle.inputs.admissionAuthority.owner.address, signer);
+    await assert.rejects(bridge.createComposableUploadProduct({ uploadId,
+      review: { ...bundle, action: 'CREATE_PRODUCT' } }), { code: 'MAKER_V8_COMPOSABLE_TICKET_DRIFT' });
+    assert.deepEqual(fixture.order, [], 'a changed review does not sign or persist a different mode');
     const reviewed = await bridge.reviewComposableAdmission({ rootId, productId: checked.product.productId, action: 'ADMIT_CERTIFIED' });
     assert.equal(reviewed.product.packRegistryRevision, '9');
     assert.equal(reviewed.inputs.protocolConfig.objectRef.objectId, runtime.protocolConfigId);
@@ -668,7 +734,7 @@ async function certifyComposableFixture(checked, response, history, transactionD
   });
 }
 
-test('external product creation certifies exact shared custody and the transferred admin cap', async () => {
+test('external product creation certifies shared custody, and combined creation also proves admission and the owned Item', async () => {
   const checked = request('CREATE_PRODUCT');
   const transactionDigest = suiDigest(34);
   const kindSha256 = 'b'.repeat(64);
@@ -738,6 +804,48 @@ test('external product creation certifies exact shared custody and the transferr
     certifyComposableFixture(checked, response, history, transactionDigest, kindSha256),
     { code: 'MAKER_V8_COMPOSABLE_CUSTODY_DRIFT' },
   );
+
+  const combined = request('CREATE_ADMIT_MINT');
+  const itemRef = ref(132);
+  const registryRef = { ...combined.inputs.packRegistry.objectRef, version: '130', digest: suiDigest(36) };
+  const revision = { root_id: combined.product.rootId, previous_revision: '9', revision: '10',
+    subject_id: productRef.objectId, operation: 2 };
+  const eventBytes = bcs.struct('PackRegistryRevisionAdvancedV8', {
+    root_id: bcs.Address, previous_revision: bcs.u64(), revision: bcs.u64(),
+    subject_id: bcs.Address, operation: bcs.u8(),
+  }).serialize(revision).toBytes();
+  const combinedResponse = finalizedResponse(kindSha256, [...entries,
+    { change: 'created', ref: itemRef, type: types.ownedExternalItem },
+    { change: 'mutated', ref: registryRef, type: types.packRegistry },
+  ], [{ type: `${runtime.roles.runtime.typeOriginPackageId}::runtime_v8::PackRegistryRevisionAdvancedV8`,
+    sender: signer, bcs: toBase64(eventBytes), parsedJson: revision }]);
+  const combinedHistory = {
+    [productRef.objectId]: finalizedObject(productRef, types.externalItemProduct,
+      { ...productFields, supply: '1' }, { Shared: { initial_shared_version: productRef.version } }, transactionDigest),
+    [capRef.objectId]: finalizedObject(capRef, types.externalItemAdminCap, capFields,
+      { AddressOwner: signer }, transactionDigest),
+    [itemRef.objectId]: finalizedObject(itemRef, types.ownedExternalItem,
+      { product_id: productRef.objectId, holder: signer, ownership_epoch: '0', transferable: true,
+        product_content_commitment: productFields.content_commitment,
+        asset_content_commitment: productFields.asset_content_commitment },
+      { AddressOwner: signer }, transactionDigest),
+    [registryRef.objectId]: finalizedObject(registryRef, types.packRegistry,
+      { ...combined.inputs.packRegistry.fields, revision: '10', external_admission_count: '1' },
+      { Shared: { initial_shared_version: '4' } }, transactionDigest),
+  };
+  const verifyCombined = () => certifyComposableFixture(combined, combinedResponse, combinedHistory, transactionDigest, kindSha256);
+  const receipt = await verifyCombined();
+  assert.equal(receipt.productId, productRef.objectId);
+  assert.deepEqual(receipt.itemRef, itemRef);
+  assert.equal(receipt.packRegistryRevision, '10');
+  combinedHistory[itemRef.objectId].owner = { AddressOwner: recipient };
+  await assert.rejects(verifyCombined(), { code: 'MAKER_V8_COMPOSABLE_CUSTODY_DRIFT' });
+  combinedHistory[itemRef.objectId].owner = { AddressOwner: signer };
+  combinedHistory[registryRef.objectId].parsed.external_admission_count = '0';
+  await assert.rejects(verifyCombined(), { code: 'MAKER_V8_COMPOSABLE_REGISTRY_DRIFT' });
+  combinedHistory[registryRef.objectId].parsed.external_admission_count = '1';
+  combinedResponse.events[0].parsedJson = { ...revision, subject_id: id(999) };
+  await assert.rejects(verifyCombined(), { code: 'MAKER_V8_COMPOSABLE_EVENT_DRIFT' });
 });
 
 test('external product control transfer certifies both state fields and actual object custody', async () => {
