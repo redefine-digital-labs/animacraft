@@ -7244,7 +7244,13 @@ test('cold Player preview displays the saved mint receipt without running Comple
     control.parent = mount;
     await waitForCompletionEvent(mount.fire('click', { target: control }));
     assert.deepEqual(receipts, [{ rootId: ROOT_ONE }]);
-    assert.match(mount.innerHTML, new RegExp(`<dt>Soul ID</dt><dd>${ROOT_TWO}</dd><dt>Transaction digest</dt><dd>${digest}</dd>`));
+    const receipt = new RegExp(`<dt>Soul ID</dt><dd>${ROOT_TWO}</dd><dt>Transaction digest</dt><dd>${digest}</dd>`);
+    assert.match(mount.innerHTML, receipt);
+    const background = new FakeTarget(harness.doc, { dataset: { action: 'player-export-background', transparent: 'true' } });
+    background.parent = mount;
+    await waitForCompletionEvent(mount.fire('click', { target: background }));
+    assert.match(mount.innerHTML, receipt, 're-rendering keeps the saved receipt visible');
+    assert.equal(receipts.length, 1);
     assert.match(mount.innerHTML, /data-action="player-download-png"[^>]*disabled/);
     assert.equal(harness.calls.completePlayerJourney.length, 0);
   } finally {

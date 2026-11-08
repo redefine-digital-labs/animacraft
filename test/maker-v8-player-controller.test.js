@@ -1001,10 +1001,20 @@ test('native Complete cold record revalidates full initial content evidence befo
     { code: 'MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT' });
   await assert.rejects(cold.readFinalizedCompletion({ ...scope, rootId: id(99) }),
     { code: 'MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT' });
+  const settled = h.persistence.inspect(prepared.actionId);
+  h.persistence.mutate(prepared.actionId, row => {
+    row.status = 'OUTCOME_UNKNOWN'; row.query = null; row.certificate = null;
+  });
+  const unknown = h.persistence.inspect(prepared.actionId);
+  h.controls.queryResults.push(notFound(settled.transaction.digest), settled.query);
+  assert.equal(await cold.readFinalizedCompletion(scope), null);
+  assert.deepEqual(await cold.readFinalizedCompletion(scope), completed);
+  assert.deepEqual(h.persistence.inspect(prepared.actionId), unknown);
+  h.persistence.mutate(prepared.actionId, row => Object.assign(row, settled));
   h.persistence.mutate(prepared.actionId, row => { row.certificate.evidence.nativeContentEvidence.objects.pop(); });
   await assert.rejects(cold.readFinalizedCompletion(scope), { code: 'MAKER_V8_NATIVE_CONTENT_EVIDENCE_INVALID' });
   await assert.rejects(h.controller.recoverPlayerAction(prepared.actionId), { code: 'MAKER_V8_NATIVE_CONTENT_EVIDENCE_INVALID' });
-  assert.deepEqual(h.calls, { ...calls, loadRecord: calls.loadRecord + 5 });
+  assert.deepEqual(h.calls, { ...calls, loadRecord: calls.loadRecord + 7, query: calls.query + 2 });
 });
 
 test('positive access flow validates, builds, dry-runs, durably signs, broadcasts, and certifies readback', async () => {

@@ -2576,6 +2576,7 @@ export function createOriginalProductApp({
       completionIssues: session.execution.writeEnabled === true
         ? [] : [String(session.execution.disabledReason || '')].filter(Boolean),
       completionStatus: null,
+      savedMintReceipt: null,
       render: {
         state: 'pending',
         message: '',
@@ -3631,7 +3632,7 @@ export function createOriginalProductApp({
   }
 
   async function refreshPlayerCompletionReceipt() {
-    if (!readPlayerCompletionReceipt || state.localPlayer || state.playerUi.completionStatus
+    if (!readPlayerCompletionReceipt || state.localPlayer || state.playerUi.savedMintReceipt
       || state.playerUi.completedSoul || !state.connection.connected) return;
     const { playerUi, playerSession, playerProjectGeneration, playerRequest, playerMutationRequest, playerExportRequest } = state;
     const wallet = state.connection.address;
@@ -3640,11 +3641,10 @@ export function createOriginalProductApp({
       if (!receipt || !EXACT_OBJECT_ID.test(receipt.soulId ?? '')
         || !/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(receipt.transactionDigest ?? '')
         || state.playerUi !== playerUi || !playerUi.export.open || state.playerCompletionFlight
-        || state.playerExportRequest !== playerExportRequest || playerUi.completionStatus
+        || state.playerExportRequest !== playerExportRequest || playerUi.savedMintReceipt
         || playerUi.completedSoul || state.connection.address !== wallet
         || !playerProjectCurrent(playerProjectGeneration, playerRequest, playerMutationRequest, playerSession.rootId)) return;
-      playerUi.completionStatus = { state: 'ready', receipt,
-        message: makerWorkspaceText(state.locale, 'playerStepSavedMintReceipt') };
+      playerUi.savedMintReceipt = receipt;
       renderPlayer({ drawPreview: false });
     } catch {
       // Preview remains usable if this browser cannot read the saved journal.
@@ -3872,6 +3872,7 @@ export function createOriginalProductApp({
               : makerWorkspaceText(state.locale, 'playerStepRecoveredOtherDraft'),
           };
           state.playerUi.export.completionConfirmed = matchesProject;
+          state.playerUi.savedMintReceipt = null;
           state.playerUi.completedSoul = result.actionId && EXACT_OBJECT_ID.test(result.soulId || '') && result.transactionDigest
             ? { actionId: result.actionId, soulId: result.soulId, transactionDigest: result.transactionDigest,
               projectHash: result.completedProjectHash, handoffUrl, matchesProject } : null;
