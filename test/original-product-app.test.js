@@ -620,20 +620,27 @@ test('Composable original controls select a certified Part and persist isolated 
   };
   let historyError = false, historyComplete = false, productAttempt = null, createCalls = 0, recoverCalls = 0;
   const ticket = { recoveryId: 'saved-product-attempt', digest: 'saved-transaction' };
-  h.harness.bridge.createComposableUploadProduct = async ({ uploadId }) => {
+  h.harness.bridge.createComposableUploadProduct = async ({ uploadId, review }) => {
     assert.equal(uploadId, 'retained-old-upload'); createCalls++;
-    if (createCalls === 1) { productAttempt = { status: 'ACTIVE', ticket: null }; throw new Error('User rejected signature'); }
-    productAttempt = { status: 'ACTIVE', ticket };
+    if (createCalls === 1) {
+      assert.equal(review?.action, 'CREATE_ADMIT_MINT');
+      productAttempt = { action: 'CREATE_ADMIT_MINT', status: 'ACTIVE', ticket: null };
+      throw new Error('User rejected signature');
+    }
+    assert.equal(review, undefined, 'the persisted combined attempt supplies the review on retry');
+    productAttempt = { action: 'CREATE_ADMIT_MINT', status: 'ACTIVE', ticket };
     throw new Error('Connection lost after signed persistence');
   };
   h.harness.bridge.recoverComposableAction = async value => {
     assert.deepEqual(value, ticket); recoverCalls++;
     if (recoverCalls === 1) return { status: 'OUTCOME_UNKNOWN' };
-    productAttempt = { status: 'COMPLETE', ticket, readback: { productId: 'certified-product' } };
+    productAttempt = { action: 'CREATE_ADMIT_MINT', status: 'COMPLETE', ticket,
+      readback: { productId: 'certified-product', itemRef: { objectId: 'wallet-owned-hat' } } };
   };
-  h.harness.bridge.reviewComposableUpload = async ({ uploadId }) => {
+  h.harness.bridge.reviewComposableUpload = async ({ uploadId, bundle }) => {
     assert.equal(uploadId, 'retained-old-upload');
-    return { requestId: uploadId, payload: { itemKey: 'old-hat', styleKey: 'old-blue', layerTrackKey: 'base-track',
+    return { requestId: uploadId, action: bundle ? 'CREATE_ADMIT_MINT' : 'CREATE_PRODUCT',
+      payload: { itemKey: 'old-hat', styleKey: 'old-blue', layerTrackKey: 'base-track',
       assetBlobId: 'certified-old-blob', assetSha256: 'b'.repeat(64) } };
   };
   h.harness.bridge.listComposableUploads = async () => {
@@ -696,6 +703,9 @@ test('Composable original controls select a certified Part and persist isolated 
     h.fire('review-composable-upload', null, { uploadId: 'retained-old-upload' });
     await waitFor('Product review ready. Not issued.');
     assert.match(mount.innerHTML, /certified-old-blob/);
+    await waitFor('Sign &amp; create external Product');
+    h.fire('review-composable-upload', null, { uploadId: 'retained-old-upload', uploadBundle: 'true' });
+    await waitFor('Sign to create, admit and issue');
     h.fire('create-composable-product', null, { uploadId: 'retained-old-upload' });
     await waitFor('User rejected signature');
     await waitFor('Sign saved Product transaction');
@@ -713,6 +723,7 @@ test('Composable original controls select a certified Part and persist isolated 
     assert.doesNotMatch(mount.innerHTML, /Product ID:/);
     h.fire('recover-composable-product', null, { uploadId: 'retained-old-upload' });
     await waitFor('Product ID: certified-product');
+    await waitFor('Item ID: wallet-owned-hat');
     assert.doesNotMatch(mount.innerHTML, /data-action="create-composable-product"/);
     historyError = true;
     h.fire('read-composable-upload-history'); await waitFor('History read failed');
