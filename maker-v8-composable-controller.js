@@ -699,7 +699,7 @@ export function createMakerV8ComposableCompilerV8({
         }
       }
       const built = await register(request);
-      if (plan.current?.fullTransaction !== null && plan.current?.fullTransaction !== undefined) {
+      if (plan.current?.signature != null) {
         const artifact = transactionData(plan.current.fullTransaction, {
           signer: request.signer,
           kindBytes: built.descriptor.kindBytes,
@@ -804,7 +804,7 @@ export function createMakerV8ComposableControllerV8({
       }
       digest(ticket.digest, 'ticket.digest');
       let plan = await engine.recoverOutcome(ticket.recoveryId);
-      const observedDigest = plan.current?.outcome?.digest ?? plan.terminal?.digest;
+      const observedDigest = plan.current?.outcome?.digest ?? plan.current?.outcome?.retiredDigest ?? plan.terminal?.digest;
       if (observedDigest !== ticket.digest) {
         fail('MAKER_V8_COMPOSABLE_TICKET_DRIFT', 'Composable durable attempt has another digest.', 'RECOVERY');
       }
@@ -1457,7 +1457,7 @@ export async function createProductionMakerV8ComposableControllerV8({
     async recover(ticket) {
       exact(ticket, ['schemaVersion', 'recoveryId', 'digest'], 'Composable recovery ticket');
       let plan = await engine.recoverOutcome(ticket.recoveryId);
-      const observedDigest = plan.current?.outcome?.digest ?? plan.terminal?.digest;
+      const observedDigest = plan.current?.outcome?.digest ?? plan.current?.outcome?.retiredDigest ?? plan.terminal?.digest;
       if (ticket.schemaVersion !== MAKER_V8_COMPOSABLE_CONTROLLER_SCHEMA || observedDigest !== ticket.digest) {
         fail('MAKER_V8_COMPOSABLE_TICKET_DRIFT', 'Composable durable attempt differs from its ticket.', 'RECOVERY');
       }
