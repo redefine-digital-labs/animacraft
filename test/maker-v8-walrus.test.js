@@ -14,6 +14,7 @@ import {
 } from '../maker-v8-walrus.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
 import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from '../maker-v8-sui-grpc.js';
+import { MakerV8DAppKitWalletError } from '../maker-v8-dapp-kit-wallet.js';
 
 const OWNER = `0x${'11'.repeat(32)}`;
 const OBJECT = `0x${'22'.repeat(32)}`;
@@ -121,6 +122,7 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
     async queryTransaction({ digest }) {
       calls.push(['query', digest]);
       const status = queries.shift() ?? 'NOT_FOUND';
+      if (status instanceof Error) throw status;
       return status === 'NOT_FOUND'
         ? { status, digest, absence: { chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER } }
         : { status, digest, absence: null, error: null };
@@ -142,9 +144,10 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
       return { verified: true, bytes: transactionBytes, digest, signer };
     },
   };
+  const buildClient = { core: { async getCurrentSystemState() { return { systemState: { epoch: '10' } }; } } };
   const publisher = createMakerV8WalrusPublisherV8({
     walrusClient,
-    buildClient: { core: { async getCurrentSystemState() { return { systemState: { epoch: '10' } }; } } },
+    buildClient,
     rpc,
     wallet,
     persistence,
@@ -155,7 +158,7 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
     fetcher: async () => ({ ok: true, async arrayBuffer() { return bytes.buffer.slice(0); } }),
     now: (() => { let value = clockStart; return () => value++; })(),
   });
-  return { publisher, bytes, calls, queries, walrusClient };
+  return { publisher, bytes, calls, queries, walrusClient, buildClient, wallet };
 }
 
 async function preparedBatch(h, persistence) {
@@ -289,6 +292,54 @@ test('publication review freezes one transaction; signing alone never broadcasts
   assert.equal(signed.status, 'RECOVERY_REQUIRED');
   assert.deepEqual(value.calls.filter(([name]) => ['sign', 'broadcast', 'upload'].includes(name)), [['sign', review.digest]]);
   await assert.rejects(value.publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REVIEW_STALE' });
+});
+
+test('a rejected Walrus wallet request keeps its reviewed digest until the exact envelope expires', async () => {
+  const value = harness();
+  const uploadId = 'rejected-reviewed-pack-upload';
+  const { publisher, wallet, buildClient } = value;
+  await publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(value.bytes) });
+  const review = await publisher.prepareReview(uploadId);
+  const before = await publisher.load(uploadId);
+  const rejection = Object.assign(new MakerV8DAppKitWalletError('MAKER_V8_DAPP_KIT_WALLET_REQUEST_REJECTED', 'Wallet rejected'), {
+    definitiveRejection: true, signedArtifactCreated: false,
+  });
+  const sign = wallet.signExactTransaction;
+  wallet.signExactTransaction = async ({ digest }) => {
+    value.calls.push(['decline', digest]);
+    throw rejection;
+  };
+  await assert.rejects(publisher.signReviewed(uploadId, review), error => error === rejection);
+  assert.deepEqual(await publisher.load(uploadId), before);
+  assert.deepEqual(await publisher.prepareReview(uploadId), review);
+  assert.deepEqual(value.calls.filter(([step]) => ['decline', 'query', 'broadcast'].includes(step)), [['decline', review.digest]]);
+
+  buildClient.core.getCurrentSystemState = async () => ({ systemState: { epoch: '12' } });
+  wallet.signExactTransaction = sign;
+  await assert.rejects(publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REVIEW_EXPIRED' });
+  const next = await publisher.prepareReview(uploadId);
+  assert.notEqual(next.digest, review.digest);
+  await assert.rejects(publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REVIEW_STALE' });
+  assert.equal(value.calls.some(([step]) => ['sign', 'query', 'broadcast'].includes(step)), false);
+});
+
+test('a signed Walrus registration keeps its digest through unknown and terminal failure across cold opens', async () => {
+  const store = memoryPersistence();
+  const first = harness(store);
+  const uploadId = 'signed-pack-upload';
+  await first.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(first.bytes) });
+  const review = await first.publisher.prepareReview(uploadId);
+  await first.publisher.signReviewed(uploadId, review);
+  const cold = harness(store, 200);
+  cold.queries.push(new Error('transport unavailable'), 'FINALIZED_FAILURE');
+  await assert.rejects(cold.publisher.resume(uploadId), /transport unavailable/);
+  assert.equal((await cold.publisher.load(uploadId)).transactionDigest, review.digest);
+  const failed = await cold.publisher.resume(uploadId);
+  assert.equal(failed.status, 'FAILED');
+  assert.equal(failed.transactionDigest, review.digest);
+  assert.equal(await cold.publisher.prepareReview(uploadId), null);
+  assert.deepEqual(await cold.publisher.resume(uploadId), failed);
+  assert.deepEqual(cold.calls, [['query', review.digest], ['query', review.digest]]);
 });
 
 test('existing signed v1 uploads survive binding-store upgrade; blocked older tabs fail visibly and retry', async () => {
