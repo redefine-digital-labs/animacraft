@@ -385,6 +385,7 @@ export function createMakerV8ProductBridge({
   const loadPlaza = method(productRuntime?.catalog, 'loadPlaza', 'productRuntime.catalog');
   const loadCreatorMakers = method(productRuntime?.catalog, 'loadCreatorMakers', 'productRuntime.catalog', { optional: true });
   const loadPlayer = method(productRuntime?.catalog, 'loadPlayer', 'productRuntime.catalog');
+  const listPublicPacks = method(productRuntime?.publicPacks, 'list', 'productRuntime.publicPacks', { optional: true });
   const loadInventory = method(productRuntime?.inventory, 'load', 'productRuntime.inventory', { optional: true });
   const loadContextualChoices = method(
     productRuntime?.choices,
@@ -848,6 +849,12 @@ export function createMakerV8ProductBridge({
       }
       return freeze(structuredClone(result.player));
     },
+    ...(listPublicPacks ? {
+      async listPublicPacks({ rootId } = {}) {
+        await ensureReady();
+        return listPublicPacks({ rootId });
+      },
+    } : {}),
     async loadCertifiedAsset({ asset, signal } = {}) {
       if (!loadCertifiedAsset) {
         fail(

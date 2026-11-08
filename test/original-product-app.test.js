@@ -3967,6 +3967,36 @@ test('walletless Maker detail uses getTemplate and certified assets in the appro
   app.destroy();
 });
 
+test('public Maker detail shows certified Pack prices without connecting a wallet', async () => {
+  const maker = certifiedMaker();
+  const harness = browserHarness({
+    templatesResult: { status: 'READY', makers: [maker], diagnostics: [] },
+    templateResult: maker,
+  });
+  const requests = [];
+  harness.bridge.listPublicPacks = async ({ rootId }) => {
+    requests.push(rootId);
+    return { rootId, unavailableCount: 1, packs: [
+      { releaseId: ROOT_ONE, name: '<Free pack>', summary: 'Free styles', accessKind: 'FREE', priceAtomic: '0' },
+      { releaseId: ROOT_TWO, name: 'Paid pack', summary: '', accessKind: 'PAID', priceAtomic: '1000' },
+      { releaseId: `0x${'ff'.repeat(32)}`, name: 'Included pack', summary: '', accessKind: 'INCLUDED_WITH_MAKER', priceAtomic: '0' },
+    ] };
+  };
+  const app = createOriginalProductApp(harness);
+  await app.ready;
+  assert.deepEqual(requests, [], 'Plaza load does not fetch Pack catalogs for every Maker');
+  await app.openTemplate(ROOT_ONE);
+  const markup = harness.doc.getElementById('templateDetail').innerHTML;
+  assert.deepEqual(requests, [ROOT_ONE]);
+  assert.match(markup, /&lt;Free pack&gt;.*Free/);
+  assert.match(markup, /Paid pack.*0\.001 USDC/);
+  assert.match(markup, /Included pack.*Included with the Maker/);
+  assert.match(markup, /Some expansion packs could not be verified/);
+  assert.equal(harness.calls.selector, 0);
+  assert.equal(harness.calls.openPlayer.length, 0);
+  app.destroy();
+});
+
 test('/maker/:id deep links and popstate restore the approved detail without adding UI', async () => {
   const first = certifiedMaker({ rootId: ROOT_ONE, title: 'First Maker', cover: certifiedCover('first-cover') });
   const second = certifiedMaker({ rootId: ROOT_TWO, title: 'Second Maker', cover: certifiedCover('second-cover') });
