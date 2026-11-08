@@ -26,10 +26,27 @@ const retiredAuthorityImport = /^\s*import\b[^\n]*(?:chain-runtime|maker-v4|make
 
 test('unchanged original pure-view sources remain byte locked to aac90dbc', () => {
   for (const [file, expected] of Object.entries(ORIGINAL_PURE_VIEWS)) {
-    if (file === 'maker-workspace-i18n.js') continue; // Explicit workflow deltas checked below.
+    if (file === 'maker-workspace-i18n.js' || file === 'docs-center-content.js') continue; // Scoped deltas checked below.
     const digest = createHash('sha256').update(readFileSync(join(ROOT, file))).digest('hex');
     assert.equal(digest, expected, `${file} must remain byte-identical to the approved source`);
   }
+});
+
+test('current lifecycle and Pack help leaves the rest of the approved handbook byte locked', async () => {
+  const source = readFileSync(join(ROOT, 'docs-center-content.js'), 'utf8');
+  const changedArticles = /^      \{\n        id: '(lifecycle-versions|expansion-packs)',[\s\S]*?^      \},\n/gm;
+  const matches = [...source.matchAll(changedArticles)];
+  const { DOCS_LOCALES } = await import('../docs-center-content.js');
+  assert.deepEqual(matches.map(match => match[1]),
+    DOCS_LOCALES.flatMap(() => ['lifecycle-versions', 'expansion-packs']));
+  const unchanged = source.replace(changedArticles, '');
+  assert.equal(createHash('sha256').update(unchanged).digest('hex'),
+    '379e43b0284f6ef682e011efb6445d87d768cc6d1ea237d75b16b39b8cd2ee9e');
+  for (const [article] of matches) {
+    assert.doesNotMatch(article, /MakerRootV5|MakerControlCapV5|ExpansionPackReleaseV8|ONE_TIME_PAID/);
+  }
+  const { validateDocsContent } = await import('../docs-center.js');
+  assert.doesNotThrow(validateDocsContent);
 });
 
 test('workflow locale deltas preserve every other historical key and translation', async () => {
