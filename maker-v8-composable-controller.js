@@ -33,6 +33,7 @@ export const MAKER_V8_COMPOSABLE_DATABASE =
 
 export const MAKER_V8_COMPOSABLE_ACTIONS = Object.freeze({
   CREATE_PRODUCT: 'CREATE_PRODUCT',
+  CREATE_ADMIT_MINT: 'CREATE_ADMIT_MINT',
   ADMIT_OPEN: 'ADMIT_OPEN',
   ADMIT_CERTIFIED: 'ADMIT_CERTIFIED',
   REVOKE_ADMISSION: 'REVOKE_ADMISSION',
@@ -45,6 +46,11 @@ export const MAKER_V8_COMPOSABLE_ACTIONS = Object.freeze({
 
 const ACTIONS = Object.freeze({
   CREATE_PRODUCT: Object.freeze({ functions: ['new_external_item_product_v8', 'share_external_item_product_v8', 'transfer_external_item_admin_cap_v8'] }),
+  CREATE_ADMIT_MINT: Object.freeze({ functions: [
+    'new_external_item_product_v8', 'certify_external_item_product_v8', 'admit_certified_external_product_v8',
+    'mint_owned_external_item_v8', 'share_external_item_product_v8', 'transfer_external_item_admin_cap_v8',
+    'transfer_new_owned_item_to_holder_v8',
+  ] }),
   ADMIT_OPEN: Object.freeze({ functions: ['admit_open_external_product_v8'] }),
   ADMIT_CERTIFIED: Object.freeze({ functions: ['certify_external_item_product_v8', 'admit_certified_external_product_v8'] }),
   REVOKE_ADMISSION: Object.freeze({ functions: ['revoke_external_product_v8'] }),
@@ -61,6 +67,9 @@ const INPUT_NAMES = Object.freeze([
   'protocolConfig', 'replacement',
   'product', 'adminCap',
 ]);
+const CREATION_ACTIONS = Object.freeze(['CREATE_PRODUCT', 'CREATE_ADMIT_MINT']);
+const REGISTRY_ACTIONS = Object.freeze(['ADMIT_OPEN', 'ADMIT_CERTIFIED', 'REVOKE_ADMISSION', 'CREATE_ADMIT_MINT']);
+const CERTIFIED_ACTIONS = Object.freeze(['ADMIT_CERTIFIED', 'CREATE_ADMIT_MINT']);
 const PRODUCT_FIELDS = Object.freeze([
   'rootId', 'productId', 'adminCapId', 'sourceLifecycle',
   'controlEpoch', 'packRegistryRevision',
@@ -159,15 +168,19 @@ function composableAttemptId({ requestId, action, signer }) {
   if (typeof requestId !== 'string' || !SAFE_KEY.test(requestId) || !Object.hasOwn(ACTIONS, action)) {
     fail('MAKER_V8_COMPOSABLE_INPUT_INVALID', 'Invalid durable Composable request identity.', 'INPUT');
   }
-  return `composable-${hashValue({ requestId, action, signer: address(signer, 'signer') })}`;
+  const durableAction = CREATION_ACTIONS.includes(action) ? 'CREATE_PRODUCT' : action;
+  return `composable-${hashValue({ requestId, action: durableAction, signer: address(signer, 'signer') })}`;
 }
 
 async function loadComposableAttempt(persistence, wallet, { requestId, action }) {
   const signer = walletAddress(await wallet.getCurrentAccount());
   const plan = await persistence.load(composableAttemptId({ requestId, action, signer }));
   if (!plan) return null;
+  const savedAction = plan.immutable.request.action;
+  const matchesAction = savedAction === action
+    || CREATION_ACTIONS.includes(savedAction) && CREATION_ACTIONS.includes(action);
   if (plan.immutable.signer !== signer || plan.immutable.request.requestId !== requestId
-    || plan.immutable.request.action !== action || walletAddress(await wallet.getCurrentAccount()) !== signer) {
+    || !matchesAction || walletAddress(await wallet.getCurrentAccount()) !== signer) {
     fail('MAKER_V8_COMPOSABLE_TICKET_DRIFT', 'Durable Composable request identity differs.', 'RECOVERY');
   }
   const digest = plan.current?.outcome?.digest ?? plan.terminal?.digest;
@@ -326,7 +339,7 @@ function hexVector(value, label) {
 
 function assertPayload(value, action) {
   exact(value, PAYLOAD_FIELDS, 'request.payload');
-  const creation = action === MAKER_V8_COMPOSABLE_ACTIONS.CREATE_PRODUCT;
+  const creation = CREATION_ACTIONS.includes(action);
   const recipientAction = [
     MAKER_V8_COMPOSABLE_ACTIONS.TRANSFER_CONTROL,
     MAKER_V8_COMPOSABLE_ACTIONS.MINT_ITEM,
@@ -364,8 +377,9 @@ function requiredInputs(action) {
   if (['ADMIT_OPEN', 'REVOKE_ADMISSION'].includes(action)) {
     return ['packRegistry', 'admissionAuthority', 'definitionRegistry', 'root', 'makerAdmin', ...(action === 'ADMIT_OPEN' ? ['product'] : [])];
   }
-  if (action === 'ADMIT_CERTIFIED') {
-    return ['packRegistry', 'admissionAuthority', 'definitionRegistry', 'root', 'makerAdmin', 'catalog', 'runtimeConfig', 'product', 'protocolConfig', 'replacement'];
+  if (CERTIFIED_ACTIONS.includes(action)) {
+    return ['packRegistry', 'admissionAuthority', 'definitionRegistry', 'root', 'makerAdmin',
+      'catalog', 'runtimeConfig', 'protocolConfig', 'replacement', action === 'CREATE_ADMIT_MINT' ? 'baseRegistry' : 'product'];
   }
   return ['product', 'adminCap'];
 }
@@ -396,7 +410,7 @@ function assertRequest(value) {
     }
   }
   exact(value.product, PRODUCT_FIELDS, 'request.product');
-  const productNeeded = value.action !== 'CREATE_PRODUCT';
+  const productNeeded = !CREATION_ACTIONS.includes(value.action);
   const product = freeze({
     rootId: address(value.product.rootId, 'product.rootId'),
     productId: productNeeded ? address(value.product.productId, 'product.productId') : null,
@@ -406,7 +420,7 @@ function assertRequest(value) {
       ? Number(decimal(value.product.sourceLifecycle, 'product.sourceLifecycle')) : null,
     controlEpoch: ['PAUSE_PRODUCT', 'RESUME_PRODUCT', 'ARCHIVE_PRODUCT', 'TRANSFER_CONTROL', 'MINT_ITEM'].includes(value.action)
       ? decimal(value.product.controlEpoch, 'product.controlEpoch') : null,
-    packRegistryRevision: ['ADMIT_OPEN', 'ADMIT_CERTIFIED', 'REVOKE_ADMISSION'].includes(value.action)
+    packRegistryRevision: REGISTRY_ACTIONS.includes(value.action)
       ? decimal(value.product.packRegistryRevision, 'product.packRegistryRevision') : null,
   });
   for (const name of PRODUCT_FIELDS) {
@@ -417,7 +431,9 @@ function assertRequest(value) {
   }
   const signer = address(value.signer, 'request.signer');
   if (inputs.adminCap !== null && (inputs.adminCap.owner.kind !== 'ADDRESS' || inputs.adminCap.owner.address !== signer)
-    || inputs.makerAdmin !== null && (inputs.makerAdmin.owner.kind !== 'ADDRESS' || inputs.makerAdmin.owner.address !== signer)) {
+    || inputs.makerAdmin !== null && (inputs.makerAdmin.owner.kind !== 'ADDRESS' || inputs.makerAdmin.owner.address !== signer)
+    || inputs.admissionAuthority !== null
+      && (inputs.admissionAuthority.owner.kind !== 'ADDRESS' || inputs.admissionAuthority.owner.address !== signer)) {
     fail('MAKER_V8_COMPOSABLE_AUTHORITY_INVALID', 'The exact required capability is not owned by the signer.', 'AUTHORITY');
   }
   const lifecycleRule = ACTIONS[value.action];
@@ -515,7 +531,28 @@ export async function buildMakerV8ComposableTransactionV8(runtimeInput, requestI
   transaction.setSender(request.signer);
   const i = request.inputs;
   const p = request.payload;
-  if (request.action === 'CREATE_PRODUCT') {
+  const admitCertified = product => {
+    assertCertifiedAuthorityInputs(runtime, i);
+    const productInput = () => product ?? transactionObject(transaction, i.product);
+    const attestation = call(transaction, targets, runtime, 'runtime', 'runtime_binding_v8', 'certify_external_item_product_v8', [
+      transactionObject(transaction, i.protocolConfig),
+      transactionObject(transaction, i.catalog),
+      transactionObject(transaction, i.replacement),
+      transactionObject(transaction, i.runtimeConfig),
+      productInput(),
+    ]);
+    call(transaction, targets, runtime, 'runtime', 'runtime_v8', 'admit_certified_external_product_v8', [
+      transactionObject(transaction, i.packRegistry, true),
+      transactionObject(transaction, i.admissionAuthority),
+      transactionObject(transaction, i.definitionRegistry),
+      transactionObject(transaction, i.root),
+      transactionObject(transaction, i.makerAdmin),
+      productInput(),
+      attestation,
+      transaction.pure.u64(request.product.packRegistryRevision),
+    ], coin);
+  };
+  if (CREATION_ACTIONS.includes(request.action)) {
     const result = call(transaction, targets, runtime, 'runtime', 'runtime_v8', 'new_external_item_product_v8', [
       transactionObject(transaction, i.root),
       transactionObject(transaction, i.definitionRegistry),
@@ -534,29 +571,22 @@ export async function buildMakerV8ComposableTransactionV8(runtimeInput, requestI
       transaction.pure.bool(p.transferable),
     ], coin);
     const [product, adminCap] = result;
+    let item = null;
+    if (request.action === 'CREATE_ADMIT_MINT') {
+      admitCertified(product);
+      item = call(transaction, targets, runtime, 'runtime', 'runtime_v8', 'mint_owned_external_item_v8', [
+        product, adminCap, transaction.pure.address(request.signer),
+      ]);
+    }
     call(transaction, targets, runtime, 'runtime', 'runtime_v8', 'share_external_item_product_v8', [product]);
     call(transaction, targets, runtime, 'runtime', 'runtime_v8', 'transfer_external_item_admin_cap_v8', [
       adminCap, transaction.pure.address(request.signer),
     ]);
+    if (item !== null) {
+      call(transaction, targets, runtime, 'runtime', 'runtime_v8', 'transfer_new_owned_item_to_holder_v8', [item]);
+    }
   } else if (request.action === 'ADMIT_CERTIFIED') {
-    assertCertifiedAuthorityInputs(runtime, i);
-    const attestation = call(transaction, targets, runtime, 'runtime', 'runtime_binding_v8', 'certify_external_item_product_v8', [
-      transactionObject(transaction, i.protocolConfig),
-      transactionObject(transaction, i.catalog),
-      transactionObject(transaction, i.replacement),
-      transactionObject(transaction, i.runtimeConfig),
-      transactionObject(transaction, i.product),
-    ]);
-    call(transaction, targets, runtime, 'runtime', 'runtime_v8', 'admit_certified_external_product_v8', [
-      transactionObject(transaction, i.packRegistry, true),
-      transactionObject(transaction, i.admissionAuthority),
-      transactionObject(transaction, i.definitionRegistry),
-      transactionObject(transaction, i.root),
-      transactionObject(transaction, i.makerAdmin),
-      transactionObject(transaction, i.product),
-      attestation,
-      transaction.pure.u64(request.product.packRegistryRevision),
-    ], coin);
+    admitCertified();
   } else if (request.action === 'ADMIT_OPEN') {
     call(transaction, targets, runtime, 'runtime', 'runtime_v8', 'admit_open_external_product_v8', [
       transactionObject(transaction, i.packRegistry, true),
@@ -699,7 +729,7 @@ export function createMakerV8ComposableCompilerV8({
         }
       }
       const built = await register(request);
-      if (plan.current?.fullTransaction !== null && plan.current?.fullTransaction !== undefined) {
+      if (plan.current?.signature != null) {
         const artifact = transactionData(plan.current.fullTransaction, {
           signer: request.signer,
           kindBytes: built.descriptor.kindBytes,
@@ -804,7 +834,7 @@ export function createMakerV8ComposableControllerV8({
       }
       digest(ticket.digest, 'ticket.digest');
       let plan = await engine.recoverOutcome(ticket.recoveryId);
-      const observedDigest = plan.current?.outcome?.digest ?? plan.terminal?.digest;
+      const observedDigest = plan.current?.outcome?.digest ?? plan.current?.outcome?.retiredDigest ?? plan.terminal?.digest;
       if (observedDigest !== ticket.digest) {
         fail('MAKER_V8_COMPOSABLE_TICKET_DRIFT', 'Composable durable attempt has another digest.', 'RECOVERY');
       }
@@ -952,7 +982,7 @@ function sameExcept(post, pre, replacements) {
   return canonical(normalized) === canonical(pre);
 }
 
-function registryEvent(event, request, runtime, operation) {
+function registryEvent(event, request, runtime, operation, productId) {
   const expectedType = `${runtime.roles.runtime.typeOriginPackageId}::runtime_v8::PackRegistryRevisionAdvancedV8`;
   if (normalizeStructTag(event?.type) !== normalizeStructTag(expectedType)
     || event.sender !== request.signer || typeof event.bcs !== 'string' || !plain(event.parsedJson)) {
@@ -988,14 +1018,14 @@ function registryEvent(event, request, runtime, operation) {
     || observed.rootId !== request.product.rootId
     || observed.previousRevision !== expectedRevision
     || observed.revision !== (BigInt(expectedRevision) + 1n).toString()
-    || observed.subjectId !== request.product.productId
+    || observed.subjectId !== productId
     || observed.operation !== operation) {
     fail('MAKER_V8_COMPOSABLE_EVENT_DRIFT', 'Pack registry event differs from the authorized external product transition.', 'READBACK');
   }
   return observed;
 }
 
-function assertProductCreation(fields, capFields, request, productId, capId) {
+function assertProductCreation(fields, capFields, request, productId, capId, supply) {
   const p = request.payload;
   const definitions = request.inputs.definitionRegistry.fields;
   const expected = {
@@ -1020,7 +1050,7 @@ function assertProductCreation(fields, capFields, request, productId, capId) {
     assetByteLength: p.assetByteLength,
     assetContentCommitment: p.assetContentCommitment,
     transferable: p.transferable,
-    supply: '0',
+    supply,
   };
   const observed = {
     version: decimal(field(fields, 'version', 'ExternalItemProduct'), 'product.version'),
@@ -1055,6 +1085,20 @@ function assertProductCreation(fields, capFields, request, productId, capId) {
   }
 }
 
+function assertMintedItem(item, product, recipient) {
+  assertHistoricalAddressOwner(item.owner, recipient, 'OwnedExternalItem.owner');
+  if (moveId(field(item.parsed, 'product_id', 'OwnedExternalItem'), 'item.productId') !== product.objectId
+    || hexVector(field(item.parsed, 'product_content_commitment', 'OwnedExternalItem'), 'item.productContent')
+      !== hexVector(field(product.parsed, 'content_commitment', 'ExternalItemProduct'), 'product.contentCommitment')
+    || hexVector(field(item.parsed, 'asset_content_commitment', 'OwnedExternalItem'), 'item.assetContent')
+      !== hexVector(field(product.parsed, 'asset_content_commitment', 'ExternalItemProduct'), 'product.assetContentCommitment')
+    || address(field(item.parsed, 'holder', 'OwnedExternalItem'), 'item.holder') !== recipient
+    || decimal(field(item.parsed, 'ownership_epoch', 'OwnedExternalItem'), 'item.ownershipEpoch') !== '0'
+    || field(item.parsed, 'transferable', 'OwnedExternalItem') !== field(product.parsed, 'transferable', 'ExternalItemProduct')) {
+    fail('MAKER_V8_COMPOSABLE_MINT_DRIFT', 'Minted external Item differs from the exact product and recipient.', 'READBACK');
+  }
+}
+
 export function createMakerV8ComposableReadbackV8({
   client,
   runtime: runtimeInput,
@@ -1078,7 +1122,28 @@ export function createMakerV8ComposableReadbackV8({
     let ownerAddress = request.inputs.product === null
       ? request.signer : address(field(request.inputs.product.fields, 'owner', 'ExternalItemProduct'), 'product.owner');
     let controlEpoch = request.product.controlEpoch;
-    if (request.action === 'CREATE_PRODUCT') {
+    const readRegistryTransition = async operation => {
+      const registryRaw = changedRef(response, request.inputs.packRegistry.objectRef.objectId, types.packRegistry, 'PackRegistry');
+      const registry = await historical(client, registryRaw, types.packRegistry, artifact.digest, 'PackRegistry');
+      assertHistoricalSharedOwner(registry.owner, request.inputs.packRegistry.owner.initialSharedVersion, 'PackRegistry.owner');
+      const revision = (BigInt(request.product.packRegistryRevision) + 1n).toString();
+      if (decimal(field(registry.parsed, 'revision', 'PackRegistry'), 'PackRegistry.revision') !== revision
+        || response.events.length !== 1) {
+        fail('MAKER_V8_COMPOSABLE_REGISTRY_DRIFT', 'PackRegistry revision does not prove the external admission transition.', 'READBACK');
+      }
+      if (request.action === 'CREATE_ADMIT_MINT') {
+        const name = 'external_admission_count';
+        const before = BigInt(decimal(field(request.inputs.packRegistry.fields, name, 'PackRegistry'), name));
+        const after = BigInt(decimal(field(registry.parsed, name, 'PackRegistry'), name));
+        if (after !== before + 1n) {
+          fail('MAKER_V8_COMPOSABLE_REGISTRY_DRIFT', 'The created Product did not advance the external admission count once.', 'READBACK');
+        }
+      }
+      registryEvent(response.events[0], request, runtime, operation, productId);
+      return revision;
+    };
+    if (CREATION_ACTIONS.includes(request.action)) {
+      const bundled = request.action === 'CREATE_ADMIT_MINT';
       const productRaw = createdRefByType(response, types.externalItemProduct, 'ExternalItemProduct');
       const capRaw = createdRefByType(response, types.externalItemAdminCap, 'ExternalItemAdminCap');
       const [product, cap] = await Promise.all([
@@ -1087,26 +1152,24 @@ export function createMakerV8ComposableReadbackV8({
       ]);
       assertHistoricalSharedOwner(product.owner, product.version, 'ExternalItemProduct.owner');
       assertHistoricalAddressOwner(cap.owner, request.signer, 'ExternalItemAdminCap.owner');
-      assertProductCreation(product.parsed, cap.parsed, request, product.objectId, cap.objectId);
+      assertProductCreation(product.parsed, cap.parsed, request, product.objectId, cap.objectId, bundled ? '1' : '0');
       productId = product.objectId;
       productRef = freeze({ objectId: product.objectId, version: String(product.version), digest: product.digest });
       adminCapRef = freeze({ objectId: cap.objectId, version: String(cap.version), digest: cap.digest });
       lifecycle = 0;
       controlEpoch = '0';
-    } else if (['ADMIT_OPEN', 'ADMIT_CERTIFIED', 'REVOKE_ADMISSION'].includes(request.action)) {
-      const registryRaw = changedRef(response, request.inputs.packRegistry.objectRef.objectId, types.packRegistry, 'PackRegistry');
-      const registry = await historical(client, registryRaw, types.packRegistry, artifact.digest, 'PackRegistry');
-      assertHistoricalSharedOwner(
-        registry.owner,
-        request.inputs.packRegistry.owner.initialSharedVersion,
-        'PackRegistry.owner',
-      );
-      packRegistryRevision = (BigInt(request.product.packRegistryRevision) + 1n).toString();
-      if (decimal(field(registry.parsed, 'revision', 'PackRegistry'), 'PackRegistry.revision') !== packRegistryRevision
-        || response.events.length !== 1) {
-        fail('MAKER_V8_COMPOSABLE_REGISTRY_DRIFT', 'PackRegistry revision does not prove the external admission transition.', 'READBACK');
+      if (bundled) {
+        const itemRaw = createdRefByType(response, types.ownedExternalItem, 'OwnedExternalItem');
+        const [item, revision] = await Promise.all([
+          historical(client, itemRaw, types.ownedExternalItem, artifact.digest, 'OwnedExternalItem'),
+          readRegistryTransition(2),
+        ]);
+        assertMintedItem(item, product, request.signer);
+        itemRef = freeze({ objectId: item.objectId, version: String(item.version), digest: item.digest });
+        packRegistryRevision = revision;
       }
-      registryEvent(response.events[0], request, runtime, request.action === 'REVOKE_ADMISSION' ? 3 : 2);
+    } else if (REGISTRY_ACTIONS.includes(request.action)) {
+      packRegistryRevision = await readRegistryTransition(request.action === 'REVOKE_ADMISSION' ? 3 : 2);
     } else if (['PAUSE_PRODUCT', 'RESUME_PRODUCT', 'ARCHIVE_PRODUCT'].includes(request.action)) {
       const raw = changedRef(response, productId, types.externalItemProduct, 'ExternalItemProduct');
       const product = await historical(client, raw, types.externalItemProduct, artifact.digest, 'ExternalItemProduct');
@@ -1165,18 +1228,10 @@ export function createMakerV8ComposableReadbackV8({
         request.inputs.product.owner.initialSharedVersion,
         'ExternalItemProduct.owner',
       );
-      assertHistoricalAddressOwner(item.owner, request.payload.recipient, 'OwnedExternalItem.owner');
+      assertMintedItem(item, product, request.payload.recipient);
       if (!sameExcept(product.parsed, request.inputs.product.fields, { supply: field(request.inputs.product.fields, 'supply', 'pre product') })
         || BigInt(decimal(field(product.parsed, 'supply', 'post product'), 'post product.supply'))
           !== BigInt(decimal(field(request.inputs.product.fields, 'supply', 'pre product'), 'pre product.supply')) + 1n
-        || moveId(field(item.parsed, 'product_id', 'OwnedExternalItem'), 'item.productId') !== productId
-        || hexVector(field(item.parsed, 'product_content_commitment', 'OwnedExternalItem'), 'item.productContent')
-          !== hexVector(field(product.parsed, 'content_commitment', 'ExternalItemProduct'), 'product.contentCommitment')
-        || hexVector(field(item.parsed, 'asset_content_commitment', 'OwnedExternalItem'), 'item.assetContent')
-          !== hexVector(field(product.parsed, 'asset_content_commitment', 'ExternalItemProduct'), 'product.assetContentCommitment')
-        || address(field(item.parsed, 'holder', 'OwnedExternalItem'), 'item.holder') !== request.payload.recipient
-        || decimal(field(item.parsed, 'ownership_epoch', 'OwnedExternalItem'), 'item.ownershipEpoch') !== '0'
-        || field(item.parsed, 'transferable', 'OwnedExternalItem') !== field(product.parsed, 'transferable', 'ExternalItemProduct')
         || response.events.length !== 0) {
         fail('MAKER_V8_COMPOSABLE_MINT_DRIFT', 'Minted external Item differs from the exact product and recipient.', 'READBACK');
       }
@@ -1290,7 +1345,7 @@ export function createMakerV8ComposableAuthorityLoaderV8({
       if (!needed.has(name)) return [name, null];
       return [name, await read(address(ids[name], `${name}Id`), typeMap[name], name)];
     })));
-    if (raw.action === 'ADMIT_CERTIFIED') assertCertifiedAuthorityInputs(runtime, inputs);
+    if (CERTIFIED_ACTIONS.includes(raw.action)) assertCertifiedAuthorityInputs(runtime, inputs);
     const root = inputs.root;
     const definitions = inputs.definitionRegistry;
     const base = inputs.baseRegistry;
@@ -1318,10 +1373,10 @@ export function createMakerV8ComposableAuthorityLoaderV8({
       || moveId(field(registry.fields, 'definition_registry_id', 'PackRegistry'), 'registry.definitionRegistryId') !== definitions.objectRef.objectId)) {
       fail('MAKER_V8_COMPOSABLE_REGISTRY_DRIFT', 'Pack registry differs from the exact Runtime definition binding.', 'AUTHORITY');
     }
-    if (authority !== null && (authority.owner.kind !== 'SHARED'
+    if (authority !== null && (authority.owner.kind !== 'ADDRESS' || authority.owner.address !== signer
       || moveId(field(authority.fields, 'root_id', 'PackAdmissionAuthority'), 'authority.rootId') !== rootId
       || moveId(field(registry.fields, 'admission_authority_id', 'PackRegistry'), 'registry.admissionAuthorityId') !== authority.objectRef.objectId)) {
-      fail('MAKER_V8_COMPOSABLE_AUTHORITY_DRIFT', 'Admission authority differs from the exact Pack registry binding.', 'AUTHORITY');
+      fail('MAKER_V8_COMPOSABLE_AUTHORITY_DRIFT', 'The connected wallet must own the admission authority bound to this Pack registry.', 'AUTHORITY');
     }
     if (makerAdmin !== null && (makerAdmin.owner.kind !== 'ADDRESS'
       || makerAdmin.owner.address !== signer
@@ -1358,7 +1413,9 @@ export function createMakerV8ComposableAuthorityLoaderV8({
       || moveId(field(inputs.runtimeConfig.fields, 'catalog_id', 'RuntimePackageConfig'), 'runtimeConfig.catalogId') !== runtime.catalogId)) {
       fail('MAKER_V8_COMPOSABLE_CONFIG_DRIFT', 'Certified admission Runtime config differs from the catalog.', 'AUTHORITY');
     }
-    const productId = productInput?.objectRef.objectId ?? null;
+    const productId = raw.action === 'REVOKE_ADMISSION'
+      ? address(raw.productId, 'productId')
+      : productInput?.objectRef.objectId ?? null;
     const stateBound = ['PAUSE_PRODUCT', 'RESUME_PRODUCT', 'ARCHIVE_PRODUCT', 'TRANSFER_CONTROL', 'MINT_ITEM']
       .includes(raw.action);
     const product = freeze({
@@ -1373,7 +1430,7 @@ export function createMakerV8ComposableAuthorityLoaderV8({
         : decimal(field(registry.fields, 'revision', 'PackRegistry'), 'registry.revision'),
     });
     const payload = Object.fromEntries(PAYLOAD_FIELDS.map((name) => [name, null]));
-    if (raw.action === 'CREATE_PRODUCT') Object.assign(payload, raw.payload);
+    if (CREATION_ACTIONS.includes(raw.action)) Object.assign(payload, raw.payload);
     if (['TRANSFER_CONTROL', 'MINT_ITEM'].includes(raw.action)) payload.recipient = raw.payload?.recipient;
     const candidate = {
       schemaVersion: MAKER_V8_COMPOSABLE_REQUEST_SCHEMA,
@@ -1457,7 +1514,7 @@ export async function createProductionMakerV8ComposableControllerV8({
     async recover(ticket) {
       exact(ticket, ['schemaVersion', 'recoveryId', 'digest'], 'Composable recovery ticket');
       let plan = await engine.recoverOutcome(ticket.recoveryId);
-      const observedDigest = plan.current?.outcome?.digest ?? plan.terminal?.digest;
+      const observedDigest = plan.current?.outcome?.digest ?? plan.current?.outcome?.retiredDigest ?? plan.terminal?.digest;
       if (ticket.schemaVersion !== MAKER_V8_COMPOSABLE_CONTROLLER_SCHEMA || observedDigest !== ticket.digest) {
         fail('MAKER_V8_COMPOSABLE_TICKET_DRIFT', 'Composable durable attempt differs from its ticket.', 'RECOVERY');
       }

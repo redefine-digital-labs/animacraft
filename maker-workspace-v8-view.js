@@ -1368,6 +1368,9 @@ function composableUploadHistory(view) {
     vi: ['Đọc lịch sử tải lên', 'Bản ghi tải lên nguồn bên ngoài của ví, gồm các phiên bản nguồn cũ.', 'Chưa có bản ghi tải lên.', 'Chưa đọc.', 'Đang đọc…'],
   };
   const copy = texts[view.locale] || texts.en, history = view.composableUploadHistory;
+  const bundleCopy = view.locale === 'zh'
+    ? ['审查合并交易（仅 Maker 管理员）', '一笔交易创建 Product、认证准入并将一件 Item 发到当前钱包。需要签名和 gas。', '签名并创建、准入和发放', 'Item ID']
+    : ['Review combined transaction (Maker admins)', 'One transaction creates the Product, certifies and admits it, and issues one Item to this wallet. Signature and gas are required.', 'Sign to create, admit and issue', 'Item ID'];
   const rows = history?.rows || [], busy = history?.status === 'loading' || history?.busy;
   const status = busy ? copy[4] : history?.status === 'error' ? history.error : history?.status === 'ready' ? (rows.length ? '' : copy[2]) : copy[3];
   const actionControl = row => {
@@ -1376,10 +1379,14 @@ function composableUploadHistory(view) {
       const attempt = row.productAttempt;
       if (row.productError) return `<p role="alert">${escapeHtml(row.productError)}</p>`;
       if (attempt) {
-        return `<p role="status">Product: ${escapeHtml(attempt.status)}</p>${attempt.ticket ? `<p>Transaction: ${escapeHtml(attempt.ticket.digest)}</p>` : ''}${attempt.readback?.productId ? `<p>Product ID: ${escapeHtml(attempt.readback.productId)}</p>` : ''}${attempt.status === 'ACTIVE' ? `<button type="button" data-action="${attempt.ticket ? 'recover-composable-product' : 'create-composable-product'}" data-upload-id="${escapeHtml(row.uploadId)}"${forcedControlAttributes(view, attempt.ticket ? 'recover-composable-product' : 'create-composable-product', '', busy || !view.composableUploadWriteEnabled)}>${attempt.ticket ? 'Recover Product transaction (no new signature)' : 'Sign saved Product transaction'}</button>` : ''}`;
+        const item = attempt.readback?.itemRef ? `<p>${bundleCopy[3]}: ${escapeHtml(attempt.readback.itemRef.objectId)}</p>` : '';
+        const combined = attempt.action === 'CREATE_ADMIT_MINT' && attempt.status === 'ACTIVE' && !attempt.ticket
+          ? `<p>${bundleCopy[1]}</p>` : '';
+        return `<p role="status">Product: ${escapeHtml(attempt.status)}</p>${combined}${attempt.ticket ? `<p>Transaction: ${escapeHtml(attempt.ticket.digest)}</p>` : ''}${attempt.readback?.productId ? `<p>Product ID: ${escapeHtml(attempt.readback.productId)}</p>` : ''}${item}${attempt.status === 'ACTIVE' ? `<button type="button" data-action="${attempt.ticket ? 'recover-composable-product' : 'create-composable-product'}" data-upload-id="${escapeHtml(row.uploadId)}"${forcedControlAttributes(view, attempt.ticket ? 'recover-composable-product' : 'create-composable-product', '', busy || !view.composableUploadWriteEnabled)}>${attempt.ticket ? 'Recover Product transaction (no new signature)' : 'Sign saved Product transaction'}</button>` : ''}`;
       }
-      const create = review ? `<p>Creates one external Product definition, not an owned Item. Wallet signing and gas payment required.</p><button type="button" data-action="create-composable-product" data-upload-id="${escapeHtml(row.uploadId)}"${forcedControlAttributes(view, 'create-composable-product', '', busy || !view.composableUploadWriteEnabled)}>Sign &amp; create external Product</button>` : '';
-      return `<button type="button" data-action="review-composable-upload" data-upload-id="${escapeHtml(row.uploadId)}"${forcedControlAttributes(view, 'review-composable-upload', '', busy)}>Review external Product (no signature)</button>${review ? `<p role="status">Product review ready. Not issued.</p><p>Item: ${escapeHtml(review.payload.itemKey)} · Style: ${escapeHtml(review.payload.styleKey)} · Track: ${escapeHtml(review.payload.layerTrackKey)}</p><p>PNG: ${escapeHtml(review.payload.assetBlobId)} · SHA-256: ${escapeHtml(review.payload.assetSha256)}</p>` : ''}${create}`;
+      const bundled = review?.action === 'CREATE_ADMIT_MINT';
+      const create = review ? `<p>${bundled ? bundleCopy[1] : 'Creates one external Product definition. Wallet signing and gas payment required.'}</p><button type="button" data-action="create-composable-product" data-upload-id="${escapeHtml(row.uploadId)}"${forcedControlAttributes(view, 'create-composable-product', '', busy || !view.composableUploadWriteEnabled)}>${bundled ? bundleCopy[2] : 'Sign &amp; create external Product'}</button>` : '';
+      return `<button type="button" data-action="review-composable-upload" data-upload-id="${escapeHtml(row.uploadId)}"${forcedControlAttributes(view, 'review-composable-upload', '', busy)}>Review external Product (no signature)</button><button type="button" data-action="review-composable-upload" data-upload-bundle="true" data-upload-id="${escapeHtml(row.uploadId)}"${forcedControlAttributes(view, 'review-composable-upload', '', busy)}>${bundleCopy[0]}</button>${review ? `<p role="status">Product review ready. Not issued.</p><p>Item: ${escapeHtml(review.payload.itemKey)} · Style: ${escapeHtml(review.payload.styleKey)} · Track: ${escapeHtml(review.payload.layerTrackKey)}</p><p>PNG: ${escapeHtml(review.payload.assetBlobId)} · SHA-256: ${escapeHtml(review.payload.assetSha256)}</p>` : ''}${create}`;
     }
     const sign = row.status === 'SIGNATURE_REQUIRED' && ['REGISTER', 'CERTIFY'].includes(row.stage);
     const recover = row.status === 'RECOVERY_REQUIRED' || row.status === 'REGISTER_FINALIZED';

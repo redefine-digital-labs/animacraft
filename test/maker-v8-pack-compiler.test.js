@@ -806,6 +806,23 @@ test('cold durable Pack signature reauthorization is required before exact gRPC 
     digest: built.digest,
   }), { status: 'SUCCESS' });
   const signed = await keypair.signTransaction(Buffer.from(built.bytes, 'base64'));
+  const effectsBcs = Uint8Array.of(1, 2, 3);
+  const fingerprint = `0x${[...sha256(effectsBcs)].map(value => value.toString(16).padStart(2, '0')).join('')}`;
+  const finalized = { status: 'FINALIZED_SUCCESS', digest: built.digest, epoch: '7',
+    eventsDigest: null, effectsFingerprint: fingerprint };
+  const ledger = { digest: built.digest, checkpoint: '150', epoch: '7', eventsDigest: null,
+    transactionBcsBase64: built.bytes, effectsBcs, effectsStatus: { success: true }, signatures: [signed.signature] };
+  client.getFinalizedTransactionEvidence = async ({ digest }) => {
+    assert.equal(digest, built.digest);
+    return ledger;
+  };
+  const recovery = { bytes: built.bytes, digest: built.digest, signer: owner, kindBytes: initial.descriptor.kindBytes,
+    query: finalized };
+  await assert.rejects(boundary.recoverFinalizedSignature({ ...recovery,
+    query: { ...finalized, effectsFingerprint: `0x${'0'.repeat(64)}` } }),
+  { code: 'MAKER_V8_PACK_ADAPTER_FINALIZED_SIGNATURE_DRIFT' });
+  assert.equal(await boundary.recoverFinalizedSignature(recovery), signed.signature);
+  assert.equal(executeCalls, 0);
   await assert.rejects(boundary.broadcastExactTransaction({
     bytes: built.bytes, signature: signed.signature, digest: built.digest, signer: owner,
   }), { code: 'MAKER_V8_PACK_COMPILER_SIGNED_PROOF_REQUIRED' });

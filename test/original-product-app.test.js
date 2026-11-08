@@ -164,7 +164,8 @@ test('Pack Studio presents a saved transaction review before invoking the wallet
   h.bridge.reviewPackPublication = async input => { calls.push(input); return { draft, review }; };
   h.bridge.advancePackPublication = async input => {
     calls.push(input);
-    return { draft, review: { id: 'recovery-review', stage: 'REGISTER', digest: review.digest, nextAction: 'RECOVER' } };
+    return { draft, review: { id: 'recovery-review', stage: 'REGISTER', digest: review.digest,
+      nextAction: 'RECOVER', signatureOutcomeUnknown: true } };
   };
   const app = createOriginalProductApp(h);
   try {
@@ -189,6 +190,8 @@ test('Pack Studio presents a saved transaction review before invoking the wallet
     await click('advance-pack-publication', { packReviewId: review.id });
     assert.deepEqual(calls[1], { reviewId: review.id, action: 'SIGN' });
     assert.match(mount.innerHTML, /Continue saved step/);
+    assert.match(mount.innerHTML, /The wallet response is unknown/);
+    assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
     assert.match(mount.innerHTML, /fixed-pack-digest/);
   } finally { app.destroy(); }
 });
@@ -620,20 +623,27 @@ test('Composable original controls select a certified Part and persist isolated 
   };
   let historyError = false, historyComplete = false, productAttempt = null, createCalls = 0, recoverCalls = 0;
   const ticket = { recoveryId: 'saved-product-attempt', digest: 'saved-transaction' };
-  h.harness.bridge.createComposableUploadProduct = async ({ uploadId }) => {
+  h.harness.bridge.createComposableUploadProduct = async ({ uploadId, review }) => {
     assert.equal(uploadId, 'retained-old-upload'); createCalls++;
-    if (createCalls === 1) { productAttempt = { status: 'ACTIVE', ticket: null }; throw new Error('User rejected signature'); }
-    productAttempt = { status: 'ACTIVE', ticket };
+    if (createCalls === 1) {
+      assert.equal(review?.action, 'CREATE_ADMIT_MINT');
+      productAttempt = { action: 'CREATE_ADMIT_MINT', status: 'ACTIVE', ticket: null };
+      throw new Error('User rejected signature');
+    }
+    assert.equal(review, undefined, 'the persisted combined attempt supplies the review on retry');
+    productAttempt = { action: 'CREATE_ADMIT_MINT', status: 'ACTIVE', ticket };
     throw new Error('Connection lost after signed persistence');
   };
   h.harness.bridge.recoverComposableAction = async value => {
     assert.deepEqual(value, ticket); recoverCalls++;
     if (recoverCalls === 1) return { status: 'OUTCOME_UNKNOWN' };
-    productAttempt = { status: 'COMPLETE', ticket, readback: { productId: 'certified-product' } };
+    productAttempt = { action: 'CREATE_ADMIT_MINT', status: 'COMPLETE', ticket,
+      readback: { productId: 'certified-product', itemRef: { objectId: 'wallet-owned-hat' } } };
   };
-  h.harness.bridge.reviewComposableUpload = async ({ uploadId }) => {
+  h.harness.bridge.reviewComposableUpload = async ({ uploadId, bundle }) => {
     assert.equal(uploadId, 'retained-old-upload');
-    return { requestId: uploadId, payload: { itemKey: 'old-hat', styleKey: 'old-blue', layerTrackKey: 'base-track',
+    return { requestId: uploadId, action: bundle ? 'CREATE_ADMIT_MINT' : 'CREATE_PRODUCT',
+      payload: { itemKey: 'old-hat', styleKey: 'old-blue', layerTrackKey: 'base-track',
       assetBlobId: 'certified-old-blob', assetSha256: 'b'.repeat(64) } };
   };
   h.harness.bridge.listComposableUploads = async () => {
@@ -696,6 +706,9 @@ test('Composable original controls select a certified Part and persist isolated 
     h.fire('review-composable-upload', null, { uploadId: 'retained-old-upload' });
     await waitFor('Product review ready. Not issued.');
     assert.match(mount.innerHTML, /certified-old-blob/);
+    await waitFor('Sign &amp; create external Product');
+    h.fire('review-composable-upload', null, { uploadId: 'retained-old-upload', uploadBundle: 'true' });
+    await waitFor('Sign to create, admit and issue');
     h.fire('create-composable-product', null, { uploadId: 'retained-old-upload' });
     await waitFor('User rejected signature');
     await waitFor('Sign saved Product transaction');
@@ -713,6 +726,7 @@ test('Composable original controls select a certified Part and persist isolated 
     assert.doesNotMatch(mount.innerHTML, /Product ID:/);
     h.fire('recover-composable-product', null, { uploadId: 'retained-old-upload' });
     await waitFor('Product ID: certified-product');
+    await waitFor('Item ID: wallet-owned-hat');
     assert.doesNotMatch(mount.innerHTML, /data-action="create-composable-product"/);
     historyError = true;
     h.fire('read-composable-upload-history'); await waitFor('History read failed');
@@ -3964,6 +3978,36 @@ test('walletless Maker detail uses getTemplate and certified assets in the appro
   assert.equal(app.getState().route, 'templates');
   assert.equal(harness.win.location.pathname, '/');
   assert.equal(harness.win.location.hash, '#templates');
+  app.destroy();
+});
+
+test('public Maker detail shows certified Pack prices without connecting a wallet', async () => {
+  const maker = certifiedMaker();
+  const harness = browserHarness({
+    templatesResult: { status: 'READY', makers: [maker], diagnostics: [] },
+    templateResult: maker,
+  });
+  const requests = [];
+  harness.bridge.listPublicPacks = async ({ rootId }) => {
+    requests.push(rootId);
+    return { rootId, unavailableCount: 1, packs: [
+      { releaseId: ROOT_ONE, name: '<Free pack>', summary: 'Free styles', accessKind: 'FREE', priceAtomic: '0' },
+      { releaseId: ROOT_TWO, name: 'Paid pack', summary: '', accessKind: 'PAID', priceAtomic: '1000' },
+      { releaseId: `0x${'ff'.repeat(32)}`, name: 'Included pack', summary: '', accessKind: 'INCLUDED_WITH_MAKER', priceAtomic: '0' },
+    ] };
+  };
+  const app = createOriginalProductApp(harness);
+  await app.ready;
+  assert.deepEqual(requests, [], 'Plaza load does not fetch Pack catalogs for every Maker');
+  await app.openTemplate(ROOT_ONE);
+  const markup = harness.doc.getElementById('templateDetail').innerHTML;
+  assert.deepEqual(requests, [ROOT_ONE]);
+  assert.match(markup, /&lt;Free pack&gt;.*Free/);
+  assert.match(markup, /Paid pack.*0\.001 USDC/);
+  assert.match(markup, /Included pack.*Included with the Maker/);
+  assert.match(markup, /Some expansion packs could not be verified/);
+  assert.equal(harness.calls.selector, 0);
+  assert.equal(harness.calls.openPlayer.length, 0);
   app.destroy();
 });
 

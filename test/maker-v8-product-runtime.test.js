@@ -422,7 +422,8 @@ function publicPackFixture(kind = 0) {
   const reads = [];
   const packManifestAdapter = { async load(input) {
     reads.push(input);
-    return { manifest: { content: { metadata: { name: 'Moon Pack' }, styles: [{
+    return { manifest: { content: { metadata: { name: 'Moon Pack', summary: 'Moon hats' },
+      access: { kind: ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'][kind], priceAtomic: release.entry.priceAtomic }, styles: [{
       partKey: 'body', itemKey: 'moon_hat', styleKey: 'violet', layerTrackKey: 'body',
       colorChannelKey: null, defaultSwatchKey: null, asset: { assetId: 'moon-asset', protected: true },
     }] } }, assets: [{ assetId: 'moon-asset', blobId: 'encrypted-asset-blob', mediaType: 'image/png',
@@ -430,6 +431,41 @@ function publicPackFixture(kind = 0) {
   } };
   return { release, reads, packManifestAdapter };
 }
+
+test('walletless Pack catalog verifies exact release policies and only returns public summaries', async () => {
+  const fixtures = [0, 1, 2].map((kind) => {
+    const fixture = publicPackFixture(kind);
+    fixture.release.objectId = objectId(960 + kind);
+    fixture.release.semanticPackId = `moon_pack_${kind}`;
+    return fixture;
+  });
+  const paid = fixtures[1];
+  let breakPaidTerms = false;
+  const { options, calls } = harness({ publicPacks: fixtures.map(fixture => fixture.release),
+    packManifestAdapter: {
+      async load(input) {
+        const fixture = fixtures.find(row => row.release.semanticPackId === input.semanticPackId);
+        const result = await fixture.packManifestAdapter.load(input);
+        if (fixture === paid && breakPaidTerms) result.manifest.content.access.priceAtomic = '1';
+        return result;
+      },
+    } });
+  const product = createMakerV8ProductRuntime(options);
+  const read = () => product.publicPacks.list({ rootId });
+  const first = await read();
+  assert.deepEqual(first, { rootId, unavailableCount: 0,
+    packs: ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'].map((accessKind, kind) => ({
+      releaseId: objectId(960 + kind), name: 'Moon Pack', summary: 'Moon hats',
+      accessKind, priceAtomic: kind === 1 ? '1250000' : '0',
+    })) });
+  assert.equal(calls.account + calls.reconnect + calls.inventory + calls.asset, 0);
+  assert.equal(paid.reads[0].sha256, paid.release.manifestSha256);
+  assert.equal(paid.reads[0].contentCommitment, paid.release.contentCommitment);
+  breakPaidTerms = true;
+  assert.deepEqual(await read(), { rootId, unavailableCount: 1, packs: [first.packs[0], first.packs[2]] });
+  paid.release.admission.admissionState = 1;
+  await assert.rejects(read(), { code: 'MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT' });
+});
 
 test('different Releases can expose same-named artwork without merging content identities', async () => {
   const first = publicPackFixture();

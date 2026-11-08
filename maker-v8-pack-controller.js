@@ -878,7 +878,7 @@ function mapPlanStatus(plan) {
   if (plan.status === 'COMPLETE') return 'COMPLETE';
   if (plan.status === 'FAILED' || plan.terminal?.status === 'FAILED'
     || plan.current?.outcome?.status === 'FINALIZED_FAILURE') return 'FAILED';
-  if (plan.current?.outcome?.status === 'OUTCOME_UNKNOWN') return 'OUTCOME_UNKNOWN';
+  if (['OUTCOME_UNKNOWN', 'SIGNING'].includes(plan.current?.outcome?.status)) return 'OUTCOME_UNKNOWN';
   if (plan.current?.outcome?.status === 'READY') return 'READY';
   return 'ACTIVE';
 }
