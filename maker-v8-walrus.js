@@ -750,6 +750,12 @@ function assertExpectedUpload(record, expected) {
   }
 }
 
+function definitiveWalletRejection(error) {
+  const rejected = (error instanceof MakerV8DAppKitWalletError && error.code === 'MAKER_V8_DAPP_KIT_WALLET_REQUEST_REJECTED')
+    || (error instanceof MakerV8BrowserError && error.code === 'MAKER_V8_BROWSER_WALLET_REQUEST_REJECTED');
+  return rejected && error.definitiveRejection === true && error.signedArtifactCreated === false;
+}
+
 /**
  * Durable, query-first Mainnet Walrus upload controller. Registration and
  * certification are separate exact wallet signatures; the public relay only
@@ -818,6 +824,13 @@ export function createMakerV8WalrusPublisherV8({
     transaction.setSenderIfNotSet(owner);
     transaction.setExpiration(makerV8PublicationExpiration(String(epoch)));
     return epoch;
+  };
+
+  const reviewWithinEpoch = async (bytes) => {
+    const { ValidDuring: validity } = bcs.TransactionData.parse(fromBase64(bytes)).V1.expiration;
+    if (!validity) return false;
+    const epoch = BigInt(integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch'));
+    return epoch >= BigInt(validity.minEpoch) && epoch <= BigInt(validity.maxEpoch);
   };
 
   const buildRegister = async (record) => {
@@ -1292,9 +1305,7 @@ export function createMakerV8WalrusPublisherV8({
           signed = await wallet.signExactTransaction({ bytes: batch.transaction.bytes,
             digest: batch.transaction.digest, signer: batch.owner });
         } catch (error) {
-          const rejected = (error instanceof MakerV8DAppKitWalletError && error.code === 'MAKER_V8_DAPP_KIT_WALLET_REQUEST_REJECTED')
-            || (error instanceof MakerV8BrowserError && error.code === 'MAKER_V8_BROWSER_WALLET_REQUEST_REJECTED');
-          if (rejected && error.definitiveRejection === true && error.signedArtifactCreated === false) {
+          if (definitiveWalletRejection(error)) {
             batch = await saveBatch(batch, { status: `${batch.transaction.stage}_PREPARED` });
           }
           throw error;
@@ -1324,6 +1335,13 @@ export function createMakerV8WalrusPublisherV8({
       const record = await persistence.load(id(uploadId));
       if (record?.batchKey) fail('MAKER_V8_WALRUS_BATCH_REQUIRED', 'Review the fixed batch instead of one member.', 'CONTEXT');
       if (!record || !['ENCODED', 'UPLOADED'].includes(record.status)) return null;
+      const retained = reviews.get(uploadId);
+      if (retained?.rejected && retained.review.revision === record.revision
+        && retained.review.stage === recordView(record).stage && await reviewWithinEpoch(retained.build.bytes)
+        && reviews.get(uploadId) === retained) {
+        assertExpectedUpload(await persistence.load(uploadId), retained.review);
+        return retained.review;
+      }
       const build = record.status === 'ENCODED' ? await buildRegister(record) : await buildCertify(record);
       assertExpectedUpload(await persistence.load(uploadId), { ...recordView(record), status: publicStatus(record) });
       const data = bcs.TransactionData.parse(fromBase64(build.bytes)).V1;
@@ -1350,9 +1368,21 @@ export function createMakerV8WalrusPublisherV8({
       if (!frozen || canonical(frozen.review) !== canonical(review)) {
         fail('MAKER_V8_WALRUS_REVIEW_STALE', 'Review this exact upload transaction again.', 'CONTEXT');
       }
+      const valid = await reviewWithinEpoch(frozen.build.bytes);
+      if (reviews.get(uploadId) !== frozen) {
+        fail('MAKER_V8_WALRUS_REVIEW_STALE', 'Review this exact upload transaction again.', 'CONTEXT');
+      }
       reviews.delete(uploadId);
+      if (!valid) fail('MAKER_V8_WALRUS_REVIEW_EXPIRED', 'This unsigned review expired. Refresh before signing.', 'CONTEXT');
       await assertCurrent();
-      return api.requestSignature(uploadId, review, { build: frozen.build, signOnly: true, assertCurrent });
+      try {
+        return await api.requestSignature(uploadId, review, { build: frozen.build, signOnly: true, assertCurrent });
+      } catch (error) {
+        if (definitiveWalletRejection(error) && !reviews.has(uploadId)) {
+          reviews.set(uploadId, { ...frozen, rejected: true });
+        }
+        throw error;
+      }
     },
 
     async prepare({ uploadId, owner, mediaType, bytesBase64, epochs = 3 } = {}) {
