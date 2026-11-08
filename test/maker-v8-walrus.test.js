@@ -123,6 +123,7 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
       calls.push(['query', digest]);
       const status = queries.shift() ?? 'NOT_FOUND';
       if (status instanceof Error) throw status;
+      if (typeof status === 'object') return status;
       return status === 'NOT_FOUND'
         ? { status, digest, absence: { chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER } }
         : { status, digest, absence: null, error: null };
@@ -158,7 +159,7 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
     fetcher: async () => ({ ok: true, async arrayBuffer() { return bytes.buffer.slice(0); } }),
     now: (() => { let value = clockStart; return () => value++; })(),
   });
-  return { publisher, bytes, calls, queries, walrusClient, buildClient, wallet };
+  return { publisher, bytes, calls, queries, walrusClient, buildClient, wallet, transport };
 }
 
 async function preparedBatch(h, persistence) {
@@ -309,18 +310,141 @@ test('a rejected Walrus wallet request keeps its reviewed digest until the exact
     value.calls.push(['decline', digest]);
     throw rejection;
   };
-  await assert.rejects(publisher.signReviewed(uploadId, review), error => error === rejection);
-  assert.deepEqual(await publisher.load(uploadId), before);
-  assert.deepEqual(await publisher.prepareReview(uploadId), review);
+  let guards = 0;
+  await assert.rejects(publisher.signReviewed(uploadId, review, async () => { guards++; }), error => error === rejection);
+  assert.equal(guards, 1, 'the Pack storage pin must not be claimed twice');
+  const after = await publisher.load(uploadId);
+  assert.equal(after.revision, before.revision + 2);
+  assert.deepEqual(after, { ...before, revision: after.revision });
+  const retained = await publisher.prepareReview(uploadId);
+  assert.deepEqual(retained, { ...review, revision: after.revision });
   assert.deepEqual(value.calls.filter(([step]) => ['decline', 'query', 'broadcast'].includes(step)), [['decline', review.digest]]);
 
   buildClient.core.getCurrentSystemState = async () => ({ systemState: { epoch: '12' } });
   wallet.signExactTransaction = sign;
-  await assert.rejects(publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REVIEW_EXPIRED' });
+  await assert.rejects(publisher.signReviewed(uploadId, retained), { code: 'MAKER_V8_WALRUS_REVIEW_EXPIRED' });
   const next = await publisher.prepareReview(uploadId);
   assert.notEqual(next.digest, review.digest);
   await assert.rejects(publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REVIEW_STALE' });
   assert.equal(value.calls.some(([step]) => ['sign', 'query', 'broadcast'].includes(step)), false);
+});
+
+function typedAbsence(transactionDigest, watermarkEpoch, overrides = {}) {
+  return { status: 'NOT_FOUND', digest: transactionDigest, absence: {
+    schemaVersion: 'animacraft.sui-transaction-absence.v8', kind: 'SUI_GRPC_TRANSACTION_NOT_FOUND',
+    grpcCode: 'NOT_FOUND', grpcService: 'sui.rpc.v2.LedgerService', grpcMethod: 'GetTransaction',
+    requestedDigest: transactionDigest, chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+    watermarkEpoch, watermarkCheckpointSequence: '100', watermarkCheckpointDigest: GAS_DIGEST, ...overrides,
+  } };
+}
+
+test('cold single-blob recovery checks the exact signing intent and restores a finalized registration from Ledger', async () => {
+  const storageManager = { persisted: async () => true, persist: async () => true };
+  const database = new IDBFactory();
+  const originalStore = createMakerV8WalrusPersistenceV8(database, { storageManager });
+  const first = harness(originalStore);
+  const uploadId = 'lost-wallet-response';
+  await first.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(first.bytes) });
+  const review = await first.publisher.prepareReview(uploadId);
+  first.wallet.signExactTransaction = async input => {
+    const intent = await originalStore.load(uploadId);
+    assert.equal(intent.status, 'REGISTER_SIGNING');
+    assert.equal(intent.transaction.digest, review.digest);
+    assert.equal(intent.transaction.bytes, input.bytes);
+    assert.equal(intent.transaction.signature, null);
+    throw new Error('Wallet response lost');
+  };
+  await assert.rejects(first.publisher.signReviewed(uploadId, review), /response lost/);
+  const intent = await originalStore.load(uploadId);
+  await originalStore.close();
+  const coldStore = createMakerV8WalrusPersistenceV8(database, { storageManager });
+  try {
+    const cold = harness(coldStore, 200);
+    assert.equal(await cold.publisher.prepareReview(uploadId), null);
+    const awaiting = await cold.publisher.load(uploadId);
+    assert.equal(awaiting.status, 'RECOVERY_REQUIRED');
+    assert.equal(awaiting.transactionDigest, review.digest);
+    cold.queries.push(typedAbsence(review.digest, '11'));
+    assert.deepEqual(await cold.publisher.resume(uploadId, awaiting), awaiting);
+    cold.queries.push('FINALIZED_SUCCESS', 'FINALIZED_SUCCESS');
+    let bytes = toBase64(new Uint8Array([1]));
+    cold.transport.getFinalizedTransactionEvidence = async ({ digest }) => {
+      assert.equal(digest, review.digest);
+      return { digest, checkpoint: '101', transactionBcsBase64: bytes, effectsStatus: { success: true },
+        signatures: [SIGNATURE] };
+    };
+    await assert.rejects(cold.publisher.resume(uploadId, awaiting), { code: 'MAKER_V8_WALRUS_TRANSACTION_DRIFT' });
+    assert.deepEqual(await cold.publisher.load(uploadId), awaiting);
+    bytes = intent.transaction.bytes;
+    const result = await cold.publisher.resume(uploadId, awaiting);
+    assert.equal(result.status, 'SIGNATURE_REQUIRED');
+    assert.equal(result.stage, 'CERTIFY');
+    assert.equal((await coldStore.load(uploadId)).upload.registrationDigest, review.digest);
+    assert.equal(cold.calls.some(([name]) => ['sign', 'broadcast'].includes(name)), false);
+    assert.deepEqual(cold.calls.filter(([name]) => ['query', 'upload'].includes(name)), [
+      ['query', review.digest], ['query', review.digest], ['query', review.digest], ['upload', review.digest],
+    ]);
+  } finally { await coldStore.close(); }
+});
+
+test('a lost single-blob response permits a fresh review only after exact finalized absence past expiry', async () => {
+  const store = memoryPersistence();
+  const first = harness(store);
+  const uploadId = 'lost-wallet-expired';
+  await first.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(first.bytes) });
+  const review = await first.publisher.prepareReview(uploadId);
+  first.wallet.signExactTransaction = async () => { throw new Error('Wallet response lost'); };
+  await assert.rejects(first.publisher.signReviewed(uploadId, review), /response lost/);
+  const cold = harness(store, 200);
+  cold.buildClient.core.getCurrentSystemState = async () => ({ systemState: { epoch: '12' } });
+  cold.queries.push(typedAbsence(review.digest, '12', { requestedDigest: GAS_DIGEST }), typedAbsence(review.digest, '12'));
+  const awaiting = await cold.publisher.load(uploadId);
+  assert.equal(awaiting.status, 'RECOVERY_REQUIRED');
+  assert.equal(await cold.publisher.prepareReview(uploadId), null);
+  await assert.rejects(cold.publisher.resume(uploadId, awaiting), { code: 'MAKER_V8_WALRUS_ABSENCE_INVALID' });
+  const ready = await cold.publisher.resume(uploadId, awaiting);
+  assert.equal(ready.status, 'SIGNATURE_REQUIRED');
+  assert.equal(ready.error.digest, review.digest);
+  assert.notEqual((await cold.publisher.prepareReview(uploadId)).digest, review.digest);
+  assert.deepEqual(cold.calls.filter(([name]) => ['query', 'sign', 'broadcast'].includes(name)), [
+    ['query', review.digest], ['query', review.digest],
+  ]);
+});
+
+test('an active single-blob signing intent prevents another tab from opening the wallet for that upload', async () => {
+  const database = new IDBFactory();
+  const storageManager = { persisted: async () => true, persist: async () => true };
+  const firstStore = createMakerV8WalrusPersistenceV8(database, { storageManager });
+  const secondStore = createMakerV8WalrusPersistenceV8(database, { storageManager });
+  const first = harness(firstStore), second = harness(secondStore, 200);
+  const uploadId = 'two-tabs-single-blob';
+  let signed;
+  const release = Promise.withResolvers();
+  const entered = Promise.withResolvers();
+  try {
+    await first.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(first.bytes) });
+    const [firstReview, secondReview] = await Promise.all([
+      first.publisher.prepareReview(uploadId), second.publisher.prepareReview(uploadId),
+    ]);
+    const sign = first.wallet.signExactTransaction;
+    first.wallet.signExactTransaction = async input => {
+      entered.resolve();
+      await release.promise;
+      return sign(input);
+    };
+    signed = first.publisher.signReviewed(uploadId, firstReview);
+    await Promise.race([entered.promise, signed]);
+    await assert.rejects(second.publisher.signReviewed(uploadId, secondReview), { code: 'MAKER_V8_WALRUS_CONTEXT_CHANGED' });
+    assert.equal((await second.publisher.load(uploadId)).transactionDigest, firstReview.digest);
+    assert.equal(second.calls.some(([name]) => ['sign', 'broadcast'].includes(name)), false);
+    release.resolve();
+    assert.equal((await signed).transactionDigest, firstReview.digest);
+  } finally {
+    release.resolve();
+    await signed?.catch(() => {});
+    await firstStore.close();
+    await secondStore.close();
+  }
 });
 
 test('a signed Walrus registration keeps its digest through unknown and terminal failure across cold opens', async () => {

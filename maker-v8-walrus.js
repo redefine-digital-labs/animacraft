@@ -2,7 +2,7 @@ import { AuthenticationError, WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobI
 import { bcs } from '@mysten/sui/bcs';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
-import { fromBase64, toBase64, normalizeStructTag } from '@mysten/sui/utils';
+import { fromBase58, fromBase64, toBase64, normalizeStructTag } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 import { MakerV8DAppKitWalletError } from './maker-v8-dapp-kit-wallet.js';
@@ -199,6 +199,7 @@ function recordView(record) {
     blobId: record.encoded.blobId,
     blobObjectId: record.upload?.blobObjectId ?? null,
     transactionDigest: record.transaction?.digest ?? null,
+    ...(record.status.endsWith('_SIGNING') ? { reason: 'SIGNATURE_OUTCOME_UNKNOWN' } : {}),
     mediaType: record.mediaType,
     byteLength: record.byteLength,
     byteSha256: record.byteSha256,
@@ -249,6 +250,19 @@ function assertRecord(value) {
     || canonicalBase64(value.encoded.rootHash, 'Walrus root hash').length !== 32
     || canonicalBase64(value.encoded.nonce, 'Walrus nonce').length !== 32) {
     fail('MAKER_V8_WALRUS_RECORD_INVALID', 'Encoded Walrus proof is invalid.', 'PERSISTENCE');
+  }
+  if (value.status === 'REGISTER_SIGNING' || value.status === 'CERTIFY_SIGNING') {
+    const transaction = exact(value.transaction, ['stage', 'bytes', 'digest', 'kindSha256',
+      'signature', 'signedAt', 'broadcastAt'], 'Walrus signing intent');
+    const proof = transactionProof(transaction.bytes, {
+      owner: value.owner, digest: transaction.digest, kindSha256: transaction.kindSha256,
+    });
+    if (value.status !== `${transaction.stage}_SIGNING` || transaction.signature !== null
+      || transaction.signedAt !== null || transaction.broadcastAt !== null
+      || proof.digest !== transaction.digest || proof.kindSha256 !== transaction.kindSha256
+      || proof.validity?.chain !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST) {
+      fail('MAKER_V8_WALRUS_RECORD_INVALID', 'Walrus signing intent differs from its exact unsigned Mainnet transaction.', 'PERSISTENCE');
+    }
   }
   canonical(value);
   return value;
@@ -573,7 +587,7 @@ function transactionProof(bytesBase64, expected) {
   if (expected.kindSha256 && kindSha256 !== expected.kindSha256) {
     fail('MAKER_V8_WALRUS_TRANSACTION_DRIFT', 'Walrus TransactionKind differs from its durable compiler proof.', 'TRANSACTION');
   }
-  return freeze({ bytes, digest, kindSha256 });
+  return freeze({ bytes, digest, kindSha256, validity: parsed.V1.expiration.ValidDuring ?? null });
 }
 
 const FRAMEWORK = `0x${'0'.repeat(63)}2`;
@@ -739,7 +753,7 @@ function nextRecord(record, at, patch) {
 
 function publicStatus(record) {
   if (record.status === 'ENCODED' || record.status === 'UPLOADED') return 'SIGNATURE_REQUIRED';
-  if (record.status.endsWith('_SIGNED')) return 'RECOVERY_REQUIRED';
+  if (record.status.endsWith('_SIGNED') || record.status.endsWith('_SIGNING')) return 'RECOVERY_REQUIRED';
   return record.status;
 }
 
@@ -754,6 +768,28 @@ function definitiveWalletRejection(error) {
   const rejected = (error instanceof MakerV8DAppKitWalletError && error.code === 'MAKER_V8_DAPP_KIT_WALLET_REQUEST_REJECTED')
     || (error instanceof MakerV8BrowserError && error.code === 'MAKER_V8_BROWSER_WALLET_REQUEST_REJECTED');
   return rejected && error.definitiveRejection === true && error.signedArtifactCreated === false;
+}
+
+function unsignedStatus(stage) {
+  return stage === 'REGISTER' ? 'ENCODED' : 'UPLOADED';
+}
+
+function expiredSigningIntent(record, absence) {
+  let checkpointDigestValid = false;
+  try { checkpointDigestValid = fromBase58(absence?.watermarkCheckpointDigest).length === 32; }
+  catch { /* Absence must include a real checkpoint digest. */ }
+  if (absence?.schemaVersion !== 'animacraft.sui-transaction-absence.v8'
+    || absence.kind !== 'SUI_GRPC_TRANSACTION_NOT_FOUND' || absence.grpcCode !== 'NOT_FOUND'
+    || absence.grpcService !== 'sui.rpc.v2.LedgerService' || absence.grpcMethod !== 'GetTransaction'
+    || absence.chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER
+    || absence.requestedDigest !== record.transaction.digest
+    || typeof absence.watermarkEpoch !== 'string' || typeof absence.watermarkCheckpointSequence !== 'string'
+    || !UINT.test(absence.watermarkEpoch) || !UINT.test(absence.watermarkCheckpointSequence)
+    || !checkpointDigestValid) {
+    fail('MAKER_V8_WALRUS_ABSENCE_INVALID', 'An uncertain signature requires typed absence for its exact Mainnet digest.', 'RECOVERY');
+  }
+  const { ValidDuring: validity } = bcs.TransactionData.parse(fromBase64(record.transaction.bytes)).V1.expiration;
+  return BigInt(absence.watermarkEpoch) > BigInt(validity.maxEpoch);
 }
 
 /**
@@ -892,6 +928,7 @@ export function createMakerV8WalrusPublisherV8({
       digest: transaction.digest,
       kindSha256: transaction.kindSha256,
     });
+    canonicalBase64(transaction.signature, 'Walrus signature');
     const verified = await wallet.verifyExactSignature({
       bytes: transaction.bytes,
       signature: transaction.signature,
@@ -905,6 +942,24 @@ export function createMakerV8WalrusPublisherV8({
       fail('MAKER_V8_WALRUS_SIGNATURE_INVALID', 'Durable Walrus signature does not authenticate exact TransactionData.', 'SIGNING');
     }
     return proof;
+  };
+
+  const recoverFinalizedSignature = async (record) => {
+    const transport = await rpc.getSuiClient();
+    const transaction = record.transaction;
+    const evidence = await transport.getFinalizedTransactionEvidence({ digest: transaction.digest });
+    if (evidence?.digest !== transaction.digest || !UINT.test(String(evidence.checkpoint ?? ''))
+      || evidence.transactionBcsBase64 !== transaction.bytes || evidence.effectsStatus?.success !== true
+      || !Array.isArray(evidence.signatures)) {
+      fail('MAKER_V8_WALRUS_TRANSACTION_DRIFT', 'Unknown signature finalized with different bytes.', 'RECOVERY');
+    }
+    for (const signature of evidence.signatures) {
+      try {
+        await verifySigned({ owner: record.owner, transaction: { ...transaction, signature } });
+        return signature;
+      } catch { /* Try only the signatures in this exact finalized transaction. */ }
+    }
+    fail('MAKER_V8_WALRUS_SIGNATURE_INVALID', 'Finalized Walrus transaction lacks this owner signature.', 'RECOVERY');
   };
 
   const broadcast = async (record) => {
@@ -1018,6 +1073,8 @@ export function createMakerV8WalrusPublisherV8({
   };
 
   const settle = async (record) => {
+    const signing = record.status.endsWith('_SIGNING');
+    if (signing) await assertPinned();
     const query = await rpc.queryTransaction({ digest: record.transaction.digest });
     if (!plain(query) || query.digest !== record.transaction.digest) {
       fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Walrus exact-digest query returned invalid evidence.', 'RECOVERY');
@@ -1029,6 +1086,15 @@ export function createMakerV8WalrusPublisherV8({
       });
     }
     if (query.status === 'NOT_FOUND') {
+      if (signing) {
+        if (!expiredSigningIntent(record, query.absence)) return record;
+        return save(record, {
+          status: unsignedStatus(record.transaction.stage), transaction: null,
+          error: { code: 'MAKER_V8_WALRUS_SIGNING_INTENT_EXPIRED',
+            message: 'The saved wallet request expired without a finalized Mainnet transaction.',
+            digest: record.transaction.digest, absence: query.absence },
+        });
+      }
       if (query.absence?.chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER) {
         fail('MAKER_V8_WALRUS_ABSENCE_INVALID', 'Walrus replay requires typed Mainnet absence evidence.', 'RECOVERY');
       }
@@ -1044,6 +1110,11 @@ export function createMakerV8WalrusPublisherV8({
     }
     if (query.status !== 'FINALIZED_SUCCESS') {
       fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Walrus query returned an unsupported state.', 'RECOVERY');
+    }
+    if (signing) {
+      const signature = await recoverFinalizedSignature(record);
+      record = await save(record, { status: `${record.transaction.stage}_SIGNED`,
+        transaction: { ...record.transaction, signature, signedAt: clock(record.updatedAt) } });
     }
     if (record.status === 'REGISTER_SIGNED') {
       let finalized = await save(record, { status: 'REGISTER_FINALIZED', error: null });
@@ -1108,20 +1179,7 @@ export function createMakerV8WalrusPublisherV8({
       }
       if (query.status !== 'FINALIZED_SUCCESS') fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Unsupported batch finality.', 'RECOVERY');
       if (batch.status.endsWith('_SIGNING')) {
-        const transport = await rpc.getSuiClient();
-        const evidence = await transport.getFinalizedTransactionEvidence({ digest: batch.transaction.digest });
-        if (evidence.digest !== batch.transaction.digest || !UINT.test(String(evidence.checkpoint ?? ''))
-          || evidence.transactionBcsBase64 !== batch.transaction.bytes || evidence.effectsStatus?.success !== true) {
-          fail('MAKER_V8_WALRUS_TRANSACTION_DRIFT', 'Unknown signature finalized with different bytes.', 'RECOVERY');
-        }
-        let signature = null;
-        for (const candidate of evidence.signatures ?? []) {
-          try {
-            await verifySigned({ owner: batch.owner, transaction: { ...batch.transaction, signature: candidate } });
-            signature = candidate; break;
-          } catch { /* Try only the signatures in this exact finalized transaction. */ }
-        }
-        if (!signature) fail('MAKER_V8_WALRUS_SIGNATURE_INVALID', 'Finalized batch lacks this owner signature.', 'RECOVERY');
+        const signature = await recoverFinalizedSignature(batch);
         batch = await saveBatch(batch, { status: `${batch.transaction.stage}_SIGNED`,
           transaction: { ...clone(batch.transaction), signature, signedAt: clock() } });
         await verifySigned(batch);
@@ -1374,12 +1432,16 @@ export function createMakerV8WalrusPublisherV8({
       }
       reviews.delete(uploadId);
       if (!valid) fail('MAKER_V8_WALRUS_REVIEW_EXPIRED', 'This unsigned review expired. Refresh before signing.', 'CONTEXT');
-      await assertCurrent();
       try {
         return await api.requestSignature(uploadId, review, { build: frozen.build, signOnly: true, assertCurrent });
       } catch (error) {
         if (definitiveWalletRejection(error) && !reviews.has(uploadId)) {
-          reviews.set(uploadId, { ...frozen, rejected: true });
+          const restored = await persistence.load(uploadId);
+          if (restored?.revision === frozen.review.revision + 2 && restored.transaction === null
+            && restored.status === unsignedStatus(frozen.build.stage)) {
+            reviews.set(uploadId, { ...frozen, rejected: true,
+              review: freeze({ ...frozen.review, revision: restored.revision }) });
+          }
         }
         throw error;
       }
@@ -1430,6 +1492,7 @@ export function createMakerV8WalrusPublisherV8({
       if (!record) fail('MAKER_V8_WALRUS_NOT_FOUND', 'Walrus upload was not found.', 'PERSISTENCE');
       if (record.batchKey) fail('MAKER_V8_WALRUS_BATCH_REQUIRED', 'Sign the fixed batch instead of one member.', 'CONTEXT');
       assertExpectedUpload(record, expected);
+      if (record.status.endsWith('_SIGNING')) return freeze({ ...recordView(record), status: publicStatus(record) });
       if (record.status.endsWith('_SIGNED')) return api.resume(uploadId);
       if (record.status === 'COMPLETE' || record.status === 'FAILED') return recordView(record);
       const build = reviewed?.build ?? (record.status === 'ENCODED'
@@ -1442,10 +1505,26 @@ export function createMakerV8WalrusPublisherV8({
         fail('MAKER_V8_WALRUS_ACCOUNT_DRIFT', 'Current wallet differs from the Walrus owner.', 'CONTEXT');
       }
       if (expected) assertExpectedUpload(await persistence.load(record.uploadId), expected);
-      await reviewed?.assertCurrent?.();
-      const signed = await wallet.signExactTransaction({
-        bytes: build.bytes, digest: build.digest, signer: record.owner,
+      record = await save(record, {
+        status: `${build.stage}_SIGNING`, error: null,
+        transaction: { ...build, signature: null, signedAt: null, broadcastAt: null },
       });
+      const restoreUnsigned = () => save(record, { status: unsignedStatus(build.stage), transaction: null });
+      try {
+        await reviewed?.assertCurrent?.();
+      } catch (error) {
+        await restoreUnsigned();
+        throw error;
+      }
+      let signed;
+      try {
+        signed = await wallet.signExactTransaction({
+          bytes: build.bytes, digest: build.digest, signer: record.owner,
+        });
+      } catch (error) {
+        if (definitiveWalletRejection(error)) await restoreUnsigned();
+        throw error;
+      }
       if (!plain(signed) || signed.bytes !== build.bytes || signed.digest !== build.digest
         || signed.signer !== record.owner || typeof signed.signature !== 'string') {
         fail('MAKER_V8_WALRUS_SIGNED_ARTIFACT_DRIFT', 'Wallet changed the exact Walrus transaction.', 'SIGNING');
@@ -1476,7 +1555,7 @@ export function createMakerV8WalrusPublisherV8({
       if (record.status === 'REGISTER_FINALIZED') {
         const uploaded = await upload(record);
         record = await save(record, { status: 'UPLOADED', upload: uploaded, transaction: null, error: null });
-      } else if (record.status.endsWith('_SIGNED')) {
+      } else if (record.status.endsWith('_SIGNED') || record.status.endsWith('_SIGNING')) {
         record = await settle(record);
       }
       return freeze({ ...recordView(record), status: publicStatus(record) });

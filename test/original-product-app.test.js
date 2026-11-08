@@ -164,7 +164,8 @@ test('Pack Studio presents a saved transaction review before invoking the wallet
   h.bridge.reviewPackPublication = async input => { calls.push(input); return { draft, review }; };
   h.bridge.advancePackPublication = async input => {
     calls.push(input);
-    return { draft, review: { id: 'recovery-review', stage: 'REGISTER', digest: review.digest, nextAction: 'RECOVER' } };
+    return { draft, review: { id: 'recovery-review', stage: 'REGISTER', digest: review.digest,
+      nextAction: 'RECOVER', signatureOutcomeUnknown: true } };
   };
   const app = createOriginalProductApp(h);
   try {
@@ -189,6 +190,8 @@ test('Pack Studio presents a saved transaction review before invoking the wallet
     await click('advance-pack-publication', { packReviewId: review.id });
     assert.deepEqual(calls[1], { reviewId: review.id, action: 'SIGN' });
     assert.match(mount.innerHTML, /Continue saved step/);
+    assert.match(mount.innerHTML, /The wallet response is unknown/);
+    assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
     assert.match(mount.innerHTML, /fixed-pack-digest/);
   } finally { app.destroy(); }
 });
