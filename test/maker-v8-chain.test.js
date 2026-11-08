@@ -1372,6 +1372,27 @@ test('gRPC finalized readback is query-first, sender-bound, event-bound, and fai
   );
 });
 
+test('Creator activity reads the exact shared output registry for an activated Maker version', async () => {
+  const rt = runtime(), b = binding(), shared = { Shared: { initial_shared_version: '2' } };
+  const outputType = `${rt.roles.output.typeOriginPackageId}::output_v8::OutputRegistryV8`;
+  let fields = {
+    version: '8', root_id: b.rootId, maker_version: '1', root_content_commitment: hash(2),
+    renderer_commitment: hash(3), soul_registry_id: b.soulRegistryId, sealed: true,
+    total_complete_count: '9007199254740993',
+  };
+  const client = createMakerV8ChainClient(rt, { rpc: mainnetRpc({
+    async getObject({ id }) {
+      if (id === b.rootId) return rootResponse();
+      assert.equal(id, b.outputRegistryId);
+      return moveObject(outputType, id, fields, shared);
+    },
+  }) });
+  const root = await client.loadActivatedRoot(activationEvent());
+  assert.equal(await client.loadCompleteCount(root), '9007199254740993');
+  fields = { ...fields, maker_version: '2' };
+  await assert.rejects(() => client.loadCompleteCount(root), /another immutable Maker version/);
+});
+
 test('client accepts only an RPC attested to the exact Mainnet chain identifier', async () => {
   class Rpc { async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; } }
   const client = createMakerV8ChainClient(runtime(), { rpc: new Rpc(), network: 'mainnet' });

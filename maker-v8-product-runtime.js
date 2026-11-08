@@ -219,6 +219,8 @@ export function createMakerV8ProductRuntime({
   const chain = freeze({
     async discover() { return (await resolveChain()).discover(); },
     async loadContext(activation) { return (await resolveChain()).loadContext(activation); },
+    async loadActivatedRoot(activation) { return (await resolveChain()).loadActivatedRoot(activation); },
+    async loadCompleteCount(root) { return (await resolveChain()).loadCompleteCount(root); },
   });
   const catalog = createMakerV8CatalogAdapter({ chain, manifests });
   const lineage = freeze({

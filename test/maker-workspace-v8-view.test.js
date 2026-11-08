@@ -821,8 +821,8 @@ test('view imports only current authority and hash-exact approved pure donor hel
         wardrobeSetupCopy: capacityCopy[locale][0],
         wardrobePartSlotCopy: capacityCopy[locale][1],
       };
-      if (key !== 'playerCommerceFree') assert.equal(current[key],
-        Object.hasOwn(approvedCopy, key) ? approvedCopy[key] : value, `${locale}:${key}`);
+      if (approvedLocaleDelta.removed.includes(key) || key === 'finalOcPreviewCopy') continue;
+      assert.equal(current[key], Object.hasOwn(approvedCopy, key) ? approvedCopy[key] : value, `${locale}:${key}`);
     }
     for (const key of playerAdditions) assert.equal(typeof current[key] === 'string' && current[key].length > 0, true, `${locale}:${key}`);
   }

@@ -109,6 +109,45 @@ function adapter({ activations = [activation()], loadContext, loadManifest } = {
   return createMakerV8CatalogAdapter({ chain, manifests });
 }
 
+test('Creator activity uses live creator and owner, and retains a row when details are unavailable', async () => {
+  const owned = objectId(101), unrelated = objectId(102);
+  const wallet = objectId(901);
+  const observedCounts = [];
+  const catalog = createMakerV8CatalogAdapter({
+    chain: {
+      async discover() {
+        return [activation(), activation(owned, 'transferred-maker'), { ...activation(unrelated), owner: wallet }];
+      },
+      async loadContext() { assert.fail('Creator does not depend on Market readback'); },
+      async loadActivatedRoot({ binding: { rootId: id }, makerKey }) {
+        const live = root({ id, makerKey, lifecycle: id === owned ? 'PAUSED' : 'ACTIVE' });
+        if (id !== rootId) live.creatorAddress = objectId(903);
+        if (id === owned) live.ownerAddress = wallet;
+        return live;
+      },
+      async loadCompleteCount(live) {
+        observedCounts.push(live.objectId);
+        if (live.objectId === owned) throw new Error('registry unavailable');
+        return '0';
+      },
+    },
+    manifests: {
+      async load(pointer) {
+        if (pointer.blobId !== `manifest-${rootId.slice(-4)}`) throw new Error('manifest unavailable');
+        return manifestRead();
+      },
+    },
+  });
+  const result = await catalog.loadCreatorMakers({ address: wallet });
+  assert.equal(result.status, 'DEGRADED');
+  assert.deepEqual(result.makers.map(({ title, lifecycle, completeCount, publicLinkAvailable }) =>
+    [title, lifecycle, completeCount, publicLinkAvailable]), [
+    ['Catalog Maker', 'ACTIVE', '0', true],
+    ['transferred-maker', 'PAUSED', null, false],
+  ]);
+  assert.deepEqual(observedCounts.sort(), [rootId, owned]);
+});
+
 test('resolves Activation to exact ACTIVE Root and emits Plaza and Player view models', async () => {
   const catalog = adapter();
   const plaza = await catalog.loadPlaza();

@@ -383,6 +383,7 @@ export function createMakerV8ProductBridge({
 } = {}) {
   const readyProduct = method(productRuntime, 'ready', 'productRuntime');
   const loadPlaza = method(productRuntime?.catalog, 'loadPlaza', 'productRuntime.catalog');
+  const loadCreatorMakers = method(productRuntime?.catalog, 'loadCreatorMakers', 'productRuntime.catalog', { optional: true });
   const loadPlayer = method(productRuntime?.catalog, 'loadPlayer', 'productRuntime.catalog');
   const loadInventory = method(productRuntime?.inventory, 'load', 'productRuntime.inventory', { optional: true });
   const loadContextualChoices = method(
@@ -823,6 +824,17 @@ export function createMakerV8ProductBridge({
       emit();
       return templates;
     },
+    ...(loadCreatorMakers ? {
+      async listCreatorMakers() {
+        await ensureReady();
+        const account = await requireConnected();
+        const result = await loadCreatorMakers({ address: account.address });
+        if (walletIdentity(await requireConnected()) !== walletIdentity(account)) {
+          fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed while reading Maker activity.', 'WALLET');
+        }
+        return result;
+      },
+    } : {}),
     async getTemplate({ makerId } = {}) {
       await ensureReady();
       const result = await loadPlayer(makerId);

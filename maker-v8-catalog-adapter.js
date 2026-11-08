@@ -298,6 +298,59 @@ export function createMakerV8CatalogAdapter({ chain, manifests } = {}) {
   return freeze({
     schemaVersion: MAKER_V8_CATALOG_ADAPTER_SCHEMA,
 
+    async loadCreatorMakers({ address } = {}) {
+      const wallet = id(address, 'creator.address');
+      const diagnostics = [];
+      const makers = [];
+      const seen = new Set();
+      const activations = await discover();
+      // Activation owner is historical. Use the current Root to include transfers
+      // and keep creator attribution independent of current ownership.
+      for (let start = 0; start < activations.length; start += 8) {
+        const outcomes = await Promise.all(activations.slice(start, start + 8).map(async (activation) => {
+          const context = { rootId: activation?.binding?.rootId ?? null, makerKey: activation?.makerKey ?? null };
+          try {
+            const rootId = id(context.rootId, 'activation.binding.rootId');
+            if (seen.has(rootId)) fail('MAKER_V8_ACTIVATION_DUPLICATE', 'Duplicate Root activation.', 'DISCOVERY');
+            seen.add(rootId);
+            const root = await chain.loadActivatedRoot(activation);
+            if (root?.objectId !== rootId || !['ACTIVE', 'PAUSED', 'ARCHIVED'].includes(root.lifecycle)) {
+              fail('MAKER_V8_CREATOR_ROOT_INVALID', 'Discovery returned another or ineligible Maker Root.', 'ROOT');
+            }
+            if (root.creatorAddress !== wallet && root.ownerAddress !== wallet) return null;
+
+            const [metadata, count] = await Promise.allSettled([
+              Promise.resolve().then(async () => {
+                const read = await manifests.load(rootManifestPointer(root));
+                return assertManifestBindsRoot(root, read).document.metadata;
+              }),
+              Promise.resolve().then(() => chain.loadCompleteCount(root)),
+            ]);
+            return {
+              maker: freeze({
+                rootId,
+                title: metadata.status === 'fulfilled' ? metadata.value.name : root.makerKey,
+                makerVersion: String(root.makerVersion),
+                lifecycle: root.lifecycle,
+                completeCount: count.status === 'fulfilled' ? count.value : null,
+                publicLinkAvailable: root.lifecycle === 'ACTIVE' && metadata.status === 'fulfilled',
+              }),
+              diagnostics: [metadata, count].filter((result) => result.status === 'rejected')
+                .map((result) => diagnostic(result.reason, context)),
+            };
+          } catch (cause) {
+            return { maker: null, diagnostics: [diagnostic(cause, context)] };
+          }
+        }));
+        for (const result of outcomes) {
+          if (!result) continue;
+          if (result.maker) makers.push(result.maker);
+          diagnostics.push(...result.diagnostics);
+        }
+      }
+      return freeze({ status: resultStatus(makers, diagnostics), makers, diagnostics });
+    },
+
     async loadLineage({ makerKey } = {}) {
       const checkedMakerKey = boundedText(makerKey, 'lineage.makerKey', 128);
       const activations = (await discover()).filter((activation) => activation?.makerKey === checkedMakerKey);

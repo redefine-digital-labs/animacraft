@@ -1556,7 +1556,7 @@ export function parseMakerV8MarketAuthority(registryResponse, treasuryResponse, 
   return freeze({ root: { ...root, binding }, registry, treasury });
 }
 
-export async function loadMakerV8Context(rpc, runtimeInput, activationInput, { network: observedNetwork = MAKER_V8_CHAIN_NETWORK } = {}) {
+async function loadActivatedMakerRoot(rpc, runtimeInput, activationInput, observedNetwork) {
   const runtime = assertMakerV8Runtime(runtimeInput);
   const activation = activationInput?.binding
     ? activationInput
@@ -1568,6 +1568,11 @@ export async function loadMakerV8Context(rpc, runtimeInput, activationInput, { n
     options: { showType: true, showContent: true, showOwner: true },
   });
   const root = parseMakerRootV8(response, runtime, activation, observedNetwork);
+  return { runtime, activation, root };
+}
+
+export async function loadMakerV8Context(rpc, runtimeInput, activationInput, { network: observedNetwork = MAKER_V8_CHAIN_NETWORK } = {}) {
+  const { runtime, activation, root } = await loadActivatedMakerRoot(rpc, runtimeInput, activationInput, observedNetwork);
   const marketResponse = await rpc.getObject({
     id: root.binding.marketRegistryId,
     options: { showType: true, showContent: true, showOwner: true },
@@ -1582,6 +1587,29 @@ export async function loadMakerV8Context(rpc, runtimeInput, activationInput, { n
   });
   const authority = parseMakerV8MarketAuthority(marketResponse, treasuryResponse, runtime, root, observedNetwork);
   return freeze({ runtime, activation, root: authority.root, marketRegistry: authority.registry, marketTreasury: authority.treasury });
+}
+
+async function loadMakerV8CompleteCount(rpc, runtime, root, observedNetwork) {
+  const label = 'OutputRegistryV8';
+  const registryId = root.binding.outputRegistryId;
+  const response = await rpc.getObject({
+    id: registryId, options: { showType: true, showContent: true, showOwner: true },
+  });
+  const type = makerV8StableType(runtime, 'output', 'output_v8', label);
+  const registry = parsedObject(response, type, observedNetwork, label);
+  exactRootInventoryBinding(registry, root, label);
+  const fields = registry.fields;
+  if (registry.objectId !== registryId || registry.owner.kind !== 'shared' || fields.sealed !== true
+    || decimal(fields.version, 'output.version') !== 8n
+    || id(fields.soul_registry_id, 'output.soul_registry_id') !== root.binding.soulRegistryId
+    || hash(fields.renderer_commitment, 'output.renderer_commitment') !== root.rendererCommitment) {
+    fail('readback', 'MAKER_V8_OUTPUT_REGISTRY_MISMATCH', 'Output registry does not match the activated Maker version.');
+  }
+  const count = decimal(fields.total_complete_count, 'output.total_complete_count');
+  if (count > 18446744073709551615n) {
+    fail('readback', 'MAKER_V8_OUTPUT_COUNT_INVALID', 'Output registry completion count is outside u64.');
+  }
+  return count.toString();
 }
 
 export async function loadMakerV8OperationalState(rpc, runtimeInput, rootInput, { network: observedNetwork = MAKER_V8_CHAIN_NETWORK } = {}) {
@@ -2729,6 +2757,8 @@ export function createMakerV8ChainClient(runtimeInput, { rpc, network: observedN
     types: makerV8ChainTypes(runtime),
     ready: () => assertMakerV8MainnetRpc(rpc),
     discover: () => discoverMakerV8Activations(rpc, runtime, { network: observedNetwork }),
+    loadActivatedRoot: async (activation) => (await loadActivatedMakerRoot(rpc, runtime, activation, observedNetwork)).root,
+    loadCompleteCount: (root) => loadMakerV8CompleteCount(rpc, runtime, root, observedNetwork),
     loadContext: (activation) => loadMakerV8Context(rpc, runtime, activation, { network: observedNetwork }),
     loadOperationalState: (root) => loadMakerV8OperationalState(rpc, runtime, root, { network: observedNetwork }),
     loadPackAuthoringContext: (root, wallet) => loadMakerV8PackAuthoringContext(

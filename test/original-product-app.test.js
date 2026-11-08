@@ -3020,6 +3020,7 @@ function browserHarness({
     'soulidityMySoulsLink', 'soulidityProfileLink',
     'soulidityCommunityLink', 'soulidityMarketLink',
     'imageMakerList', 'openDraftRecovery', 'backToMakerList',
+    'creatorMakerActivity', 'creatorMakerActivityStatus', 'creatorMakerActivityList', 'refreshCreatorMakers',
     'makerRegistrationModal', 'newMakerName', 'registerMaker',
     'draftRecoveryModal', 'draftRecoveryTitle', 'draftRecoveryStatus',
     'draftRecoveryList', 'rescanDraftRecovery',
@@ -8599,6 +8600,42 @@ test('Player retry-save retries only the exact durable project write and never c
   assert.match(mount.innerHTML, /id="v4PlayerSaveStatus"[^>]+data-state="saved"/);
   assert.equal(harness.calls.completePlayerJourney.length, 0);
   app.destroy();
+});
+
+test('Creator Studio displays a release without a local draft and ignores activity from the prior wallet', async () => {
+  const wallet = { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } };
+  const other = { account: { address: ROOT_TWO, chains: ['sui:mainnet'] } };
+  const h = browserHarness({ connection: wallet, initialUrl: 'https://animacraft.soulidity.ai/#creator' });
+  const pending = deferred();
+  const row = { rootId: ROOT_ONE, title: 'TINY man', makerVersion: '1', lifecycle: 'ACTIVE',
+    completeCount: '0', publicLinkAvailable: true };
+  let reads = 0;
+  h.bridge.listCreatorMakers = async () => {
+    reads += 1;
+    if (reads === 2) return pending.promise;
+    if (reads === 3) return { status: 'EMPTY', makers: [] };
+    return { status: 'READY', makers: [row] };
+  };
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready;
+    await settle();
+    const activity = h.doc.getElementById('creatorMakerActivityList');
+    assert.match(activity.innerHTML, /TINY man/);
+    assert.match(activity.innerHTML, /OCs completed: 0/);
+    assert.ok(activity.innerHTML.includes(`href="/maker/${ROOT_ONE}"`));
+    assert.match(h.doc.getElementById('imageMakerList').innerHTML, /No local drafts/);
+
+    h.doc.getElementById('refreshCreatorMakers').fire('click');
+    app.refreshConnection(other);
+    await settle();
+    assert.equal(activity.innerHTML, '');
+    pending.resolve({ status: 'READY', makers: [{ ...row, completeCount: '2' }] });
+    await settle();
+    assert.equal(activity.innerHTML, '');
+    assert.match(h.doc.getElementById('creatorMakerActivityStatus').textContent, /no published Makers/);
+    assert.equal(reads, 3);
+  } finally { app.destroy(); }
 });
 
 function libraryPreviewClick(harness, draftId) {

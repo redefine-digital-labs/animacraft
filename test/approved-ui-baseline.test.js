@@ -27,6 +27,8 @@ const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 test('unchanged UI baseline is byte locked outside explicit feature, retired collection, error wrapping and publication scrolling deltas', () => {
   const back = '<button id="backToCreatorPreview" class="secondary" type="button" hidden>Back to Creator Studio</button>';
   const deletion = '<button id="deleteMakerDraft" class="danger-button" type="button" data-lifecycle-action="delete-draft" hidden>Delete local draft</button>';
+  const activitySection = /^              <section class="image-maker-section" id="creatorMakerActivity"[^\n]*>\n[\s\S]*?^              <\/section>\n/m;
+  const localDraftLabel = 'data-i18n="creatorLocalDrafts">Drafts on this device</span>';
   const collectionShortcut = '        <button data-page="collection"><strong data-i18n="myOcs">My Souls</strong><span data-i18n="myOcsCopy">Soulidity-owned characters</span></button>\n';
   const collectionPage = `      <section id="collection" class="page">
         <div class="page-head">
@@ -44,10 +46,14 @@ test('unchanged UI baseline is byte locked outside explicit feature, retired col
 `;
   assert.equal(html.split(back).length, 2);
   assert.equal(html.split(deletion).length, 2);
+  assert.match(html.match(activitySection)?.[0] || '', /id="refreshCreatorMakers"[\s\S]*?id="creatorMakerActivityStatus" role="status"[\s\S]*?id="creatorMakerActivityList"/);
+  assert.equal(html.split(localDraftLabel).length, 2);
   assert.doesNotMatch(html, /data-page="collection"|id="collection"|refreshOwnedCharacters|ownedCharacterGrid/);
   assert.ok(html.includes(`<section id="make" class="page">\n        ${back}\n        <div id="makerV4PlayerMount"`), 'Local Player return must be outside the hidden retired editor.');
   assert.match(html, /maker-lifecycle-manager-footer[\s\S]*?id="deleteMakerDraft"[\s\S]*?data-lifecycle-action="open-editor"/);
   const baselineHtml = html
+    .replace(activitySection, '')
+    .replace(localDraftLabel, 'data-i18n="walletOwnedMakers">Wallet-owned Makers</span>')
     .replace('        <button data-page="creator"', `${collectionShortcut}        <button data-page="creator"`)
     .replace('      <section id="creator" class="page">', `${collectionPage}      <section id="creator" class="page">`)
     .replace(`        ${back}\n`, '')
