@@ -798,6 +798,8 @@ function projectPlayerPresentation(exact, state, capabilities, assetRecords) {
     action,
     reason: normalizedCapabilities.entries[action]?.reason || boundaryReason,
   }));
+  const liveReceipt = state.completionStatus?.receipt;
+  const pendingReceipt = liveReceipt ?? state.savedMintReceipt;
   return deepFreeze({
     schemaVersion: MAKER_V8_APPROVED_PLAYER_VIEW_SCHEMA,
     locale,
@@ -816,8 +818,10 @@ function projectPlayerPresentation(exact, state, capabilities, assetRecords) {
     packAcquisition: plain(state.packAcquisition) ? structuredClone(state.packAcquisition) : null,
     completionConfirmation: plain(state.completionConfirmation) ? clone(state.completionConfirmation) : null,
     completedSoul: plain(state.completedSoul) ? clone(state.completedSoul) : null,
-    pendingHandoffReceipt: exact.mode !== 'LOCAL_DRAFT' && plain(state.completionStatus?.receipt)
-      ? { ...clone(state.completionStatus.receipt), message: String(state.completionStatus.message || '') }
+    pendingHandoffReceipt: exact.mode !== 'LOCAL_DRAFT' && !state.completedSoul && plain(pendingReceipt)
+      ? { ...clone(pendingReceipt), message: liveReceipt
+        ? String(state.completionStatus.message || '')
+        : makerWorkspaceText(locale, 'playerStepSavedMintReceipt') }
       : null,
     envelopeRecoveryAvailable: state.envelopeRecoveryAvailable === true,
     assets: projectAssets(player, state, assetRecords),

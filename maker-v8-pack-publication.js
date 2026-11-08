@@ -4,6 +4,7 @@ import { fromBase58, fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
 
 import { MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA } from './maker-v8-pack-controller.js';
+import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from './maker-v8-sui-grpc.js';
 
 export const MAKER_V8_PACK_PUBLICATION_SCHEMA =
   'animacraft.maker-v8-pack-publication.v1';
@@ -23,7 +24,7 @@ const EXACT_ID = /^0x[0-9a-f]{64}$/;
 const STAGES = new Set(['INIT', 'DEFINITIONS_BEGIN', 'DEFINITIONS_APPEND', 'DEFINITIONS_FINALIZE',
   'DEFINITIONS_COLOR_BEGIN', 'DEFINITIONS_COLOR_APPEND', 'DEFINITIONS_COLOR_FINISH', 'APPEND', 'FINALIZE']);
 const OUTCOMES = new Set([
-  'READY', 'SIGNED', 'OUTCOME_PENDING', 'BROADCAST_ACCEPTED',
+  'READY', 'SIGNING', 'SIGNED', 'OUTCOME_PENDING', 'BROADCAST_ACCEPTED',
   'OUTCOME_UNKNOWN', 'FINALIZED_SUCCESS', 'FINALIZED_FAILURE',
 ]);
 const encoder = new TextEncoder();
@@ -233,7 +234,16 @@ function transactionDataProof(value, expected) {
     || kind !== expected.kindBytes || expected.digest != null && digest !== expected.digest) {
     fail('MAKER_V8_PACK_PUBLICATION_TRANSACTION_DRIFT', 'Pack TransactionData differs from its signer, kind, or digest.');
   }
-  return freeze({ bytes, base64: value, digest, kindBytes: kind });
+  return freeze({ bytes, base64: value, digest, kindBytes: kind,
+    validity: parsed.V1.expiration.ValidDuring ?? null });
+}
+
+function signingIntentExpired(plan, absence) {
+  const { validity } = transactionDataProof(plan.current.fullTransaction, {
+    signer: plan.immutable.signer, kindBytes: plan.current.descriptor.kindBytes, digest: absence.requestedDigest,
+  });
+  return validity?.chain === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+    && BigInt(absence.watermarkEpoch) > BigInt(validity.maxEpoch);
 }
 
 function assertDescriptor(value) {
@@ -267,8 +277,15 @@ function assertOutcome(value, descriptor) {
     fail('MAKER_V8_PACK_PUBLICATION_OUTCOME_INVALID', 'Pack cursor outcome is invalid.');
   }
   if (value.status === 'READY') {
-    exact(value, ['status'], 'READY outcome');
-    return freeze({ status: 'READY' });
+    exact(value, Object.hasOwn(value, 'retiredDigest') ? ['status', 'retiredDigest'] : ['status'], 'READY outcome');
+    if (Object.hasOwn(value, 'retiredDigest')) suiDigest(value.retiredDigest, 'retired signing intent digest');
+    return freeze(clone(value));
+  }
+  if (value.status === 'SIGNING') {
+    exact(value, ['status', 'digest', 'requestedAt'], 'SIGNING outcome');
+    suiDigest(value.digest, 'signing intent digest');
+    exactTime(value.requestedAt, 'signing intent time');
+    return freeze(clone(value));
   }
   const base = [
     'status', 'digest', 'signedAt', 'firstSeenAt', 'broadcastAt', 'observedAt',
@@ -323,14 +340,21 @@ export function assertMakerV8PackPublicationPlanV8(value) {
       || !Number.isSafeInteger(plan.current.eventSequence) || plan.current.eventSequence < -1) {
       fail('MAKER_V8_PACK_PUBLICATION_CURSOR_INVALID', 'Pack current cursor differs from its immutable signer or event sequence.');
     }
-    if ((plan.current.fullTransaction === null) !== (plan.current.signature === null)) {
+    plan.current.outcome = assertOutcome(plan.current.outcome, plan.current.descriptor);
+    if (plan.current.outcome.status === 'SIGNING') {
+      if (plan.current.signature !== null || plan.current.fullTransaction === null
+        || plan.current.outcome.requestedAt < plan.createdAt || plan.current.outcome.requestedAt > plan.updatedAt) {
+        fail('MAKER_V8_PACK_PUBLICATION_ARTIFACT_INVALID', 'A Pack signing intent must hold exact unsigned TransactionData.');
+      }
+      transactionDataProof(plan.current.fullTransaction, {
+        signer: plan.immutable.signer, kindBytes: plan.current.descriptor.kindBytes, digest: plan.current.outcome.digest,
+      });
+    } else if ((plan.current.fullTransaction === null) !== (plan.current.signature === null)) {
       fail('MAKER_V8_PACK_PUBLICATION_ARTIFACT_INVALID', 'Pack TransactionData and signature must be stored together.');
-    }
-    if (plan.current.fullTransaction !== null) {
+    } else if (plan.current.fullTransaction !== null) {
       canonicalBase64(plan.current.fullTransaction, 'durable Pack TransactionData');
       canonicalBase64(plan.current.signature, 'durable Pack signature');
     }
-    plan.current.outcome = assertOutcome(plan.current.outcome, plan.current.descriptor);
     if (plan.current.outcome.absence != null) {
       if (!['OUTCOME_PENDING', 'BROADCAST_ACCEPTED'].includes(plan.current.outcome.status)
         || plan.current.outcome.code !== 'TYPED_GRPC_NOT_FOUND') {
@@ -376,6 +400,12 @@ function makeEvent(plan, status, at, { digest = null, code = null, absence = nul
 }
 
 function assertEvent(value, current, successor) {
+  if (value === null) {
+    if (current.current?.outcome.status === 'SIGNING' || successor.current?.outcome.status === 'SIGNING') {
+      fail('MAKER_V8_PACK_PUBLICATION_EVENT_INVALID', 'A Pack signing intent change must record its original digest.');
+    }
+    return null;
+  }
   const event = deterministic(value, 'Pack publication event');
   exact(event, [
     'schemaVersion', 'attemptId', 'ordinal', 'sequence', 'status', 'digest',
@@ -387,7 +417,7 @@ function assertEvent(value, current, successor) {
     || !cursor || event.attemptId !== current.attemptId
     || event.ordinal !== cursor.descriptor.ordinal
     || event.sequence !== cursor.eventSequence + 1
-    || !OUTCOMES.has(event.status) || event.status === 'READY'
+    || !OUTCOMES.has(event.status)
     || event.kindSha256 !== cursor.descriptor.kindSha256
     || event.previousEventSha256 !== current.eventHeadSha256
     || event.eventSha256 !== successor.eventHeadSha256
@@ -400,12 +430,32 @@ function assertEvent(value, current, successor) {
   if (event.code !== null && typeof event.code !== 'string') {
     fail('MAKER_V8_PACK_PUBLICATION_EVENT_INVALID', 'Pack publication event code is invalid.');
   }
+  const prior = cursor.outcome;
+  const next = successor.current?.outcome;
+  if (event.status === 'SIGNING' && (prior.status !== 'READY' || next?.status !== 'SIGNING' || event.digest !== next.digest)
+    || event.status === 'READY' && (prior.status !== 'SIGNING' || next?.status !== 'READY'
+      || !['WALLET_REJECTED', 'BEFORE_WALLET_ABORTED', 'SIGNING_INTENT_EXPIRED'].includes(event.code))
+    || prior.status === 'SIGNING' && (event.digest !== prior.digest
+      || !['READY', 'SIGNED', 'FINALIZED_FAILURE'].includes(event.status)
+      || event.status === 'SIGNED' && (next?.status !== 'SIGNED' || next.digest !== prior.digest
+        || successor.current.fullTransaction !== cursor.fullTransaction)
+      || event.status === 'FINALIZED_FAILURE' && successor.terminal?.digest !== prior.digest)) {
+    fail('MAKER_V8_PACK_PUBLICATION_EVENT_INVALID', 'Pack signing intent transition differs from its original digest.');
+  }
   if (event.absence !== null) {
     assertGrpcAbsence(
       event.absence,
       cursor.outcome.digest,
       current.immutable.request.publicationInput.chainIdentifier,
     );
+  }
+  if (event.status === 'READY') {
+    const expired = event.code === 'SIGNING_INTENT_EXPIRED';
+    if (expired ? event.absence === null || next.retiredDigest !== prior.digest
+        || !signingIntentExpired(current, event.absence)
+      : event.absence !== null || next.retiredDigest !== undefined) {
+      fail('MAKER_V8_PACK_PUBLICATION_EVENT_INVALID', 'Only expired exact Ledger absence can retire a Pack signing intent.');
+    }
   }
   return freeze(event);
 }
@@ -566,7 +616,8 @@ export function createMakerV8PackPublicationPersistenceV8(
           || successor.attemptId !== checkedId || successor.revision !== expectedRevision + 1) {
           fail('MAKER_V8_PACK_PUBLICATION_CAS_MISMATCH', 'Pack publication changed in another tab.');
         }
-        if (event !== null) transaction.objectStore(EVENT_STORE).add(clone(assertEvent(event, current, successor)));
+        const checkedEvent = assertEvent(event, current, successor);
+        if (checkedEvent) transaction.objectStore(EVENT_STORE).add(clone(checkedEvent));
         plans.put(clone(successor));
         return successor;
       });
@@ -610,7 +661,8 @@ export function createMakerV8PackPublicationMemoryPersistenceV8({ durable = true
       if (!current || current.revision !== revision || successor.revision !== revision + 1) {
         fail('MAKER_V8_PACK_PUBLICATION_CAS_MISMATCH', 'Pack publication changed in another tab.');
       }
-      if (event) events.push(clone(assertEvent(event, current, successor)));
+      const checkedEvent = assertEvent(event, current, successor);
+      if (checkedEvent) events.push(clone(checkedEvent));
       plans.set(id, clone(successor));
       return successor;
     },
@@ -746,8 +798,8 @@ export function createMakerV8PackPublicationControllerV8({
     }
     return plan;
   };
-  const verifyArtifact = async (plan) => {
-    if (!plan.current.fullTransaction || !plan.current.signature || !plan.current.outcome.digest) {
+  const verifyArtifact = async (plan, signature = plan.current.signature) => {
+    if (!plan.current.fullTransaction || !signature || !plan.current.outcome.digest) {
       fail('MAKER_V8_PACK_PUBLICATION_ARTIFACT_REQUIRED', 'Pack cursor has no durable signed artifact.');
     }
     const proof = transactionDataProof(plan.current.fullTransaction, {
@@ -755,16 +807,44 @@ export function createMakerV8PackPublicationControllerV8({
       kindBytes: plan.current.descriptor.kindBytes,
       digest: plan.current.outcome.digest,
     });
+    canonicalBase64(signature, 'Pack signature');
     const verified = await wallet.verifyExactSignature({
       bytes: proof.base64,
-      signature: plan.current.signature,
+      signature,
       digest: proof.digest,
       signer: plan.immutable.signer,
     });
     if (!verified || verified.verified === false) {
       fail('MAKER_V8_PACK_PUBLICATION_SIGNATURE_INVALID', 'Pack signature does not authenticate the durable TransactionData.');
     }
-    return freeze({ ...proof, signature: plan.current.signature });
+    return freeze({ ...proof, signature });
+  };
+  const recordSigned = (plan, signature) => {
+    const at = clock(plan.updatedAt);
+    const digest = plan.current.outcome.digest;
+    const event = makeEvent(plan, 'SIGNED', at, { digest });
+    const outcome = { status: 'SIGNED', digest, signedAt: at, firstSeenAt: null,
+      broadcastAt: null, observedAt: at, code: null, absence: null };
+    const next = applyEvent({ ...plan, current: { ...plan.current, signature } }, event, outcome, at);
+    return cas(plan, assertMakerV8PackPublicationPlanV8(next), event);
+  };
+  const restoreReady = (plan, code, absence = null) => {
+    const at = clock(plan.updatedAt);
+    const digest = plan.current.outcome.digest;
+    const event = makeEvent(plan, 'READY', at, { digest, code, absence });
+    const outcome = absence ? { status: 'READY', retiredDigest: digest } : { status: 'READY' };
+    const next = applyEvent({ ...plan, current: { ...plan.current, fullTransaction: null, signature: null } },
+      event, outcome, at);
+    return cas(plan, assertMakerV8PackPublicationPlanV8(next), event);
+  };
+  const recordFailure = (plan, query) => {
+    const at = clock(plan.updatedAt);
+    const event = makeEvent(plan, 'FINALIZED_FAILURE', at, { digest: query.digest, code: 'MOVE_FAILURE' });
+    return cas(plan, assertMakerV8PackPublicationPlanV8({
+      ...plan, revision: plan.revision + 1, status: 'FAILED', updatedAt: at, current: null, nextPreparation: null,
+      terminal: { status: 'FAILED', digest: query.digest, at, query: deterministic(query, 'failure query') },
+      eventHeadSha256: event.eventSha256,
+    }), event);
   };
   const pending = async (plan) => {
     if (plan.current.outcome.status === 'OUTCOME_PENDING') return plan;
@@ -793,11 +873,13 @@ export function createMakerV8PackPublicationControllerV8({
     if (['SIGNED', 'OUTCOME_UNKNOWN', 'BROADCAST_ACCEPTED'].includes(plan.current.outcome.status)) {
       plan = await pending(plan);
     }
-    if (plan.current.outcome.status !== 'OUTCOME_PENDING') return plan;
+    const signing = plan.current.outcome.status === 'SIGNING';
+    if (!signing && plan.current.outcome.status !== 'OUTCOME_PENDING') return plan;
     let query;
     try {
       query = await rpc.queryTransaction({ digest: plan.current.outcome.digest });
     } catch (error) {
+      if (signing) throw error; // Keep the original unsigned intent recoverable.
       const at = clock(plan.updatedAt);
       const event = makeEvent(plan, 'OUTCOME_UNKNOWN', at, {
         digest: plan.current.outcome.digest,
@@ -813,6 +895,22 @@ export function createMakerV8PackPublicationControllerV8({
       return cas(plan, assertMakerV8PackPublicationPlanV8(applyEvent(plan, event, outcome, at)), event);
     }
     query = assertQuery(query, plan);
+    if (signing) {
+      if (query.status === 'NOT_FOUND') {
+        if (signingIntentExpired(plan, query.absence)) {
+          return restoreReady(plan, 'SIGNING_INTENT_EXPIRED', query.absence);
+        }
+        return plan;
+      }
+      if (query.status === 'FINALIZED_FAILURE') return recordFailure(plan, query);
+      requireMethod(boundary, 'recoverFinalizedSignature', 'Pack boundary');
+      const signature = await boundary.recoverFinalizedSignature({
+        bytes: plan.current.fullTransaction, digest: query.digest, signer: plan.immutable.signer,
+        kindBytes: plan.current.descriptor.kindBytes, query,
+      });
+      await verifyArtifact(plan, signature);
+      plan = await recordSigned(plan, signature);
+    }
     if (query.status === 'NOT_FOUND') {
       const at = clock(plan.updatedAt);
       const event = makeEvent(plan, 'OUTCOME_PENDING', at, {
@@ -830,20 +928,10 @@ export function createMakerV8PackPublicationControllerV8({
     }
     const authorized = await authorize(plan, 'FINALIZED_RECOVERY', false);
     const artifact = await verifyArtifact(plan);
-    const at = clock(plan.updatedAt);
     if (query.status === 'FINALIZED_FAILURE') {
-      const event = makeEvent(plan, 'FINALIZED_FAILURE', at, { digest: artifact.digest, code: 'MOVE_FAILURE' });
-      return cas(plan, assertMakerV8PackPublicationPlanV8({
-        ...plan,
-        revision: plan.revision + 1,
-        status: 'FAILED',
-        updatedAt: at,
-        current: null,
-        nextPreparation: null,
-        terminal: { status: 'FAILED', digest: artifact.digest, at, query: deterministic(query, 'failure query') },
-        eventHeadSha256: event.eventSha256,
-      }), event);
+      return recordFailure(plan, query);
     }
+    const at = clock(plan.updatedAt);
     const certified = await compiler.certifyFinalized({
       plan: clone(plan), query: deterministic(query, 'success query'),
       attested: authorized, artifact: clone(artifact),
@@ -944,7 +1032,7 @@ export function createMakerV8PackPublicationControllerV8({
       let plan = await persistence.load(id);
       if (!plan) fail('MAKER_V8_PACK_PUBLICATION_NOT_FOUND', 'Pack publication attempt was not found.');
       if (plan.status !== 'ACTIVE') return plan;
-      if (plan.current && ['SIGNED', 'OUTCOME_PENDING', 'OUTCOME_UNKNOWN', 'BROADCAST_ACCEPTED']
+      if (plan.current && ['SIGNING', 'SIGNED', 'OUTCOME_PENDING', 'OUTCOME_UNKNOWN', 'BROADCAST_ACCEPTED']
         .includes(plan.current.outcome.status)) return recover(id);
       if (plan.current !== null) {
         await authorize(plan, 'READY_RESUME', false);
@@ -974,6 +1062,18 @@ export function createMakerV8PackPublicationControllerV8({
     async prepareReview(id) {
       const plan = await loadReady(id);
       const authorized = await authorize(plan, 'REQUEST_SIGNATURE', true);
+      const retained = preparedReview;
+      if (retained?.rejected && retained.review.id === plan.attemptId && retained.review.revision === plan.revision) {
+        try {
+          await simulateSignatureProof(retained.proof, authorized);
+          await reread(plan);
+          if (preparedReview === retained) return retained.review;
+        } catch (error) {
+          // A transport error leaves the original review available. A known
+          // simulation failure permits a fresh review of this unsigned step.
+          if (error?.code !== 'MAKER_V8_PACK_PUBLICATION_DRY_RUN_FAILED') throw error;
+        }
+      }
       const proof = await buildSignatureProof(plan, authorized);
       await simulateSignatureProof(proof, authorized);
       await reread(plan);
@@ -989,7 +1089,7 @@ export function createMakerV8PackPublicationControllerV8({
       if (!gates.allowWalletSignature || !gates.allowBroadcast) {
         fail('MAKER_V8_PACK_PUBLICATION_EXECUTION_DISABLED', 'Pack signing and exact-byte broadcast are disabled.');
       }
-      const plan = await loadReady(id);
+      let plan = await loadReady(id);
       const prepared = preparedReview;
       if (review && (!prepared || !same(prepared.review, review)
         || review.id !== plan.attemptId || review.revision !== plan.revision)) {
@@ -1000,10 +1100,32 @@ export function createMakerV8PackPublicationControllerV8({
       const proof = review ? prepared.proof : await buildSignatureProof(plan, authorized);
       await simulateSignatureProof(proof, authorized);
       await reread(plan);
-      await assertCurrent?.();
-      const signed = await wallet.signExactTransaction({
-        bytes: proof.base64, digest: proof.digest, signer: plan.immutable.signer,
-      });
+      const at = clock(plan.updatedAt);
+      const intent = makeEvent(plan, 'SIGNING', at, { digest: proof.digest });
+      const signing = applyEvent({ ...plan, current: { ...plan.current, fullTransaction: proof.base64 } },
+        intent, { status: 'SIGNING', digest: proof.digest, requestedAt: at }, at);
+      plan = await cas(plan, assertMakerV8PackPublicationPlanV8(signing), intent);
+      try {
+        await assertCurrent?.();
+      } catch (error) {
+        await restoreReady(plan, 'BEFORE_WALLET_ABORTED');
+        throw error;
+      }
+      let signed;
+      try {
+        signed = await wallet.signExactTransaction({
+          bytes: proof.base64, digest: proof.digest, signer: plan.immutable.signer,
+        });
+      } catch (error) {
+        if (error?.definitiveRejection === true && error.signedArtifactCreated === false) {
+          const restored = await restoreReady(plan, 'WALLET_REJECTED');
+          if (review && !preparedReview) {
+            preparedReview = { ...prepared, rejected: true,
+              review: freeze({ ...prepared.review, revision: restored.revision }) };
+          }
+        }
+        throw error;
+      }
       if (!plain(signed) || signed.bytes !== proof.base64 || signed.digest !== proof.digest
         || signed.signer !== plan.immutable.signer) {
         fail('MAKER_V8_PACK_PUBLICATION_SIGNED_DRIFT', 'Wallet changed Pack TransactionData, digest, or signer.');
@@ -1013,17 +1135,7 @@ export function createMakerV8PackPublicationControllerV8({
       if (!verified || verified.verified === false) {
         fail('MAKER_V8_PACK_PUBLICATION_SIGNATURE_INVALID', 'Pack signature verification failed before WAL commit.');
       }
-      const at = clock(plan.updatedAt);
-      const event = makeEvent(plan, 'SIGNED', at, { digest: proof.digest });
-      const outcome = {
-        status: 'SIGNED', digest: proof.digest, signedAt: at, firstSeenAt: null,
-        broadcastAt: null, observedAt: at, code: null, absence: null,
-      };
-      const next = assertMakerV8PackPublicationPlanV8(applyEvent({
-        ...plan,
-        current: { ...plan.current, fullTransaction: signed.bytes, signature: signed.signature },
-      }, event, outcome, at));
-      return cas(plan, next, event);
+      return recordSigned(plan, signed.signature);
     },
     recoverOutcome: recover,
     async replayExact(id) {

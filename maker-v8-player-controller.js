@@ -1765,12 +1765,16 @@ export function createMakerV8PlayerControllerV8({
     return freeze(clone(record));
   };
 
+  const certifyFinalizedReadback = async (record, query) => assertReadback(
+    await custody.readbackPlayerAction({ record: clone(record), query: clone(query) }),
+    record,
+    query,
+  );
+
   const readbackFinalized = async (record, query) => {
     let certificate;
     try {
-      certificate = assertReadback(await custody.readbackPlayerAction({
-        record: clone(record), query: clone(query),
-      }), record, query);
+      certificate = await certifyFinalizedReadback(record, query);
     } catch (cause) {
       const error = asPlayerError(
         cause,
@@ -2604,7 +2608,12 @@ export function createMakerV8PlayerControllerV8({
         fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'The completion belongs to a different wallet or Maker.', 'PERSISTENCE');
       }
       // readRecord verifies the stored finality, custody and native content evidence.
-      return record.status === 'FINALIZED_SUCCESS' ? actionView(record) : null;
+      if (record.status === 'FINALIZED_SUCCESS') return actionView(record);
+      if (!['SIGNED', 'BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN', 'FINALIZED_UNCERTIFIED'].includes(record.status)) return null;
+      const query = await queryExact(record);
+      if (query.status !== 'FINALIZED_SUCCESS') return null;
+      const certificate = await certifyFinalizedReadback(record, query);
+      return actionView({ ...record, status: 'FINALIZED_SUCCESS', query, certificate, error: null });
     },
 
     async getPlayerAction(actionId) {
