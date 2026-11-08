@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
-import { WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt } from '@mysten/walrus';
+import { AuthenticationError, WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt } from '@mysten/walrus';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { isValidTransactionSignature } from '@mysten/sui/verify';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
@@ -282,7 +282,8 @@ async function batchRuntime() {
   } });
   const calls = [], receipts = new Map(), inputs = new Map();
   const controls = { epoch: '1272', signError: null, uploadFailure: null, readbackFailure: false,
-    broadcastUnknown: false, finalizedSignature: false, signWait: null };
+    broadcastUnknown: false, finalizedSignature: false, signWait: null,
+    relayOnlyFirstInput: false, directUnavailable: false };
   const objectId = i => `0x${(80 + i).toString(16).padStart(64, '0')}`;
   const signatures = new Map();
   const certificate = bcs.struct('Certificate', { signers: bcs.vector(bcs.u16()),
@@ -319,9 +320,28 @@ async function batchRuntime() {
       calls.push(['upload', member.uploadId, resume.blobObjectId, digest]);
       assert.equal(resume.blobObjectId, member.objectId, 'Never let the SDK choose the first created object in a shared digest.');
       if (controls.uploadFailure === member.uploadId) throw new Error('relay unavailable');
+      if (controls.relayOnlyFirstInput && member.uploadId !== 'render') {
+        throw new AuthenticationError(401, undefined, 'the provided nonce hash in the ptb is invalid');
+      }
       return { blobId: member.blobId, blobObjectId: member.objectId, certificate };
     },
   });
+  const directUploadClient = {
+    writeBlobFlow: ({ blob, resume }) => ({
+      async encode() {},
+      async upload({ digest, deletable, signal }) {
+        const member = [...inputs.values()].find(input => input.objectId === resume.blobObjectId);
+        assert.deepEqual(blob, member.bytes);
+        assert.equal(resume.blobId, member.blobId);
+        assert.equal(resume.txDigest, digest);
+        assert.equal(deletable, false);
+        assert.equal(signal.aborted, false);
+        calls.push(['direct-upload', member.uploadId, resume.blobObjectId, digest]);
+        if (controls.directUnavailable) throw new Error('no storage quorum');
+        return { blobId: member.blobId, blobObjectId: member.objectId, certificate };
+      },
+    }),
+  };
   sdk.walrus.getBlobObject = async id => {
     const member = [...inputs.values()].find(input => input.objectId === id);
     return { id, blob_id: String(member.bytes.length), size: String(member.bytes.length),
@@ -383,7 +403,7 @@ async function batchRuntime() {
     if (held) return fn(null);
     held = true; try { return await fn({}); } finally { held = false; }
   } };
-  const options = { walrusClient: sdk.walrus, buildClient: sdk.client, persistence, rpc, wallet, locks,
+  const options = { walrusClient: sdk.walrus, directUploadClient, buildClient: sdk.client, persistence, rpc, wallet, locks,
     execution: { network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, allowWalletSignature: true, allowBroadcast: true },
     quoteAuthority: async () => ({ system, walCoinType: WAL, relayAddress: RELAY }), now: () => 123,
     fetcher: async url => {
@@ -495,6 +515,32 @@ test('unknown broadcast and partial relay failure resume exact signed bytes and 
   assert.equal(h.calls.filter(c => c[0] === 'upload' && c[1] === 'soul').length, 1);
   assert.equal(h.calls.filter(c => c[0] === 'sign').length, 1);
   assert.equal(h.calls.filter(c => c[0] === 'broadcast').length, 1);
+  await h.persistence.close();
+});
+
+test('a cold retry recovers a paid batch after the relay rejects later nonce inputs', async () => {
+  const h = await batchRuntime();
+  h.controls.relayOnlyFirstInput = true;
+  h.controls.directUnavailable = true;
+  const review = await signBatch(h);
+  await h.publisher.resumeBatch(h.batch.key);
+  await assert.rejects(h.publisher.resumeBatch(h.batch.key), /no storage quorum/);
+  const original = await h.persistence.loadPublicationBinding(h.batch.key);
+  assert.equal(original.status, 'REGISTER_FINALIZED');
+  assert.equal(original.registration.transaction.digest, review.digest);
+  assert.deepEqual(Object.keys(original.uploads), ['render']);
+
+  h.controls.directUnavailable = false;
+  assert.equal((await h.cold().resumeBatch(h.batch.key)).status, 'SIGNATURE_REQUIRED');
+  const recovered = await h.persistence.loadPublicationBinding(h.batch.key);
+  assert.deepEqual(recovered.registration, original.registration);
+  assert.deepEqual(recovered.uploads.render, original.uploads.render);
+  assert.deepEqual(h.calls.filter(c => c[0] === 'direct-upload').slice(1),
+    ['soul', 'memory', 'skill'].map(id => ['direct-upload', id, h.inputs.get(id).objectId, review.digest]));
+  assert.equal(h.calls.filter(c => c[0] === 'upload' && c[1] === 'render').length, 1);
+  assert.equal(h.calls.filter(c => c[0] === 'sign').length, 1);
+  assert.equal(h.calls.filter(c => c[0] === 'broadcast').length, 1);
+  assert.equal((await h.cold().prepareBatchReview(h.batch.key)).stage, 'CERTIFY');
   await h.persistence.close();
 });
 

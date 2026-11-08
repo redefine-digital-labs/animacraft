@@ -1,4 +1,4 @@
-import { WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt } from '@mysten/walrus';
+import { AuthenticationError, WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt } from '@mysten/walrus';
 import { bcs } from '@mysten/sui/bcs';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
@@ -757,6 +757,7 @@ function assertExpectedUpload(record, expected) {
  */
 export function createMakerV8WalrusPublisherV8({
   walrusClient,
+  directUploadClient = null,
   buildClient,
   rpc,
   wallet,
@@ -772,6 +773,7 @@ export function createMakerV8WalrusPublisherV8({
     'computeBlobMetadata', 'writeBlobFlow', 'certifyBlobTransaction',
     'getBlobObject', 'getVerifiedBlobStatus',
   ]) requireMethod(walrusClient, method, 'walrusClient');
+  if (directUploadClient) requireMethod(directUploadClient, 'writeBlobFlow', 'directUploadClient');
   requireMethod(buildClient?.core, 'getCurrentSystemState', 'buildClient.core');
   for (const method of ['getChainIdentifier', 'queryTransaction', 'getSuiClient']) requireMethod(rpc, method, 'rpc');
   for (const method of ['getCurrentAccount', 'signExactTransaction', 'verifyExactSignature']) requireMethod(wallet, method, 'wallet');
@@ -919,18 +921,28 @@ export function createMakerV8WalrusPublisherV8({
   const upload = async (record, blobObjectId = null) => {
     const { bytes } = await reconstructMetadata(record);
     const transaction = record.transaction;
-    const flow = walrusClient.writeBlobFlow({
-      blob: bytes,
-      resume: {
-        step: 'registered',
-        blobId: record.encoded.blobId,
-        txDigest: transaction.digest,
-        nonce: record.encoded.nonce,
-        ...(blobObjectId ? { blobObjectId } : {}),
-      },
-    });
-    await flow.encode();
-    const result = await flow.upload({ digest: transaction.digest, deletable: false });
+    const resume = {
+      step: 'registered',
+      blobId: record.encoded.blobId,
+      txDigest: transaction.digest,
+      nonce: record.encoded.nonce,
+      ...(blobObjectId ? { blobObjectId } : {}),
+    };
+    const uploadWith = async (client, signal) => {
+      const flow = client.writeBlobFlow({ blob: bytes, resume });
+      await flow.encode();
+      return flow.upload({ digest: transaction.digest, deletable: false, signal });
+    };
+    let result;
+    try {
+      result = await uploadWith(walrusClient);
+    } catch (error) {
+      // The paid relay reads only PTB input zero. A later member of an
+      // already-finalized batch can use its verified Blob object directly.
+      if (!blobObjectId || !directUploadClient || !(error instanceof AuthenticationError)
+        || error.message !== '401 the provided nonce hash in the ptb is invalid') throw error;
+      result = await uploadWith(directUploadClient, AbortSignal.timeout(60_000));
+    }
     if (result.blobId !== record.encoded.blobId || typeof result.blobObjectId !== 'string'
       || blobObjectId && result.blobObjectId !== blobObjectId
       || typeof result.certificate !== 'string') {
@@ -1481,7 +1493,9 @@ export function createProductionMakerV8WalrusPublisherV8({
   });
   const persistence = createMakerV8WalrusPersistenceV8(indexedDB, { storageManager });
   const publisher = createMakerV8WalrusPublisherV8({
-    walrusClient, buildClient, rpc, wallet, persistence, execution, fetcher, aggregator,
+    walrusClient,
+    directUploadClient: new WalrusClient({ network: 'mainnet', suiClient: buildClient }),
+    buildClient, rpc, wallet, persistence, execution, fetcher, aggregator,
     async quoteAuthority(stage) {
       const system = await walrusClient.systemObject();
       if (stage === 'CERTIFY') return { system };
