@@ -283,7 +283,7 @@ async function batchRuntime() {
   const calls = [], receipts = new Map(), inputs = new Map();
   const controls = { epoch: '1272', signError: null, uploadFailure: null, readbackFailure: false,
     broadcastUnknown: false, finalizedSignature: false, signWait: null,
-    relayOnlyFirstInput: false, directUnavailable: false };
+    relayOnlyFirstInput: false, directUnavailable: false, cachedUncertifiedObjects: false };
   const objectId = i => `0x${(80 + i).toString(16).padStart(64, '0')}`;
   const signatures = new Map();
   const certificate = bcs.struct('Certificate', { signers: bcs.vector(bcs.u16()),
@@ -342,10 +342,15 @@ async function batchRuntime() {
       },
     }),
   };
+  const reset = sdk.walrus.reset.bind(sdk.walrus);
+  sdk.walrus.reset = () => {
+    controls.cachedUncertifiedObjects = false;
+    reset();
+  };
   sdk.walrus.getBlobObject = async id => {
     const member = [...inputs.values()].find(input => input.objectId === id);
     return { id, blob_id: String(member.bytes.length), size: String(member.bytes.length),
-      deletable: false, certified_epoch: 43, storage: { end_epoch: 46 } };
+      deletable: false, certified_epoch: controls.cachedUncertifiedObjects ? null : 43, storage: { end_epoch: 46 } };
   };
   sdk.walrus.getVerifiedBlobStatus = async () => ({ type: 'permanent', isCertified: true });
   const finalized = (digest, bytes) => {
@@ -450,6 +455,27 @@ test('four-member SDK batch completes with two signatures, correct per-member re
   }
   for (const call of h.calls.filter(c => c[0] === 'broadcast')) {
     assert.ok(h.calls.slice(0, h.calls.indexOf(call)).some(c => c[0] === 'query' && c[1] === call[1]));
+  }
+  await h.persistence.close();
+});
+
+test('finalized certification clears upload-time Blob cache and completes the same batch', async () => {
+  const h = await batchRuntime();
+  assert.equal((await finalizeRegister(h)).status, 'SIGNATURE_REQUIRED');
+  const review = await signBatch(h);
+  await h.publisher.resumeBatch(h.batch.key);
+  const settled = await h.persistence.loadPublicationBinding(h.batch.key);
+  assert.equal(settled.status, 'CERTIFY_SIGNED');
+  assert.equal(settled.transaction.digest, review.digest);
+
+  h.controls.cachedUncertifiedObjects = true;
+  const priorCalls = h.calls.length;
+  assert.equal((await h.publisher.resumeBatch(h.batch.key)).status, 'COMPLETE');
+  assert.deepEqual(h.calls.slice(priorCalls).filter(([name]) => ['sign', 'broadcast', 'upload'].includes(name)), []);
+  for (const { uploadId } of h.inputs.values()) {
+    const record = await h.persistence.load(uploadId);
+    assert.equal(record.readback.certifiedEpoch, '43');
+    assert.equal(record.transaction.digest, review.digest);
   }
   await h.persistence.close();
 });

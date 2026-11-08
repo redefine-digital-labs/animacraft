@@ -1039,6 +1039,8 @@ export function createMakerV8WalrusPublisherV8({
       return finalized;
     }
     if (record.status === 'CERTIFY_SIGNED') {
+      // The SDK can retain the Blob version observed during upload.
+      walrusClient.reset?.();
       const proof = await readback(record);
       return save(record, { status: 'COMPLETE', readback: proof, error: null });
     }
@@ -1121,6 +1123,8 @@ export function createMakerV8WalrusPublisherV8({
           registration: { transaction: clone(batch.transaction), ...clone(mapped) }, error: null });
       } else if (batch.status === 'CERTIFY_SIGNED') {
         await validateBatchUploads(batch, records, { complete: true });
+        // Refresh the SDK's upload-time object cache before reading the certified batch.
+        walrusClient.reset?.();
         const readbacks = {};
         for (const record of records) readbacks[record.uploadId] = await readback({ ...record, upload: batch.uploads[record.uploadId] });
         return saveBatch(batch, { status: 'COMPLETE', readbacks, error: null });
