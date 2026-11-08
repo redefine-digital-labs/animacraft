@@ -932,6 +932,8 @@ export function createOriginalProductApp({
   const savePackDraft = optionalMethod(bridge, 'savePackDraft');
   const bindPackParent = optionalMethod(bridge, 'bindPackParent');
   const renderPackPreview = optionalMethod(bridge, 'renderPackPreview');
+  const reviewPackPublication = optionalMethod(bridge, 'reviewPackPublication');
+  const advancePackPublication = optionalMethod(bridge, 'advancePackPublication');
   const upsertPackAsset = optionalMethod(bridge, 'upsertPackAsset');
   let packAssetFlight = null;
   let packSaveFlight = null;
@@ -6172,12 +6174,44 @@ export function createOriginalProductApp({
       && creatorConnectionGeneration === editor.connection && state.connection.address === editor.address;
   }
 
+  function renderPackPublication(editor) {
+    if (!editor.draft.document.bindings.root || !reviewPackPublication || !advancePackPublication) return '';
+    const review = editor.publicationReview;
+    const busy = Boolean(editor.publicationBusy);
+    const step = review?.step;
+    const quote = step?.quote?.verified ? step.quote : null;
+    const disabled = busy || editor.dirty || packSaveFlight || packAssetFlight ? ' disabled' : '';
+    const line = (label, value) => value == null ? '' : `<p><strong>${escapeHtml(label)}</strong> ${escapeHtml(String(value))}</p>`;
+    const status = busy ? 'Reading the saved Pack publication…'
+      : review?.releaseId ? 'Pack release confirmed on Sui.'
+        : review?.needsVerifiedQuote ? 'A verified storage quote is required. Refresh to read a new quote.'
+          : review?.executionEnabled === false ? 'Pack signing and broadcast are disabled.'
+            : review?.nextAction === 'SIGN' ? 'Review this transaction before opening your wallet.'
+              : review?.nextAction === 'RECOVER' ? 'Continue the saved step. This can upload or send the previously signed transaction.'
+                : review?.status === 'FAILED' ? 'The saved Pack publication failed. Check the recorded transaction.'
+                  : 'Prepare the next Pack publication step.';
+    const ready = review?.nextAction && !editor.publicationError;
+    const next = review?.nextAction === 'SIGN' ? 'Review in wallet' : 'Continue saved step';
+    return `<section class="v4-pack-boundary-note" data-pack-publication>
+      <h3>Publish Pack to Mainnet</h3><p role="status">${escapeHtml(status)}</p>
+      ${editor.publicationError ? `<p role="alert">${escapeHtml(editor.publicationError)}</p>` : ''}
+      ${line('Stage', review?.stage)}${line('Resource', review?.resource)}
+      ${line('Walrus relay tip (MIST)', quote?.relayTipMist)}${line('Walrus total (FROST)', quote?.walrusTotalCostFrost)}
+      ${line('Storage epochs', step?.storageEpochs)}${line('Gas budget (MIST)', step?.gasBudgetMist)}
+      ${line('Transaction digest', review?.digest)}${line('Pack Release ID', review?.releaseId)}
+      <button type="button" data-action="review-pack-publication"${disabled}>${review ? 'Refresh publication status' : 'Prepare publication review'}</button>
+      ${ready ? `<button type="button" data-action="advance-pack-publication" data-pack-review-id="${escapeHtml(review.id)}"${disabled}>${escapeHtml(next)}</button>` : ''}
+    </section>`;
+  }
+
   function renderPackEditor() {
     const editor = state.packEditor, row = editor.draft;
     const tr = key => makerWorkspaceText(state.locale, key);
     const parent = (row.document.authoringParent ?? row.document.bindings.parent).draft.document;
     const authored = packAuthoringDocument(row.document);
-    const disabled = packSaveFlight || packAssetFlight ? ' disabled' : '';
+    const publishing = Boolean(editor.publicationBusy);
+    const editingLocked = (row.publication?.status ?? 'UNPREPARED') !== 'UNPREPARED' || Boolean(editor.publicationReview);
+    const disabled = packSaveFlight || packAssetFlight || publishing || editingLocked ? ' disabled' : '';
     const economics = { ...packEconomicFields(row.document), ...editor.economics };
     const economicControl = (key, label, options) => `<label>${escapeHtml(label)}${options
       ? `<select data-action="pack-economics" data-field="${key}" aria-label="${escapeHtml(label)}"${disabled}>${options.map(([value, text]) => `<option value="${value}"${economics[key] === value ? ' selected' : ''}>${escapeHtml(text)}</option>`).join('')}</select>`
@@ -6192,7 +6226,7 @@ export function createOriginalProductApp({
       <p>Free/included entry requires price 0. Free completion requires price 0; paid completion requires a positive price. Quota modes require a positive quota; other modes require 0. A nonzero total cap must cover the quota.</p>`;
     const boundRoot = row.document.bindings.root?.objectRef.objectId;
     const parentBindingHtml = boundRoot
-      ? `<p>Published parent bound · v${escapeHtml(row.document.bindings.root.makerVersion)}</p><code>${escapeHtml(boundRoot)}</code><p>Pack publication is not enabled yet.</p>`
+      ? `<p>Published parent bound · v${escapeHtml(row.document.bindings.root.makerVersion)}</p><code>${escapeHtml(boundRoot)}</code>`
       : `<p>${escapeHtml(tr('packLocalParentBinding'))}</p><code>${escapeHtml(editor.parentId)}</code><label>Published Maker Root<input type="text" data-action="pack-parent-root" aria-label="Published Maker Root" placeholder="0x…" value="${escapeHtml(editor.parentRootInput || '')}"${disabled}></label><button type="button" data-action="bind-pack-parent"${disabled || (!bindPackParent ? ' disabled' : '')}>Verify and bind parent</button><p>Save edits first. Binding checks the exact published artwork and settings. It does not publish the Pack or sign a transaction.</p>`;
     const selectedPart = authored.parts.find(part => part.key === editor.partKey) || authored.parts[0];
     const selectedItem = selectedPart?.items.find(item => item.key === editor.itemKey) || selectedPart?.items[0];
@@ -6206,7 +6240,7 @@ export function createOriginalProductApp({
       id: part.key, name: part.label, itemCount: part.items.length, required: part.required,
       readonly: parent.parts.some(inherited => inherited.key === part.key),
       draggable: !disabled && !editor.dirty,
-      disabled: Boolean(packSaveFlight || packAssetFlight), capabilities: { select: true, preview: false,
+      disabled: Boolean(packSaveFlight || packAssetFlight || publishing), capabilities: { select: true, preview: false,
         moveUp: packPartMoveAllowed(part.key, 'up'), moveDown: packPartMoveAllowed(part.key, 'down'), duplicate: false, delete: false },
       actions: { select: 'select-pack-part', preview: '', slot: '', move: 'pack-move-part', duplicate: '', delete: '' },
     })), { selectedId: selectedPart?.key });
@@ -6310,8 +6344,8 @@ export function createOriginalProductApp({
       title: { eyebrow: tr('packStudio'), contentHtml: `<input class="v4-pack-title-input" type="text" data-action="pack-name" aria-label="${escapeHtml(tr('packName'))}" value="${escapeHtml(editor.name)}"${disabled}><span class="v4-version-badge">${escapeHtml(row.draftId)}</span>` },
       save: { phase: editor.error ? 'error' : packSaveFlight || packAssetFlight ? 'saving' : editor.dirty ? 'dirty' : 'saved',
         label: editor.error || (packSaveFlight || packAssetFlight ? tr('saving') : editor.dirty ? tr('packUnsaved') : tr('packSaved')) },
-      actionsHtml: `<button type="button" data-action="request-back-to-maker"${disabled}>← ${escapeHtml(tr('packBackToProjects'))}</button><button type="button" data-action="save-pack"${disabled}>${escapeHtml(tr('save'))}</button>`,
-      noticesHtml: `<div class="v4-pack-boundary-note" role="status">${escapeHtml(tr('packStudioBindingCopy'))}</div>`,
+      actionsHtml: `<button type="button" data-action="request-back-to-maker"${publishing || packSaveFlight || packAssetFlight ? ' disabled' : ''}>← ${escapeHtml(tr('packBackToProjects'))}</button><button type="button" data-action="save-pack"${disabled}>${escapeHtml(tr('save'))}</button>`,
+      noticesHtml: `<div class="v4-pack-boundary-note" role="status">${escapeHtml(tr('packStudioBindingCopy'))}</div>${renderPackPublication(editor)}`,
       leftLabel: tr('partsItems'),
       leftHtml: `<h3>${escapeHtml(tr('partsItems'))}</h3><button type="button" data-action="pack-add-part"${disabled}>＋ ${escapeHtml(tr('addPartAria'))}</button>${renderMakerPartList(partList)}`,
       centerHtml: `<div class="v4-canvas-toolbar"><div><strong>${escapeHtml(tr('packMergedPreview'))}</strong><span id="expansionPackRenderStatus" role="status">${escapeHtml(editor.previewStatus || '')}</span></div><div class="v4-canvas-tools"><button type="button" data-action="pack-preview"${editor.previewPending || !renderPackPreview ? ' disabled' : ''}>${escapeHtml(tr('packRefreshPreview'))}</button><span class="v4-version-badge">${parent.canvas.width}×${parent.canvas.height}</span></div></div><div class="v4-canvas-viewport"><div class="v4-canvas-ruler"><span>0,0</span><span>${parent.canvas.width},${parent.canvas.height}</span></div><canvas id="expansionPackPreviewCanvas" class="v4-runtime-canvas" data-expansion-pack-preview-canvas width="${parent.canvas.width}" height="${parent.canvas.height}" aria-label="${escapeHtml(tr('packMergedPreview'))}"></canvas></div><p>${escapeHtml(tr('packInheritanceSummary'))}</p>`,
@@ -6326,6 +6360,36 @@ export function createOriginalProductApp({
         if (status) status.textContent = editor.previewStatus;
       }
     });
+  }
+
+  async function runPackPublicationReview(action, control) {
+    const editor = state.packEditor;
+    if (!editor || !currentPackEditor(editor) || editor.dirty || editor.publicationBusy || packSaveFlight
+      || packAssetFlight || !editor.draft.document.bindings.root || !reviewPackPublication || !advancePackPublication) return;
+    const prior = editor.publicationReview;
+    const advance = action === 'advance-pack-publication';
+    if (advance && (!prior?.nextAction || prior.id !== control?.dataset.packReviewId || editor.publicationError)) return;
+    editor.publicationBusy = true;
+    editor.publicationError = '';
+    renderCreator();
+    try {
+      const result = advance
+        ? await advancePackPublication({ reviewId: prior.id, action: prior.nextAction })
+        : await reviewPackPublication({ draftId: editor.draft.draftId, expectedRevision: editor.draft.revision });
+      if (!currentPackEditor(editor)) return;
+      if (result.draft.draftId !== editor.draft.draftId || result.draft.document.author.address !== editor.address
+        || result.draft.revision < editor.draft.revision
+        || result.draft.document.bindings.root?.objectRef.objectId !== editor.draft.document.bindings.root.objectRef.objectId) {
+        throw new Error('The Pack publication review belongs to another saved release.');
+      }
+      editor.draft = result.draft;
+      editor.publicationReview = result.review;
+    } catch (error) {
+      if (currentPackEditor(editor)) editor.publicationError = String(error?.message || 'Pack publication review failed.');
+    } finally {
+      editor.publicationBusy = false;
+      if (currentPackEditor(editor)) renderCreator();
+    }
   }
 
   async function requestPackPreview() {
@@ -6866,7 +6930,9 @@ export function createOriginalProductApp({
         key: row.draftId, packId: row.document.metadata.semanticPackId,
         name: row.document.metadata.name, namespace: row.document.metadata.semanticPackId,
         version: String((row.document.authoringParent ?? row.document.bindings.parent).draft.document.lineage.version),
-        revision: row.revision, status: row.document.authoringParent ? 'Parent bound · Draft' : 'Draft', publishable: false,
+        revision: row.revision, status: row.publication?.chain?.lifecycle
+          ?? (row.document.authoringParent ? 'Parent bound · Draft' : 'Draft'),
+        publishable: Boolean(row.document.bindings.root && reviewPackPublication && advancePackPublication),
         parentBindingIdentity: (row.document.authoringParent ?? row.document.bindings.parent).draftSha256,
       }));
       state.expansionPacksStatus = 'ready';
@@ -7219,6 +7285,9 @@ export function createOriginalProductApp({
     }
     if (action === 'save-pack') return saveCreatorPack();
     if (action === 'bind-pack-parent') return bindCreatorPackParent();
+    if (action === 'review-pack-publication' || action === 'advance-pack-publication') {
+      return runPackPublicationReview(action, control);
+    }
     if (action === 'request-back-to-maker') {
       const editor = state.packEditor;
       if (editor && await saveCreatorPack() && currentPackEditor(editor)) {

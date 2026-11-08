@@ -373,7 +373,7 @@ function checkpoint(compiled, descriptor, stage, endStyle) {
 
 async function authoredTransportFixture(owner = id(90), largePalette = false) {
   const runtime = await attestFixtureRuntime(runtimeFixture());
-  // Offline certified-transport fixture; the real upload entry stays blocked.
+  // Offline fixture for the certified transport produced by Pack Studio.
   const prepared = structuredClone(await preparedTransport(documentFixture(1, owner)));
   const document = prepared.document;
   const parent = createCreatorCharacterStarter();
@@ -441,7 +441,7 @@ test('authored compilation and fresh successors require exact independently cert
   assert.equal(calls.length, count, 'recover already-signed history before requesting fresh external parent state');
 });
 
-test('main compiler rebuilds authored definition cursors and scoped Styles while execution remains blocked', async () => {
+test('main compiler authorizes rebuilt definition cursors and scoped Styles with fresh parent authority', async () => {
   const { runtime, prepared, document, documentSha256, manifest } = await authoredTransportFixture();
   const makeCompiler = () => createMakerV8PackCompilerV8({ runtime,
     loadParent: async () => structuredClone(manifest.content.authoring.parent),
@@ -468,10 +468,11 @@ test('main compiler rebuilds authored definition cursors and scoped Styles while
     compiler = makeCompiler();
     const rebuilt = await compiler.rehydrate({ plan });
     assert.deepEqual(rebuilt.descriptor, built.descriptor, 'fresh compiler must reconstruct the exact cursor');
-    await assert.rejects(compiler.rehydrate({ plan, purpose: 'REQUEST_SIGNATURE', requireFreshAuthority: true }),
-      { code: 'MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE' });
-    assert.throws(() => assertMakerV8PackCompilerTransactionV8(compiler.authority, rebuilt.transaction),
-      { code: 'MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE' });
+    const live = await compiler.rehydrate({ plan, purpose: 'REQUEST_SIGNATURE', requireFreshAuthority: true });
+    assert.deepEqual(live.descriptor, built.descriptor);
+    assertMakerV8PackCompilerTransactionV8(compiler.authority, live.transaction, {
+      signer: built.descriptor.signer, kindBytes: built.descriptor.kindBytes,
+    });
     const certified = await compiler.certifyFinalized({ plan, query: { status: 'FINALIZED_SUCCESS' },
       artifact: { digest: digest(200 + built.descriptor.ordinal) } });
     assert.equal(certified.complete, built.descriptor.stage === 'FINALIZE');

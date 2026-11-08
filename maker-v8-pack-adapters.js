@@ -293,15 +293,28 @@ export function createMakerV8PackStudioV8({
   };
 
   const continuePublication = async (input, operation) => {
+    const checkedInput = plain(input) ? input : {};
+    if (operation === 'REVIEW') {
+      const result = await controller.inspectPublication(checkedInput);
+      if (result.plan || transport === null) return result;
+    }
+    if (operation === 'SIGN_REVIEWED' && checkedInput.reviewKind === 'SUI') {
+      return controller.requestPublicationSignature(checkedInput);
+    }
+    if (operation === 'SIGN_REVIEWED' && !transport) {
+      fail('MAKER_V8_PACK_TRANSPORT_INVALID', 'Pack storage review is unavailable.', 'CONFIGURATION');
+    }
     if (transport === null) return controller[operation === 'PREPARE'
       ? 'preparePublication' : operation === 'SIGN'
         ? 'requestPublicationSignature' : 'recoverPublicationOutcome'](input);
-    const checkedInput = plain(input) ? input : {};
     const draft = await controller.load(checkedInput.draftId);
     if (draft.document.bindings.kind === 'LOCAL_DRAFT') {
       fail('MAKER_V8_PACK_PARENT_NOT_PUBLISHED', 'Bind the exact published parent release before publishing this Pack.', 'BINDING');
     }
     if (draft.publication.status !== 'UNPREPARED') {
+      if (operation === 'SIGN_REVIEWED') {
+        fail('MAKER_V8_PACK_TRANSPORT_REVIEW_STALE', 'Review the current Pack publication step again.', 'CONTEXT');
+      }
       if (operation === 'PREPARE') return controller.preparePublication(checkedInput);
       if (operation === 'SIGN') return controller.requestPublicationSignature(checkedInput);
       return controller.recoverPublicationOutcome(checkedInput);
@@ -310,10 +323,10 @@ export function createMakerV8PackStudioV8({
       && checkedInput.expectedRevision !== draft.revision) {
       fail('MAKER_V8_PACK_DRAFT_CAS_MISMATCH', 'Pack draft changed before transport recovery.', 'PERSISTENCE');
     }
-    const view = await transport[operation === 'PREPARE'
-      ? 'prepare' : operation === 'SIGN' ? 'requestSignature' : 'recover'](
-      await transportInput(draft),
-    );
+    const view = await transport[{
+      PREPARE: 'prepare', REVIEW: 'prepareReview', SIGN: 'requestSignature',
+      SIGN_REVIEWED: 'signReviewed', RECOVER: 'recover',
+    }[operation]](await transportInput(draft), checkedInput.review, checkedInput.assertCurrent);
     if (view.status !== 'PUBLICATION_TRANSPORT_READY') {
       return freeze({ draft, transport: view, plan: null, execution: controller.execution });
     }
@@ -330,6 +343,9 @@ export function createMakerV8PackStudioV8({
       draftId: saved.draftId,
       expectedRevision: saved.revision,
       context: { transport: structuredClone(view.prepared) },
+    });
+    if (operation === 'REVIEW') return controller.inspectPublication({
+      draftId: result.draft.draftId, expectedRevision: result.draft.revision,
     });
     return freeze({ ...result, transport: view });
   };
@@ -381,6 +397,8 @@ export function createMakerV8PackStudioV8({
     export: (draftId) => controller.export(draftId),
     validate: (value, options) => controller.validate(value, options),
     preparePublication: (input) => continuePublication(input, 'PREPARE'),
+    reviewPublication: (input) => continuePublication(input, 'REVIEW'),
+    signReviewedPublication: (input) => continuePublication(input, 'SIGN_REVIEWED'),
     resumePublication: async (input) => {
       const draft = await controller.load(input?.draftId);
       return draft.publication.status === 'UNPREPARED' && transport !== null

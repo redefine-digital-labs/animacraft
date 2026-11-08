@@ -714,6 +714,38 @@ export function createMakerV8PackPublicationControllerV8({
     await compiler.rehydrate({ plan: clone(plan), purpose, requireFreshAuthority }),
     purpose,
   );
+  let preparedReview = null;
+  const buildSignatureProof = async (plan, authorized) => {
+    const built = await boundary.buildExactTransaction({
+      transaction: authorized.transaction,
+      descriptor: authorized.descriptor,
+      sender: plan.immutable.signer,
+    });
+    return transactionDataProof(built.bytes ?? built.transactionBytes, {
+      signer: plan.immutable.signer,
+      kindBytes: authorized.descriptor.kindBytes,
+      digest: built.digest ?? built.transactionDigest,
+    });
+  };
+  const simulateSignatureProof = async (proof, authorized) => {
+    const simulated = await boundary.dryRunExactTransaction({
+      transaction: authorized.transaction,
+      descriptor: authorized.descriptor,
+      transactionBytes: proof.base64,
+      digest: proof.digest,
+    });
+    if (simulated?.status !== 'SUCCESS') {
+      fail('MAKER_V8_PACK_PUBLICATION_DRY_RUN_FAILED', 'Exact Pack transaction simulation failed.');
+    }
+  };
+  const loadReady = async (id) => {
+    await persistence.requirePersistentStorage();
+    const plan = await persistence.load(id);
+    if (!plan || plan.status !== 'ACTIVE' || plan.current?.outcome.status !== 'READY') {
+      fail('MAKER_V8_PACK_PUBLICATION_NOT_READY', 'Only one durable READY Pack cursor may be reviewed or signed.');
+    }
+    return plan;
+  };
   const verifyArtifact = async (plan) => {
     if (!plan.current.fullTransaction || !plan.current.signature || !plan.current.outcome.digest) {
       fail('MAKER_V8_PACK_PUBLICATION_ARTIFACT_REQUIRED', 'Pack cursor has no durable signed artifact.');
@@ -938,35 +970,37 @@ export function createMakerV8PackPublicationControllerV8({
       await assertAttested(next, prepared, 'SUCCESSOR');
       return cas(plan, next);
     },
-    async requestSignature(id) {
+    load: (id) => persistence.load(id),
+    async prepareReview(id) {
+      const plan = await loadReady(id);
+      const authorized = await authorize(plan, 'REQUEST_SIGNATURE', true);
+      const proof = await buildSignatureProof(plan, authorized);
+      await simulateSignatureProof(proof, authorized);
+      await reread(plan);
+      const gas = bcs.TransactionData.parse(proof.bytes).V1.gasData;
+      const review = freeze({
+        id: plan.attemptId, revision: plan.revision, digest: proof.digest, stage: authorized.descriptor.stage,
+        gasBudgetMist: String(gas.budget), gasPriceMist: String(gas.price),
+      });
+      preparedReview = { review, proof };
+      return review;
+    },
+    async requestSignature(id, { review = null, assertCurrent = null } = {}) {
       if (!gates.allowWalletSignature || !gates.allowBroadcast) {
         fail('MAKER_V8_PACK_PUBLICATION_EXECUTION_DISABLED', 'Pack signing and exact-byte broadcast are disabled.');
       }
-      await persistence.requirePersistentStorage();
-      const plan = await persistence.load(id);
-      if (!plan || plan.status !== 'ACTIVE' || plan.current?.outcome.status !== 'READY') {
-        fail('MAKER_V8_PACK_PUBLICATION_NOT_READY', 'Only one durable READY Pack cursor may be signed.');
+      const plan = await loadReady(id);
+      const prepared = preparedReview;
+      if (review && (!prepared || !same(prepared.review, review)
+        || review.id !== plan.attemptId || review.revision !== plan.revision)) {
+        fail('MAKER_V8_PACK_PUBLICATION_REVIEW_STALE', 'Review the current Pack publication transaction again.');
       }
+      if (review) preparedReview = null;
       const authorized = await authorize(plan, 'REQUEST_SIGNATURE', true);
-      const built = await boundary.buildExactTransaction({
-        transaction: authorized.transaction,
-        descriptor: authorized.descriptor,
-        sender: plan.immutable.signer,
-      });
-      const proof = transactionDataProof(built.bytes ?? built.transactionBytes, {
-        signer: plan.immutable.signer,
-        kindBytes: authorized.descriptor.kindBytes,
-        digest: built.digest ?? built.transactionDigest,
-      });
-      const simulated = await boundary.dryRunExactTransaction({
-        transaction: authorized.transaction,
-        descriptor: authorized.descriptor,
-        transactionBytes: proof.base64,
-        digest: proof.digest,
-      });
-      if (simulated?.status !== 'SUCCESS') {
-        fail('MAKER_V8_PACK_PUBLICATION_DRY_RUN_FAILED', 'Exact Pack transaction simulation failed.');
-      }
+      const proof = review ? prepared.proof : await buildSignatureProof(plan, authorized);
+      await simulateSignatureProof(proof, authorized);
+      await reread(plan);
+      await assertCurrent?.();
       const signed = await wallet.signExactTransaction({
         bytes: proof.base64, digest: proof.digest, signer: plan.immutable.signer,
       });

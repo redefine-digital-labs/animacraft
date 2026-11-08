@@ -921,7 +921,6 @@ async function buildDescriptor(authority, compiled, {
   });
   COMPILER_TRANSACTIONS.set(transaction, freeze({
     authority,
-    executionBlocked: compiled.document.authoring !== undefined,
     signer: compiled.signer,
     kindBytes: kind.bytes,
     kindSha256: kind.sha256,
@@ -1185,9 +1184,6 @@ export function createMakerV8PackProtectionAuthorityLoaderV8({
 
 export function assertMakerV8PackCompilerTransactionV8(authority, transaction, expected = {}) {
   const proof = COMPILER_TRANSACTIONS.get(transaction);
-  if (proof?.executionBlocked) {
-    fail('MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE', 'Authored Pack execution remains blocked pending complete publication and consumer acceptance.');
-  }
   if (!proof || proof.authority !== authority
     || expected.signer !== undefined && proof.signer !== expected.signer
     || expected.kindBytes !== undefined && proof.kindBytes !== expected.kindBytes
@@ -1572,9 +1568,6 @@ export function createMakerV8PackCompilerV8({
     async rehydrate({ plan, purpose = 'REHYDRATE', requireFreshAuthority = false }) {
       const compiled = validateCompiled(plan?.immutable?.request?.publicationInput);
       if (requireFreshAuthority) {
-        if (compiled.document.authoring !== undefined) {
-          fail('MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE', 'Authored Pack signing/replay remains blocked until publication mapping is complete.');
-        }
         await assertFreshAuthority(compiled, purpose, Number(plan?.head?.observedStyleCount ?? 0));
       }
       const cursor = plan.current.descriptor.stage === 'INIT'

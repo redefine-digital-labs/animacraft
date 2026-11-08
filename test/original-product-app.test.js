@@ -139,6 +139,60 @@ test('ordinary publication opens exact saved review without signing and rejects 
   } finally { app.destroy(); }
 });
 
+test('Pack Studio presents a saved transaction review before invoking the wallet', async () => {
+  const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const parent = { draft: draftRecord(), draftSha256: 'c'.repeat(64) };
+  const draft = {
+    draftId: 'qa-pack', revision: 3,
+    document: {
+      author: { address: ROOT_ONE }, authoringParent: parent,
+      bindings: { root: { objectRef: { objectId: ROOT_TWO }, makerVersion: '1' } },
+      styles: [], metadata: { name: 'QA Pack', semanticPackId: 'qa-pack' },
+      access: { kind: 'FREE', priceAtomic: '0' },
+      completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '0' },
+    },
+    publication: { status: 'UNPREPARED' },
+  };
+  const calls = [];
+  h.bridge.createPackDraft = async () => assert.fail('Open the existing QA Pack');
+  h.bridge.listPackDrafts = async () => [draft];
+  h.bridge.loadPackDraft = async () => draft;
+  h.bridge.savePackDraft = async () => assert.fail('Opening a review does not edit the Pack');
+  const review = { id: 'first-review', stage: 'REGISTER', resource: 'qa-png', digest: 'fixed-pack-digest',
+    step: { gasBudgetMist: '6032248', quote: { verified: true, walrusTotalCostFrost: '23590980' } },
+    nextAction: 'SIGN' };
+  h.bridge.reviewPackPublication = async input => { calls.push(input); return { draft, review }; };
+  h.bridge.advancePackPublication = async input => {
+    calls.push(input);
+    return { draft, review: { id: 'recovery-review', stage: 'REGISTER', digest: review.digest, nextAction: 'RECOVER' } };
+  };
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft(parent.draft.draftId);
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const click = async (action, dataset = {}) => {
+      const target = new FakeTarget(h.doc, { dataset: { action, ...dataset } });
+      target.parent = mount;
+      mount.fire('click', { target });
+      await settle(); await settle();
+    };
+    await click('creator-tab', { tab: 'expansions' });
+    await click('open-expansion-pack-studio', { packProjectKey: draft.draftId });
+    assert.match(mount.innerHTML, /Publish Pack to Mainnet/);
+    assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
+    await click('review-pack-publication');
+    assert.match(mount.innerHTML, /fixed-pack-digest/);
+    assert.match(mount.innerHTML, /23590980/);
+    assert.match(mount.innerHTML, /Review in wallet/);
+    await click('advance-pack-publication', { packReviewId: 'stale' });
+    assert.deepEqual(calls, [{ draftId: 'qa-pack', expectedRevision: 3 }]);
+    await click('advance-pack-publication', { packReviewId: review.id });
+    assert.deepEqual(calls[1], { reviewId: review.id, action: 'SIGN' });
+    assert.match(mount.innerHTML, /Continue saved step/);
+    assert.match(mount.innerHTML, /fixed-pack-digest/);
+  } finally { app.destroy(); }
+});
+
 test('publication review fences late results on route, wallet, close and reopened draft', async t => {
   for (const mode of ['route', 'wallet', 'close', 'reopen']) await t.test(mode, async () => {
     const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
