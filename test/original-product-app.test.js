@@ -2999,6 +2999,7 @@ function browserHarness({
   renderDraftPreviewResult = undefined,
   completePlayerJourneyResult = undefined,
   openPlayerReception = undefined,
+  readPlayerCompletionReceipt = undefined,
   exportPlayerEnvelopeRecovery = undefined,
   draftAssets = [],
   bridgeReadyError = null,
@@ -3355,6 +3356,7 @@ function browserHarness({
         : renderDraftPreviewResult);
     };
   }
+  if (readPlayerCompletionReceipt) bridge.readPlayerCompletionReceipt = readPlayerCompletionReceipt;
   if (completePlayerJourneyResult !== undefined) {
     if (exportPlayerEnvelopeRecovery) bridge.exportPlayerEnvelopeRecovery = exportPlayerEnvelopeRecovery;
     if (openPlayerReception) bridge.openPlayerReception = openPlayerReception;
@@ -7164,6 +7166,36 @@ test('closing after confirmation suppresses late success navigation and leaves c
   await waitForCompletionEvent(fire('player-preview-export'));
   assert.match(mount.innerHTML, /data-action="player-download-png"[^>]*disabled/);
   app.destroy();
+});
+
+test('cold Player preview displays the saved mint receipt without running Complete or opening the receiver', async () => {
+  const receipts = [];
+  const digest = '7'.repeat(44);
+  const harness = browserHarness({
+    connection: { account: { address: ROOT_TWO, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult: playerSession(ROOT_ONE), renderPlayerPreviewResult: canonicalPreview(), nativeCompletionConfigured: true,
+    completePlayerJourneyResult: () => assert.fail('Receipt must not run Complete'),
+    openPlayerReception: () => assert.fail('Receipt must not open the receiver'),
+    async readPlayerCompletionReceipt(input) {
+      receipts.push(input);
+      return { soulId: ROOT_TWO, transactionDigest: digest };
+    },
+  });
+  const app = createOriginalProductApp(harness);
+  try {
+    await app.ready; await app.openPlayer(ROOT_ONE);
+    const mount = harness.doc.getElementById('makerV4PlayerMount');
+    const control = new FakeTarget(harness.doc, { dataset: { action: 'player-preview-export' } });
+    control.parent = mount;
+    await waitForCompletionEvent(mount.fire('click', { target: control }));
+    assert.deepEqual(receipts, [{ rootId: ROOT_ONE }]);
+    assert.match(mount.innerHTML, new RegExp(`<dt>Soul ID</dt><dd>${ROOT_TWO}</dd><dt>Transaction digest</dt><dd>${digest}</dd>`));
+    assert.match(mount.innerHTML, /data-action="player-download-png"[^>]*disabled/);
+    assert.equal(harness.calls.completePlayerJourney.length, 0);
+  } finally {
+    await app.destroy();
+  }
 });
 
 test('recovered foreign-draft Soul does not unlock the current PNG and starting another is explicit', async () => {

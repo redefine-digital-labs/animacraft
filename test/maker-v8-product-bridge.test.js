@@ -1864,6 +1864,28 @@ test('Composable Maker inspection uses exact published authority and excludes fi
   } finally { bridge.dispose(); drafts.close(); }
 });
 
+test('Composable discovery keeps verified targets when another Maker is archived or unreadable', async () => {
+  const { productRuntime } = runtimeHarness({ connected: true });
+  const { drafts } = draftHarness();
+  const target = { id: `0x${'34'.repeat(32)}`, title: 'Active target' };
+  const unavailable = { id: `0x${'35'.repeat(32)}`, title: 'Unverified target' };
+  let result = { status: 'READY', makers: [target], diagnostics: [
+    { severity: 'INFO', rootId: unavailable.id, code: 'MAKER_V8_ROOT_NOT_ACTIVE' },
+  ] };
+  productRuntime.catalog.loadPlaza = async () => result;
+  const bridge = createMakerV8ProductBridge({ productRuntime, drafts,
+    composable: { build() { assert.fail('Discovery cannot build'); }, prepare() {}, recover() {} } });
+  try {
+    const expected = [{ rootId: target.id, title: target.title }];
+    assert.deepEqual(await bridge.listComposableMakers(), expected);
+    result = { status: 'DEGRADED', makers: [target, unavailable],
+      diagnostics: [{ severity: 'ERROR', rootId: unavailable.id }] };
+    assert.deepEqual(await bridge.listComposableMakers(), expected);
+    result = { status: 'ERROR', makers: [], diagnostics: [{ severity: 'ERROR' }] };
+    await assert.rejects(bridge.listComposableMakers(), { code: 'MAKER_V8_COMPOSABLE_CATALOG_INCOMPLETE' });
+  } finally { bridge.dispose(); drafts.close(); }
+});
+
 test('Composable inventory separates controlled Products and rejects partial or wrong-wallet reads', async () => {
   const { productRuntime } = runtimeHarness({ connected: true });
   const { drafts } = draftHarness();

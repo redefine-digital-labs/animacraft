@@ -1087,6 +1087,17 @@ export function createMakerV8PlayerJourneyV8({
     return view.status === 'COMPLETE' ? null : freeze({ status: 'RECOVERY_REQUIRED', stage: 'STORAGE_BATCH', upload: view });
   };
 
+  const loadScopedCompletion = async ({ rootId, signer }) => {
+    const saved = await nativeContent.loadCompletion({ rootId, signer });
+    if (saved === null) return null;
+    exactRecord(saved, ['rootId', 'signer', 'actionId', 'project'], 'pending native completion');
+    if (saved.rootId !== rootId || saved.signer !== signer || typeof saved.actionId !== 'string'
+      || !saved.actionId || !plain(saved.project)) {
+      fail('MAKER_V8_PLAYER_NATIVE_CONTENT_INVALID', 'Pending native completion belongs to another scope.', 'RECOVERY');
+    }
+    return saved;
+  };
+
   const finishNativeComplete = async ({ rootId, signer, project, action, recovered = false, confirmEnvelopes, recoveryJson }) => {
     const soulId = soulFrom(action);
     const bound = action?.certificate?.evidence?.certifiedEvent?.fields;
@@ -1128,6 +1139,24 @@ export function createMakerV8PlayerJourneyV8({
     },
     openReception(scope) { nativeContent?.open?.(scope); },
     async exportEnvelopeRecovery(scope) { return nativeContent?.exportRecovery?.(scope) ?? null; },
+    async readCompletionReceipt({ rootId, signer }) {
+      if (!EXACT_ID.test(rootId ?? '') || !EXACT_ID.test(signer ?? '')) {
+        fail('MAKER_V8_PLAYER_JOURNEY_INPUT_INVALID', 'An exact Root and signer are required.', 'RECOVERY');
+      }
+      if (typeof nativeContent?.loadCompletion !== 'function' || typeof player.readFinalizedCompletion !== 'function') return null;
+      const saved = await loadScopedCompletion({ rootId, signer });
+      if (saved === null) return null;
+      const action = await player.readFinalizedCompletion({ rootId, signer, actionId: saved.actionId });
+      if (action === null) return null;
+      const soulId = soulFrom(action);
+      const bound = action?.certificate?.evidence?.certifiedEvent?.fields;
+      if (action?.status !== FINAL_SUCCESS || action.actionId !== saved.actionId || !soulId
+        || bound.root_id !== rootId || bound.original_holder !== signer
+        || !/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(action.transactionDigest ?? '')) {
+        fail('MAKER_V8_PLAYER_JOURNEY_SOUL_READBACK_MISSING', 'Finalized completion lacks this wallet/Root native Soul.', 'READBACK');
+      }
+      return freeze({ soulId, transactionDigest: action.transactionDigest });
+    },
     async complete({ rootId, signer, selections, project = {} } = {}, { confirmStep, signal, startNew = false, newCompletionFrom, recoveryJson } = {}) {
       if (!EXACT_ID.test(rootId ?? '') || !EXACT_ID.test(signer ?? '') || !plain(project)) {
         fail('MAKER_V8_PLAYER_JOURNEY_INPUT_INVALID', 'An exact Root, signer and project are required.');
@@ -1188,7 +1217,7 @@ export function createMakerV8PlayerJourneyV8({
       // and accidentally change the controller's idempotency scope. Recovery
       // precedes live Maker/issuance gates: pausing new mints must not prevent
       // synchronization of an already finalized Soul.
-      const pendingCompletion = await nativeContent.loadCompletion({ rootId, signer });
+      const pendingCompletion = await loadScopedCompletion({ rootId, signer });
       if (recoveryJson !== undefined && (typeof recoveryJson !== 'string'
         || new TextEncoder().encode(recoveryJson).length > 2 * 1024 * 1024 || !pendingCompletion || startNew)) {
         fail('MAKER_V8_PLAYER_ENVELOPE_RECOVERY_INVALID', 'Envelope recovery requires the existing completion, not a new Soul.', 'RECOVERY');
@@ -1202,12 +1231,6 @@ export function createMakerV8PlayerJourneyV8({
         fail('MAKER_V8_PLAYER_JOURNEY_COMPLETED_RECORD_REQUIRED', 'The prior completed Soul identity changed.', 'RECOVERY');
       }
       if (pendingCompletion !== null) {
-        exactRecord(pendingCompletion, ['rootId', 'signer', 'actionId', 'project'], 'pending native completion');
-        if (pendingCompletion.rootId !== rootId || pendingCompletion.signer !== signer
-          || typeof pendingCompletion.actionId !== 'string' || !pendingCompletion.actionId
-          || !plain(pendingCompletion.project)) {
-          fail('MAKER_V8_PLAYER_NATIVE_CONTENT_INVALID', 'Pending native completion belongs to another scope.', 'RECOVERY');
-        }
         let action = await player.recoverPlayerAction(pendingCompletion.actionId, { replayIfNotFound: false });
         if (action?.actionId !== pendingCompletion.actionId) {
           fail('MAKER_V8_PLAYER_NATIVE_CONTENT_INVALID', 'Recovered native completion has a different action ID.', 'RECOVERY');

@@ -963,6 +963,7 @@ export function createOriginalProductApp({
   const getPendingPlayerAction = optionalMethod(bridge, 'getPendingPlayerAction');
   const openPlayerReception = optionalMethod(bridge, 'openPlayerReception');
   const exportPlayerEnvelopeRecovery = optionalMethod(bridge, 'exportPlayerEnvelopeRecovery');
+  const readPlayerCompletionReceipt = optionalMethod(bridge, 'readPlayerCompletionReceipt');
   // Separate from playerUi/project autosave and diagnostic snapshots. Signed
   // envelope recovery is exported only through an explicit local download.
   const envelopeRecoveryByScope = new Map();
@@ -3608,12 +3609,35 @@ export function createOriginalProductApp({
     }
   }
 
+  async function refreshPlayerCompletionReceipt() {
+    if (!readPlayerCompletionReceipt || state.localPlayer || state.playerUi.completionStatus
+      || state.playerUi.completedSoul || !state.connection.connected) return;
+    const { playerUi, playerSession, playerProjectGeneration, playerRequest, playerMutationRequest, playerExportRequest } = state;
+    const wallet = state.connection.address;
+    try {
+      const receipt = await readPlayerCompletionReceipt({ rootId: playerSession.rootId });
+      if (!receipt || !EXACT_OBJECT_ID.test(receipt.soulId ?? '')
+        || !/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(receipt.transactionDigest ?? '')
+        || state.playerUi !== playerUi || !playerUi.export.open || state.playerCompletionFlight
+        || state.playerExportRequest !== playerExportRequest || playerUi.completionStatus
+        || playerUi.completedSoul || state.connection.address !== wallet
+        || !playerProjectCurrent(playerProjectGeneration, playerRequest, playerMutationRequest, playerSession.rootId)) return;
+      playerUi.completionStatus = { state: 'ready', receipt,
+        message: makerWorkspaceText(state.locale, 'playerStepSavedMintReceipt') };
+      renderPlayer({ drawPreview: false });
+    } catch {
+      // Preview remains usable if this browser cannot read the saved journal.
+    }
+  }
+
   async function openPlayerExport() {
     if (!state.playerUi || !state.playerSession
       || (state.playerCompletionFlight && !state.playerCompletionFlight.abort.signal.aborted)) return null;
     void refreshEnvelopeRecovery();
     const generation = state.playerProjectGeneration;
-    const record = await requestPlayerExportRender({ open: true });
+    const rendering = requestPlayerExportRender({ open: true });
+    void refreshPlayerCompletionReceipt();
+    const record = await rendering;
     if (record && generation === state.playerProjectGeneration) {
       await savePlayerProjectAfterLocalEdit(generation);
     }

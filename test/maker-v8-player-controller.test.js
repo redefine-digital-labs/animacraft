@@ -988,11 +988,23 @@ test('native Complete cold record revalidates full initial content evidence befo
     transactionDigest: record.transaction.digest, evidence: { effectsBcsSha256: proof.effectsSha256,
       nativeContentEvidence: proof.evidence, certifiedEvent: { fields: { root_id: ROOT_ID, original_holder: HOLDER,
         soul_id: id(40), soul_state_id: id(41) } } } });
-  assert.equal((await h.controller.executePlayerAction(prepared.actionId)).status, 'FINALIZED_SUCCESS');
-  const calls = { sign: h.calls.sign, query: h.calls.query };
+  const scope = { rootId: ROOT_ID, signer: HOLDER, actionId: prepared.actionId };
+  assert.equal(await h.controller.readFinalizedCompletion(scope), null);
+  const completed = await h.controller.executePlayerAction(prepared.actionId);
+  assert.equal(completed.status, 'FINALIZED_SUCCESS');
+  const calls = { ...h.calls };
+  const cold = createMakerV8PlayerControllerV8({ productRuntime: h.productRuntime,
+    compiler: h.compiler, custody: h.custody, boundary: h.boundary, wallet: h.wallet,
+    rpc: h.rpc, persistence: h.persistence, execution: { allowWalletSignature: true, allowBroadcast: true } });
+  assert.deepEqual(await cold.readFinalizedCompletion(scope), completed);
+  await assert.rejects(cold.readFinalizedCompletion({ ...scope, signer: id(99) }),
+    { code: 'MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT' });
+  await assert.rejects(cold.readFinalizedCompletion({ ...scope, rootId: id(99) }),
+    { code: 'MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT' });
   h.persistence.mutate(prepared.actionId, row => { row.certificate.evidence.nativeContentEvidence.objects.pop(); });
+  await assert.rejects(cold.readFinalizedCompletion(scope), { code: 'MAKER_V8_NATIVE_CONTENT_EVIDENCE_INVALID' });
   await assert.rejects(h.controller.recoverPlayerAction(prepared.actionId), { code: 'MAKER_V8_NATIVE_CONTENT_EVIDENCE_INVALID' });
-  assert.deepEqual({ sign: h.calls.sign, query: h.calls.query }, calls);
+  assert.deepEqual(h.calls, { ...calls, loadRecord: calls.loadRecord + 5 });
 });
 
 test('positive access flow validates, builds, dry-runs, durably signs, broadcasts, and certifies readback', async () => {

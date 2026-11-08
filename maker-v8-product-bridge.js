@@ -2063,6 +2063,14 @@ export function createMakerV8ProductBridge({
       // complete/production provider independently reread the wallet after await.
       return playerJourney.openReception({ rootId, signer: wallet.address });
     };
+    if (typeof playerJourney.readCompletionReceipt === 'function') bridge.readPlayerCompletionReceipt = async ({ rootId }) => {
+      const account = await requireConnected();
+      const result = await playerJourney.readCompletionReceipt({ rootId, signer: account.address });
+      if ((await requireConnected()).address !== account.address) {
+        fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed while reading the completion receipt.', 'WALLET');
+      }
+      return result;
+    };
     if (typeof playerJourney.exportEnvelopeRecovery === 'function') bridge.exportPlayerEnvelopeRecovery = async ({ rootId }) => {
       const account = await requireConnected();
       const result = await playerJourney.exportEnvelopeRecovery({ rootId, signer: account.address });
@@ -2295,11 +2303,16 @@ export function createMakerV8ProductBridge({
     bridge.listComposableMakers = async () => {
       await requireConnected();
       const result = await loadPlaza();
-      if (!['READY', 'EMPTY'].includes(result?.status) || !Array.isArray(result.makers)
-        || result.diagnostics?.length) {
+      if (!['READY', 'EMPTY', 'DEGRADED'].includes(result?.status) || !Array.isArray(result.makers)) {
         fail('MAKER_V8_COMPOSABLE_CATALOG_INCOMPLETE', 'Published Makers could not be read completely.', 'COMPOSABLE');
       }
-      return freeze(result.makers.map(row => freeze({ rootId: row.id, title: row.title })));
+      // Catalog cards are discovery only. Inspect and every operation review
+      // re-read the selected Root and its certified manifest independently.
+      const unavailable = new Set((result.diagnostics ?? [])
+        .filter(diagnostic => diagnostic.severity === 'ERROR' && diagnostic.rootId)
+        .map(diagnostic => diagnostic.rootId));
+      return freeze(result.makers.filter(row => !unavailable.has(row.id))
+        .map(row => freeze({ rootId: row.id, title: row.title })));
     };
     bridge.getComposableMaker = async ({ rootId }) => {
       await requireConnected();
