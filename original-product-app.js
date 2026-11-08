@@ -3839,7 +3839,11 @@ export function createOriginalProductApp({
           const message = String(result.message || `Recovery required at ${stage}.`);
           // Retry the existing journey/journal; an operation outcome is not a
           // recipe, render or execution constraint on the next attempt.
-          state.playerUi.completionStatus = { state: 'blocked', message };
+          const receipt = stage === 'NATIVE_CONTENT_SYNC' && EXACT_OBJECT_ID.test(result.soulId || '')
+            && /^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(result.transactionDigest || '')
+            ? { soulId: result.soulId, transactionDigest: result.transactionDigest }
+            : null;
+          state.playerUi.completionStatus = { state: 'blocked', message, receipt };
           renderPlayer();
           return result;
         }

@@ -302,7 +302,14 @@ export function createMakerV8NativeContentProviderV8({ store, walrus, resolveAut
         if (!row.data.finalizing) row = await save(key, row, { ...row.data, finalizing });
         const current = await store.load(key);
         if (!current || current.revision !== row.revision || !same(current.data, row.data)) fail('MAKER_V8_NATIVE_CONTENT_COMPLETION_CONFLICT');
-        const result = await receiver.sync({ rootId, signer, action: completed, contentSidecars });
+        let result;
+        try {
+          result = await receiver.sync({ rootId, signer, action: completed, contentSidecars });
+        } catch (error) {
+          if (!['MAKER_V8_NATIVE_RECEIVER_NOT_READY', 'MAKER_V8_NATIVE_RECEIVER_TIMEOUT',
+            'MAKER_V8_NATIVE_RECEIVER_CLOSED', 'MAKER_V8_NATIVE_RECEIVER_POPUP_BLOCKED'].includes(error?.code)) throw error;
+          return Object.freeze({ status: 'RECOVERY_REQUIRED', reason: error.code });
+        }
         if (result?.status !== 'COMPLETE') return Object.freeze({ status: 'RECOVERY_REQUIRED' });
         if (result.soulId !== event.soul_id || result.transactionDigest !== transactionDigest) fail('MAKER_V8_NATIVE_CONTENT_RECEIVER_DRIFT');
         await save(key, row, { ...row.data, finalized: { soulId: event.soul_id, transactionDigest } });
