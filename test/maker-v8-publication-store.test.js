@@ -298,7 +298,7 @@ function nearLimitAttempts(plan, descriptor, {
   return [signed, pending, success];
 }
 
-async function authority() {
+async function authority(protocolVersion = '137') {
   const packageTuple = ROLES.map((role, index) => ({
     role,
     originalPackageId: id(`${index + 1}${index + 1}`),
@@ -331,7 +331,7 @@ async function authority() {
   return makerV8PublicationCompilerAuthorityV8({
     schemaVersion: 'animacraft.maker-v8-publication-authority.v1',
     protocolProfile: {
-      protocolVersion: '137',
+      protocolVersion,
       objectRuntimeMaxNumCachedObjects: '1000',
       objectRuntimeMaxNumStoreEntries: '1000',
     },
@@ -416,6 +416,7 @@ function cursor(kindBlob, ordinal = 0, options = {}) {
 
 async function planFixture({
   makerKey = 'maker', nonce = '1:first', kindSalt = 0,
+  protocolVersion = '137',
   activationAuthority = { walrusExecution, walrusSystem },
 } = {}) {
   const kindBase64 = await compilerKindBase64(kindSalt);
@@ -431,7 +432,7 @@ async function planFixture({
     compilerContext: makerV8BlobRefV8(compilerContextBlob),
     assets: [],
   };
-  const compilerAuthority = await authority();
+  const compilerAuthority = await authority(protocolVersion);
   const immutable = {
     chainIdentifier: CHAIN,
     paymentCoinType: COIN,
@@ -439,7 +440,10 @@ async function planFixture({
     makerKey,
     manifestSha256: hash('aa'),
     contentCommitment: hash('cc'),
-    protocolProfileCommitment: 'bf6c019eae80bac3824e07fad65b2f983f5e74e69d0b6c46779078c752738fa7',
+    protocolProfileCommitment: canonicalSha256({
+      schemaVersion: 'animacraft.maker-v8-sui-protocol-profile.v1',
+      ...compilerAuthority.protocolProfile,
+    }),
     coreArtifactCommitment: await crypto.subtle.digest(
       'SHA-256',
       new TextEncoder().encode(JSON.stringify({
@@ -1187,6 +1191,37 @@ test('scope, plan, blob-ref, and ABI commitments reject self-consistent caller d
     mutate(plan);
     await assert.rejects(assertMakerV8PublicationPlanIdentityV8(plan));
   }
+});
+
+test('publication plans persist the exact measured Sui 141 profile and reject profile drift', async () => {
+  const fixture = await planFixture({ protocolVersion: '141' });
+  const store = await publicationStore(new IDBFactory(), { databaseName: 'measured-protocol-141' });
+  await store.createAttempt(fixture.plan, fixture.blobs);
+  const restored = (await store.exportAttempt(fixture.plan.attemptId)).plan;
+  assert.deepEqual(restored.immutable.compilerAuthority.protocolProfile, {
+    protocolVersion: '141',
+    objectRuntimeMaxNumCachedObjects: '1000',
+    objectRuntimeMaxNumStoreEntries: '1000',
+  });
+  assert.equal(restored.immutable.protocolProfileCommitment, 'a5ce613acce0bd130b002ebdf04c9d5862fd43a43c82c1db82e47358b65345c2');
+
+  for (const changes of [
+    { protocolVersion: '142' },
+    { objectRuntimeMaxNumStoreEntries: '1001' },
+  ]) {
+    const payload = clone(restored.immutable.compilerAuthority);
+    delete payload.trustedContextCommitment;
+    Object.assign(payload.protocolProfile, changes);
+    await assert.rejects(makerV8PublicationCompilerAuthorityV8(payload), {
+      code: 'MAKER_V8_PUBLICATION_AUTHORITY_UNMEASURED',
+    });
+  }
+  const wrongCommitment = clone(restored);
+  wrongCommitment.immutable.protocolProfileCommitment = hash('ab');
+  await assert.rejects(assertMakerV8PublicationPlanIdentityV8(wrongCommitment), {
+    code: 'MAKER_V8_PUBLICATION_AUTHORITY_COMMITMENT_MISMATCH',
+  });
+  await store.close();
 });
 
 test('canonical checkpoint and plan evidence rejects non-injective JSON-domain values without invoking accessors', async () => {
