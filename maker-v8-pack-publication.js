@@ -974,6 +974,18 @@ export function createMakerV8PackPublicationControllerV8({
     async prepareReview(id) {
       const plan = await loadReady(id);
       const authorized = await authorize(plan, 'REQUEST_SIGNATURE', true);
+      const retained = preparedReview;
+      if (retained?.rejected && retained.review.id === plan.attemptId && retained.review.revision === plan.revision) {
+        try {
+          await simulateSignatureProof(retained.proof, authorized);
+          await reread(plan);
+          if (preparedReview === retained) return retained.review;
+        } catch (error) {
+          // A transport error leaves the original review available. A known
+          // simulation failure permits a fresh review of this unsigned step.
+          if (error?.code !== 'MAKER_V8_PACK_PUBLICATION_DRY_RUN_FAILED') throw error;
+        }
+      }
       const proof = await buildSignatureProof(plan, authorized);
       await simulateSignatureProof(proof, authorized);
       await reread(plan);
@@ -1001,9 +1013,17 @@ export function createMakerV8PackPublicationControllerV8({
       await simulateSignatureProof(proof, authorized);
       await reread(plan);
       await assertCurrent?.();
-      const signed = await wallet.signExactTransaction({
-        bytes: proof.base64, digest: proof.digest, signer: plan.immutable.signer,
-      });
+      let signed;
+      try {
+        signed = await wallet.signExactTransaction({
+          bytes: proof.base64, digest: proof.digest, signer: plan.immutable.signer,
+        });
+      } catch (error) {
+        if (review && !preparedReview && error?.definitiveRejection === true && error.signedArtifactCreated === false) {
+          preparedReview = { ...prepared, rejected: true };
+        }
+        throw error;
+      }
       if (!plain(signed) || signed.bytes !== proof.base64 || signed.digest !== proof.digest
         || signed.signer !== plan.immutable.signer) {
         fail('MAKER_V8_PACK_PUBLICATION_SIGNED_DRIFT', 'Wallet changed Pack TransactionData, digest, or signer.');
