@@ -528,7 +528,8 @@ function normalizeVersionHistory(state, locale) {
     message: String(source.message || state.versionHistoryMessage || ''),
     chainVersions: Array.isArray(state.chainVersions) ? state.chainVersions : [],
     chainStatus: String(state.chainVersionStatus || ''),
-    archiveReview: state.chainVersionReview || null,
+    chainBusy: state.chainVersionBusy === true,
+    chainReview: state.chainVersionReview || null,
     restoringRevision: Number.isSafeInteger(source.restoringRevision)
       ? source.restoringRevision
       : Number.isSafeInteger(state.restoringCheckpointRevision)
@@ -1764,13 +1765,33 @@ function versionHistory(view) {
   const chain = '<h4>' + escapeHtml(tr(view, 'chainHistory')) + '</h4><p>' + escapeHtml(tr(view, 'chainCopy')) + '</p>'
     + history.chainVersions.map(row => {
       const root = escapeHtml(row.rootId), allowed = row.canManage === true;
-      const button = (action, label, enabled) => `<button type="button" data-action="${action}" data-chain-root="${root}"${enabled && !busy ? '' : ' disabled'}>${label}</button>`;
+      const lifecycle = allowed && row.lifecycleAvailable === true;
+      const button = (action, label, enabled) => `<button type="button" data-action="${action}" data-chain-root="${root}"${enabled && !busy && !history.chainBusy ? '' : ' disabled'}>${escapeHtml(label)}</button>`;
+      const treasury = row.treasury;
+      const coin = String(treasury?.paymentCoinType || '').split('::').at(-1);
+      const review = history.chainReview?.rootId === row.rootId ? history.chainReview : null;
+      const reviewLabels = {
+        pause: 'chainPauseReview', resume: 'chainResumeReview', archive: 'chainArchiveReview', withdraw: 'chainWithdrawReview',
+      };
+      const treasuryText = treasury ? `<p title="${escapeHtml(treasury.paymentCoinType)}">${escapeHtml(tr(view, 'chainTreasuryAmounts', {
+        balance: treasury.balanceAtomic, collected: treasury.totalCollectedAtomic, withdrawn: treasury.totalWithdrawnAtomic, coin,
+      }))}</p>` : row.treasury === null && allowed ? `<p>${escapeHtml(tr(view, 'chainTreasuryUnavailable'))}</p>` : '';
+      const reviewText = review ? `<p style="overflow-wrap:anywhere">${escapeHtml(tr(view, reviewLabels[review.action]))} · ${escapeHtml(tr(view, review.action === 'archive' ? 'chainArchiveDigest' : 'chainLifecycleDigest'))} ${escapeHtml(review.digest)}</p>`
+        + (review.amountAtomic ? `<p style="overflow-wrap:anywhere">${escapeHtml(tr(view, 'chainWithdrawalDetails', { amount: review.amountAtomic, coin, recipient: review.recipient }))}</p>` : '')
+        + button(`chain-${review.action}-sign`, tr(view, review.action === 'archive' ? 'chainArchiveSign' : 'chainLifecycleSign'),
+          lifecycle && view.publicationSigningEnabled && view.publicationBroadcastEnabled) : '';
       return `<article><strong>Chain version ${escapeHtml(row.makerVersion)} · ${escapeHtml(row.lifecycle)}</strong><p style="overflow-wrap:anywhere">${root}</p>`
-        + button('chain-archive-review', escapeHtml(tr(view, 'chainArchiveReview')), allowed && ['ACTIVE', 'PAUSED'].includes(row.lifecycle))
-        + button('chain-archive-recover', escapeHtml(tr(view, 'chainArchiveRecover')), allowed)
-        + button('chain-successor', escapeHtml(tr(view, 'chainSuccessor')), allowed && row.lifecycle === 'ARCHIVED')
-        + (history.archiveReview?.rootId === row.rootId ? `<p>${escapeHtml(tr(view, 'chainArchiveDigest'))}: ${escapeHtml(history.archiveReview.digest)}</p>`
-          + button('chain-archive-sign', escapeHtml(tr(view, 'chainArchiveSign')), allowed && view.publicationSigningEnabled) : '') + '</article>';
+        + treasuryText
+        + button('chain-pause-review', tr(view, 'chainPauseReview'), lifecycle && row.lifecycle === 'ACTIVE')
+        + button('chain-resume-review', tr(view, 'chainResumeReview'), lifecycle && row.lifecycle === 'PAUSED')
+        + button('chain-archive-review', tr(view, 'chainArchiveReview'), lifecycle && row.successorRootId === null && ['ACTIVE', 'PAUSED'].includes(row.lifecycle))
+        + button('chain-withdraw-review', tr(view, 'chainWithdrawReview'), lifecycle && Boolean(treasury && treasury.balanceAtomic !== '0'))
+        + button('chain-successor', tr(view, 'chainSuccessor'), allowed && row.successorRootId === null && row.lifecycle === 'ARCHIVED')
+        + reviewText
+        + (lifecycle ? `<details><summary>${escapeHtml(tr(view, 'chainRecoverAction'))}</summary>`
+          + Object.entries(reviewLabels).map(([kind, key]) => button(`chain-${kind}-recover`,
+            tr(view, kind === 'archive' ? 'chainArchiveRecover' : key), view.publicationBroadcastEnabled)).join('') + '</details>' : '')
+        + '</article>';
     }).join('') + `<p role="status">${escapeHtml(history.chainStatus)}</p><h4>${escapeHtml(tr(view, 'chainLocal'))}</h4>`;
   content = chain + content;
   return `<div class="v4-modal-backdrop v4-version-history-backdrop" data-action="close-version-history-backdrop"><section class="v4-version-history-dialog" role="dialog" aria-modal="true" aria-labelledby="makerVersionHistoryTitle"><header><div><span class="v4-eyebrow">${escapeHtml(tr(view, 'versionHistory'))}</span><h3 id="makerVersionHistoryTitle">${escapeHtml(tr(view, 'versionHistoryTitle'))}</h3><p>${escapeHtml(tr(view, 'versionHistoryCopy'))}</p></div><button type="button" data-action="close-version-history" aria-label="${escapeHtml(tr(view, 'close'))}"${forcedControlAttributes(view, 'close-version-history', '', history.status === 'restoring')}>×</button></header><div class="v4-version-history-content">${content}</div></section></div>`;
