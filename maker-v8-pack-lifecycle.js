@@ -612,7 +612,7 @@ export function createMakerV8PackLifecycleCompilerV8({
         }
       }
       const built = await register(request);
-      if (plan.current?.fullTransaction !== null && plan.current?.fullTransaction !== undefined) {
+      if (plan.current?.signature != null) {
         const artifact = transactionData(plan.current.fullTransaction, {
           signer: request.signer,
           kindBytes: built.descriptor.kindBytes,
@@ -1169,7 +1169,7 @@ export function createMakerV8PackLifecycleControllerV8({
       }
       digest(ticket.digest, 'ticket.digest');
       let plan = await engine.recoverOutcome(ticket.recoveryId);
-      const observedDigest = plan.current?.outcome?.digest ?? plan.terminal?.digest;
+      const observedDigest = plan.current?.outcome?.digest ?? plan.current?.outcome?.retiredDigest ?? plan.terminal?.digest;
       if (observedDigest !== ticket.digest) {
         fail('MAKER_V8_PACK_LIFECYCLE_TICKET_DRIFT', 'Pack lifecycle durable attempt has another digest.', 'RECOVERY');
       }
@@ -1269,7 +1269,7 @@ export async function createProductionMakerV8PackLifecycleV8({
     async recover(ticket) {
       exact(ticket, ['schemaVersion', 'recoveryId', 'digest'], 'Pack lifecycle ticket');
       let plan = await engine.recoverOutcome(ticket.recoveryId);
-      const observedDigest = plan.current?.outcome?.digest ?? plan.terminal?.digest;
+      const observedDigest = plan.current?.outcome?.digest ?? plan.current?.outcome?.retiredDigest ?? plan.terminal?.digest;
       if (ticket.schemaVersion !== MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA || observedDigest !== ticket.digest) {
         fail('MAKER_V8_PACK_LIFECYCLE_TICKET_DRIFT', 'Pack lifecycle durable attempt differs from its ticket.', 'RECOVERY');
       }
