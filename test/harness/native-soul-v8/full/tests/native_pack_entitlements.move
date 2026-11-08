@@ -8,14 +8,15 @@ use animacraft_v8_core::maker_v8::MakerRootV8;
 use animacraft_v8_core::protocol_config_v8::{Self as protocol, ProtocolConfigV8, ProtocolTreasuryV8};
 use animacraft_v8_core::treasury_v8::{Self as treasury, MakerAccessPassV8, MakerTreasuryV8};
 use animacraft_v8_output::output_v8::{Self as output, CompleteReceiptV8, OutputRegistryV8};
-use animacraft_v8_runtime::runtime_v8::{Self as runtime, MakerLoadoutV8, PackPassV8,
+use animacraft_v8_runtime::runtime_v8::{Self as runtime, MakerLoadoutV8, PackAdminCapV8, PackPassV8,
     PackRegistryV8, PackReleaseV8, PackTreasuryV8};
-use sui::{clock, coin, sui::SUI, test_scenario::{Self as scenario, Scenario}};
+use sui::{clock, coin::{Self, Coin}, sui::SUI, test_scenario::{Self as scenario, Scenario}};
 
 const PRICE: u64 = 1_000;
 const EWrongInventory: u64 = 1;
 const EWrongAccounting: u64 = 2;
 const EWrongCompletion: u64 = 3;
+const EWrongLifecycle: u64 = 4;
 
 #[test]
 fun free_entry_and_complete_reuse_exact_pass() {
@@ -23,7 +24,7 @@ fun free_entry_and_complete_reuse_exact_pass() {
 }
 
 #[test]
-fun paid_entry_splits_revenue_once_and_complete_reuses_pass() {
+fun paid_entry_complete_and_archived_revenue_are_exact() {
     run_policy(runtime::access_paid_v8(), false);
 }
 
@@ -60,7 +61,7 @@ fun run_policy(policy: u8, duplicate_purchase: bool) {
     let included = policy == runtime::access_included_with_maker_v8();
     let pack = pack_player::publish_pack_with_policy_for_testing(
         &mut scenario, maker, policy, if (paid) PRICE else 0);
-    let (release_id, _, pack_treasury_id) = pack_player::published_ids_for_testing(pack);
+    let (release_id, pack_admin_id, pack_treasury_id) = pack_player::published_ids_for_testing(pack);
     let (root_id, _, maker_treasury_id, _) = active::maker_ids_for_testing(maker);
     let (_, packs_id, _, _, output_id, _, _, _, _) = active::companion_ids_for_testing(maker);
     let config = scenario.take_shared_by_id<ProtocolConfigV8>(protocol_id);
@@ -154,6 +155,73 @@ fun run_policy(policy: u8, duplicate_purchase: bool) {
         runtime::transfer_pack_pass_to_holder_v8(duplicate);
         abort EWrongInventory
     };
+
+    if (paid) {
+        scenario.next_tx(author);
+        verify_archived_pack_revenue(&mut scenario, release_id, pack_admin_id, packs_id, pack_treasury_id);
+        scenario.next_tx(holder);
+        let pass = scenario.take_from_sender_by_id<PackPassV8>(pass_id);
+        assert!(std::bcs::to_bytes(&pass) == original_pass, EWrongInventory);
+        let protocol_treasury = scenario.take_shared_by_id<ProtocolTreasuryV8<SUI>>(protocol_treasury_id);
+        let maker_treasury = scenario.take_shared_by_id<MakerTreasuryV8<SUI>>(maker_treasury_id);
+        assert!(protocol::protocol_treasury_balance_for_testing(&protocol_treasury) == 100
+            && treasury::maker_treasury_balance_v2(&maker_treasury) == 0, EWrongAccounting);
+        scenario::return_shared(protocol_treasury);
+        scenario::return_shared(maker_treasury);
+        scenario.return_to_sender(pass);
+    };
     std::unit_test::destroy(system);
     scenario.end();
+}
+
+fun verify_archived_pack_revenue(
+    scenario: &mut Scenario, release_id: ID, admin_id: ID, registry_id: ID, treasury_id: ID,
+) {
+    let author = scenario.ctx().sender();
+    let recipient = @0xC33;
+    let mut release = scenario.take_shared_by_id<PackReleaseV8<SUI>>(release_id);
+    let parent_version = runtime::pack_release_root_version_v8(&release);
+    let content = *runtime::pack_release_content_commitment_v8(&release);
+    let admin = scenario.take_from_sender_by_id<PackAdminCapV8>(admin_id);
+    runtime::pause_pack_release_v8(&mut release, &admin, scenario.ctx());
+    assert!(runtime::pack_release_lifecycle_v8(&release) == runtime::pack_paused_v8(), EWrongLifecycle);
+    scenario::return_shared(release);
+    scenario.return_to_sender(admin);
+    scenario.next_tx(author);
+
+    let mut release = scenario.take_shared_by_id<PackReleaseV8<SUI>>(release_id);
+    let admin = scenario.take_from_sender_by_id<PackAdminCapV8>(admin_id);
+    let registry = scenario.take_shared_by_id<PackRegistryV8>(registry_id);
+    runtime::resume_pack_release_v8(&mut release, &admin, &registry, scenario.ctx());
+    scenario::return_shared(registry);
+    scenario::return_shared(release);
+    scenario.return_to_sender(admin);
+    scenario.next_tx(author);
+
+    let mut release = scenario.take_shared_by_id<PackReleaseV8<SUI>>(release_id);
+    let admin = scenario.take_from_sender_by_id<PackAdminCapV8>(admin_id);
+    assert!(runtime::pack_release_lifecycle_v8(&release) == runtime::pack_active_v8(), EWrongLifecycle);
+    runtime::archive_pack_release_v8(&mut release, &admin, scenario.ctx());
+    scenario::return_shared(release);
+    scenario.return_to_sender(admin);
+    scenario.next_tx(author);
+
+    let release = scenario.take_shared_by_id<PackReleaseV8<SUI>>(release_id);
+    let admin = scenario.take_from_sender_by_id<PackAdminCapV8>(admin_id);
+    let mut treasury = scenario.take_shared_by_id<PackTreasuryV8<SUI>>(treasury_id);
+    assert!(runtime::pack_release_lifecycle_v8(&release) == runtime::pack_archived_v8()
+        && runtime::pack_release_root_version_v8(&release) == parent_version
+        && runtime::pack_release_content_commitment_v8(&release) == &content, EWrongLifecycle);
+    assert!(runtime::pack_treasury_balance_v8(&treasury) == 900, EWrongAccounting);
+    runtime::withdraw_pack_revenue_v8(&release, &admin, &mut treasury, 900, recipient, scenario.ctx());
+    assert!(runtime::pack_treasury_balance_v8(&treasury) == 0, EWrongAccounting);
+    scenario::return_shared(release);
+    scenario::return_shared(treasury);
+    scenario.return_to_sender(admin);
+    scenario.next_tx(recipient);
+
+    assert!(scenario.ids_for_sender<Coin<SUI>>().length() == 1, EWrongInventory);
+    let received = scenario.take_from_sender<Coin<SUI>>();
+    assert!(coin::value(&received) == 900, EWrongAccounting);
+    scenario.return_to_sender(received);
 }
