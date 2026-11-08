@@ -6232,7 +6232,8 @@ export function createOriginalProductApp({
         : review?.needsVerifiedQuote ? 'A verified storage quote is required. Refresh to read a new quote.'
           : review?.executionEnabled === false ? 'Pack signing and broadcast are disabled.'
             : review?.nextAction === 'SIGN' ? 'Review this transaction before opening your wallet.'
-              : review?.nextAction === 'RECOVER' ? 'Continue the saved step. This can upload or send the previously signed transaction.'
+              : review?.signatureOutcomeUnknown ? 'The wallet response is unknown. Check the original transaction before any new signature.'
+                : review?.nextAction === 'RECOVER' ? 'Continue the saved step. This can upload or send the previously signed transaction.'
                 : review?.status === 'FAILED' ? 'The saved Pack publication failed. Check the recorded transaction.'
                   : editor.transportPinned ? 'A saved storage attempt is available. Open its current step.'
                     : 'Prepare the next Pack publication step.';
