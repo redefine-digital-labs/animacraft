@@ -417,7 +417,9 @@ function assertRequest(value) {
   }
   const signer = address(value.signer, 'request.signer');
   if (inputs.adminCap !== null && (inputs.adminCap.owner.kind !== 'ADDRESS' || inputs.adminCap.owner.address !== signer)
-    || inputs.makerAdmin !== null && (inputs.makerAdmin.owner.kind !== 'ADDRESS' || inputs.makerAdmin.owner.address !== signer)) {
+    || inputs.makerAdmin !== null && (inputs.makerAdmin.owner.kind !== 'ADDRESS' || inputs.makerAdmin.owner.address !== signer)
+    || inputs.admissionAuthority !== null
+      && (inputs.admissionAuthority.owner.kind !== 'ADDRESS' || inputs.admissionAuthority.owner.address !== signer)) {
     fail('MAKER_V8_COMPOSABLE_AUTHORITY_INVALID', 'The exact required capability is not owned by the signer.', 'AUTHORITY');
   }
   const lifecycleRule = ACTIONS[value.action];
@@ -1318,10 +1320,10 @@ export function createMakerV8ComposableAuthorityLoaderV8({
       || moveId(field(registry.fields, 'definition_registry_id', 'PackRegistry'), 'registry.definitionRegistryId') !== definitions.objectRef.objectId)) {
       fail('MAKER_V8_COMPOSABLE_REGISTRY_DRIFT', 'Pack registry differs from the exact Runtime definition binding.', 'AUTHORITY');
     }
-    if (authority !== null && (authority.owner.kind !== 'SHARED'
+    if (authority !== null && (authority.owner.kind !== 'ADDRESS' || authority.owner.address !== signer
       || moveId(field(authority.fields, 'root_id', 'PackAdmissionAuthority'), 'authority.rootId') !== rootId
       || moveId(field(registry.fields, 'admission_authority_id', 'PackRegistry'), 'registry.admissionAuthorityId') !== authority.objectRef.objectId)) {
-      fail('MAKER_V8_COMPOSABLE_AUTHORITY_DRIFT', 'Admission authority differs from the exact Pack registry binding.', 'AUTHORITY');
+      fail('MAKER_V8_COMPOSABLE_AUTHORITY_DRIFT', 'The connected wallet must own the admission authority bound to this Pack registry.', 'AUTHORITY');
     }
     if (makerAdmin !== null && (makerAdmin.owner.kind !== 'ADDRESS'
       || makerAdmin.owner.address !== signer
@@ -1358,7 +1360,9 @@ export function createMakerV8ComposableAuthorityLoaderV8({
       || moveId(field(inputs.runtimeConfig.fields, 'catalog_id', 'RuntimePackageConfig'), 'runtimeConfig.catalogId') !== runtime.catalogId)) {
       fail('MAKER_V8_COMPOSABLE_CONFIG_DRIFT', 'Certified admission Runtime config differs from the catalog.', 'AUTHORITY');
     }
-    const productId = productInput?.objectRef.objectId ?? null;
+    const productId = raw.action === 'REVOKE_ADMISSION'
+      ? address(raw.productId, 'productId')
+      : productInput?.objectRef.objectId ?? null;
     const stateBound = ['PAUSE_PRODUCT', 'RESUME_PRODUCT', 'ARCHIVE_PRODUCT', 'TRANSFER_CONTROL', 'MINT_ITEM']
       .includes(raw.action);
     const product = freeze({
