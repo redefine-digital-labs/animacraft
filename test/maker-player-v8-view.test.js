@@ -1296,6 +1296,22 @@ test('Complete confirmation shows exact fees, distinct quotas, rights and origin
   }
 });
 
+test('pending handoff shows the original Soul receipt without enabling a new completion', () => {
+  const soulId = `0x${'86'.repeat(32)}`;
+  const transactionDigest = 'B'.repeat(43);
+  const message = 'Soul mint is complete. Resume encrypted-content finalization; do not mint again.';
+  const state = fullState();
+  const html = renderApprovedMakerV8Player(projectMakerV8PlayerView(sessionFixture(), {
+    ...state, export: { ...state.export, state: 'ready' },
+    completionStatus: { state: 'blocked', message, receipt: { soulId, transactionDigest } },
+  }, { default: true }));
+  const receipt = html.match(/<section class="v4-player-export-status" role="status">[\s\S]*?<\/section>/)?.[0];
+  assert.ok(receipt?.includes(message));
+  assert.ok(receipt?.includes(soulId));
+  assert.ok(receipt?.includes(transactionDigest));
+  assert.doesNotMatch(html, /data-action="player-start-new-completion"/);
+});
+
 test('known entry access never labels an unquoted Complete as free in any locale', () => {
   const session = sessionFixture();
   session.execution.writeEnabled = true;

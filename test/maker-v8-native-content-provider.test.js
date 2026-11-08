@@ -239,7 +239,13 @@ test('cold recovery verifies atomic content evidence before receiver without ano
   assert.equal((await h.store.load(`native-content/${rootId}/${signer}`)).data.finalizing, undefined);
   const calls = [...h.calls]; const cold = createMakerV8NativeContentProviderV8(h.dependencies);
   h.dependencies.envelopes.persist = async () => assert.fail('Initial envelopes are already in mint');
-  await cold.finalize({ ...args, action, mode: 'query', assertBeforeSignature: () => assert.fail('Query never signs') });
+  const sync = h.receiver.sync;
+  h.receiver.sync = async function (request) {
+    await sync.call(this, request);
+    throw Object.assign(new Error('Account receiver rejected synchronization'), { code: 'MAKER_V8_NATIVE_RECEIVER_NOT_READY' });
+  };
+  const blocked = await cold.finalize({ ...args, action, mode: 'query', assertBeforeSignature: () => assert.fail('Query never signs') });
+  assert.deepEqual(blocked, { status: 'RECOVERY_REQUIRED', reason: 'MAKER_V8_NATIVE_RECEIVER_NOT_READY' });
   assert.deepEqual(h.calls, calls); assert.equal(h.receiver.requests.length, 1);
   const forged = structuredClone(action); forged.certificate.evidence.nativeContentEvidence.objects.pop();
   await assert.rejects(cold.finalize({ ...args, action: forged }), { code: 'MAKER_V8_NATIVE_CONTENT_EVIDENCE_INVALID' });

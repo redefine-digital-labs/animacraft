@@ -816,6 +816,9 @@ function projectPlayerPresentation(exact, state, capabilities, assetRecords) {
     packAcquisition: plain(state.packAcquisition) ? structuredClone(state.packAcquisition) : null,
     completionConfirmation: plain(state.completionConfirmation) ? clone(state.completionConfirmation) : null,
     completedSoul: plain(state.completedSoul) ? clone(state.completedSoul) : null,
+    pendingHandoffReceipt: exact.mode !== 'LOCAL_DRAFT' && plain(state.completionStatus?.receipt)
+      ? { ...clone(state.completionStatus.receipt), message: String(state.completionStatus.message || '') }
+      : null,
     envelopeRecoveryAvailable: state.envelopeRecoveryAvailable === true,
     assets: projectAssets(player, state, assetRecords),
     profile,
@@ -1157,6 +1160,8 @@ function renderExportModal(view) {
   const canDownload = view.export.state === 'ready' && view.export.previewUrl
     && (view.mode === 'LOCAL_DRAFT' || view.export.completionConfirmed);
   const canComplete = view.export.state === 'ready' && view.completeReady && !view.completionConfirmation;
+  const receipt = view.pendingHandoffReceipt ?? view.completedSoul;
+  const receiptDetails = receipt ? `<dl style="overflow-wrap: anywhere"><dt>Soul ID</dt><dd>${escapeHtml(receipt.soulId)}</dd><dt>Transaction digest</dt><dd>${escapeHtml(receipt.transactionDigest)}</dd></dl>` : '';
   return `
     <div class="v4-modal-backdrop v4-player-export-backdrop" data-action="close-player-export-backdrop">
       <section id="makerPlayerExportDialog" class="v4-player-export-dialog" role="dialog" aria-modal="true" aria-labelledby="makerPlayerExportTitle" tabindex="-1">
@@ -1172,7 +1177,9 @@ function renderExportModal(view) {
             <p class="v4-player-export-license">${escapeHtml(tr(view, 'exportLicenseNotice'))}</p>
           </aside>
         </div>
-        ${view.completedSoul && !view.completionConfirmation ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.completedSoul.matchesProject ? tr(view, 'playerCompletionConfirmed') : tr(view, 'playerStepRecoveredOtherDraft'))}</p><p>${escapeHtml(view.completedSoul.soulId)}</p><button type="button" data-action="player-open-completed-soul" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-open-completed-soul', '', view.completedSoul.handoffUrl ? '' : view.boundaryReason)}>${escapeHtml(tr(view, 'playerStepOpenSoul'))}</button><button type="button" data-action="player-start-new-completion" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-start-new-completion')}>${escapeHtml(tr(view, 'playerStepStartAnother'))}</button></section>` : ''}
+        ${view.completedSoul && !view.completionConfirmation ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.completedSoul.matchesProject ? tr(view, 'playerCompletionConfirmed') : tr(view, 'playerStepRecoveredOtherDraft'))}</p>${receiptDetails}<button type="button" data-action="player-open-completed-soul" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-open-completed-soul', '', view.completedSoul.handoffUrl ? '' : view.boundaryReason)}>${escapeHtml(tr(view, 'playerStepOpenSoul'))}</button><button type="button" data-action="player-start-new-completion" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-start-new-completion')}>${escapeHtml(tr(view, 'playerStepStartAnother'))}</button></section>` : ''}
+        ${view.pendingHandoffReceipt && !view.completedSoul && !view.completionConfirmation
+          ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.pendingHandoffReceipt.message)}</p>${receiptDetails}</section>` : ''}
         ${renderEnvelopeRecovery(view)}
         <footer><p id="makerPlayerExportCompletionIssue" class="v4-player-export-completion-issue" ${completionIssue ? '' : 'hidden'}>${escapeHtml(completionIssue)}</p><button type="button" data-action="close-player-export"${controlAttributes(view, 'close-player-export')}>${escapeHtml(tr(view, 'continueEditing'))}</button><button type="button" data-action="player-export-recipe"${controlAttributes(view, 'player-export-recipe')}>${escapeHtml(tr(view, 'downloadRecipePackage'))}</button><button type="button" data-action="player-download-png"${controlAttributes(view, 'player-download-png', '', canDownload ? '' : tr(view, 'playerDownloadAfterComplete'))}>${escapeHtml(canDownload ? tr(view, 'downloadPng') : tr(view, 'playerDownloadAfterComplete'))}</button><button type="button" class="primary" data-action="player-confirm-complete" aria-describedby="makerPlayerExportCompletionIssue"${controlAttributes(view, 'player-confirm-complete', '', canComplete ? '' : completionIssue || view.boundaryReason)}>${escapeHtml(tr(view, 'completeOc'))}</button></footer>
       </section>
