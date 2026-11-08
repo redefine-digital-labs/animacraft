@@ -182,6 +182,11 @@ function typeName(value, label) {
   }
 }
 
+function dynamicFieldValueType(field, label) {
+  if (field.$kind === 'DynamicField' && field.value.type === 'u64') return 'u64';
+  return typeName(field.value.type, label);
+}
+
 function bytes(value, label, { allowEmpty = false, maximum = 4 * 1024 * 1024 } = {}) {
   if (!(value instanceof Uint8Array)
     || (!allowEmpty && value.length === 0)
@@ -1528,7 +1533,7 @@ export function createMakerV8SuiGrpcTransport({
           bcsBase64: toBase64(bytes(field.name.bcs, `dynamicField[${index}].name.bcs`)),
         }),
         value: Object.freeze({
-          type: typeName(field.value.type, `dynamicField[${index}].value.type`),
+          type: dynamicFieldValueType(field, `dynamicField[${index}].value.type`),
           bcsBase64: toBase64(bytes(field.value.bcs, `dynamicField[${index}].value.bcs`)),
         }),
       });
@@ -1576,7 +1581,7 @@ export function createMakerV8SuiGrpcTransport({
         bcsBase64: toBase64(bytes(field.name.bcs, 'dynamicField.name.bcs')),
       }),
       value: Object.freeze({
-        type: typeName(field.value.type, 'dynamicField.value.type'),
+        type: dynamicFieldValueType(field, 'dynamicField.value.type'),
         bcsBase64: toBase64(bytes(field.value.bcs, 'dynamicField.value.bcs')),
       }),
     });

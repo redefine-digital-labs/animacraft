@@ -121,6 +121,12 @@ test('compiler gRPC pins the exact measured Sui protocol profile', async () => {
     objectRuntimeMaxNumCachedObjects: '1000',
     objectRuntimeMaxNumStoreEntries: '1000',
   });
+  const measured141 = { ...response, protocolVersion: '141' };
+  assert.equal((await read(measured141)).protocolVersion, '141');
+  await assert.rejects(read({
+    ...measured141,
+    attributes: { ...response.attributes, object_runtime_max_num_cached_objects: '999' },
+  }), { code: 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED' });
 
   for (const [mutate, code] of [
     [(value) => { value.featureFlags.enable_unified_linkage = false; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],

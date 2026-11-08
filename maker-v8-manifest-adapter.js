@@ -351,6 +351,16 @@ export function createMakerV8ManifestAdapter({
         fetched = await fetcher(Object.freeze({ blobId, maximumBytes: checkedMaximum, signal }));
       } catch (cause) {
         if (cause instanceof MakerV8ManifestError) throw cause;
+        const status = cause?.code === 'ANIMACRAFT_WALRUS_READ_FAILED'
+          ? cause.details?.status : undefined;
+        if (status === 404 || status === 410) {
+          fail(
+            'MAKER_V8_MANIFEST_BLOB_UNAVAILABLE',
+            'The published Maker manifest is unavailable on Walrus. Use Refresh Makers to check again.',
+            'TRANSPORT',
+            { status, blobId },
+          );
+        }
         fail(
           'MAKER_V8_MANIFEST_FETCH_FAILED',
           'Manifest transport failed before returning certified bytes.',

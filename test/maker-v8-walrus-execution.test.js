@@ -20,6 +20,14 @@ test('cold Walrus proof accepts old static minimum and separately binds effectiv
   assert.equal(validate(fixture({ systemVersion: '2' }), options).packageId, minimumDependency.publishedAt);
 });
 
+test('cold Walrus proof binds the v4 System to the matching execution package', () => {
+  const evidence = fixture({ systemVersion: '4' });
+  const target = validate(evidence, options);
+  assert.equal(target.packageVersion, '4');
+  assert.equal(target.systemVersion, '4');
+  assert.equal(target.packageId, evidence.package.reference.objectId);
+});
+
 for (const issue of ['digest', 'uid', 'owner', 'type', 'ref-version', 'package-owner', 'package-id', 'package-version',
   'origin', 'missing-origin', 'duplicate-origin', 'module-self', 'unsupported-version', 'trailing-bcs', 'system-shape', 'shared-birth']) {
   test(`cold Walrus proof rejects ${issue}, including rehashed full objects`, () => {
@@ -36,7 +44,7 @@ for (const issue of ['digest', 'uid', 'owner', 'type', 'ref-version', 'package-o
     if (issue === 'missing-origin') p.data.Package.typeOriginTable.pop();
     if (issue === 'duplicate-origin') p.data.Package.typeOriginTable.push(p.data.Package.typeOriginTable[0]);
     if (issue === 'module-self') p.data.Package.moduleMap.get('blob').fill(0, -33, -1);
-    if (issue === 'unsupported-version') { fields.version = '4'; p.data.Package.version = '4'; }
+    if (issue === 'unsupported-version') { fields.version = '5'; p.data.Package.version = '5'; }
     s.data.Move.contents = MakerV8WalrusSystemBcs.serialize(fields).toBytes();
     if (issue === 'system-shape') s.data.Move.contents = new Uint8Array([...s.data.Move.contents, 0]);
     e.package = proof(p);

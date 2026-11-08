@@ -1019,6 +1019,20 @@ test('gRPC dynamic-field point and page reads preserve exact key/value BCS witho
   assert.equal(fixture.calls.some(([name]) => name.includes('jsonRpc')), false);
 });
 
+test('gRPC dynamic fields preserve the primitive u64 values used by Player counters', async () => {
+  const fixture = fixtures();
+  const name = fixture.values.dynamicField.name;
+  const value = bcs.u64().serialize('9').toBytes();
+  fixture.values.dynamicField.type = normalizeStructTag('0x2::dynamic_field::Field<0x2::object::ID,u64>');
+  fixture.values.dynamicField.value = { type: 'u64', bcs: value };
+  const field = await fixture.transport.getDynamicField({
+    parentId: PARENT, name: { type: name.type, bcsBase64: toBase64(name.bcs) },
+  });
+  const page = await fixture.transport.listDynamicFields({ parentId: PARENT });
+  assert.deepEqual(field.value, { type: 'u64', bcsBase64: toBase64(value) });
+  assert.deepEqual(page.data[0].value, field.value);
+});
+
 test('Core dynamic-field version is an exact positive uint64 string, not raw protobuf bigint', async () => {
   const fixture = fixtures();
   const request = { parentId: PARENT, name: { type: normalizeStructTag('0x2::object::ID'),

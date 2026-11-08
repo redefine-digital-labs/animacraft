@@ -114,8 +114,9 @@ const AUTHORITY_BYTE_FIELDS = new Set([
 ]);
 const AUTHORITY_BYTE_VECTOR_FIELDS = new Set(['role_config_commitments', 'install_mark_commitments']);
 function authorityJsonMatches(observed, decoded, label, byteVector = false, nestedBytes = false) {
-  // The gRPC Move JSON projection unwraps Balance<u64> only at this schema path.
-  if (label === 'Native soulTransferPolicy JSON/BCS.balance' && typeof observed === 'string') {
+  // gRPC projects Balance<SUI> as a decimal string at these known schema paths.
+  if ((label === 'Native soulTransferPolicy JSON/BCS.balance'
+    || label === 'Native personal Kiosk JSON/BCS.profits') && typeof observed === 'string') {
     authorityCheck(/^(?:0|[1-9][0-9]*)$/.test(observed) && observed.length <= 20
       && BigInt(observed) <= 18446744073709551615n, `${label} canonical u64`);
     observed = { value: observed };

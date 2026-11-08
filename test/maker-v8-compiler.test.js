@@ -705,6 +705,14 @@ test('trusted context pins exact measured Sui protocol and Core artifact commitm
   const approved = await trustedContext();
   assert.deepEqual(approved.protocolProfile, MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE);
   assert.equal(approved._derived.protocolProfileCommitment, MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT);
+  const measured141 = await trustedContext(clone(fixture.document), clone(fixture.transportAssets), null, (context) => {
+    context.protocolProfile.protocolVersion = '141';
+  });
+  assert.equal(measured141._derived.protocolProfileCommitment, 'a5ce613acce0bd130b002ebdf04c9d5862fd43a43c82c1db82e47358b65345c2');
+  await assert.rejects(
+    () => assertMakerV8CompilerContextFreshV8(approved, measured141),
+    { code: 'MAKER_V8_COMPILER_CONTEXT_DRIFT' },
+  );
   assert.equal(approved.coreArtifact.callablePackageId, approved.catalog.fields.roles.core.callablePackageId);
   assert.equal(approved.coreArtifact.baseRegistryModuleSha256, MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256);
   assert.match(approved._derived.coreArtifactCommitment, /^[0-9a-f]{64}$/);

@@ -66,13 +66,13 @@ import {
   MAKER_V8_BASE_CHUNK_READBACK_SCHEMA,
   MAKER_V8_ACTIVATION_CHUNK_READBACK_SCHEMA,
   MAKER_V8_ACTIVATION_READBACK_SCHEMA,
-  MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE,
   MAKER_V8_COMPANION_READBACK_SCHEMA,
   MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
   MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
   canonicalMakerV8Json,
   certifyMakerV8TrustedContext,
   exactMakerV8TransactionTargets,
+  measuredMakerV8SuiProtocolCommitment,
 } from './maker-v8-compiler.js';
 
 export const MAKER_V8_BROWSER_SCHEMA = 'animacraft.maker-v8-browser.v8';
@@ -2975,9 +2975,8 @@ export async function readMakerV8CompilerProtocolProfileV8(client) {
     objectRuntimeMaxNumCachedObjects: attribute('object_runtime_max_num_cached_objects'),
     objectRuntimeMaxNumStoreEntries: attribute('object_runtime_max_num_store_entries'),
   });
-  if (canonicalMakerV8Json(observed) !== canonicalMakerV8Json(MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE)) {
+  if (!measuredMakerV8SuiProtocolCommitment(observed)) {
     fail('MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED', 'The live Sui protocol profile has not been approved by the Maker v8 seal-cap harness.', 'CONTEXT', {
-      expected: MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE,
       actual: observed,
     });
   }
