@@ -32,7 +32,7 @@ import {
 } from './maker-v8-chain.js';
 import { assertMakerV8Runtime } from './maker-v8-runtime.js';
 import { assertMakerV8PlayerProtocolCurrentV8 } from './maker-v8-player-protocol.js';
-import { packPublicationAuthoringContent } from './maker-v8-pack-authoring.js';
+import { packPublicationAuthoringContent, assertPackStylesTargetSlots } from './maker-v8-pack-authoring.js';
 import { compileMakerV8PackDefinitionRowsV8, planMakerV8PackDefinitionRegistrationV8,
   buildMakerV8PackDefinitionStepV8 } from './maker-v8-pack-definitions-compiler.js';
 
@@ -1273,7 +1273,9 @@ export function createMakerV8PackCompilerV8({
     if (typeof loadParent !== 'function') {
       fail('MAKER_V8_PACK_PARENT_RESOLVER_REQUIRED', 'Authored Pack compilation requires the independently certified Maker content reader.');
     }
-    const expected = packPublicationAuthoringContent(document).content.parent;
+    const { content } = packPublicationAuthoringContent(document);
+    assertPackStylesTargetSlots(content.styles, content.document.parts);
+    const expected = content.parent;
     const published = await loadParent({ rootId: document.bindings.root.objectRef.objectId,
       rootVersion: document.bindings.root.makerVersion, rootContentCommitment: document.bindings.root.contentCommitment });
     if (!plain(published) || !same(published, expected)) {

@@ -379,13 +379,14 @@ async function authoredTransportFixture(owner = id(90), largePalette = false) {
   const prepared = structuredClone(await preparedTransport(documentFixture(1, owner)));
   const document = prepared.document;
   const parent = createCreatorCharacterStarter();
+  parent.composition = { mode: 'COMPOSABLE', thirdPartyAdmission: 'CERTIFIED', itemAssetization: true };
   parent.assets.push({ id: 'base-image', kind: 'layer', mediaType: 'image/png', byteLength: 3 });
   for (const part of parent.parts) part.items[0].styles[0].assetId = 'base-image';
   document.authoringParent = { draft: { document: parent }, assets: [
     { assetId: 'base-image', kind: 'layer', mediaType: 'image/png', byteLength: 3, sha256: '11'.repeat(32) },
   ] };
   document.authoring = structuredClone(parent);
-  const own = { ...structuredClone(parent.parts[0]), key: 'own', label: 'Own', menuOrder: 99, renderOrder: 99 };
+  const own = { ...structuredClone(parent.parts[0]), key: 'own', label: 'Own', menuOrder: 99, renderOrder: 99, wardrobeMode: 'SLOT' };
   document.authoring.parts.push(own);
   document.authoring.tracks.push({ key: 'overlay', label: 'Overlay', renderOrder: 99, locked: false });
   document.authoring.colors.push({ key: 'tint', label: 'Tint', defaultSwatchKey: 'red',

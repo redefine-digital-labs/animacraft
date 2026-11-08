@@ -1,6 +1,6 @@
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { validatedDraftExportBundle } from './maker-v8-draft-store.js';
-import { assertPackAuthoring, packAuthoringDocument, packAuthoringContent, packAuthoringParent, preparePackStructure, preparePackEdits } from './maker-v8-pack-authoring.js';
+import { assertPackAuthoring, assertPackStylesTargetSlots, packAuthoringDocument, packAuthoringContent, packAuthoringParent, preparePackStructure, preparePackEdits } from './maker-v8-pack-authoring.js';
 import { projectPublicMakerV8Document } from './maker-v8-document.js';
 import { bindMakerV8SourceAssets } from './maker-v8-source-asset.js';
 
@@ -348,6 +348,14 @@ export function createMakerV8PackStudioV8({
       throw error;
     }
     if (view.status !== 'PUBLICATION_TRANSPORT_READY') {
+      if (operation === 'REVIEW' && view.status === 'TRANSPORT_SIGNATURE_REQUIRED' && view.upload.stage === 'REGISTER'
+        && draft.document.authoring === undefined && loadParent) {
+        const { root } = draft.document.bindings;
+        const parent = await loadParent({
+          rootId: root.objectRef.objectId, rootVersion: root.makerVersion, rootContentCommitment: root.contentCommitment,
+        });
+        assertPackStylesTargetSlots(draft.document.styles, parent.document.parts);
+      }
       return freeze({ draft, transport: view, plan: null, execution: controller.execution });
     }
     const result = await controller.preparePublication({

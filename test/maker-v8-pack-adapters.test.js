@@ -260,6 +260,7 @@ test('Pack additive Part Item and pending Style persist without changing the par
   const { studio, persistence } = harness();
   try {
     const document = structuredClone(createCharacterMakerV8Starter());
+    document.composition = { mode: 'COMPOSABLE', thirdPartyAdmission: 'CERTIFIED', itemAssetization: true };
     await parents.createBundle({ draftId: 'structure-parent', document, createdAt: 10,
       assets: [{ assetId: 'base-default', kind: 'layer', mediaType: 'image/png', bytesBase64: 'AA==' }] });
     const parent = await parents.export('structure-parent');
@@ -268,6 +269,14 @@ test('Pack additive Part Item and pending Style persist without changing the par
     draft = await studio.save({ draftId: draft.draftId, expectedRevision: draft.revision,
       fields: { structure: { action: 'add-part' } } });
     const partKey = draft.document.authoring.parts.at(-1).key;
+    assert.equal(draft.document.authoring.parts.at(-1).wardrobeMode, 'SLOT');
+    assert.throws(() => preparePackEdits(draft.document, [
+      { kind: 'part', field: 'wardrobe-mode', partKey: document.parts[0].key, value: 'SLOT' },
+    ]), /Inherited Parts/);
+    const fixed = preparePackEdits(draft.document, [{ kind: 'part', field: 'wardrobe-mode', partKey, value: 'FIXED' }]);
+    assert.equal(fixed.authoring.parts.at(-1).wardrobeMode, 'FIXED');
+    const slotted = preparePackEdits(fixed, [{ kind: 'part', field: 'wardrobe-mode', partKey, value: 'SLOT' }]);
+    assert.equal(slotted.authoring.parts.at(-1).wardrobeMode, 'SLOT');
     draft = await studio.save({ draftId: draft.draftId, expectedRevision: draft.revision,
       fields: { structure: { action: 'add-item', partKey } } });
     const itemKey = draft.document.authoring.parts.at(-1).items.at(-1).key;

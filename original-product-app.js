@@ -6270,6 +6270,10 @@ export function createOriginalProductApp({
     const propertyInput = (kind, field, value, label, styleKey = '', type = 'text') => {
       const edit = { kind, field, partKey: selectedPart.key, itemKey: kind === 'part' ? '' : selectedItem.key, styleKey };
       const pending = editor.edits?.[JSON.stringify(edit)];
+      if (field === 'wardrobe-mode') {
+        const selected = pending?.value ?? value;
+        return `<label>${escapeHtml(label)}<select data-action="pack-property" data-pack-edit="${escapeHtml(JSON.stringify(edit))}" aria-label="${escapeHtml(label)}"${disabled}><option value="FIXED"${selected === 'FIXED' ? ' selected' : ''}>Fixed</option><option value="SLOT"${selected === 'SLOT' ? ' selected' : ''}>Wardrobe Slot</option></select></label>`;
+      }
       if (field === 'assign-style-track' || field === 'assign-style-color') {
         const options = field === 'assign-style-track' ? authored.tracks : [{ key: '', label: tr('noSmartColor') }, ...authored.colors];
         return `<label>${escapeHtml(label)}<select data-action="pack-property" data-pack-edit="${escapeHtml(JSON.stringify(edit))}" aria-label="${escapeHtml(label)}"${disabled}>${options.map(row => `<option value="${escapeHtml(row.key)}"${row.key === (pending ? pending.value : value || '') ? ' selected' : ''}>${escapeHtml(row.label)}</option>`).join('')}</select></label>`;
@@ -6277,8 +6281,13 @@ export function createOriginalProductApp({
       if (field === 'style-blend') return `<label>${escapeHtml(label)}<select data-action="pack-property" data-pack-edit="${escapeHtml(JSON.stringify(edit))}" aria-label="${escapeHtml(label)}"${disabled}>${MAKER_V8_BLEND_MODES.map(mode => `<option value="${mode}"${mode === (pending ? pending.value : value) ? ' selected' : ''}>${escapeHtml(mode)}</option>`).join('')}</select></label>`;
       return `<label>${escapeHtml(label)}<input type="${type}"${type === 'number' ? ' step="any"' : ''} data-action="pack-property" data-pack-edit="${escapeHtml(JSON.stringify(edit))}" aria-label="${escapeHtml(label)}" value="${escapeHtml(pending ? pending.value : value)}"${disabled}></label>`;
     };
-    const names = selectedItem ? `${parent.parts.some(part => part.key === selectedPart.key) ? '' : propertyInput('part', 'label', selectedPart.label, 'Part name')}
-      ${parent.parts.some(part => part.key === selectedPart.key) ? '' : ruleControl(selectedPart.key, 'part')}
+    const packOwnsPart = selectedPart && !parent.parts.some(part => part.key === selectedPart.key);
+    const partSlot = packOwnsPart && parent.composition.mode === 'COMPOSABLE'
+      ? propertyInput('part', 'wardrobe-mode', selectedPart.wardrobeMode, 'Pack Part behavior')
+      : selectedPart?.wardrobeMode === 'FIXED' ? '<p>Publish Styles on a wardrobe Slot. Fixed parent Parts are read-only.</p>' : '';
+    const names = selectedItem ? `${packOwnsPart ? propertyInput('part', 'label', selectedPart.label, 'Part name') : ''}
+      ${partSlot}
+      ${packOwnsPart ? ruleControl(selectedPart.key, 'part') : ''}
       ${inheritedItem ? '' : propertyInput('item', 'label', selectedItem.label, 'Item name') + ruleControl(`${selectedPart.key}::${selectedItem.key}`, 'item')}` : '';
     const colorInput = (edit, value, label, type = 'text') => {
       const key = JSON.stringify({ kind: 'color', ...edit });

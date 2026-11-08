@@ -323,14 +323,20 @@ test('authored Pack Manifest binds complete content to independent parent and ex
   const candidate = input();
   candidate.draft.document.authoringParent = {
     schemaVersion: 'animacraft.maker-v8-draft-export.v1',
-    draft: { draftId: 'parent-maker', revision: 1, document: parent },
+    draft: { draftId: 'parent-maker', revision: 1, document: structuredClone(parent) },
     assets: local.bindings.parent.assets,
     draftSha256: hash('f'),
   };
   candidate.draft.document.authoring = structuredClone(parent);
   candidate.draft.document.styles[0].itemKey = row.itemKey;
   candidate.draft.document.styles[0].layerTrackKey = row.layerTrackKey;
-  const fresh = harness().transport;
+  const { transport: fresh, calls } = harness();
+  await assert.rejects(fresh.prepare(candidate), { code: 'MAKER_V8_PACK_STYLE_SLOT_REQUIRED' });
+  assert.deepEqual(calls, [], 'a fixed part fails before any Walrus write or quote');
+  for (const document of [candidate.draft.document.authoringParent.draft.document, candidate.draft.document.authoring]) {
+    document.composition = { mode: 'COMPOSABLE', thirdPartyAdmission: 'CERTIFIED', itemAssetization: true };
+    document.parts.find(part => part.key === row.partKey).wardrobeMode = 'SLOT';
+  }
   assert.equal((await fresh.prepare(candidate)).stage, 'ASSET');
   await fresh.requestSignature(candidate);
   assert.equal((await fresh.recover(candidate)).stage, 'MANIFEST');
@@ -338,7 +344,7 @@ test('authored Pack Manifest binds complete content to independent parent and ex
   const compiled = await fresh.recover(candidate);
   assert.equal(compiled.status, 'PUBLICATION_TRANSPORT_READY');
   const published = JSON.parse(Buffer.from(compiled.prepared.manifest.bytesBase64, 'base64'));
-  assert.deepEqual(published.content.authoring, authored.content);
+  assert.deepEqual(published.content.authoring, packPublicationAuthoringContent(candidate.draft.document).content);
   manifest.content.authoring = authored.content;
   const hashBytes = value => createHash('sha256').update(value).digest('hex');
   const commit = content => hashBytes(canonicalMakerV8PackJson({ ...content,

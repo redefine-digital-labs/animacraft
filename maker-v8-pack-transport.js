@@ -1,6 +1,6 @@
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { packPublicationAuthoringContent, assertPublicPackAuthoringContent } from './maker-v8-pack-authoring.js';
+import { packPublicationAuthoringContent, assertPublicPackAuthoringContent, assertPackStylesTargetSlots } from './maker-v8-pack-authoring.js';
 import { compileMakerV8PackDefinitionRowsV8 } from './maker-v8-pack-definitions-compiler.js';
 
 import {
@@ -605,6 +605,7 @@ export function createMakerV8PackTransportV8({
       if (content.styles.length !== document.styles.length) {
         fail('MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE', 'Every published Pack Style must belong to a public Item.', 'VALIDATION');
       }
+      assertPackStylesTargetSlots(content.styles, content.document.parts);
       await compileMakerV8PackDefinitionRowsV8(content, {
         expectedParent: content.parent, semanticPackId: document.metadata.semanticPackId,
       });
