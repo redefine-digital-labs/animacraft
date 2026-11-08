@@ -6795,8 +6795,14 @@ public fun new_physical_runtime_fixture_for_testing<PaymentCoin>(
 public fun physical_pack_style_commitment_for_testing<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): vector<u8> {
+    physical_pack_style_commitment_for_content_for_testing(root, test_hash(71))
+}
+
+#[test_only]
+public fun physical_pack_style_commitment_for_content_for_testing<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>, release_content: vector<u8>,
+): vector<u8> {
     let content = *maker::root_content_commitment_v8(root);
-    let release_content = test_hash(71);
     advance_pack_style_commitment_v8(content, release_content, 0,
         empty_pack_style_commitment_v8(content, release_content), PackStyleV8 {
             index: 0, definition_sources: new_pack_style_definition_sources_v8(1, 1, option::none()),

@@ -38,6 +38,52 @@ fun second_paid_entry_is_rejected() {
     run_policy(runtime::access_paid_v8(), true);
 }
 
+#[test, expected_failure(abort_code = 27, location = animacraft_v8_runtime::runtime_v8)]
+fun archived_pack_semantic_id_cannot_be_admitted_again() {
+    let author = @0xA11;
+    let mut scenario = scenario::begin(author);
+    let (protocol_id, setup, mut system) = bootstrap::initialize_for_testing(&mut scenario);
+    let maker = active::new_active_maker_for_testing(&mut scenario, protocol_id, setup, &mut system);
+    let original = pack_player::publish_pack_for_testing(&mut scenario, maker);
+    let (release_id, admin_id, _) = pack_player::published_ids_for_testing(original);
+    let mut release = scenario.take_shared_by_id<PackReleaseV8<SUI>>(release_id);
+    let admin = scenario.take_from_sender_by_id<PackAdminCapV8>(admin_id);
+    runtime::archive_pack_release_v8(&mut release, &admin, scenario.ctx());
+    scenario::return_shared(release);
+    scenario.return_to_sender(admin);
+    scenario.next_tx(author);
+
+    let _ = pack_player::publish_pack_release_for_testing(&mut scenario, maker,
+        runtime::access_free_v8(), 0, b"physical-pack".to_string(),
+        b"physical-pack-revised-manifest".to_string(), 76);
+    abort EWrongLifecycle
+}
+
+#[test, expected_failure(abort_code = 23, location = animacraft_v8_runtime::runtime_v8)]
+fun original_pack_pass_cannot_authorize_a_new_release() {
+    let mut scenario = scenario::begin(@0xA11);
+    let (protocol_id, setup, mut system) = bootstrap::initialize_for_testing(&mut scenario);
+    let maker = active::new_active_maker_for_testing(&mut scenario, protocol_id, setup, &mut system);
+    let player = pack_player::new_pack_player_for_testing(&mut scenario, maker);
+    let (_, _, _, pass_id, loadout_id, access_id) = pack_player::ids_for_testing(player);
+    let next = pack_player::publish_pack_release_for_testing(&mut scenario, maker,
+        runtime::access_paid_v8(), PRICE, b"physical-pack-v2".to_string(),
+        b"physical-pack-v2-manifest".to_string(), 76);
+    let (next_release_id, _, _) = pack_player::published_ids_for_testing(next);
+    let (root_id, _, _, _) = active::maker_ids_for_testing(maker);
+    let (_, packs_id, _, _, _, _, _, _, _) = active::companion_ids_for_testing(maker);
+    let next_release = scenario.take_shared_by_id<PackReleaseV8<SUI>>(next_release_id);
+    let root = scenario.take_shared_by_id<MakerRootV8<SUI>>(root_id);
+    let packs = scenario.take_shared_by_id<PackRegistryV8>(packs_id);
+    let loadout = scenario.take_from_sender_by_id<MakerLoadoutV8>(loadout_id);
+    let old_pass = scenario.take_from_sender_by_id<PackPassV8>(pass_id);
+    let maker_access = scenario.take_from_sender_by_id<MakerAccessPassV8>(access_id);
+    let proof = runtime::prove_pack_selection_v8(&loadout, &packs, &next_release, &old_pass,
+        &root, &maker_access, 0, scenario.ctx());
+    std::unit_test::destroy(proof);
+    abort EWrongInventory
+}
+
 fun claim_maker_access(scenario: &mut Scenario, root_id: ID, treasury_id: ID) {
     let root = scenario.take_shared_by_id<MakerRootV8<SUI>>(root_id);
     let mut treasury = scenario.take_shared_by_id<MakerTreasuryV8<SUI>>(treasury_id);
@@ -118,6 +164,7 @@ fun run_policy(policy: u8, duplicate_purchase: bool) {
     assert!(std::bcs::to_bytes(&pass) == original_pass, EWrongInventory);
     let loadout = scenario.take_from_sender_by_id<MakerLoadoutV8>(loadout_id);
     let receipt = scenario.take_immutable_by_id<CompleteReceiptV8>(receipt_id);
+    let original_receipt = std::bcs::to_bytes(&receipt);
     let outputs = scenario.take_shared_by_id<OutputRegistryV8>(output_id);
     assert!(output::receipt_loadout_id_v8(&receipt) == loadout_id
         && output::receipt_loadout_revision_v8(&receipt) == runtime::loadout_revision_v8(&loadout)
@@ -159,15 +206,48 @@ fun run_policy(policy: u8, duplicate_purchase: bool) {
     if (paid) {
         scenario.next_tx(author);
         verify_archived_pack_revenue(&mut scenario, release_id, pack_admin_id, packs_id, pack_treasury_id);
+        scenario.next_tx(author);
+        let next = pack_player::publish_pack_release_for_testing(&mut scenario, maker,
+            runtime::access_paid_v8(), PRICE, b"physical-pack-v2".to_string(),
+            b"physical-pack-v2-manifest".to_string(), 76);
+        let (next_release_id, next_admin_id, next_treasury_id) = pack_player::published_ids_for_testing(next);
+        assert!(next_release_id != release_id && next_admin_id != pack_admin_id
+            && next_treasury_id != pack_treasury_id, EWrongLifecycle);
         scenario.next_tx(holder);
+        assert!(scenario.ids_for_sender<PackPassV8>() == vector[pass_id], EWrongInventory);
         let pass = scenario.take_from_sender_by_id<PackPassV8>(pass_id);
         assert!(std::bcs::to_bytes(&pass) == original_pass, EWrongInventory);
+        let receipt = scenario.take_immutable_by_id<CompleteReceiptV8>(receipt_id);
+        let outputs = scenario.take_shared_by_id<OutputRegistryV8>(output_id);
+        assert!(std::bcs::to_bytes(&receipt) == original_receipt
+            && output::output_registry_total_complete_count_v8(&outputs) == 1, EWrongCompletion);
+        let packs = scenario.take_shared_by_id<PackRegistryV8>(packs_id);
+        let original = scenario.take_shared_by_id<PackReleaseV8<SUI>>(release_id);
+        let next = scenario.take_shared_by_id<PackReleaseV8<SUI>>(next_release_id);
+        assert!(runtime::pack_registry_revision_v8(&packs) == 2
+            && runtime::pack_registry_release_count_v8(&packs) == 2
+            && runtime::pack_release_root_id_v8(&next) == root_id
+            && runtime::pack_release_root_version_v8(&next) == runtime::pack_release_root_version_v8(&original)
+            && runtime::pack_release_content_commitment_v8(&next) != runtime::pack_release_content_commitment_v8(&original)
+            && runtime::pack_release_lifecycle_v8(&original) == runtime::pack_archived_v8()
+            && runtime::pack_release_lifecycle_v8(&next) == runtime::pack_active_v8(), EWrongLifecycle);
+        let original_treasury = scenario.take_shared_by_id<PackTreasuryV8<SUI>>(pack_treasury_id);
+        let next_treasury = scenario.take_shared_by_id<PackTreasuryV8<SUI>>(next_treasury_id);
         let protocol_treasury = scenario.take_shared_by_id<ProtocolTreasuryV8<SUI>>(protocol_treasury_id);
         let maker_treasury = scenario.take_shared_by_id<MakerTreasuryV8<SUI>>(maker_treasury_id);
         assert!(protocol::protocol_treasury_balance_for_testing(&protocol_treasury) == 100
-            && treasury::maker_treasury_balance_v2(&maker_treasury) == 0, EWrongAccounting);
+            && treasury::maker_treasury_balance_v2(&maker_treasury) == 0
+            && runtime::pack_treasury_balance_v8(&original_treasury) == 0
+            && runtime::pack_treasury_balance_v8(&next_treasury) == 0, EWrongAccounting);
         scenario::return_shared(protocol_treasury);
         scenario::return_shared(maker_treasury);
+        scenario::return_shared(original_treasury);
+        scenario::return_shared(next_treasury);
+        scenario::return_shared(packs);
+        scenario::return_shared(original);
+        scenario::return_shared(next);
+        scenario::return_shared(outputs);
+        scenario::return_immutable(receipt);
         scenario.return_to_sender(pass);
     };
     std::unit_test::destroy(system);

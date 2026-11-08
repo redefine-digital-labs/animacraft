@@ -9,6 +9,7 @@ use animacraft_v8_core::base_registry_v8::BaseDefinitionRegistryV8;
 use animacraft_v8_core::treasury_v8::{Self as treasury, MakerTreasuryV8, MakerAccessPassV8};
 use animacraft_v8_runtime::runtime_v8::{Self as runtime, RuntimeDefinitionRegistryV8,
     PackRegistryV8, PackAdmissionAuthorityV8, PackReleaseV8, PackPassV8};
+use std::string::String;
 use sui::sui::SUI;
 use sui::test_scenario::{Self as scenario, Scenario};
 
@@ -38,6 +39,14 @@ public fun publish_pack_for_testing(
 public fun publish_pack_with_policy_for_testing(
     scenario: &mut Scenario, active_ids: ActiveMakerIds, access_kind: u8, price_atomic: u64,
 ): PublishedPackIds {
+    publish_pack_release_for_testing(scenario, active_ids, access_kind, price_atomic,
+        b"physical-pack".to_string(), b"physical-pack-manifest".to_string(), 71)
+}
+
+public fun publish_pack_release_for_testing(
+    scenario: &mut Scenario, active_ids: ActiveMakerIds, access_kind: u8, price_atomic: u64,
+    semantic_id: String, manifest_id: String, content_seed: u8,
+): PublishedPackIds {
     let holder = scenario.ctx().sender();
     let (root_id, base_id, _, admin_id) = active::maker_ids_for_testing(active_ids);
     let (definitions_id, packs_id, admission_id, _, _, _, _, _, _) =
@@ -48,10 +57,12 @@ public fun publish_pack_with_policy_for_testing(
     let mut packs = scenario.take_shared_by_id<PackRegistryV8>(packs_id);
     let admission = scenario.take_from_sender_by_id<PackAdmissionAuthorityV8>(admission_id);
     let admin = scenario.take_from_sender_by_id<MakerAdminCapV8>(admin_id);
-    let expected_styles = runtime::physical_pack_style_commitment_for_testing(&root);
+    let release_content = fixture_hash(content_seed);
+    let expected_styles = runtime::physical_pack_style_commitment_for_content_for_testing(
+        &root, release_content);
     let (mut release, pack_admin, pack_treasury) = runtime::new_pack_release_v8(
-        &root, &definitions, b"physical-pack".to_string(),
-        b"physical-pack-manifest".to_string(), fixture_hash(75), fixture_hash(71),
+        &root, &definitions, semantic_id,
+        manifest_id, fixture_hash(content_seed + 4), release_content,
         access_kind, price_atomic, maker::complete_unlimited_free_v8(), 0, 0, 0,
         1, expected_styles, scenario.ctx());
     runtime::append_unprotected_pack_style_v8(&mut release, &pack_admin,
