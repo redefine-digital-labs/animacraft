@@ -14,9 +14,10 @@ use animacraft_v8_core::protocol_config_v8::{Self as protocol, ProtocolConfigV8,
 use animacraft_v8_core::treasury_v8::{Self as treasury, MakerTreasuryV8, MakerAccessPassV8};
 use animacraft_v8_core::package_binding_v8::{ProductReleaseCatalogV8, FreshTupleReplacementBindingV2};
 use animacraft_v8_runtime::runtime_v8::{Self as runtime, RuntimeDefinitionRegistryV8,
-    PackRegistryV8, MakerLoadoutV8, OwnedBaseItemV8};
+    PackRegistryV8, PackReleaseV8, PackPassV8, MakerLoadoutV8, OwnedBaseItemV8};
+use animacraft_v8_runtime::runtime_binding_v8::RuntimePackageConfigV8;
 use animacraft_v8_output::output_v8::{Self as output, OutputRegistryV8, SoulRegistryV8,
-    NativeSoulBindingV8, CompleteOutputV8, CompleteReceiptV8};
+    NativeSoulBindingV8, CompleteOutputV8, CompleteReceiptV8, OutputPackageConfigV8};
 use animacraft_v8_release::release_v8::{Self as release, ReleasePackageConfigV8};
 use animacraft_v8_seal::seal_v8::{Self as seal, SealRegistryV8, SealPolicyConfigV8};
 use soulidity::market::{Self as market, MarketConfigV2, MarketAdminCapV2, KioskRegistry};
@@ -37,6 +38,12 @@ public struct MarketIds has copy, drop, store {
 public struct NativeCompletionIds has copy, drop, store {
     soul: ID, state: ID, binding: ID, output: ID, receipt: ID,
     kiosk: ID, personal_cap: ID, loadout: ID, owned_base: ID, access: ID,
+}
+public struct PackCompletionIds has copy, drop {
+    release: ID, pass: ID,
+}
+public struct PackCompletionObjects {
+    release: PackReleaseV8<SUI>, pass: PackPassV8,
 }
 public fun market_ids(ids: MarketIds): (ID, ID, ID, ID, ID) {
     (ids.config, ids.admin, ids.registry, ids.kinds, ids.policy)
@@ -75,7 +82,18 @@ public fun mint_for_testing(
     scenario: &mut Scenario, protocol_id: ID, setup: SetupIds,
     maker_ids: MakerObjectIds, market_ids: MarketIds, system: &mut System,
 ): NativeCompletionIds {
-    mint_using_player(scenario, protocol_id, setup, maker_ids, market_ids, system, option::none(), false)
+    mint_using_player(scenario, protocol_id, setup, maker_ids, market_ids, system,
+        option::none(), false, option::none())
+}
+
+/// First Complete with an already-owned Maker Access Pass and Pack Pass.
+public fun mint_with_pack_for_testing(
+    scenario: &mut Scenario, protocol_id: ID, setup: SetupIds,
+    maker_ids: MakerObjectIds, market_ids: MarketIds, system: &mut System,
+    pack_release_id: ID, pack_pass_id: ID,
+): NativeCompletionIds {
+    mint_using_player(scenario, protocol_id, setup, maker_ids, market_ids, system,
+        option::none(), false, option::some(PackCompletionIds { release: pack_release_id, pass: pack_pass_id }))
 }
 
 /// Uses a protected output policy installed before activation; no sealed flag
@@ -84,7 +102,8 @@ public fun mint_protected_for_testing(
     scenario: &mut Scenario, protocol_id: ID, setup: SetupIds,
     maker_ids: MakerObjectIds, market_ids: MarketIds, system: &mut System,
 ): NativeCompletionIds {
-    mint_using_player(scenario, protocol_id, setup, maker_ids, market_ids, system, option::none(), true)
+    mint_using_player(scenario, protocol_id, setup, maker_ids, market_ids, system,
+        option::none(), true, option::none())
 }
 
 /// A new explicit completion, not replay of a previously consumed authorization.
@@ -95,7 +114,8 @@ public fun repeat_mint_for_testing(
     maker_ids: MakerObjectIds, market_ids: MarketIds, system: &mut System,
     previous: NativeCompletionIds,
 ): NativeCompletionIds {
-    mint_using_player(scenario, protocol_id, setup, maker_ids, market_ids, system, option::some(previous), false)
+    mint_using_player(scenario, protocol_id, setup, maker_ids, market_ids, system,
+        option::some(previous), false, option::none())
 }
 
 fun mint_using_player(
@@ -103,25 +123,29 @@ fun mint_using_player(
     maker_ids: MakerObjectIds, market_ids: MarketIds, system: &mut System,
     existing: std::option::Option<NativeCompletionIds>,
     protected_complete: bool,
+    pack_ids: Option<PackCompletionIds>,
 ): NativeCompletionIds {
     let holder = scenario.ctx().sender();
     let (root_id, base_id, treasury_id, _) = active::draft_maker_ids_for_testing(maker_ids);
     let (definitions_id, packs_id, _, seal_registry_id, output_id, souls_id, _, _, _) =
         active::draft_companion_ids_for_testing(maker_ids);
-    let (catalog_id, seal_policy_id, _, _, _, _, release_id) = bootstrap::configuration_ids_for_testing(setup);
+    let (catalog_id, seal_policy_id, runtime_config_id, output_config_id, _, _, release_id) =
+        bootstrap::configuration_ids_for_testing(setup);
     let (replacement_id, _, _) = bootstrap::authority_ids_for_testing(scenario, setup);
     let kiosk_id = if (existing.is_some()) existing.borrow().kiosk else {
-        // First completion alone acquires access and creates the holder Kiosk.
-        let root = scenario.take_shared_by_id<MakerRootV8<SUI>>(root_id);
-        let mut maker_treasury = scenario.take_shared_by_id<MakerTreasuryV8<SUI>>(treasury_id);
-        let clock = sui::clock::create_for_testing(scenario.ctx());
-        treasury::claim_free_maker_access_v8(&root, &mut maker_treasury, &clock, scenario.ctx());
-        clock.destroy_for_testing();
+        // A Pack test arrives with Maker access already in wallet inventory.
+        if (pack_ids.is_none()) {
+            let root = scenario.take_shared_by_id<MakerRootV8<SUI>>(root_id);
+            let mut maker_treasury = scenario.take_shared_by_id<MakerTreasuryV8<SUI>>(treasury_id);
+            let clock = sui::clock::create_for_testing(scenario.ctx());
+            treasury::claim_free_maker_access_v8(&root, &mut maker_treasury, &clock, scenario.ctx());
+            clock.destroy_for_testing();
+            scenario::return_shared(root);
+            scenario::return_shared(maker_treasury);
+        };
         let market_config = scenario.take_shared_by_id<MarketConfigV2>(market_ids.config);
         let mut registry = scenario.take_shared_by_id<KioskRegistry>(market_ids.registry);
         let kiosk_id = market::init_personal_kiosk_v2(&market_config, &mut registry, scenario.ctx());
-        scenario::return_shared(root);
-        scenario::return_shared(maker_treasury);
         scenario::return_shared(market_config);
         scenario::return_shared(registry);
         scenario.next_tx(holder);
@@ -135,16 +159,30 @@ fun mint_using_player(
     let access = if (existing.is_some())
         scenario.take_from_sender_by_id<MakerAccessPassV8>(existing.borrow().access)
     else scenario.take_from_sender<MakerAccessPassV8>();
-    let (owned, loadout) = if (existing.is_some()) {
+    let (owned, mut loadout) = if (existing.is_some()) {
         (scenario.take_from_sender_by_id<OwnedBaseItemV8>(existing.borrow().owned_base),
             scenario.take_from_sender_by_id<MakerLoadoutV8>(existing.borrow().loadout))
     } else {
         let mut owned = runtime::claim_owned_base_item_v8(&mut packs, &definitions,
             &base, &root, &access, b"part".to_string(), b"item".to_string(), scenario.ctx());
         let mut loadout = runtime::create_maker_loadout_v8(&root, &definitions, &packs, &access, scenario.ctx());
-        runtime::equip_owned_base_style_v8(&mut loadout, &mut owned, &root, &definitions,
-            &packs, &base, &access, 0, option::none(), b"style".to_string(), option::none(), scenario.ctx());
+        if (pack_ids.is_none()) {
+            runtime::equip_owned_base_style_v8(&mut loadout, &mut owned, &root, &definitions,
+                &packs, &base, &access, 0, option::none(), b"style".to_string(), option::none(), scenario.ctx());
+        };
         (owned, loadout)
+    };
+    let pack = if (pack_ids.is_some()) {
+        let ids = pack_ids.destroy_some();
+        let release = scenario.take_shared_by_id<PackReleaseV8<SUI>>(ids.release);
+        let pass = scenario.take_from_sender_by_id<PackPassV8>(ids.pass);
+        runtime::select_pack_style_v8(&mut loadout, &root, &definitions, &base, &packs,
+            &release, &pass, &access, 0, option::none(), b"part".to_string(),
+            b"pack-item".to_string(), b"pack-style".to_string(), option::none(), scenario.ctx());
+        option::some(PackCompletionObjects { release, pass })
+    } else {
+        pack_ids.destroy_none();
+        option::none()
     };
     // The sparse fixture has a preceding empty Part; prove the actual selected
     // row instead of assuming every Maker's first occupied slot is zero.
@@ -152,8 +190,14 @@ fun mint_using_player(
     let mut selected_index = 0;
     while (selections[selected_index].is_none()) selected_index = selected_index + 1;
     assert!(runtime::loadout_selection_count_v8(&loadout) == 1, 99);
-    let proof = runtime::prove_owned_base_selection_v8(&loadout, &owned, &definitions,
-        &packs, &base, &root, &access, selected_index, scenario.ctx());
+    let proof = if (pack.is_some()) {
+        let PackCompletionObjects { release, pass } = pack.borrow();
+        runtime::prove_pack_selection_v8(&loadout, &packs, release, pass,
+            &root, &access, selected_index, scenario.ctx())
+    } else {
+        runtime::prove_owned_base_selection_v8(&loadout, &owned, &definitions,
+            &packs, &base, &root, &access, selected_index, scenario.ctx())
+    };
     let authorization = runtime::seal_ordered_selection_proofs_v8(&loadout,
         &definitions, &base, vector[], vector[proof], scenario.ctx());
     let config = scenario.take_shared_by_id<ProtocolConfigV8>(protocol_id);
@@ -165,9 +209,21 @@ fun mint_using_player(
     let release_config = scenario.take_shared_by_id<ReleasePackageConfigV8>(release_id);
     let mut output_registry = scenario.take_shared_by_id<OutputRegistryV8>(output_id);
     let mut souls = scenario.take_shared_by_id<SoulRegistryV8>(souls_id);
-    let session = output::begin_complete_v8(&mut output_registry, b"complete".to_string(),
+    let mut session = output::begin_complete_v8(&mut output_registry, b"complete".to_string(),
         &root, &config, &mut maker_treasury, &mut protocol_treasury,
         sui::coin::zero<SUI>(scenario.ctx()), authorization, &loadout, scenario.ctx());
+    if (pack.is_some()) {
+        let PackCompletionObjects { mut release, pass } = pack.destroy_some();
+        let runtime_config = scenario.take_shared_by_id<RuntimePackageConfigV8>(runtime_config_id);
+        let output_config = scenario.take_shared_by_id<OutputPackageConfigV8>(output_config_id);
+        output::append_free_pack_complete_v8(&mut session, &output_config, &output_registry,
+            &root, &catalog, &config, &replacement, &runtime_config, &mut release,
+            &packs, &pass, &loadout, scenario.ctx());
+        scenario::return_shared(runtime_config);
+        scenario::return_shared(output_config);
+        scenario::return_shared(release);
+        scenario.return_to_sender(pass);
+    } else pack.destroy_none();
     let render = content_blob(system, 0xD0E, scenario.ctx());
     let authorization = if (protected_complete) {
         let mut seal_registry = scenario.take_shared_by_id<SealRegistryV8>(seal_registry_id);

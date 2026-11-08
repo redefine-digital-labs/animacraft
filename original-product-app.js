@@ -108,6 +108,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     templatePlazaBack: '← Template Plaza', sourceOnchain: 'On-chain Maker',
     partsLabel: 'Parts', itemsLabel: 'Items', royaltyPolicy: 'Royalty policy',
     viewMaker: 'View Maker', startMaking: 'Start making', connectToMake: 'Connect to make',
+    loadingPublicPacks: 'Loading expansion packs…', publicPacksUnavailable: 'Some expansion packs could not be verified. Refresh the page to try again.',
     noMatchingMakers: 'No matching Makers found.',
     noPublishedMakers: 'No Makers have been published on-chain yet',
     noPublishedMakersCopy: 'Animacraft only lists Makers discovered from Sui and restored from certified Walrus assets. Be the first creator to publish one.',
@@ -169,6 +170,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     templatePlazaBack: '← 返回模板广场', sourceOnchain: '链上 Maker',
     partsLabel: '部位', itemsLabel: '部件', royaltyPolicy: '版税政策',
     viewMaker: '查看模板', startMaking: '开始捏 OC', connectToMake: '连接钱包后开始',
+    loadingPublicPacks: '正在读取扩展包…', publicPacksUnavailable: '部分扩展包暂时无法核验。请刷新页面重试。',
     noMatchingMakers: '没有找到匹配的模板。', noPublishedMakers: '链上还没有已发布的 Maker',
     noPublishedMakersCopy: 'Animacraft 只展示从 Sui 发现并由 Walrus 认证素材恢复的 Maker。成为第一位发布者。',
     createFirstMaker: '创建第一个 Maker', byCreator: '创作者：{creator}',
@@ -224,6 +226,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     templatePlazaBack: '← テンプレート広場へ戻る', sourceOnchain: 'オンチェーン Maker',
     partsLabel: 'パーツ', itemsLabel: 'アイテム', royaltyPolicy: 'ロイヤリティ方針',
     viewMaker: 'メーカーを見る', startMaking: 'OC を作る', connectToMake: '接続して作る',
+    loadingPublicPacks: '拡張パックを読み込み中…', publicPacksUnavailable: '一部の拡張パックを確認できませんでした。ページを更新して再試行してください。',
     noMatchingMakers: '一致するメーカーがありません。',
     noPublishedMakers: 'オンチェーンに公開された Maker はまだありません',
     noPublishedMakersCopy: 'Animacraft は Sui で検出され、認証済み Walrus 素材から復元された Maker のみを表示します。最初のクリエイターになりましょう。',
@@ -281,6 +284,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     templatePlazaBack: '← 템플릿 광장으로', sourceOnchain: '온체인 Maker',
     partsLabel: '파트', itemsLabel: '아이템', royaltyPolicy: '로열티 정책',
     viewMaker: '메이커 보기', startMaking: 'OC 만들기', connectToMake: '연결하고 만들기',
+    loadingPublicPacks: '확장 팩을 불러오는 중…', publicPacksUnavailable: '일부 확장 팩을 확인하지 못했습니다. 페이지를 새로고침해 주세요.',
     noMatchingMakers: '일치하는 메이커가 없습니다.',
     noPublishedMakers: '아직 온체인에 게시된 Maker가 없습니다',
     noPublishedMakersCopy: 'Animacraft는 Sui에서 발견되고 인증된 Walrus 에셋으로 복원된 Maker만 표시합니다. 첫 번째 크리에이터가 되어 보세요.',
@@ -338,6 +342,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     templatePlazaBack: '← Về Quảng trường mẫu', sourceOnchain: 'Maker trên chuỗi',
     partsLabel: 'Bộ phận', itemsLabel: 'Vật phẩm', royaltyPolicy: 'Chính sách tiền bản quyền',
     viewMaker: 'Xem Maker', startMaking: 'Bắt đầu tạo OC', connectToMake: 'Kết nối để tạo',
+    loadingPublicPacks: 'Đang tải các gói mở rộng…', publicPacksUnavailable: 'Không thể xác minh một số gói mở rộng. Hãy tải lại trang để thử lại.',
     noMatchingMakers: 'Không tìm thấy Maker phù hợp.',
     noPublishedMakers: 'Chưa có Maker nào được đăng trên chuỗi',
     noPublishedMakersCopy: 'Animacraft chỉ hiển thị Maker được phát hiện từ Sui và khôi phục bằng tài sản Walrus đã chứng nhận. Hãy trở thành nhà sáng tạo đầu tiên.',
@@ -905,6 +910,7 @@ export function createOriginalProductApp({
   const bridgeSubscribe = requiredMethod(bridge, 'subscribe', 'bridge');
   const listTemplates = requiredMethod(bridge, 'listTemplates', 'bridge');
   const getTemplate = requiredMethod(bridge, 'getTemplate', 'bridge');
+  const listPublicPacks = optionalMethod(bridge, 'listPublicPacks');
   const loadCertifiedAsset = requiredMethod(bridge, 'loadCertifiedAsset', 'bridge');
   const openPlayerSession = requiredMethod(bridge, 'openPlayerSession', 'bridge');
   const createDraft = requiredMethod(bridge, 'createDraft', 'bridge');
@@ -1045,6 +1051,7 @@ export function createOriginalProductApp({
     search: '',
     templateId: makerReferenceFromLocation(win),
     templateDetailStatus: 'idle',
+    templatePackCatalog: null,
     templateDetail: null,
     templateDetailError: '',
     templateDetailCoverUrl: '',
@@ -1649,6 +1656,30 @@ export function createOriginalProductApp({
     });
   }
 
+  function renderTemplatePublicPacks() {
+    const catalog = state.templatePackCatalog;
+    if (!catalog) return '';
+    const text = key => makerWorkspaceText(state.locale, key);
+    const rows = catalog.packs.map(pack => {
+      const atomic = pack.priceAtomic.padStart(7, '0');
+      const price = `${atomic.slice(0, -6)}.${atomic.slice(-6)}`.replace(/\.?0+$/, '');
+      const entry = pack.accessKind === 'PAID' ? `${price} USDC`
+        : text(pack.accessKind === 'FREE' ? 'accessFree' : 'accessIncludedCore');
+      return `<li data-public-pack-release="${escapeHtml(pack.releaseId)}">
+        <strong>${escapeHtml(pack.name)}</strong> <span>${escapeHtml(entry)}</span>
+        ${pack.summary ? `<p>${escapeHtml(pack.summary)}</p>` : ''}
+      </li>`;
+    }).join('');
+    const status = catalog.loading ? t('loadingPublicPacks')
+      : catalog.unavailableCount ? t('publicPacksUnavailable')
+        : rows ? '' : text('noExpansionPacks');
+    return `<section class="template-detail-license" data-public-packs aria-labelledby="publicPacksHeading">
+      <h2 id="publicPacksHeading">${escapeHtml(text('expansionPacks'))}</h2>
+      ${rows ? `<ul>${rows}</ul>` : ''}
+      ${status ? `<p role="status">${escapeHtml(status)}</p>` : ''}
+    </section>`;
+  }
+
   function renderTemplateDetail() {
     const root = byId('templateDetail');
     if (!root) return;
@@ -1700,6 +1731,7 @@ export function createOriginalProductApp({
         </div>
         <div class="badge-row">${template.partLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join('')}</div>
         <div class="template-detail-license"><strong>${escapeHtml(template.license)}</strong><p>${escapeHtml(template.licenseNote)}</p></div>
+        ${renderTemplatePublicPacks()}
         <div class="template-detail-actions">
           <button class="primary" type="button" data-detail-start>${escapeHtml(state.connection.connected ? t('startMaking', 'Make this OC') : t('connectToMake', 'Connect to make'))}</button>
         </div>
@@ -1844,6 +1876,7 @@ export function createOriginalProductApp({
     const request = ++state.templateDetailRequest;
     state.templateId = listed.id;
     state.templateDetailStatus = 'loading';
+    state.templatePackCatalog = listPublicPacks ? { packs: [], loading: true } : null;
     state.templateDetail = null;
     state.templateDetailError = '';
     state.templateDetailCoverUrl = state.templateCoverUrls.get(listed.id) || '';
@@ -1875,6 +1908,20 @@ export function createOriginalProductApp({
       }
       state.templateDetailStatus = 'ready';
       renderConnection();
+      if (listPublicPacks) {
+        let catalog;
+        try {
+          catalog = await listPublicPacks({ rootId: listed.id });
+          if (catalog?.rootId !== listed.id || !Array.isArray(catalog.packs)) {
+            throw new TypeError('Expansion pack discovery returned another Maker.');
+          }
+        } catch {
+          catalog = { packs: [], unavailableCount: 1 };
+        }
+        if (state.destroyed || request !== state.templateDetailRequest) return null;
+        state.templatePackCatalog = catalog;
+        renderTemplateDetail();
+      }
       return detail;
     } catch (error) {
       if (state.destroyed || request !== state.templateDetailRequest) return null;
@@ -2576,6 +2623,7 @@ export function createOriginalProductApp({
       completionIssues: session.execution.writeEnabled === true
         ? [] : [String(session.execution.disabledReason || '')].filter(Boolean),
       completionStatus: null,
+      savedMintReceipt: null,
       render: {
         state: 'pending',
         message: '',
@@ -3631,7 +3679,7 @@ export function createOriginalProductApp({
   }
 
   async function refreshPlayerCompletionReceipt() {
-    if (!readPlayerCompletionReceipt || state.localPlayer || state.playerUi.completionStatus
+    if (!readPlayerCompletionReceipt || state.localPlayer || state.playerUi.savedMintReceipt
       || state.playerUi.completedSoul || !state.connection.connected) return;
     const { playerUi, playerSession, playerProjectGeneration, playerRequest, playerMutationRequest, playerExportRequest } = state;
     const wallet = state.connection.address;
@@ -3640,11 +3688,10 @@ export function createOriginalProductApp({
       if (!receipt || !EXACT_OBJECT_ID.test(receipt.soulId ?? '')
         || !/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(receipt.transactionDigest ?? '')
         || state.playerUi !== playerUi || !playerUi.export.open || state.playerCompletionFlight
-        || state.playerExportRequest !== playerExportRequest || playerUi.completionStatus
+        || state.playerExportRequest !== playerExportRequest || playerUi.savedMintReceipt
         || playerUi.completedSoul || state.connection.address !== wallet
         || !playerProjectCurrent(playerProjectGeneration, playerRequest, playerMutationRequest, playerSession.rootId)) return;
-      playerUi.completionStatus = { state: 'ready', receipt,
-        message: makerWorkspaceText(state.locale, 'playerStepSavedMintReceipt') };
+      playerUi.savedMintReceipt = receipt;
       renderPlayer({ drawPreview: false });
     } catch {
       // Preview remains usable if this browser cannot read the saved journal.
@@ -3872,6 +3919,7 @@ export function createOriginalProductApp({
               : makerWorkspaceText(state.locale, 'playerStepRecoveredOtherDraft'),
           };
           state.playerUi.export.completionConfirmed = matchesProject;
+          state.playerUi.savedMintReceipt = null;
           state.playerUi.completedSoul = result.actionId && EXACT_OBJECT_ID.test(result.soulId || '') && result.transactionDigest
             ? { actionId: result.actionId, soulId: result.soulId, transactionDigest: result.transactionDigest,
               projectHash: result.completedProjectHash, handoffUrl, matchesProject } : null;
@@ -6232,7 +6280,8 @@ export function createOriginalProductApp({
         : review?.needsVerifiedQuote ? 'A verified storage quote is required. Refresh to read a new quote.'
           : review?.executionEnabled === false ? 'Pack signing and broadcast are disabled.'
             : review?.nextAction === 'SIGN' ? 'Review this transaction before opening your wallet.'
-              : review?.nextAction === 'RECOVER' ? 'Continue the saved step. This can upload or send the previously signed transaction.'
+              : review?.signatureOutcomeUnknown ? 'The wallet response is unknown. Check the original transaction before any new signature.'
+                : review?.nextAction === 'RECOVER' ? 'Continue the saved step. This can upload or send the previously signed transaction.'
                 : review?.status === 'FAILED' ? 'The saved Pack publication failed. Check the recorded transaction.'
                   : editor.transportPinned ? 'A saved storage attempt is available. Open its current step.'
                     : 'Prepare the next Pack publication step.';
@@ -6713,7 +6762,7 @@ export function createOriginalProductApp({
     }
     renderCreator();
   }
-  async function continueComposableUpload(uploadId, action) {
+  async function continueComposableUpload(uploadId, action, { bundle = false } = {}) {
     const history = state.composableUploadHistory;
     const handler = action === 'REVIEW' ? reviewComposableUpload : action === 'CREATE_PRODUCT'
       ? createComposableUploadProduct : action === 'RECOVER_PRODUCT' ? recoverComposableAction : advanceComposableUpload;
@@ -6726,7 +6775,8 @@ export function createOriginalProductApp({
       if (action === 'CREATE_PRODUCT' || action === 'RECOVER_PRODUCT') {
         if (action === 'CREATE_PRODUCT') {
           if (!createComposableUploadProduct) throw new Error('Product creation is unavailable.');
-          await createComposableUploadProduct({ uploadId });
+          const review = history.productReview?.requestId === uploadId ? history.productReview : undefined;
+          await createComposableUploadProduct({ uploadId, ...(review ? { review } : {}) });
         } else {
           if (!recoverComposableAction || !row.productAttempt?.ticket) throw new Error('Saved Product recovery ticket is unavailable.');
           await recoverComposableAction(row.productAttempt.ticket);
@@ -6735,7 +6785,7 @@ export function createOriginalProductApp({
         return;
       }
       if (action === 'REVIEW') {
-        const request = await reviewComposableUpload({ uploadId });
+        const request = await reviewComposableUpload({ uploadId, ...(bundle ? { bundle } : {}) });
         if (generation === state.creatorDraftGeneration && connection === creatorConnectionGeneration) {
           state.composableUploadHistory = { ...history, busy: false, actionError: '', productReview: request };
           renderCreator();
@@ -7491,7 +7541,7 @@ export function createOriginalProductApp({
     } else if (action === 'create-composable-product' || action === 'recover-composable-product') {
       await continueComposableUpload(String(control.dataset.uploadId || ''), action === 'create-composable-product' ? 'CREATE_PRODUCT' : 'RECOVER_PRODUCT');
     } else if (action === 'review-composable-upload') {
-      await continueComposableUpload(String(control.dataset.uploadId || ''), 'REVIEW');
+      await continueComposableUpload(String(control.dataset.uploadId || ''), 'REVIEW', { bundle: control.dataset.uploadBundle === 'true' });
     } else if (action === 'continue-composable-upload') {
       await continueComposableUpload(String(control.dataset.uploadId || ''), String(control.dataset.uploadAction || ''));
     } else if (action === 'prepare-composable-storage') {

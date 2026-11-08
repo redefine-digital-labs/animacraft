@@ -463,6 +463,82 @@ export function createMakerV8ProductRuntime({
       });
     },
   });
+  const loadActivePlayerRoot = async (rootId) => {
+    const resolved = await resolveChain();
+    const activations = await resolved.discover();
+    const matches = activations.filter((activation) => (
+      String(activation?.binding?.rootId ?? '').toLowerCase() === rootId
+    ));
+    if (matches.length !== 1) {
+      fail(
+        'MAKER_V8_PRODUCT_CHOICE_ROOT_INVALID',
+        'Pack choices require one exact activated Maker Root.',
+        { rootId, observed: matches.length },
+      );
+    }
+    const context = await resolved.loadContext(matches[0]);
+    if (context?.root?.objectId !== rootId || context.root.lifecycle !== 'ACTIVE') {
+      fail(
+        'MAKER_V8_PRODUCT_CHOICE_ROOT_INACTIVE',
+        'Pack choices require the exact ACTIVE Maker Root.',
+        { rootId, lifecycle: context?.root?.lifecycle ?? null },
+      );
+    }
+    requireMethod(resolved, 'discoverPackReleases', 'chain');
+    return { resolved, context };
+  };
+  const assertPublicPackEntry = (release, rootId, seen) => {
+    const entry = release?.entry;
+    if (!release || !EXACT_ID.test(release.objectId) || release.rootId !== rootId || release.lifecycle !== 2
+      || release.admission?.admissionState !== 0 || seen.has(release.objectId)
+      || ![0, 1, 2].includes(entry?.kind) || !/^(?:0|[1-9][0-9]*)$/.test(entry?.priceAtomic)
+      || BigInt(entry.priceAtomic) > 1_000_000_000_000n
+      || (entry.kind === 1 ? entry.priceAtomic === '0' : entry.priceAtomic !== '0')
+      || entry.paymentCoinType !== runtime.paymentCoinType) {
+      fail('MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT', 'Public Pack choice lacks its exact ACTIVE admission or entry policy.');
+    }
+  };
+  const loadPackManifest = (release, root) => {
+    if (!packManifests) {
+      fail('MAKER_V8_PRODUCT_PACK_MANIFEST_READER_REQUIRED', 'Pack choices require the certified Pack Manifest reader.');
+    }
+    return packManifests.load({
+      blobId: release.manifestBlobId,
+      sha256: release.manifestSha256,
+      rootId: root.objectId,
+      rootVersion: root.makerVersion.toString(),
+      rootContentCommitment: root.contentCommitment,
+      semanticPackId: release.semanticPackId,
+      contentCommitment: release.contentCommitment,
+    });
+  };
+  const publicPacks = freeze({
+    async list({ rootId } = {}) {
+      if (!EXACT_ID.test(rootId)) fail('MAKER_V8_PRODUCT_CHOICE_CONTEXT_INVALID', 'Pack discovery requires one exact Maker Root.');
+      const { resolved, context: { root } } = await loadActivePlayerRoot(rootId);
+      const releases = await resolved.discoverPackReleases(root);
+      const seen = new Set();
+      const packs = [];
+      let unavailableCount = 0;
+      for (const release of releases) {
+        assertPublicPackEntry(release, rootId, seen);
+        seen.add(release.objectId);
+        try {
+          const { manifest: { content } } = await loadPackManifest(release, root);
+          const accessKind = ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'][release.entry.kind];
+          if (content.access.kind !== accessKind || content.access.priceAtomic !== release.entry.priceAtomic
+            || String(content.styles.length) !== release.expectedStyleCount) {
+            fail('MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT', 'Certified Pack terms or Style count differ from the ACTIVE Release.');
+          }
+          packs.push(freeze({ releaseId: release.objectId, name: content.metadata.name,
+            summary: content.metadata.summary, accessKind, priceAtomic: release.entry.priceAtomic }));
+        } catch {
+          unavailableCount += 1;
+        }
+      }
+      return freeze({ rootId, packs: freeze(packs), unavailableCount });
+    },
+  });
   const loadPlayerContext = async (request = {}) => {
       const address = typeof request.address === 'string' ? request.address.toLowerCase() : '';
       const rootId = typeof request.rootId === 'string' ? request.rootId.toLowerCase() : '';
@@ -472,28 +548,8 @@ export function createMakerV8ProductRuntime({
           'Contextual Player choices require one exact wallet and Maker Root.',
         );
       }
-      const resolved = await resolveChain();
-      const activations = await resolved.discover();
-      const matches = activations.filter((activation) => (
-        String(activation?.binding?.rootId ?? '').toLowerCase() === rootId
-      ));
-      if (matches.length !== 1) {
-        fail(
-          'MAKER_V8_PRODUCT_CHOICE_ROOT_INVALID',
-          'Contextual Player choices require one exact activated Maker Root.',
-          { rootId, observed: matches.length },
-        );
-      }
-      const context = await resolved.loadContext(matches[0]);
-      if (context?.root?.objectId !== rootId || context.root.lifecycle !== 'ACTIVE') {
-        fail(
-          'MAKER_V8_PRODUCT_CHOICE_ROOT_INACTIVE',
-          'Contextual Player choices require the exact ACTIVE Maker Root.',
-          { rootId, lifecycle: context?.root?.lifecycle ?? null },
-        );
-      }
-      requireMethod(resolved, 'discoverPackReleases', 'chain');
-      const [owned, publicPacks] = await Promise.all([
+      const { resolved, context } = await loadActivePlayerRoot(rootId);
+      const [owned, packReleases] = await Promise.all([
         resolved.inventory(address, context.root), resolved.discoverPackReleases(context.root),
       ]);
       const packStyles = [];
@@ -529,16 +585,8 @@ export function createMakerV8ProductRuntime({
       const certifiedPackAssets = [];
       const diagnostics = [];
       const packChoices = new Map();
-      for (const release of publicPacks) {
-        const entry = release?.entry;
-        if (!release || release.rootId !== rootId || release.lifecycle !== 2
-          || release.admission?.admissionState !== 0 || packChoices.has(release.objectId)
-          || ![0, 1, 2].includes(entry?.kind) || !/^(?:0|[1-9][0-9]*)$/.test(entry?.priceAtomic)
-          || BigInt(entry.priceAtomic) > 1_000_000_000_000n
-          || (entry.kind === 1 ? entry.priceAtomic === '0' : entry.priceAtomic !== '0')
-          || entry.paymentCoinType !== runtime.paymentCoinType) {
-          fail('MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT', 'Public Pack choice lacks its exact ACTIVE admission or entry policy.');
-        }
+      for (const release of packReleases) {
+        assertPublicPackEntry(release, rootId, packChoices);
         packChoices.set(release.objectId, { release, owned: false });
       }
       for (const pass of owned.packPasses ?? []) {
@@ -563,21 +611,7 @@ export function createMakerV8ProductRuntime({
       const hasMakerAccess = (owned.makerAccessPasses ?? []).length > 0;
       for (const choice of packChoices.values()) {
         const { release } = choice;
-        if (!packManifests) {
-          fail(
-            'MAKER_V8_PRODUCT_PACK_MANIFEST_READER_REQUIRED',
-            'Pack choices require the certified Pack Manifest reader.',
-          );
-        }
-        const read = await packManifests.load({
-          blobId: release.manifestBlobId,
-          sha256: release.manifestSha256,
-          rootId,
-          rootVersion: context.root.makerVersion.toString(),
-          rootContentCommitment: context.root.contentCommitment,
-          semanticPackId: release.semanticPackId,
-          contentCommitment: release.contentCommitment,
-        });
+        const read = await loadPackManifest(release, context.root);
         const styles = read.manifest.content.styles;
         let definitionCommitment = null;
         let styleReferences = null;
@@ -804,6 +838,7 @@ export function createMakerV8ProductRuntime({
     lineage,
     wallet,
     inventory,
+    publicPacks,
     choices,
     playerContext,
     compiler: browser.compiler,
