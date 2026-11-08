@@ -296,7 +296,8 @@ function absence(transactionDigest, checkpoint = '9') {
   };
 }
 
-function controllerHarness({ unknown = false, persistence = createMakerV8PackPublicationMemoryPersistenceV8(), accountAddress, startTime = 100, action = 'MINT_ITEM', loadRequest } = {}) {
+function controllerHarness({ unknown = false, persistence = createMakerV8PackPublicationMemoryPersistenceV8(),
+  accountAddress, startTime = 100, action = 'MINT_ITEM', loadRequest, signError = null } = {}) {
   const order = [];
   const durableRequest = request(action);
   let queryCount = 0;
@@ -321,6 +322,7 @@ function controllerHarness({ unknown = false, persistence = createMakerV8PackPub
       async getCurrentAccount() { return { address: accountAddress || durableRequest.signer, network: 'mainnet' }; },
       async signExactTransaction({ bytes, digest, signer: address }) {
         order.push('sign');
+        if (signError) throw signError;
         return { bytes, digest, signer: address, signature: toBase64(Uint8Array.of(1, 2, 3)) };
       },
       async verifyExactSignature() { order.push('verify'); return true; },
@@ -411,6 +413,23 @@ test('Composable unknown outcome never fabricates readback or broadcasts', async
   const otherWallet = controllerHarness({ persistence, accountAddress: id(999) });
   assert.equal(await otherWallet.controller.load(input), null);
   assert.deepEqual((await otherWallet.controller.list()).rows, []);
+});
+
+test('Composable recovery uses the original equipment digest when the wallet callback was lost', async () => {
+  const idb = new IDBFactory();
+  const options = { storageManager: { persisted: async () => true, persist: async () => true } };
+  const first = controllerHarness({ persistence: createMakerV8ComposablePersistenceV8(idb, options),
+    signError: new Error('Wallet response lost') });
+  const checked = request('MINT_ITEM');
+  await assert.rejects(first.controller.prepare(checked), /Wallet response lost/);
+  const prior = await first.controller.load(checked);
+  assert.ok(prior.ticket?.digest);
+  const cold = controllerHarness({ persistence: createMakerV8ComposablePersistenceV8(idb, options), startTime: 200 });
+  assert.deepEqual((await cold.controller.load(checked)).ticket, prior.ticket);
+  const recovered = await cold.controller.recover(prior.ticket);
+  assert.equal(recovered.status, 'OUTCOME_UNKNOWN');
+  assert.equal(recovered.digest, prior.ticket.digest);
+  assert.deepEqual(cold.order, ['query']);
 });
 
 function rpcOwner(value) {

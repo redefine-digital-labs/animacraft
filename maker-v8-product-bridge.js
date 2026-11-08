@@ -2234,7 +2234,7 @@ export function createMakerV8ProductBridge({
           releaseId: chain?.release.objectRef.objectId ?? null,
           releaseDigest: chain?.finalizedDigest ?? null,
           needsVerifiedQuote: Boolean(step && !canSign),
-          signatureOutcomeUnknown: transport?.upload?.reason === 'SIGNATURE_OUTCOME_UNKNOWN',
+          signatureOutcomeUnknown: transport?.upload?.reason === 'SIGNATURE_OUTCOME_UNKNOWN' || outcome?.status === 'SIGNING',
         });
         currentReview = { scope, review };
         return freeze({ draft, review });

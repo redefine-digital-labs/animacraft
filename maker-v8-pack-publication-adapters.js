@@ -278,6 +278,33 @@ export function createMakerV8PackPublicationBoundaryV8({
       return freeze({ status: success ? 'SUCCESS' : 'FAILURE' });
     },
 
+    async recoverFinalizedSignature(input) {
+      exact(input, ['bytes', 'digest', 'signer', 'kindBytes', 'query'], 'Pack finalized signature request');
+      const signer = address(input.signer, 'Pack signer');
+      const kind = transactionKind(input.kindBytes, 'Pack descriptor kind');
+      const proof = transactionData(input.bytes, { signer, kindBytes: kind.base64, digest: input.digest });
+      await assertPinnedMainnet(client);
+      const evidence = await client.getFinalizedTransactionEvidence({ digest: proof.digest });
+      await assertPinnedMainnet(client);
+      const query = input.query;
+      if (query?.status !== 'FINALIZED_SUCCESS' || query.digest !== proof.digest
+        || evidence?.digest !== proof.digest || !/^(?:0|[1-9][0-9]*)$/.test(evidence.checkpoint ?? '')
+        || evidence.transactionBcsBase64 !== proof.base64 || evidence.effectsStatus?.success !== true
+        || evidence.epoch !== query.epoch || evidence.eventsDigest !== query.eventsDigest
+        || !(evidence.effectsBcs instanceof Uint8Array)
+        || `0x${hashBytes(evidence.effectsBcs)}` !== query.effectsFingerprint
+        || !Array.isArray(evidence.signatures)) {
+        fail('MAKER_V8_PACK_ADAPTER_FINALIZED_SIGNATURE_DRIFT', 'Finalized Ledger evidence differs from the original Pack transaction.');
+      }
+      for (const signature of evidence.signatures) {
+        try {
+          canonicalBase64(signature, 'Pack signature');
+          if (await isValidTransactionSignature(proof.raw, signature, { client, address: signer })) return signature;
+        } catch { /* Only an authentic signature from the original receipt can restore the intent. */ }
+      }
+      fail('MAKER_V8_PACK_ADAPTER_SIGNATURE_INVALID', 'Finalized Pack transaction lacks the original signer signature.');
+    },
+
     async broadcastExactTransaction(input) {
       exact(input, ['bytes', 'signature', 'digest', 'signer'], 'Pack broadcast request');
       if (!gates.allowWalletSignature || !gates.allowBroadcast) {
