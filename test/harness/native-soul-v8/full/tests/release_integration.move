@@ -165,6 +165,71 @@ fun active_can_archive_directly_with_exact_event() {
     scenario.end();
 }
 
+#[test]
+fun archived_maker_activates_an_independent_successor() {
+    let author = @0xA11;
+    let mut scenario = scenario::begin(author);
+    let (protocol_id, setup, original_ids, mut system) = start(&mut scenario, true);
+    let mut original = take_fixture(&scenario, protocol_id, setup, original_ids);
+    let maker_key = *maker::root_maker_key_v2(&original.root);
+    let original_version_commitment = *maker::root_version_commitment_v2(&original.root);
+    let original_content_commitment = *maker::root_content_commitment_v8(&original.root);
+    let original_companions = original.companion_ids;
+    archive(&mut original, scenario.ctx());
+    finish(&scenario, original);
+    scenario.next_tx(author);
+
+    let (successor_ids, living) = active::new_successor_draft_for_testing(
+        &mut scenario, protocol_id, setup, &mut system, original_ids);
+    let (original_root, original_base, original_treasury, original_admin) =
+        active::draft_maker_ids_for_testing(original_ids);
+    let (successor_root, successor_base, successor_treasury, successor_admin) =
+        active::draft_maker_ids_for_testing(successor_ids);
+    assert!(successor_root != original_root && successor_base != original_base
+        && successor_treasury != original_treasury && successor_admin != original_admin, 99);
+    assert!(active::draft_blob_id_for_testing(original_ids)
+        != active::draft_blob_id_for_testing(successor_ids), 99);
+    let draft = take_fixture(&scenario, protocol_id, setup, successor_ids);
+    assert!(maker::root_maker_version_v8(&draft.root) == 2
+        && maker::root_lifecycle_v8(&draft.root) == maker::lifecycle_draft_v8(), 99);
+    finish(&scenario, draft);
+    scenario.next_tx(author);
+
+    let _ = active::activate_maker_for_testing(
+        &mut scenario, protocol_id, setup, successor_ids, &system, living);
+    let activated = release::capture_activation_event_for_testing();
+    scenario.next_tx(author);
+    let successor = take_fixture(&scenario, protocol_id, setup, successor_ids);
+    assert!(maker::root_maker_key_v2(&successor.root) == &maker_key
+        && maker::root_maker_version_v8(&successor.root) == 2
+        && maker::root_lifecycle_v8(&successor.root) == maker::lifecycle_active_v8()
+        && maker::root_version_commitment_v2(&successor.root) != &original_version_commitment
+        && maker::root_content_commitment_v8(&successor.root) != &original_content_commitment, 99);
+    assert!(successor.companion_ids.length() == original_companions.length(), 99);
+    let mut index = 0;
+    while (index < successor.companion_ids.length()) {
+        assert!(successor.companion_ids[index] != original_companions[index], 99);
+        index = index + 1;
+    };
+    release::assert_activation_for_testing(activated, &successor.root, &successor.admin,
+        &successor.catalog, &successor.base_registry, &successor.maker_treasury, &successor.protocol_treasury,
+        &successor.seal_registry, &successor.seal_policy_config, successor.companion_ids,
+        object::id(&successor.replacement), successor.bootstrap_id);
+    finish(&scenario, successor);
+    scenario.next_tx(author);
+
+    let original = take_fixture(&scenario, protocol_id, setup, original_ids);
+    assert!(maker::root_maker_key_v2(&original.root) == &maker_key
+        && maker::root_maker_version_v8(&original.root) == 1
+        && maker::root_lifecycle_v8(&original.root) == maker::lifecycle_archived_v8()
+        && maker::root_version_commitment_v2(&original.root) == &original_version_commitment
+        && maker::root_content_commitment_v8(&original.root) == &original_content_commitment
+        && original.companion_ids == original_companions, 99);
+    finish(&scenario, original);
+    std::unit_test::destroy(system);
+    scenario.end();
+}
+
 #[test, expected_failure(abort_code = 0, location = animacraft_v8_core::maker_v8)]
 fun active_cannot_pause_twice() {
     let mut scenario = scenario::begin(@0xA11);

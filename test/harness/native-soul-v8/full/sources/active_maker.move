@@ -92,7 +92,7 @@ public fun new_active_sparse_parts_for_testing(
 ): ActiveMakerIds {
     let author = scenario.ctx().sender();
     let (ids, living) = new_draft_with_policy(scenario, protocol_id, setup, system,
-        option::none(), true, false, true);
+        option::none(), option::none(), true, false, true);
     let active = activate_maker_for_testing(scenario, protocol_id, setup, ids, system, living);
     scenario.next_tx(author);
     active
@@ -103,7 +103,8 @@ public fun new_active_protected_maker_for_testing(
     scenario: &mut Scenario, protocol_id: ID, setup: SetupIds, system: &mut System,
 ): ActiveMakerIds {
     let author = scenario.ctx().sender();
-    let (ids, living) = new_draft_with_policy(scenario, protocol_id, setup, system, option::none(), true, true, false);
+    let (ids, living) = new_draft_with_policy(scenario, protocol_id, setup, system,
+        option::none(), option::none(), true, true, false);
     let active = activate_maker_for_testing(scenario, protocol_id, setup, ids, system, living);
     scenario.next_tx(author);
     active
@@ -116,7 +117,16 @@ public fun new_active_protected_maker_for_testing(
 public fun new_draft_maker_for_testing(
     scenario: &mut Scenario, protocol_id: ID, setup: SetupIds, system: &mut System,
 ): (MakerObjectIds, LivingContentBindingV8) {
-    new_draft_with_policy(scenario, protocol_id, setup, system, option::none(), true, false, false)
+    new_draft_with_policy(scenario, protocol_id, setup, system,
+        option::none(), option::none(), true, false, false)
+}
+
+public fun new_successor_draft_for_testing(
+    scenario: &mut Scenario, protocol_id: ID, setup: SetupIds, system: &mut System,
+    previous: MakerObjectIds,
+): (MakerObjectIds, LivingContentBindingV8) {
+    new_draft_with_policy(scenario, protocol_id, setup, system,
+        option::some(previous), option::none(), true, false, false)
 }
 
 /// Delays only the normal Market seal call so readiness tests can observe its
@@ -124,14 +134,15 @@ public fun new_draft_maker_for_testing(
 public fun new_draft_with_unsealed_market_for_testing(
     scenario: &mut Scenario, protocol_id: ID, setup: SetupIds, system: &mut System,
 ): (MakerObjectIds, LivingContentBindingV8) {
-    new_draft_with_policy(scenario, protocol_id, setup, system, option::none(), false, false, false)
+    new_draft_with_policy(scenario, protocol_id, setup, system,
+        option::none(), option::none(), false, false, false)
 }
 
 public fun new_draft_with_physical_for_testing(
     scenario: &mut Scenario, protocol_id: ID, setup: SetupIds, system: &mut System,
     issuance: u8, proof: u8, price: u64, max_supply: u64, transferable: bool,
 ): (MakerObjectIds, LivingContentBindingV8) {
-    new_draft_with_policy(scenario, protocol_id, setup, system,
+    new_draft_with_policy(scenario, protocol_id, setup, system, option::none(),
         option::some(PhysicalPolicyFixture { issuance, proof, price, max_supply, transferable }), true, false, false)
 }
 
@@ -149,6 +160,7 @@ public fun new_active_with_physical_for_testing(
 
 fun new_draft_with_policy(
     scenario: &mut Scenario, protocol_id: ID, setup: SetupIds, system: &mut System,
+    predecessor: Option<MakerObjectIds>,
     physical_policy: Option<PhysicalPolicyFixture>,
     seal_market: bool,
     protected_complete: bool,
@@ -168,8 +180,9 @@ fun new_draft_with_policy(
     let release_config = scenario.take_shared_by_id<ReleasePackageConfigV8>(release_id);
     let ctx = scenario.ctx();
 
-    let blob = certified_storage_fixture(system, ctx);
-    let content = fixture_hash(5);
+    let successor = predecessor.is_some();
+    let blob = certified_storage_fixture(system, if (successor) 0xABD else 0xABC, ctx);
+    let content = fixture_hash(if (successor) 25 else 5);
     let defaults = fixture_hash(6);
     let living = core::new_living_content_binding_v8(defaults,
         core::walrus_blob_id_string_v1(walrus_blob::blob_id(&blob)),
@@ -193,14 +206,34 @@ fun new_draft_with_policy(
         0, 0, maker::complete_unlimited_free_v8(), 0, 0, 0);
     let rights = maker::new_onchain_native_rights_snapshot_v8(ctx, 250, 250, 500);
     let clock = sui::clock::create_for_testing(ctx);
-    let (mut root, mut base_registry, treasury, admin) = core::new_initial_maker_draft_v8<SUI>(
-        &protocol, b"native-graph-author".to_string(), fixture_hash(9), defaults,
-        core::living_content_binding_commitment_v1(&living), fixture_hash(10),
-        b"fixture-manifest".to_string(), fixture_hash(12), content,
-        base::new_base_definition_counts_v8(1, 0, part_count, 1, 1, 0, 1),
-        if (sparse_parts) sparse_base::author_commitment() else base::minimal_author_rows_commitment_for_testing(), pack_policy,
-        economics, rights, &clock, ctx);
+    let living_commitment = core::living_content_binding_commitment_v1(&living);
+    let counts = base::new_base_definition_counts_v8(1, 0, part_count, 1, 1, 0, 1);
+    let author_rows = if (sparse_parts) sparse_base::author_commitment()
+        else base::minimal_author_rows_commitment_for_testing();
+    let (mut root, mut base_registry, treasury, admin) = if (successor) {
+        let ids = predecessor.destroy_some();
+        let mut previous = scenario.take_shared_by_id<MakerRootV8<SUI>>(ids.root);
+        let previous_admin = scenario.take_from_sender_by_id<MakerAdminCapV8>(ids.admin);
+        let epoch = maker::root_control_epoch_v2(&previous);
+        let ctx = scenario.ctx();
+        let authority = maker::issue_successor_authority_v8(&mut previous, &previous_admin, epoch, ctx);
+        let (root, base_registry, treasury, admin) = core::new_successor_maker_draft_v8<SUI>(
+            &protocol, &mut previous, &previous_admin, authority, epoch,
+            fixture_hash(10), b"fixture-manifest-v2".to_string(), fixture_hash(22), content,
+            counts, author_rows, pack_policy, fixture_hash(9), defaults, living_commitment,
+            economics, rights, &clock, ctx);
+        scenario::return_shared(previous);
+        scenario.return_to_sender(previous_admin);
+        (root, base_registry, treasury, admin)
+    } else {
+        core::new_initial_maker_draft_v8<SUI>(
+            &protocol, b"native-graph-author".to_string(), fixture_hash(9), defaults,
+            living_commitment, fixture_hash(10),
+            b"fixture-manifest".to_string(), fixture_hash(12), content,
+            counts, author_rows, pack_policy, economics, rights, &clock, scenario.ctx())
+    };
     clock.destroy_for_testing();
+    let ctx = scenario.ctx();
     release::finalize_product_release_binding_v8(&mut root, &admin, &protocol,
         &catalog, &release_config, ctx);
     if (sparse_parts) sparse_base::populate(&mut base_registry, &mut root, &admin)
@@ -379,15 +412,15 @@ public fun activate_maker_for_testing(
 /// Actual registered nondeletable Blob and paid Storage; only the external
 /// committee certification is supplied by Walrus's official test hook. The
 /// author hashes above are declared fixture bytes, not verified remote content.
-fun certified_storage_fixture(system: &mut System, ctx: &mut TxContext): Blob {
+fun certified_storage_fixture(system: &mut System, metadata: u256, ctx: &mut TxContext): Blob {
     let size = 1_000;
-    let blob_id = walrus_blob::derive_blob_id(0xABC, 1, size);
+    let blob_id = walrus_blob::derive_blob_id(metadata, 1, size);
     let encoded_size = walrus::encoding::encoded_blob_length(
         size, 1, walrus_system::n_shards(system));
     let mut payment = walrus::test_utils::mint_frost(1_000_000_000_000, ctx);
     let storage = walrus_system::reserve_space(system, encoded_size, 3, &mut payment, ctx);
     let mut blob = walrus_system::register_blob(system, storage, blob_id,
-        0xABC, size, 1, false, &mut payment, ctx);
+        metadata, size, 1, false, &mut payment, ctx);
     sui::coin::burn_for_testing(payment);
     let message = walrus::messages::certified_permanent_blob_message_for_testing(blob_id);
     walrus_blob::certify_with_certified_msg_for_testing(&mut blob,
