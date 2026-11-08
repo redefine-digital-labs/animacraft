@@ -1,6 +1,7 @@
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { packPublicationAuthoringContent, assertPublicPackAuthoringContent } from './maker-v8-pack-authoring.js';
+import { packPublicationAuthoringContent, assertPublicPackAuthoringContent, assertPackStylesTargetSlots } from './maker-v8-pack-authoring.js';
+import { compileMakerV8PackDefinitionRowsV8 } from './maker-v8-pack-definitions-compiler.js';
 
 import {
   MAKER_V8_PACK_DOCUMENT_SCHEMA,
@@ -128,9 +129,6 @@ function prepareInput(input) {
     fail('MAKER_V8_PACK_PARENT_NOT_PUBLISHED', 'Bind and validate the exact public parent before any Pack upload.', 'VALIDATION');
   }
   const checkedOwner = owner(input.owner);
-  if (draft.document.authoring !== undefined) {
-    fail('MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE', 'Authored Pack runtime mapping must be complete before uploading.', 'VALIDATION');
-  }
   if (draft.document.author.address !== checkedOwner) {
     fail('MAKER_V8_PACK_TRANSPORT_AUTHOR_DRIFT', 'Pack transport owner differs from the exact Pack author.', 'VALIDATION');
   }
@@ -159,9 +157,9 @@ function prepareInput(input) {
   return freeze({ draft, assets, owner: checkedOwner });
 }
 
-function stageView(stage, upload, completedAssets, assetId = null) {
+function stageView(stage, upload, completedAssets, assetId = null, step = null) {
   const status = upload?.status;
-  if (!['SIGNATURE_REQUIRED', 'RECOVERY_REQUIRED', 'FAILED'].includes(status)) {
+  if (!['SIGNATURE_REQUIRED', 'RECOVERY_REQUIRED', 'REGISTER_FINALIZED', 'FAILED'].includes(status)) {
     fail('MAKER_V8_PACK_TRANSPORT_UPLOAD_STATE_INVALID', 'Pack Walrus upload returned an unsupported durable state.');
   }
   const publicStatus = status === 'FAILED'
@@ -174,6 +172,7 @@ function stageView(stage, upload, completedAssets, assetId = null) {
     assetId,
     completedAssets,
     upload,
+    step,
     prepared: null,
     message: status === 'FAILED'
       ? `Pack ${stage === 'ASSET' ? 'asset' : 'Manifest'} transport failed and requires review.`
@@ -499,13 +498,19 @@ export function createMakerV8PackTransportV8({
   const ensureUpload = async ({ uploadId, owner: checkedOwner, mediaType, bytesBase64 }) => {
     let view = await publisher.load(uploadId);
     if (!view) {
-      view = await publisher.prepare({
-        uploadId,
-        owner: checkedOwner,
-        mediaType,
-        bytesBase64,
-        epochs: 3,
-      });
+      try {
+        await publisher.prepare({
+          uploadId,
+          owner: checkedOwner,
+          mediaType,
+          bytesBase64,
+          epochs: 3,
+        });
+      } catch (error) {
+        if (error?.code !== 'MAKER_V8_WALRUS_UPLOAD_EXISTS') throw error;
+      }
+      view = await publisher.load(uploadId);
+      if (!view) fail('MAKER_V8_PACK_TRANSPORT_UPLOAD_MISSING', 'Prepared Pack storage was not saved.', 'PERSISTENCE');
     }
     return view;
   };
@@ -533,16 +538,12 @@ export function createMakerV8PackTransportV8({
           sha256: asset.sha256,
         },
       }), identity);
-      try {
-        await ensureUpload({
-          uploadId,
-          owner: checked.owner,
-          mediaType: encrypted.mediaType,
-          bytesBase64: encrypted.bytesBase64,
-        });
-      } catch (error) {
-        if (error?.code !== 'MAKER_V8_WALRUS_UPLOAD_EXISTS') throw error;
-      }
+      await ensureUpload({
+        uploadId,
+        owner: checked.owner,
+        mediaType: encrypted.mediaType,
+        bytesBase64: encrypted.bytesBase64,
+      });
       content = await publisher.loadContent(uploadId);
     }
     const bytes = content === null ? null : canonicalBase64(
@@ -565,9 +566,50 @@ export function createMakerV8PackTransportV8({
     return freeze({ upload, content });
   };
 
-  const inspect = async (input, operation) => {
+  const advanceUpload = async (upload, operation, review, assertCurrent, firstResource = false) => {
+    if (operation === 'SIGN_REVIEWED') {
+      if (!review || upload.status !== 'SIGNATURE_REQUIRED' || review.id !== upload.uploadId
+        || review.revision !== upload.revision || review.stage !== upload.stage) {
+        fail('MAKER_V8_PACK_TRANSPORT_REVIEW_STALE', 'Review the current Pack storage transaction again.', 'CONTEXT');
+      }
+      return publisher.signReviewed(upload.uploadId, review, () => assertCurrent?.({
+        firstRegistration: firstResource && upload.stage === 'REGISTER',
+      }));
+    }
+    if (operation === 'SIGN' && upload.status === 'SIGNATURE_REQUIRED') {
+      return publisher.requestSignature(upload.uploadId);
+    }
+    if (operation === 'RECOVER' && ['RECOVERY_REQUIRED', 'REGISTER_FINALIZED'].includes(upload.status)) {
+      return publisher.resume(upload.uploadId, upload);
+    }
+    return upload;
+  };
+
+  const pendingUpload = async (stage, upload, completedAssets, assetId, operation) => {
+    const step = operation === 'REVIEW' && upload.status === 'SIGNATURE_REQUIRED'
+      ? await publisher.prepareReview(upload.uploadId) : null;
+    if (step && (step.id !== upload.uploadId || step.revision !== upload.revision || step.stage !== upload.stage)) {
+      fail('MAKER_V8_PACK_TRANSPORT_REVIEW_STALE', 'Pack storage changed while preparing its review.', 'CONTEXT');
+    }
+    return stageView(stage, upload, completedAssets, assetId, step);
+  };
+
+  const inspect = async (input, operation, review, assertCurrent) => {
     const checked = prepareInput(input);
     const document = structuredClone(checked.draft.document);
+    if (document.styles.length === 0) {
+      fail('MAKER_V8_PACK_STYLE_COUNT_INVALID', 'Add artwork to at least one Pack Style before publication.', 'VALIDATION');
+    }
+    if (document.authoring !== undefined) {
+      const { content } = packPublicationAuthoringContent(document);
+      if (content.styles.length !== document.styles.length) {
+        fail('MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE', 'Every published Pack Style must belong to a public Item.', 'VALIDATION');
+      }
+      assertPackStylesTargetSlots(content.styles, content.document.parts);
+      await compileMakerV8PackDefinitionRowsV8(content, {
+        expectedParent: content.parent, semanticPackId: document.metadata.semanticPackId,
+      });
+    }
     const protectedStyles = document.styles.filter((style) => style.asset.protected);
     let identities = new Map();
     if (protectedStyles.length) {
@@ -622,13 +664,9 @@ export function createMakerV8PackTransportV8({
         });
       }
       if (upload.status !== 'COMPLETE') {
-        if (operation === 'SIGN' && upload.status === 'SIGNATURE_REQUIRED') {
-          upload = await publisher.requestSignature(upload.uploadId);
-        } else if (operation === 'RECOVER' && upload.status === 'RECOVERY_REQUIRED') {
-          upload = await publisher.resume(upload.uploadId);
-        }
+        upload = await advanceUpload(upload, operation, review, assertCurrent, uploadedAssets.length === 0);
         if (upload.status !== 'COMPLETE') {
-          return stageView('ASSET', upload, uploadedAssets.length, asset.assetId);
+          return pendingUpload('ASSET', upload, uploadedAssets.length, asset.assetId, operation);
         }
       }
       uploadedAssets.push(freeze({
@@ -666,13 +704,9 @@ export function createMakerV8PackTransportV8({
       bytesBase64: manifest.bytesBase64,
     });
     if (upload.status !== 'COMPLETE') {
-      if (operation === 'SIGN' && upload.status === 'SIGNATURE_REQUIRED') {
-        upload = await publisher.requestSignature(upload.uploadId);
-      } else if (operation === 'RECOVER' && upload.status === 'RECOVERY_REQUIRED') {
-        upload = await publisher.resume(upload.uploadId);
-      }
+      upload = await advanceUpload(upload, operation, review, assertCurrent);
       if (upload.status !== 'COMPLETE') {
-        return stageView('MANIFEST', upload, uploadedAssets.length);
+        return pendingUpload('MANIFEST', upload, uploadedAssets.length, null, operation);
       }
     }
     const prepared = assertMakerV8PackPreparedTransportV8({
@@ -702,6 +736,14 @@ export function createMakerV8PackTransportV8({
   return freeze({
     schemaVersion: MAKER_V8_PACK_TRANSPORT_SCHEMA,
     prepare: (input) => inspect(input, 'INSPECT'),
+    prepareReview(input) {
+      requireMethod(publisher, 'prepareReview', 'publisher');
+      return inspect(input, 'REVIEW');
+    },
+    signReviewed(input, review, assertCurrent) {
+      requireMethod(publisher, 'signReviewed', 'publisher');
+      return inspect(input, 'SIGN_REVIEWED', review, assertCurrent);
+    },
     requestSignature: (input) => inspect(input, 'SIGN'),
     recover: (input) => inspect(input, 'RECOVER'),
   });

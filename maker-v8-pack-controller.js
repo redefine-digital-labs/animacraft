@@ -1261,16 +1261,30 @@ export function createMakerV8PackControllerV8({
       return collectMakerV8PackDraftIssuesV8(value, options);
     },
 
-    async preparePublication({ draftId, expectedRevision, context = null } = {}) {
+    async preparePublication({ draftId, expectedRevision, context = null, certifiedDocument = null } = {}) {
       requireDurablePublication();
-      const current = await loadRequired(draftId, 'COMPILE');
+      const current = await loadRequired(draftId, certifiedDocument === null ? 'COMPILE' : 'DRAFT');
       requireExpectedRevision(current, expectedRevision);
       if (current.publication.status !== 'UNPREPARED') {
         fail('PUBLICATION', 'MAKER_V8_PACK_PUBLICATION_EXISTS', 'This Pack already has a durable publication attempt.', {
           attemptId: current.publication.attemptId,
         });
       }
-      const { result, documentSha256 } = await compile(current, context);
+      const document = certifiedDocument === null ? current.document
+        : assertMakerV8PackDocumentV8(certifiedDocument, { mode: 'COMPILE' });
+      if (certifiedDocument !== null) {
+        const withoutTransport = value => ({
+          ...value, styles: value.styles.map(style => ({
+            ...style, asset: { assetId: style.asset.assetId, contentCommitment: style.asset.contentCommitment,
+              protected: style.asset.protected },
+          })),
+        });
+        if (canonicalMakerV8PackJson(withoutTransport(document)) !== canonicalMakerV8PackJson(withoutTransport(current.document))) {
+          fail('PUBLICATION', 'MAKER_V8_PACK_TRANSPORT_DOCUMENT_DRIFT', 'Certified storage differs from the saved Pack content.');
+        }
+        await checkAuthoring(document);
+      }
+      const { result, documentSha256 } = await compile({ ...snapshot(current), document }, context);
       if (!compiledProofs.has(result)) {
         fail('COMPILER', 'MAKER_V8_PACK_COMPILER_PROOF_REQUIRED', 'Publication requires the fresh in-process Pack compiler result.');
       }
@@ -1296,6 +1310,7 @@ export function createMakerV8PackControllerV8({
       const status = mapPlanStatus(plan);
       const next = cloneRecord({
         ...snapshot(current),
+        document,
         revision: current.revision + 1,
         updatedAt: at,
         publication: {
@@ -1346,7 +1361,27 @@ export function createMakerV8PackControllerV8({
       return linkPublicationPlan(current, plan, `PUBLICATION_${mapPlanStatus(plan)}`);
     },
 
-    async requestPublicationSignature({ draftId, expectedRevision = null } = {}) {
+    async inspectPublication({ draftId, expectedRevision = null } = {}) {
+      const draft = await loadRequired(draftId);
+      if (expectedRevision !== null) requireExpectedRevision(draft, expectedRevision);
+      const attemptId = draft.publication.attemptId;
+      if (attemptId === null) return freeze({ draft, plan: null, step: null, execution: gates });
+      requireMethod(publication, 'load', 'publication');
+      const plan = await publication.load(attemptId);
+      assertPublicationPlan(plan, attemptId);
+      let step = null;
+      if (plan.current?.outcome.status === 'READY') {
+        requireMethod(publication, 'prepareReview', 'publication');
+        step = await publication.prepareReview(attemptId);
+        if (step.revision !== plan.revision) {
+          fail('PUBLICATION', 'MAKER_V8_PACK_PUBLICATION_REVIEW_STALE', 'Pack publication changed while preparing its review.');
+        }
+      }
+      requireExpectedRevision(await loadRequired(draftId), draft.revision);
+      return freeze({ draft, plan: cloneData(plan), step, execution: gates });
+    },
+
+    async requestPublicationSignature({ draftId, expectedRevision = null, review = null, assertCurrent = null } = {}) {
       requireDurablePublication();
       if (!gates.allowWalletSignature || !gates.allowBroadcast) {
         fail('CONFIG', 'MAKER_V8_PACK_EXECUTION_DISABLED', 'Pack publication signing and exact-byte broadcast are disabled.', undefined, false);
@@ -1358,7 +1393,13 @@ export function createMakerV8PackControllerV8({
       }
       let plan;
       try {
-        plan = await publication.requestSignature(current.publication.attemptId);
+        plan = await publication.requestSignature(current.publication.attemptId, review ? {
+          review,
+          assertCurrent: async () => {
+            requireExpectedRevision(await loadRequired(draftId), current.revision);
+            await assertCurrent?.();
+          },
+        } : undefined);
       } catch (cause) {
         fail('PUBLICATION', 'MAKER_V8_PACK_PUBLICATION_SIGNATURE_FAILED', 'Pack publication signature request failed visibly.', {
           attemptId: current.publication.attemptId,

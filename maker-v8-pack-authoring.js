@@ -194,6 +194,17 @@ export function packAuthoringDocument(pack) {
   return document;
 }
 
+export function assertPackStylesTargetSlots(styles, parts) {
+  const slots = new Set(parts.filter(part => part.wardrobeMode === 'SLOT').map(part => part.key));
+  const invalid = styles.find(style => !slots.has(style.partKey));
+  if (invalid) {
+    const part = parts.find(row => row.key === invalid.partKey);
+    const error = new Error(`Pack Style ${invalid.styleKey} requires a wardrobe Slot on ${part?.label ?? invalid.partKey}.`);
+    error.code = 'MAKER_V8_PACK_STYLE_SLOT_REQUIRED';
+    throw error;
+  }
+}
+
 /** The child may append definitions, but cannot rewrite or reorder inherited rows. */
 export function assertPackAuthoring(pack) {
   if (pack.authoring === undefined) return;
@@ -275,6 +286,9 @@ export function preparePackStructure(pack, { action, partKey, itemKey, styleKey,
     ? { ...prepareCreatorColorChange({ document: packAuthoringDocument(pack), action }), selection: { partKey, itemKey, styleKey } }
     : prepareCreatorStructure({ document: packAuthoringDocument(pack), action, partKey, itemKey, styleKey });
   const document = { ...structuredClone(pack), authoring: prepared.document };
+  if (action === 'add-part' && document.authoring.composition.mode === 'COMPOSABLE') {
+    document.authoring.parts.find(part => part.key === prepared.selection.partKey).wardrobeMode = 'SLOT';
+  }
   const assetCopies = [];
   if (action.startsWith('copy-')) {
     const before = packAuthoringDocument(pack);
@@ -340,7 +354,13 @@ export function preparePackEdits(pack, edits) {
     const target = kind === 'part' ? part : kind === 'item' ? item : kind === 'style' ? style
       : kind === 'color' ? authoring.colors.find(row => row.key === channelKey) : null;
     if (!target) fail('Select an existing Pack definition.');
-    if (field === 'label') {
+    if (kind === 'part' && field === 'wardrobe-mode') {
+      if (parentDocument(pack).parts.some(row => row.key === partKey)) fail('Inherited Parts are read-only.');
+      if (authoring.composition.mode !== 'COMPOSABLE' || !['FIXED', 'SLOT'].includes(value)) {
+        fail('A Pack wardrobe Slot requires a composable parent Maker.');
+      }
+      part.wardrobeMode = value;
+    } else if (field === 'label') {
       if (typeof value !== 'string' || !value.trim()) fail('Pack definition names cannot be empty.');
       target.label = value.trim();
     } else if (kind === 'style' && ['style-x', 'style-y', 'style-scale', 'style-rotation', 'style-opacity', 'style-blend'].includes(field)) {

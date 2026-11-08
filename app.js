@@ -282,10 +282,18 @@ export function createLazyMakerV8PackFacade(resolvePack, resolveLocalPack = reso
     }
     return resolved;
   };
+  const callReviewedPublication = async (operation, input) => {
+    const studio = await load();
+    if (typeof studio[operation] !== 'function') {
+      fail('ANIMACRAFT_PACK_ADAPTER_INVALID', `Pack adapter.${operation} is required for reviewed publication.`, 'CONFIGURATION');
+    }
+    return studio[operation](input);
+  };
   return freeze({
     createPackDraft: async (input) => (await (input?.parent ? loadLocal() : load())).createPackDraft(input),
     list: async () => (await loadLocal()).list(),
     load: async (draftId) => (await loadLocal()).load(draftId),
+    getTransportPin: async (draftId) => (await loadLocal()).getTransportPin?.(draftId) ?? null,
     bindPublishedParent: async (input) => (await load()).bindPublishedParent(input),
     save: async (input) => (await loadLocal()).save(input),
     upsertAsset: async (input) => (await loadLocal()).upsertAsset(input),
@@ -293,6 +301,8 @@ export function createLazyMakerV8PackFacade(resolvePack, resolveLocalPack = reso
     preview: async (input) => (await loadLocal()).preview(input),
     export: async (draftId) => (await loadLocal()).export(draftId),
     preparePublication: async (input) => (await load()).preparePublication(input),
+    reviewPublication: (input) => callReviewedPublication('reviewPublication', input),
+    signReviewedPublication: (input) => callReviewedPublication('signReviewedPublication', input),
     resumePublication: async (input) => (await load()).resumePublication(input),
     requestPublicationSignature: async (input) => (await load()).requestPublicationSignature(input),
     recoverPublicationOutcome: async (input) => (await load()).recoverPublicationOutcome(input),

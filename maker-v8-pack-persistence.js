@@ -9,13 +9,15 @@ export const MAKER_V8_PACK_PERSISTENCE_SCHEMA =
 export const MAKER_V8_PACK_DATABASE = 'animacraft-maker-v8-pack-drafts-v1';
 export const MAKER_V8_PACK_ASSET_SCHEMA = 'animacraft.maker-v8-pack-asset.v1';
 
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const DRAFT_STORE = 'packDrafts';
 const ASSET_STORE = 'packAssets';
+const TRANSPORT_PIN_STORE = 'packTransportPins';
 const SAFE_DRAFT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const SAFE_ASSET_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const MEDIA_TYPE = /^(?:image\/png|image\/webp)$/;
 const HASH = /^[0-9a-f]{64}$/;
+const DIGEST = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 
 export class MakerV8PackPersistenceError extends Error {
@@ -155,7 +157,8 @@ export function createMakerV8PackPersistenceV8(
   const open = () => {
     if (databasePromise && !closed) return databasePromise;
     closed = false;
-    databasePromise = new Promise((resolve, reject) => {
+    const opening = new Promise((resolve, reject) => {
+      let blocked = false;
       const request = indexedDB.open(databaseName, DATABASE_VERSION);
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains(DRAFT_STORE)) {
@@ -166,9 +169,13 @@ export function createMakerV8PackPersistenceV8(
           const assets = request.result.createObjectStore(ASSET_STORE, { keyPath: ['draftId', 'assetId'] });
           assets.createIndex('byDraft', 'draftId', { unique: false });
         }
+        if (!request.result.objectStoreNames.contains(TRANSPORT_PIN_STORE)) {
+          request.result.createObjectStore(TRANSPORT_PIN_STORE, { keyPath: 'draftId' });
+        }
       };
       request.onsuccess = () => {
         const database = request.result;
+        if (blocked) { database.close(); return; }
         database.onversionchange = () => {
           closed = true;
           database.close();
@@ -177,12 +184,15 @@ export function createMakerV8PackPersistenceV8(
         resolve(database);
       };
       request.onerror = () => reject(request.error || new Error('Pack database failed to open.'));
-      request.onblocked = () => reject(new MakerV8PackPersistenceError(
-        'MAKER_V8_PACK_DATABASE_BLOCKED',
-        'Another tab is blocking the Pack Studio database.',
-      ));
+      request.onblocked = () => {
+        blocked = true;
+        reject(new MakerV8PackPersistenceError('MAKER_V8_PACK_DATABASE_BLOCKED',
+          'Close other Animacraft tabs using the older Pack Studio database, then retry.'));
+      };
     });
-    return databasePromise;
+    databasePromise = opening;
+    void opening.catch(() => { if (databasePromise === opening) databasePromise = null; });
+    return opening;
   };
 
   const transact = async (stores, mode, operation) => {
@@ -199,6 +209,11 @@ export function createMakerV8PackPersistenceV8(
       throw error;
     }
     return result;
+  };
+
+  const assertTransportEditable = async (transaction, draftId) => {
+    const pin = await requestResult(transaction.objectStore(TRANSPORT_PIN_STORE).get(draftId));
+    if (pin) fail('MAKER_V8_PACK_TRANSPORT_LOCKED', 'This Pack has a saved storage attempt. Continue that attempt from its publication review.');
   };
 
   return Object.freeze({
@@ -233,6 +248,44 @@ export function createMakerV8PackPersistenceV8(
       )));
     },
 
+    async getTransportPin(draftId) {
+      const checkedId = exactDraftId(draftId);
+      const value = await transact([TRANSPORT_PIN_STORE], 'readonly', (transaction) => (
+        requestResult(transaction.objectStore(TRANSPORT_PIN_STORE).get(checkedId))
+      ));
+      return value ? Object.freeze(value) : null;
+    },
+
+    async pinTransport({ draftId, expectedRevision, digest } = {}) {
+      const checkedId = exactDraftId(draftId);
+      const revision = exactRevision(expectedRevision, 'expectedRevision');
+      if (typeof digest !== 'string' || !DIGEST.test(digest)) {
+        fail('MAKER_V8_PACK_TRANSPORT_PIN_INVALID', 'A storage pin must bind an exact Sui transaction digest.');
+      }
+      return transact([DRAFT_STORE, TRANSPORT_PIN_STORE], 'readwrite', async (transaction) => {
+        const draft = await requestResult(transaction.objectStore(DRAFT_STORE).get(checkedId));
+        if (!draft || draft.revision !== revision || draft.publication.status !== 'UNPREPARED') {
+          fail('MAKER_V8_PACK_DRAFT_CAS_MISMATCH', 'Pack changed before its storage signature.');
+        }
+        const pins = transaction.objectStore(TRANSPORT_PIN_STORE);
+        if (await requestResult(pins.get(checkedId))) return null;
+        const pin = { draftId: checkedId, revision, digest };
+        pins.add(pin);
+        return Object.freeze(pin);
+      });
+    },
+
+    async releaseTransportPin({ draftId, revision, digest } = {}) {
+      const checkedId = exactDraftId(draftId);
+      return transact([TRANSPORT_PIN_STORE], 'readwrite', async (transaction) => {
+        const pins = transaction.objectStore(TRANSPORT_PIN_STORE);
+        const pin = await requestResult(pins.get(checkedId));
+        if (!pin || pin.revision !== revision || pin.digest !== digest) return false;
+        pins.delete(checkedId);
+        return true;
+      });
+    },
+
     async compareAndSwap({ draftId, expectedRevision, next } = {}) {
       const checkedId = exactDraftId(draftId);
       const checkedRevision = exactRevision(expectedRevision, 'expectedRevision');
@@ -240,7 +293,7 @@ export function createMakerV8PackPersistenceV8(
       if (successor.draftId !== checkedId || successor.revision !== checkedRevision + 1) {
         fail('MAKER_V8_PACK_DRAFT_CAS_INVALID', 'Pack CAS successor identity or revision is invalid.');
       }
-      return transact([DRAFT_STORE], 'readwrite', async (transaction) => {
+      return transact([DRAFT_STORE, TRANSPORT_PIN_STORE], 'readwrite', async (transaction) => {
         const store = transaction.objectStore(DRAFT_STORE);
         const current = await requestResult(store.get(checkedId));
         if (!current) fail('MAKER_V8_PACK_DRAFT_NOT_FOUND', `Pack draft ${checkedId} was not found.`);
@@ -255,6 +308,9 @@ export function createMakerV8PackPersistenceV8(
           || successor.updatedAt < checkedCurrent.updatedAt) {
           fail('MAKER_V8_PACK_DRAFT_CAS_INVALID', 'Pack CAS changed immutable creation time or moved updatedAt backwards.');
         }
+        if (successor.publication.status === 'UNPREPARED') {
+          await assertTransportEditable(transaction, checkedId);
+        }
         store.put(structuredClone(successor));
         return cloneDraft(successor);
       });
@@ -263,7 +319,7 @@ export function createMakerV8PackPersistenceV8(
     async delete({ draftId, expectedRevision } = {}) {
       const checkedId = exactDraftId(draftId);
       const checkedRevision = exactRevision(expectedRevision, 'expectedRevision');
-      return transact([DRAFT_STORE, ASSET_STORE], 'readwrite', async (transaction) => {
+      return transact([DRAFT_STORE, ASSET_STORE, TRANSPORT_PIN_STORE], 'readwrite', async (transaction) => {
         const store = transaction.objectStore(DRAFT_STORE);
         const current = await requestResult(store.get(checkedId));
         if (!current) return false;
@@ -277,6 +333,7 @@ export function createMakerV8PackPersistenceV8(
         if (draft.publication.status !== 'UNPREPARED') {
           fail('MAKER_V8_PACK_DRAFT_DELETE_FORBIDDEN', 'A Pack with durable publication evidence cannot be deleted.');
         }
+        await assertTransportEditable(transaction, checkedId);
         store.delete(checkedId);
         const assetStore = transaction.objectStore(ASSET_STORE);
         const index = assetStore.index('byDraft');
@@ -348,7 +405,7 @@ export function createMakerV8PackPersistenceV8(
         || descriptors[0].contentCommitment !== hash) {
         fail('MAKER_V8_PACK_ASSET_DESCRIPTOR_DRIFT', 'Pack document asset descriptor differs from the exact persisted bytes.');
       }
-      return transact([DRAFT_STORE, ASSET_STORE], 'readwrite', async (transaction) => {
+      return transact([DRAFT_STORE, ASSET_STORE, TRANSPORT_PIN_STORE], 'readwrite', async (transaction) => {
         const draftStore = transaction.objectStore(DRAFT_STORE);
         const assetStore = transaction.objectStore(ASSET_STORE);
         const currentRaw = await requestResult(draftStore.get(checkedId));
@@ -360,6 +417,10 @@ export function createMakerV8PackPersistenceV8(
             actualRevision: current.revision,
           });
         }
+        if (current.publication.status !== 'UNPREPARED') {
+          fail('MAKER_V8_PACK_DRAFT_LOCKED', 'A saved publication attempt locks the Pack artwork.');
+        }
+        await assertTransportEditable(transaction, checkedId);
         const priorRaw = await requestResult(assetStore.get([checkedId, checkedAssetId]));
         const prior = priorRaw ? cloneAsset(priorRaw) : null;
         if ((prior === null) !== (expectedAssetRevision === null)
@@ -406,10 +467,14 @@ export function createMakerV8PackPersistenceV8(
         prepared.push({ source, asset: cloneAsset({ ...source, assetId, revision: 1,
           createdAt: successor.updatedAt, updatedAt: successor.updatedAt }) });
       }
-      return transact([DRAFT_STORE, ASSET_STORE], 'readwrite', async transaction => {
+      return transact([DRAFT_STORE, ASSET_STORE, TRANSPORT_PIN_STORE], 'readwrite', async transaction => {
         const drafts = transaction.objectStore(DRAFT_STORE), assets = transaction.objectStore(ASSET_STORE);
         const current = await requestResult(drafts.get(checkedId));
         if (!current || current.revision !== checkedRevision) fail('MAKER_V8_PACK_DRAFT_CAS_MISMATCH', 'Pack changed before copying.');
+        if (current.publication.status !== 'UNPREPARED') {
+          fail('MAKER_V8_PACK_DRAFT_LOCKED', 'A saved publication attempt locks the Pack artwork.');
+        }
+        await assertTransportEditable(transaction, checkedId);
         for (const { source, asset } of prepared) {
           const actual = await requestResult(assets.get([checkedId, source.assetId]));
           if (!actual || actual.revision !== source.revision || actual.sha256 !== source.sha256 || actual.bytesBase64 !== source.bytesBase64

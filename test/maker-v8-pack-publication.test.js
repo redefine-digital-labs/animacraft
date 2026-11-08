@@ -209,6 +209,25 @@ test('dedicated Pack WAL is query-first and advances INIT, APPEND, FINALIZE with
   assert.equal((await persistence.listEvents(plan.attemptId)).length, 13);
 });
 
+test('Pack publication reviews one simulated digest before signing its exact transaction', async () => {
+  const { controller, order } = await harness();
+  const plan = await controller.prepare(request);
+  const review = await controller.prepareReview(plan.attemptId);
+  assert.equal(review.revision, plan.revision);
+  assert.equal(review.stage, 'INIT');
+  assert.equal(review.gasBudgetMist, '10000000');
+  assert.deepEqual(order, ['rehydrate:REQUEST_SIGNATURE', 'build:INIT', 'dry-run:INIT']);
+  await assert.rejects(controller.requestSignature(plan.attemptId, {
+    review: { ...review, digest: digest(99) },
+  }), { code: 'MAKER_V8_PACK_PUBLICATION_REVIEW_STALE' });
+  const signed = await controller.requestSignature(plan.attemptId, {
+    review,
+    assertCurrent: async () => { order.push('current'); },
+  });
+  assert.equal(signed.current.outcome.digest, review.digest);
+  assert.deepEqual(order.slice(3), ['rehydrate:REQUEST_SIGNATURE', 'dry-run:INIT', 'current', `sign:${review.digest}`]);
+});
+
 test('Pack publication gates, compiler kind drift, and non-durable persistence fail closed', async () => {
   const disabled = await harness({ execution: false });
   const prepared = await disabled.controller.prepare(request);

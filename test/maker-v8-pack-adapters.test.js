@@ -9,7 +9,13 @@ import { toBase58, toBase64 } from '@mysten/sui/utils';
 import {
   MAKER_V8_PACK_STUDIO_SCHEMA,
   createMakerV8PackStudioV8,
+  createProductionMakerV8PackAdaptersV8,
 } from '../maker-v8-pack-adapters.js';
+import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
+import {
+  MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA, MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA,
+} from '../maker-v8-pack-controller.js';
+import { currentRuntimeAuthorityFixture } from './fixtures/maker-v8-current-runtime-authority.js';
 import { createMakerV8PackPersistenceV8 } from '../maker-v8-pack-persistence.js';
 import { createMakerV8DraftPersistence } from '../maker-v8-draft-store.js';
 import { createCharacterMakerV8Starter } from '../maker-v8-document.js';
@@ -25,6 +31,30 @@ const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const digest = (value) => toBase58(new Uint8Array(32).fill(value));
 const hash = (value) => value.repeat(64).slice(0, 64);
 const ref = (value) => ({ objectId: id(value), version: String(value), digest: digest(value) });
+
+test('production Pack Studio accepts the browser chain execution configuration', async () => {
+  const { config, rpc } = currentRuntimeAuthorityFixture();
+  const transactionOperation = () => assert.fail('Adapter initialization must not start a transaction');
+  const publication = { schemaVersion: MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA,
+    prepare: transactionOperation, resume: transactionOperation, requestSignature: transactionOperation,
+    recoverOutcome: transactionOperation, replayExact: transactionOperation };
+  const compiler = { authority: {}, compilePack: transactionOperation };
+  for (const enabled of [false, true]) {
+    const gates = { allowWalletSignature: enabled, allowBroadcast: enabled };
+    const lifecycle = { schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA, execution: gates,
+      build: transactionOperation, prepare: transactionOperation, recover: transactionOperation };
+    const { controller, persistence } = await createProductionMakerV8PackAdaptersV8({
+      runtime: config, client: rpc, wallet: { getCurrentAccount: transactionOperation },
+      execution: { network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, ...gates },
+      indexedDB, compiler, publication, lifecycle,
+    });
+    try {
+      assert.deepEqual(controller.execution, gates);
+    } finally {
+      persistence.close();
+    }
+  }
+});
 
 function bindings() {
   const rootId = id(1);
@@ -75,7 +105,7 @@ function bindings() {
   };
 }
 
-function harness({ loadParent = null, transport = null } = {}) {
+function harness({ loadParent = null, transport = null, execution } = {}) {
   const rootId = id(1);
   const calls = { discover: 0, context: 0, bindings: 0 };
   const chain = {
@@ -105,6 +135,7 @@ function harness({ loadParent = null, transport = null } = {}) {
     wallet,
     persistence,
     transport,
+    execution,
     now: () => time++,
   });
   return { studio, persistence, calls, rootId, wallet };
@@ -259,6 +290,7 @@ test('Pack additive Part Item and pending Style persist without changing the par
   const { studio, persistence } = harness();
   try {
     const document = structuredClone(createCharacterMakerV8Starter());
+    document.composition = { mode: 'COMPOSABLE', thirdPartyAdmission: 'CERTIFIED', itemAssetization: true };
     await parents.createBundle({ draftId: 'structure-parent', document, createdAt: 10,
       assets: [{ assetId: 'base-default', kind: 'layer', mediaType: 'image/png', bytesBase64: 'AA==' }] });
     const parent = await parents.export('structure-parent');
@@ -267,6 +299,14 @@ test('Pack additive Part Item and pending Style persist without changing the par
     draft = await studio.save({ draftId: draft.draftId, expectedRevision: draft.revision,
       fields: { structure: { action: 'add-part' } } });
     const partKey = draft.document.authoring.parts.at(-1).key;
+    assert.equal(draft.document.authoring.parts.at(-1).wardrobeMode, 'SLOT');
+    assert.throws(() => preparePackEdits(draft.document, [
+      { kind: 'part', field: 'wardrobe-mode', partKey: document.parts[0].key, value: 'SLOT' },
+    ]), /Inherited Parts/);
+    const fixed = preparePackEdits(draft.document, [{ kind: 'part', field: 'wardrobe-mode', partKey, value: 'FIXED' }]);
+    assert.equal(fixed.authoring.parts.at(-1).wardrobeMode, 'FIXED');
+    const slotted = preparePackEdits(fixed, [{ kind: 'part', field: 'wardrobe-mode', partKey, value: 'SLOT' }]);
+    assert.equal(slotted.authoring.parts.at(-1).wardrobeMode, 'SLOT');
     draft = await studio.save({ draftId: draft.draftId, expectedRevision: draft.revision,
       fields: { structure: { action: 'add-item', partKey } } });
     const itemKey = draft.document.authoring.parts.at(-1).items.at(-1).key;
@@ -625,11 +665,58 @@ test('Pack Studio rejects wallet change during asset read before invoking transp
   } finally { persistence.close(); }
 });
 
+test('Pack storage pins the exact draft before wallet entry and only unlocks a definitive first rejection', async () => {
+  const registrationDigest = digest(99);
+  let walletError = Object.assign(new Error('Rejected'), {
+    definitiveRejection: true, signedArtifactCreated: false,
+  });
+  let beforeWallet = 0;
+  const transport = {
+    schemaVersion: 'animacraft.maker-v8-pack-transport.v1',
+    async prepare() { assert.fail('The reviewed path does not prepare another upload'); },
+    async requestSignature() { assert.fail('The reviewed path does not use legacy signing'); },
+    async signReviewed(_input, step, guard) {
+      assert.equal(step.digest, registrationDigest);
+      await guard({ firstRegistration: true });
+      beforeWallet++;
+      assert.equal((await studio.getTransportPin('pin-pack')).digest, registrationDigest);
+      throw walletError;
+    },
+    async recover() {
+      assert.equal((await studio.getTransportPin('pin-pack')).digest, registrationDigest);
+      return { status: 'TRANSPORT_RECOVERY_REQUIRED', upload: { transactionDigest: registrationDigest } };
+    },
+  };
+  const { studio, persistence, rootId } = harness({ transport,
+    execution: { allowWalletSignature: true, allowBroadcast: true } });
+  try {
+    const draft = await studio.createPackDraft({ draftId: 'pin-pack', rootId,
+      metadata: { semanticPackId: 'pin', name: 'Pinned Pack' } });
+    const request = { draftId: draft.draftId, expectedRevision: draft.revision, reviewKind: 'WALRUS',
+      review: { digest: registrationDigest } };
+    await assert.rejects(studio.signReviewedPublication(request), /Rejected/);
+    assert.equal(await studio.getTransportPin(draft.draftId), null);
+    const edited = await studio.save({ ...request, fields: { name: 'Still editable after rejection' } });
+    walletError = new Error('Wallet disconnected before result');
+    await assert.rejects(studio.signReviewedPublication({ ...request, expectedRevision: edited.revision }), /before result/);
+    await assert.rejects(studio.save({ draftId: edited.draftId, expectedRevision: edited.revision,
+      fields: { accessKind: 'PAID', accessPriceAtomic: '1000' } }), { code: 'MAKER_V8_PACK_TRANSPORT_LOCKED' });
+    const recovered = await studio.recoverPublicationOutcome({ draftId: edited.draftId, expectedRevision: edited.revision });
+    assert.equal(recovered.transport.upload.transactionDigest, registrationDigest);
+    assert.equal(beforeWallet, 2);
+  } finally { persistence.close(); }
+});
+
 test('replacing Pack artwork prepares only the current image while retaining the old local bytes', async () => {
   const uploads = [];
+  const stored = new Map();
   const transport = createMakerV8PackTransportV8({ publisher: {
-    load: async () => null,
-    prepare: async value => { uploads.push(value); return { uploadId: value.uploadId, status: 'SIGNATURE_REQUIRED' }; },
+    load: async uploadId => stored.get(uploadId) ?? null,
+    prepare: async value => {
+      uploads.push(value);
+      stored.set(value.uploadId, { uploadId: value.uploadId, status: 'SIGNATURE_REQUIRED' });
+      return { uploadId: value.uploadId, status: 'ENCODED' };
+    },
     requestSignature: async () => { throw Error('No wallet'); }, resume: async () => { throw Error('No network'); },
   } });
   const { studio, persistence, rootId } = harness({ transport });

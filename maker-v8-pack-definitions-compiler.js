@@ -27,7 +27,7 @@ function freeze(value) {
 }
 
 /** Offline definition projection, NOT release authorization. Parent certification
- * remains the caller's responsibility; existing full-publication guards remain. */
+ * remains the caller's responsibility. */
 export async function compileMakerV8PackDefinitionRowsV8(authoring, { expectedParent, semanticPackId } = {}) {
   if (typeof semanticPackId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(semanticPackId)) fail('Invalid semantic Pack ID.');
   const checked = assertPublicPackAuthoringContent(authoring, { expectedParent });

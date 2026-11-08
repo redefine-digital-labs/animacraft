@@ -2021,6 +2021,73 @@ test('bridge maps the exact Player, Pack, Composable, and Maker lifecycle contro
   ]);
 });
 
+test('Pack review signs only the reviewed stage and recovers the saved digest on a cold reopen', async () => {
+  const { productRuntime } = runtimeHarness({ connected: true });
+  const { drafts } = draftHarness();
+  const calls = [];
+  const draft = { draftId: 'qa-pack', revision: 2, document: { author: { address } },
+    publication: { status: 'UNPREPARED', chain: null } };
+  const step = { id: 'asset', revision: 1, stage: 'REGISTER', digest: 'storage-digest',
+    quote: { verified: true } };
+  let signed = false;
+  let verified = false;
+  const pack = {
+    async createPackDraft() {}, async load() { return structuredClone(draft); },
+    async save() {}, async preview() {}, async export() {}, async performLifecycle() {},
+    async requestPublicationSignature() { assert.fail('Legacy sign cannot serve the Studio'); },
+    async replayPackPublication() { assert.fail('Storage uses its own query-first recovery'); },
+    async resumePublication() { assert.fail('Storage cannot resume a Sui publication plan'); },
+    async reviewPublication() {
+      calls.push('read');
+      return { draft: structuredClone(draft), transport: {
+        stage: 'ASSET',
+        status: signed ? 'TRANSPORT_RECOVERY_REQUIRED' : 'TRANSPORT_SIGNATURE_REQUIRED',
+        upload: { stage: 'REGISTER', transactionDigest: signed ? step.digest : null },
+        step: signed ? null : { ...step, quote: { verified } },
+      } };
+    },
+    async signReviewedPublication(value) {
+      await value.assertCurrent();
+      assert.equal(value.reviewKind, 'WALRUS');
+      assert.deepEqual(value.review, step);
+      signed = true;
+      calls.push('sign');
+      return { draft };
+    },
+    async recoverPublicationOutcome(value) {
+      assert.equal(value.draftId, draft.draftId);
+      assert.equal(value.expectedRevision, draft.revision);
+      assert.equal(signed, true);
+      calls.push('recover');
+      return { draft };
+    },
+  };
+  const open = () => createMakerV8ProductBridge({ productRuntime, drafts, pack,
+    execution: { allowWalletSignature: true, allowBroadcast: true } });
+  const read = { draftId: draft.draftId, expectedRevision: draft.revision };
+  const bridge = open();
+  const reopened = open();
+  try {
+    let { review } = await bridge.reviewPackPublication(read);
+    assert.equal(review.nextAction, null);
+    assert.equal(review.needsVerifiedQuote, true);
+    verified = true;
+    ({ review } = await bridge.reviewPackPublication(read));
+    assert.equal(review.nextAction, 'SIGN');
+    await assert.rejects(bridge.advancePackPublication({ reviewId: review.id, action: 'RECOVER' }),
+      { code: 'MAKER_V8_PRODUCT_PACK_REVIEW_STALE' });
+    assert.deepEqual(calls, ['read', 'read']);
+    const result = await bridge.advancePackPublication({ reviewId: review.id, action: 'SIGN' });
+    assert.equal(result.review.nextAction, 'RECOVER');
+    assert.equal(result.review.digest, step.digest);
+    ({ review } = await reopened.reviewPackPublication(read));
+    assert.equal(review.nextAction, 'RECOVER');
+    assert.equal(review.digest, step.digest);
+    await reopened.advancePackPublication({ reviewId: review.id, action: 'RECOVER' });
+    assert.deepEqual(calls, ['read', 'read', 'sign', 'read', 'read', 'recover', 'read']);
+  } finally { bridge.dispose(); reopened.dispose(); drafts.close(); }
+});
+
 test('Start Making opens one exact Fresh-v8 Player session for the selected Maker', async () => {
   const rootId = `0x${'44'.repeat(32)}`;
   const commitment = '44'.repeat(32);

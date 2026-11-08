@@ -27,6 +27,7 @@ import {
   assertMakerV8SuiGrpcTransport,
 } from './maker-v8-sui-grpc.js';
 import { assertMakerV8Runtime } from './maker-v8-runtime.js';
+import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 import { buildMakerV8PackDefinitionStepV8 } from './maker-v8-pack-definitions-compiler.js';
 import { MAKER_V8_PACK_DEFINITIONS_BCS, MAKER_V8_PACK_DEFINITIONS_DRAFT_BCS,
   MAKER_V8_COLOR_CHANNEL_DRAFT_BCS_V2 } from './maker-v8-pack-definition-wire.js';
@@ -219,7 +220,7 @@ export function createMakerV8PackPublicationBoundaryV8({
       await assertPinnedMainnet(client);
       const state = await client.core.getCurrentSystemState();
       const epoch = decimal(state?.systemState?.epoch, 'current epoch');
-      input.transaction.setExpiration({ Epoch: (BigInt(epoch) + 1n).toString() });
+      input.transaction.setExpiration(makerV8PublicationExpiration(epoch));
       const raw = await input.transaction.build({ client });
       await assertPinnedMainnet(client);
       const rebuiltKind = toBase64(await input.transaction.build({ onlyTransactionKind: true }));
@@ -268,9 +269,10 @@ export function createMakerV8PackPublicationBoundaryV8({
       if (!simulated || simulated.digest !== proof.digest
         || !(simulated.bcs instanceof Uint8Array)
         || toBase64(simulated.bcs) !== proof.base64
-        || simulated.effects?.transactionDigest !== proof.digest) {
+        || typeof simulated.effects?.transactionDigest !== 'string') {
         fail('MAKER_V8_PACK_ADAPTER_SIMULATION_DRIFT', 'Pack simulation did not echo the exact TransactionData and digest.');
       }
+      suiDigest(simulated.effects.transactionDigest, 'Pack simulation effects digest');
       const success = result.$kind === 'Transaction'
         && simulated.status?.success === true && simulated.effects?.status?.success === true;
       return freeze({ status: success ? 'SUCCESS' : 'FAILURE' });

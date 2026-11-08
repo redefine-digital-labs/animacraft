@@ -138,7 +138,7 @@ function harness() {
       };
       uploads.set(value.uploadId, upload);
       calls.push(['prepare', value.mediaType]);
-      return upload;
+      return { ...upload, status: 'ENCODED' };
     },
     async requestSignature(uploadId) {
       const upload = { ...uploads.get(uploadId), status: 'RECOVERY_REQUIRED' };
@@ -204,6 +204,64 @@ test('Pack transport certifies every Style asset and one canonical Manifest befo
   ]);
 });
 
+test('Pack storage reviews exact bytes and resumes finalized registration before quoting certification', async () => {
+  let upload;
+  let review;
+  const signed = [];
+  const recovered = [];
+  const publisher = {
+    async load(uploadId) { return upload?.uploadId === uploadId ? upload : null; },
+    async prepare({ uploadId }) {
+      upload = { uploadId, status: 'SIGNATURE_REQUIRED', stage: 'REGISTER', revision: 1 };
+      return { ...upload, status: 'ENCODED' };
+    },
+    async requestSignature() { assert.fail('The reviewed flow cannot use unreviewed signing'); },
+    async prepareReview(uploadId) {
+      review = { id: uploadId, revision: upload.revision, stage: upload.stage, digest: digest(upload.revision) };
+      return review;
+    },
+    async signReviewed(uploadId, step, assertCurrent) {
+      assert.equal(uploadId, upload.uploadId);
+      assert.deepEqual(step, review);
+      await assertCurrent();
+      signed.push(step.digest);
+      upload = { ...upload, revision: 2, status: 'RECOVERY_REQUIRED', transactionDigest: step.digest };
+      return upload;
+    },
+    async resume(uploadId, expected) {
+      assert.equal(uploadId, upload.uploadId);
+      assert.deepEqual(expected, upload);
+      recovered.push(upload.transactionDigest);
+      upload = upload.status === 'RECOVERY_REQUIRED'
+        ? { ...upload, revision: 3, status: 'REGISTER_FINALIZED', stage: 'UPLOAD' }
+        : { ...upload, revision: 4, status: 'SIGNATURE_REQUIRED', stage: 'CERTIFY', transactionDigest: null };
+      return upload;
+    },
+  };
+  const transport = createMakerV8PackTransportV8({ publisher });
+  const registration = await transport.prepareReview(input());
+  assert.equal(registration.step.stage, 'REGISTER');
+  assert.deepEqual(signed, []);
+  assert.deepEqual(recovered, []);
+  let guards = 0;
+  const guard = async () => { guards++; };
+  await transport.signReviewed(input(), registration.step, guard);
+  const finalized = await transport.recover(input());
+  assert.equal(finalized.status, 'TRANSPORT_RECOVERY_REQUIRED');
+  assert.equal(finalized.upload.status, 'REGISTER_FINALIZED');
+  assert.equal(finalized.upload.transactionDigest, registration.step.digest);
+  await transport.recover(input());
+  const certification = await transport.prepareReview(input());
+  assert.equal(certification.step.stage, 'CERTIFY');
+  assert.notEqual(certification.step.digest, registration.step.digest);
+  await assert.rejects(transport.signReviewed(input(), registration.step, guard), {
+    code: 'MAKER_V8_PACK_TRANSPORT_REVIEW_STALE',
+  });
+  assert.deepEqual(signed, [registration.step.digest]);
+  assert.deepEqual(recovered, [registration.step.digest, registration.step.digest]);
+  assert.equal(guards, 1);
+});
+
 test('Pack transport rejects substituted bytes, incomplete sets, protected rows and author drift', async () => {
   const { transport, calls } = harness();
   const substituted = input();
@@ -262,6 +320,31 @@ test('authored Pack Manifest binds complete content to independent parent and ex
     ...inheritedSource, sha256: 'ef'.repeat(32),
   };
   assert.throws(() => packPublicationAuthoringContent(staleParent), { code: 'MAKER_V8_SOURCE_ASSET_MISMATCH' });
+  const candidate = input();
+  candidate.draft.document.authoringParent = {
+    schemaVersion: 'animacraft.maker-v8-draft-export.v1',
+    draft: { draftId: 'parent-maker', revision: 1, document: structuredClone(parent) },
+    assets: local.bindings.parent.assets,
+    draftSha256: hash('f'),
+  };
+  candidate.draft.document.authoring = structuredClone(parent);
+  candidate.draft.document.styles[0].itemKey = row.itemKey;
+  candidate.draft.document.styles[0].layerTrackKey = row.layerTrackKey;
+  const { transport: fresh, calls } = harness();
+  await assert.rejects(fresh.prepare(candidate), { code: 'MAKER_V8_PACK_STYLE_SLOT_REQUIRED' });
+  assert.deepEqual(calls, [], 'a fixed part fails before any Walrus write or quote');
+  for (const document of [candidate.draft.document.authoringParent.draft.document, candidate.draft.document.authoring]) {
+    document.composition = { mode: 'COMPOSABLE', thirdPartyAdmission: 'CERTIFIED', itemAssetization: true };
+    document.parts.find(part => part.key === row.partKey).wardrobeMode = 'SLOT';
+  }
+  assert.equal((await fresh.prepare(candidate)).stage, 'ASSET');
+  await fresh.requestSignature(candidate);
+  assert.equal((await fresh.recover(candidate)).stage, 'MANIFEST');
+  await fresh.requestSignature(candidate);
+  const compiled = await fresh.recover(candidate);
+  assert.equal(compiled.status, 'PUBLICATION_TRANSPORT_READY');
+  const published = JSON.parse(Buffer.from(compiled.prepared.manifest.bytesBase64, 'base64'));
+  assert.deepEqual(published.content.authoring, packPublicationAuthoringContent(candidate.draft.document).content);
   manifest.content.authoring = authored.content;
   const hashBytes = value => createHash('sha256').update(value).digest('hex');
   const commit = content => hashBytes(canonicalMakerV8PackJson({ ...content,

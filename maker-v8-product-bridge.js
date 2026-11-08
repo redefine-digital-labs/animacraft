@@ -2116,11 +2116,14 @@ export function createMakerV8ProductBridge({
     const listPackDrafts = method(pack, 'list', 'pack', { optional: true });
     const upsertPackAsset = method(pack, 'upsertAsset', 'pack', { optional: true });
     const loadPackDraft = method(pack, 'load', 'pack');
+    const getPackTransportPin = method(pack, 'getTransportPin', 'pack', { optional: true });
     const preparePackPublication = method(pack, 'preparePublication', 'pack', { optional: true });
     const resumePackPublication = method(pack, 'resumePublication', 'pack');
     const signPackPublication = method(pack, 'requestPublicationSignature', 'pack');
     const recoverPackPublication = method(pack, 'recoverPublicationOutcome', 'pack');
     const replayPackPublication = method(pack, 'replayPackPublication', 'pack');
+    const reviewPackPublication = method(pack, 'reviewPublication', 'pack', { optional: true });
+    const signReviewedPackPublication = method(pack, 'signReviewedPublication', 'pack', { optional: true });
     bridge.createPackDraft = async (input = {}) => {
       if (input.rootId && input.makerDraftId) {
         fail('MAKER_V8_PRODUCT_PACK_PARENT_AMBIGUOUS', 'Choose one local or published parent.', 'PACK');
@@ -2141,6 +2144,14 @@ export function createMakerV8ProductBridge({
     };
     if (listPackDrafts) bridge.listPackDrafts = listPackDrafts;
     bridge.loadPackDraft = loadPackDraft;
+    if (getPackTransportPin) bridge.getPackTransportPin = async (draftId) => {
+      const { address } = await requireConnected();
+      const draft = await loadPackDraft(exactDraftId(draftId));
+      if (draft.document.author.address !== address || (await requireConnected()).address !== address) {
+        fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Connect the Pack author wallet to inspect saved storage.', 'PACK');
+      }
+      return getPackTransportPin(draftId);
+    };
     const loadPackPreview = method(pack, 'loadPreview', 'pack', { optional: true });
     if (loadPackPreview) bridge.renderPackPreview = async ({ draftId, selection } = {}) => {
       const selected = selection === undefined ? null : structuredClone(selection);
@@ -2185,6 +2196,86 @@ export function createMakerV8ProductBridge({
     bridge.requestPackPublicationSignature = signPackPublication;
     bridge.recoverPackPublicationOutcome = recoverPackPublication;
     bridge.replayPackPublication = replayPackPublication;
+    if (reviewPackPublication && signReviewedPackPublication) {
+      let currentReview = null;
+      let reviewSequence = 0;
+      const stalePackReview = () => fail('MAKER_V8_PRODUCT_PACK_REVIEW_STALE', 'Review the current saved Pack publication again.', 'PACK');
+      const requirePackScope = async ({ draftId, revision, account, generation }) => {
+        const active = await requireConnected();
+        const draft = await loadPackDraft(draftId);
+        if (disposed || generation !== publicationGeneration || active.address !== account
+          || draft?.revision !== revision || draft.document.author.address !== account) stalePackReview();
+      };
+      const projectPackReview = async (scope) => {
+        const result = await reviewPackPublication({ draftId: scope.draftId, expectedRevision: scope.revision });
+        const { draft, transport, plan } = result;
+        if (draft?.draftId !== scope.draftId || draft.document.author.address !== scope.account) stalePackReview();
+        scope = { ...scope, revision: draft.revision };
+        await requirePackScope(scope);
+        const chain = draft.publication.chain;
+        const outcome = plan?.current?.outcome;
+        const reviewKind = transport ? 'WALRUS' : 'SUI';
+        const step = transport?.step ?? result.step ?? null;
+        const status = transport?.status ?? outcome?.status ?? plan?.status ?? draft.publication.status;
+        const stage = transport?.upload?.status === 'REGISTER_FINALIZED' ? 'UPLOAD'
+          : transport?.upload?.stage ?? step?.stage ?? plan?.current?.descriptor.stage ?? plan?.head?.stage ?? null;
+        const canSign = step && (reviewKind === 'SUI' || stage === 'CERTIFY'
+          || (stage === 'REGISTER' && step.quote?.verified === true));
+        const canRecover = transport?.status === 'TRANSPORT_RECOVERY_REQUIRED'
+          || (plan?.status === 'ACTIVE' && !step)
+          || (plan && plan.status !== 'ACTIVE' && draft.publication.status !== plan.status);
+        const nextAction = canSign ? 'SIGN' : canRecover ? 'RECOVER' : null;
+        const review = freeze({
+          id: String(++reviewSequence), kind: reviewKind, status, stage, step,
+          nextAction: gates.allowWalletSignature && gates.allowBroadcast ? nextAction : null,
+          executionEnabled: gates.allowWalletSignature && gates.allowBroadcast,
+          resource: transport?.assetId ?? transport?.stage ?? null,
+          digest: transport?.upload?.transactionDigest ?? outcome?.digest ?? plan?.terminal?.digest ?? step?.digest ?? null,
+          releaseId: chain?.release.objectRef.objectId ?? null,
+          releaseDigest: chain?.finalizedDigest ?? null,
+          needsVerifiedQuote: Boolean(step && !canSign),
+        });
+        currentReview = { scope, review };
+        return freeze({ draft, review });
+      };
+      bridge.reviewPackPublication = async ({ draftId, expectedRevision } = {}) => {
+        const account = (await requireConnected()).address;
+        const scope = { draftId: exactDraftId(draftId), revision: expectedRevision, account, generation: publicationGeneration };
+        return publicationLock(`pack:${scope.draftId}:${account}`, async () => {
+          currentReview = null;
+          await requirePackScope(scope);
+          return projectPackReview(scope);
+        });
+      };
+      bridge.advancePackPublication = async ({ reviewId, action } = {}) => {
+        const saved = currentReview;
+        if (!saved || saved.review.id !== reviewId || !saved.review.nextAction
+          || saved.review.nextAction !== action) stalePackReview();
+        const { scope, review } = saved;
+        currentReview = null;
+        return publicationLock(`pack:${scope.draftId}:${scope.account}`, async () => {
+          await requirePackScope(scope);
+          const input = { draftId: scope.draftId, expectedRevision: scope.revision };
+          let result;
+          if (action === 'SIGN') {
+            result = await signReviewedPackPublication({
+              ...input, reviewKind: review.kind, review: review.step, assertCurrent: () => requirePackScope(scope),
+            });
+          } else if (review.kind === 'WALRUS') {
+            result = await recoverPackPublication(input);
+          } else {
+            result = await resumePackPublication(input);
+            if (result.plan?.current?.outcome.status === 'OUTCOME_PENDING'
+              && result.plan.current.outcome.absence) {
+              const replayScope = { ...scope, revision: result.draft.revision };
+              await requirePackScope(replayScope);
+              result = await replayPackPublication({ ...input, expectedRevision: replayScope.revision });
+            }
+          }
+          return projectPackReview({ ...scope, revision: result.draft.revision });
+        });
+      };
+    }
     if (preparePackPublication) bridge.continuePackPublication = async ({ draftId } = {}) => {
       if (!gates.allowWalletSignature || !gates.allowBroadcast) {
         fail('MAKER_V8_PRODUCT_EXECUTION_DISABLED', 'Expansion Pack publishing is not enabled for this release.', 'PACK');

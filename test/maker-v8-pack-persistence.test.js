@@ -185,3 +185,51 @@ test('Pack persistence refuses deletion after durable publication evidence exist
   assert.ok(await persistence.load('durable-pack'));
   persistence.close();
 });
+
+test('Pack storage pin survives a cold reopen and excludes competing draft writes', async () => {
+  const options = { databaseName: `pack-pin-${crypto.randomUUID()}` };
+  const original = createMakerV8PackPersistenceV8(indexedDB, options);
+  const reopened = createMakerV8PackPersistenceV8(indexedDB, options);
+  try {
+    const draft = await original.create(draftFixture());
+    const pin = await original.pinTransport({ draftId: draft.draftId, expectedRevision: draft.revision, digest: digest(77) });
+    original.close();
+    assert.deepEqual(await reopened.getTransportPin(draft.draftId), pin);
+    assert.equal(await reopened.pinTransport({ draftId: draft.draftId, expectedRevision: 1, digest: digest(78) }), null);
+    const next = structuredClone(draft);
+    next.revision = 2;
+    next.updatedAt = 101;
+    next.document.metadata.summary = 'Competing edit';
+    const update = { draftId: draft.draftId, expectedRevision: 1, next };
+    await assert.rejects(reopened.compareAndSwap(update), { code: 'MAKER_V8_PACK_TRANSPORT_LOCKED' });
+    await assert.rejects(reopened.delete(update), { code: 'MAKER_V8_PACK_TRANSPORT_LOCKED' });
+    assert.equal(await reopened.releaseTransportPin({ ...pin, digest: digest(78) }), false);
+    assert.deepEqual(await reopened.getTransportPin(draft.draftId), pin);
+    assert.equal(await reopened.releaseTransportPin(pin), true);
+    assert.equal((await reopened.compareAndSwap(update)).revision, 2);
+  } finally { original.close(); reopened.close(); }
+});
+
+test('adding storage pins preserves saved version-one Pack drafts', async () => {
+  const options = { databaseName: `pack-legacy-${crypto.randomUUID()}` };
+  const draft = draftFixture();
+  const legacy = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(options.databaseName, 1);
+    request.onupgradeneeded = () => {
+      const drafts = request.result.createObjectStore('packDrafts', { keyPath: 'draftId' });
+      drafts.createIndex('byUpdatedAt', 'updatedAt');
+      drafts.add(draft);
+      request.result.createObjectStore('packAssets', { keyPath: ['draftId', 'assetId'] }).createIndex('byDraft', 'draftId');
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  legacy.close();
+  const upgraded = createMakerV8PackPersistenceV8(indexedDB, options);
+  try {
+    assert.deepEqual(await upgraded.load(draft.draftId), draft);
+    assert.equal(await upgraded.getTransportPin(draft.draftId), null);
+    const pin = await upgraded.pinTransport({ draftId: draft.draftId, expectedRevision: draft.revision, digest: digest(79) });
+    assert.equal(pin.digest, digest(79));
+  } finally { upgraded.close(); }
+});

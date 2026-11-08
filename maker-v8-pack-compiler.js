@@ -32,7 +32,7 @@ import {
 } from './maker-v8-chain.js';
 import { assertMakerV8Runtime } from './maker-v8-runtime.js';
 import { assertMakerV8PlayerProtocolCurrentV8 } from './maker-v8-player-protocol.js';
-import { packPublicationAuthoringContent } from './maker-v8-pack-authoring.js';
+import { packPublicationAuthoringContent, assertPackStylesTargetSlots } from './maker-v8-pack-authoring.js';
 import { compileMakerV8PackDefinitionRowsV8, planMakerV8PackDefinitionRegistrationV8,
   buildMakerV8PackDefinitionStepV8 } from './maker-v8-pack-definitions-compiler.js';
 
@@ -921,7 +921,6 @@ async function buildDescriptor(authority, compiled, {
   });
   COMPILER_TRANSACTIONS.set(transaction, freeze({
     authority,
-    executionBlocked: compiled.document.authoring !== undefined,
     signer: compiled.signer,
     kindBytes: kind.bytes,
     kindSha256: kind.sha256,
@@ -1185,9 +1184,6 @@ export function createMakerV8PackProtectionAuthorityLoaderV8({
 
 export function assertMakerV8PackCompilerTransactionV8(authority, transaction, expected = {}) {
   const proof = COMPILER_TRANSACTIONS.get(transaction);
-  if (proof?.executionBlocked) {
-    fail('MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE', 'Authored Pack execution remains blocked pending complete publication and consumer acceptance.');
-  }
   if (!proof || proof.authority !== authority
     || expected.signer !== undefined && proof.signer !== expected.signer
     || expected.kindBytes !== undefined && proof.kindBytes !== expected.kindBytes
@@ -1277,7 +1273,9 @@ export function createMakerV8PackCompilerV8({
     if (typeof loadParent !== 'function') {
       fail('MAKER_V8_PACK_PARENT_RESOLVER_REQUIRED', 'Authored Pack compilation requires the independently certified Maker content reader.');
     }
-    const expected = packPublicationAuthoringContent(document).content.parent;
+    const { content } = packPublicationAuthoringContent(document);
+    assertPackStylesTargetSlots(content.styles, content.document.parts);
+    const expected = content.parent;
     const published = await loadParent({ rootId: document.bindings.root.objectRef.objectId,
       rootVersion: document.bindings.root.makerVersion, rootContentCommitment: document.bindings.root.contentCommitment });
     if (!plain(published) || !same(published, expected)) {
@@ -1572,9 +1570,6 @@ export function createMakerV8PackCompilerV8({
     async rehydrate({ plan, purpose = 'REHYDRATE', requireFreshAuthority = false }) {
       const compiled = validateCompiled(plan?.immutable?.request?.publicationInput);
       if (requireFreshAuthority) {
-        if (compiled.document.authoring !== undefined) {
-          fail('MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE', 'Authored Pack signing/replay remains blocked until publication mapping is complete.');
-        }
         await assertFreshAuthority(compiled, purpose, Number(plan?.head?.observedStyleCount ?? 0));
       }
       const cursor = plan.current.descriptor.stage === 'INIT'

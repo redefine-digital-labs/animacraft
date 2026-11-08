@@ -178,11 +178,13 @@ function documentFixture(styles = 2, owner = id(90)) {
 }
 
 async function preparedTransport(document) {
+  const uploads = new Map();
   const transport = createMakerV8PackTransportV8({
     publisher: {
-      async load() { return null; },
-      async prepare({ mediaType }) {
-        return { status: 'COMPLETE', blobId: mediaType === 'application/json' ? 'walrus-manifest' : 'walrus-style' };
+      async load(uploadId) { return uploads.get(uploadId) ?? null; },
+      async prepare({ uploadId, mediaType }) {
+        uploads.set(uploadId, { status: 'COMPLETE', blobId: mediaType === 'application/json' ? 'walrus-manifest' : 'walrus-style' });
+        return { status: 'ENCODED' };
       },
       async requestSignature() { throw new Error('not used'); },
       async resume() { throw new Error('not used'); },
@@ -373,17 +375,18 @@ function checkpoint(compiled, descriptor, stage, endStyle) {
 
 async function authoredTransportFixture(owner = id(90), largePalette = false) {
   const runtime = await attestFixtureRuntime(runtimeFixture());
-  // Offline certified-transport fixture; the real upload entry stays blocked.
+  // Offline fixture for the certified transport produced by Pack Studio.
   const prepared = structuredClone(await preparedTransport(documentFixture(1, owner)));
   const document = prepared.document;
   const parent = createCreatorCharacterStarter();
+  parent.composition = { mode: 'COMPOSABLE', thirdPartyAdmission: 'CERTIFIED', itemAssetization: true };
   parent.assets.push({ id: 'base-image', kind: 'layer', mediaType: 'image/png', byteLength: 3 });
   for (const part of parent.parts) part.items[0].styles[0].assetId = 'base-image';
   document.authoringParent = { draft: { document: parent }, assets: [
     { assetId: 'base-image', kind: 'layer', mediaType: 'image/png', byteLength: 3, sha256: '11'.repeat(32) },
   ] };
   document.authoring = structuredClone(parent);
-  const own = { ...structuredClone(parent.parts[0]), key: 'own', label: 'Own', menuOrder: 99, renderOrder: 99 };
+  const own = { ...structuredClone(parent.parts[0]), key: 'own', label: 'Own', menuOrder: 99, renderOrder: 99, wardrobeMode: 'SLOT' };
   document.authoring.parts.push(own);
   document.authoring.tracks.push({ key: 'overlay', label: 'Overlay', renderOrder: 99, locked: false });
   document.authoring.colors.push({ key: 'tint', label: 'Tint', defaultSwatchKey: 'red',
@@ -441,7 +444,7 @@ test('authored compilation and fresh successors require exact independently cert
   assert.equal(calls.length, count, 'recover already-signed history before requesting fresh external parent state');
 });
 
-test('main compiler rebuilds authored definition cursors and scoped Styles while execution remains blocked', async () => {
+test('main compiler authorizes rebuilt definition cursors and scoped Styles with fresh parent authority', async () => {
   const { runtime, prepared, document, documentSha256, manifest } = await authoredTransportFixture();
   const makeCompiler = () => createMakerV8PackCompilerV8({ runtime,
     loadParent: async () => structuredClone(manifest.content.authoring.parent),
@@ -468,10 +471,11 @@ test('main compiler rebuilds authored definition cursors and scoped Styles while
     compiler = makeCompiler();
     const rebuilt = await compiler.rehydrate({ plan });
     assert.deepEqual(rebuilt.descriptor, built.descriptor, 'fresh compiler must reconstruct the exact cursor');
-    await assert.rejects(compiler.rehydrate({ plan, purpose: 'REQUEST_SIGNATURE', requireFreshAuthority: true }),
-      { code: 'MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE' });
-    assert.throws(() => assertMakerV8PackCompilerTransactionV8(compiler.authority, rebuilt.transaction),
-      { code: 'MAKER_V8_PACK_AUTHORING_NOT_PUBLISHABLE' });
+    const live = await compiler.rehydrate({ plan, purpose: 'REQUEST_SIGNATURE', requireFreshAuthority: true });
+    assert.deepEqual(live.descriptor, built.descriptor);
+    assertMakerV8PackCompilerTransactionV8(compiler.authority, live.transaction, {
+      signer: built.descriptor.signer, kindBytes: built.descriptor.kindBytes,
+    });
     const certified = await compiler.certifyFinalized({ plan, query: { status: 'FINALIZED_SUCCESS' },
       artifact: { digest: digest(200 + built.descriptor.ordinal) } });
     assert.equal(certified.complete, built.descriptor.stage === 'FINALIZE');
@@ -765,7 +769,7 @@ test('cold durable Pack signature reauthorization is required before exact gRPC 
           Transaction: {
             digest: transactionDigest, bcs: raw,
             status: { success: true },
-            effects: { transactionDigest, status: { success: true } },
+            effects: { transactionDigest: digest(222), status: { success: true } },
           },
         };
       },
@@ -791,6 +795,10 @@ test('cold durable Pack signature reauthorization is required before exact gRPC 
   const built = await boundary.buildExactTransaction({
     transaction: initial.transaction, descriptor: initial.descriptor, sender: owner,
   });
+  const expiry = bcs.TransactionData.parse(fromBase64(built.bytes)).V1.expiration.ValidDuring;
+  assert.equal(expiry.chain, MAKER_V8_SUI_MAINNET_GENESIS_DIGEST);
+  assert.equal(expiry.minEpoch, '7');
+  assert.equal(expiry.maxEpoch, '8');
   assert.deepEqual(await boundary.dryRunExactTransaction({
     transaction: initial.transaction,
     descriptor: initial.descriptor,
