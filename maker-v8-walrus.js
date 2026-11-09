@@ -888,7 +888,7 @@ export function createMakerV8WalrusPublisherV8({
     return epoch >= BigInt(validity.minEpoch) && epoch <= BigInt(validity.maxEpoch);
   };
 
-  const verifyRegistrationSimulation = async (build) => {
+  const verifyRegistrationSimulation = async (build, owner, quote) => {
     const unverified = () => fail('MAKER_V8_WALRUS_REGISTRATION_SIMULATION_UNVERIFIED',
       'Could not simulate this Walrus registration. Refresh the review before signing.', 'CONTEXT', { digest: build.digest });
     let result;
@@ -903,6 +903,37 @@ export function createMakerV8WalrusPublisherV8({
       walrusClient.reset?.();
       fail('MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FAILED',
         'This Walrus registration failed simulation. Refresh and review a new quote before signing.', 'CONTEXT', { digest: build.digest });
+    }
+    if (!quoteAuthority) return;
+    if (quote?.verified !== true || !UINT.test(quote.walrusTotalCostFrost ?? '')
+      || !UINT.test(quote.relayTipMist ?? '') || !Array.isArray(simulated.balanceChanges)) unverified();
+    let walType;
+    const debits = new Map();
+    try {
+      walType = normalizeStructTag((await quoteAuthority('REGISTER')).walCoinType);
+      for (const change of simulated.balanceChanges) {
+        if (change.address !== owner) continue;
+        const coin = normalizeStructTag(change.coinType);
+        if (typeof change.amount !== 'string' || !/^-?(0|[1-9][0-9]*)$/.test(change.amount)
+          || debits.has(coin)) unverified();
+        debits.set(coin, -BigInt(change.amount));
+      }
+    } catch { unverified(); }
+    const { computationCost, storageCost, storageRebate } = simulated.effects.gasUsed ?? {};
+    if (walType === SUI_TYPE || ![computationCost, storageCost, storageRebate].every(
+      value => typeof value === 'string' && UINT.test(value),
+    )) unverified();
+    const netGas = BigInt(computationCost) + BigInt(storageCost) - BigInt(storageRebate);
+    const gasBudget = BigInt(bcs.TransactionData.parse(fromBase64(build.bytes)).V1.gasData.budget);
+    const suiDebit = debits.get(SUI_TYPE) ?? 0n;
+    // A relay payment to the sender itself may net out of the wallet balance.
+    if ((debits.get(walType) ?? 0n) !== BigInt(quote.walrusTotalCostFrost)
+      || netGas > gasBudget || suiDebit < netGas || suiDebit > netGas + BigInt(quote.relayTipMist)
+      || [...debits].some(([coin, amount]) => coin !== walType && coin !== SUI_TYPE && amount !== 0n)) {
+      walrusClient.reset?.();
+      fail('MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FEE_MISMATCH',
+        'The simulated wallet charges differ from this Walrus review. Refresh and review a new quote before signing.',
+        'CONTEXT', { digest: build.digest });
     }
   };
 
@@ -1398,6 +1429,18 @@ export function createMakerV8WalrusPublisherV8({
         const data = bcs.TransactionData.parse(fromBase64(batch.transaction.bytes)).V1;
         const epoch = integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch');
         if (BigInt(epoch) > BigInt(data.expiration.ValidDuring?.maxEpoch ?? '-1')) fail('MAKER_V8_WALRUS_REVIEW_EXPIRED', 'This unsigned batch review expired; prepare a new review before signing.', 'CONTEXT');
+        if (batch.transaction.stage === 'REGISTER' && simulateReviewedRegistration) {
+          try {
+            await verifyRegistrationSimulation(batch.transaction, batch.owner, batch.review.quote);
+          } catch (error) {
+            if (['MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FAILED',
+              'MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FEE_MISMATCH'].includes(error.code)) {
+              // The wallet has not opened. Requote the same members on the next review.
+              await saveBatch(batch, { status: 'ENCODED', transaction: null, review: null });
+            }
+            throw error;
+          }
+        }
         await assertCurrent();
         batch = await saveBatch(batch, { status: `${batch.transaction.stage}_SIGNING` });
         let signed;
@@ -1594,7 +1637,7 @@ export function createMakerV8WalrusPublisherV8({
         fail('MAKER_V8_WALRUS_ACCOUNT_DRIFT', 'Current wallet differs from the Walrus owner.', 'CONTEXT');
       }
       if (reviewed && build.stage === 'REGISTER' && simulateReviewedRegistration) {
-        await verifyRegistrationSimulation(build);
+        await verifyRegistrationSimulation(build, record.owner, expected?.quote);
       }
       if (expected) assertExpectedUpload(await persistence.load(record.uploadId), expected);
       record = await save(record, {
@@ -1703,7 +1746,7 @@ export function createProductionMakerV8WalrusPublisherV8({
     buildClient, rpc, wallet, persistence, execution, fetcher, aggregator,
     async simulateReviewedRegistration(transaction) {
       const client = await rpc.getSuiClient();
-      return client.core.simulateTransaction({ transaction, include: { bcs: true, effects: true } });
+      return client.core.simulateTransaction({ transaction, include: { bcs: true, effects: true, balanceChanges: true } });
     },
     async readOwnedPublicBlobs({ owner, blobId, signal }) {
       const reader = new WalrusClient({ network: 'mainnet', suiClient: buildClient });
