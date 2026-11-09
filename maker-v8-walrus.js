@@ -826,6 +826,7 @@ export function createMakerV8WalrusPublisherV8({
   aggregator = MAKER_V8_WALRUS_MAINNET_AGGREGATOR,
   now = () => Date.now(),
   quoteAuthority = null,
+  simulateReviewedRegistration = null,
   readOwnedPublicBlobs = null,
   locks = globalThis.navigator?.locks,
 } = {}) {
@@ -885,6 +886,24 @@ export function createMakerV8WalrusPublisherV8({
     if (!validity) return false;
     const epoch = BigInt(integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch'));
     return epoch >= BigInt(validity.minEpoch) && epoch <= BigInt(validity.maxEpoch);
+  };
+
+  const verifyRegistrationSimulation = async (build) => {
+    const unverified = () => fail('MAKER_V8_WALRUS_REGISTRATION_SIMULATION_UNVERIFIED',
+      'Could not simulate this Walrus registration. Refresh the review before signing.', 'CONTEXT', { digest: build.digest });
+    let result;
+    try { result = await simulateReviewedRegistration(fromBase64(build.bytes)); }
+    catch { unverified(); }
+    const success = result?.$kind === 'Transaction';
+    const simulated = success ? result.Transaction : result?.FailedTransaction;
+    if ((!success && result?.$kind !== 'FailedTransaction') || simulated?.digest !== build.digest
+      || !(simulated.bcs instanceof Uint8Array) || toBase64(simulated.bcs) !== build.bytes
+      || simulated.status?.success !== success || simulated.effects?.status?.success !== success) unverified();
+    if (!success) {
+      walrusClient.reset?.();
+      fail('MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FAILED',
+        'This Walrus registration failed simulation. Refresh and review a new quote before signing.', 'CONTEXT', { digest: build.digest });
+    }
   };
 
   const buildRegister = async (record) => {
@@ -1574,6 +1593,9 @@ export function createMakerV8WalrusPublisherV8({
       if (account?.address !== record.owner || account?.network !== 'mainnet') {
         fail('MAKER_V8_WALRUS_ACCOUNT_DRIFT', 'Current wallet differs from the Walrus owner.', 'CONTEXT');
       }
+      if (reviewed && build.stage === 'REGISTER' && simulateReviewedRegistration) {
+        await verifyRegistrationSimulation(build);
+      }
       if (expected) assertExpectedUpload(await persistence.load(record.uploadId), expected);
       record = await save(record, {
         status: `${build.stage}_SIGNING`, error: null,
@@ -1679,6 +1701,10 @@ export function createProductionMakerV8WalrusPublisherV8({
     walrusClient,
     directUploadClient: new WalrusClient({ network: 'mainnet', suiClient: buildClient }),
     buildClient, rpc, wallet, persistence, execution, fetcher, aggregator,
+    async simulateReviewedRegistration(transaction) {
+      const client = await rpc.getSuiClient();
+      return client.core.simulateTransaction({ transaction, include: { bcs: true, effects: true } });
+    },
     async readOwnedPublicBlobs({ owner, blobId, signal }) {
       const reader = new WalrusClient({ network: 'mainnet', suiClient: buildClient });
       const [type, { epoch }] = await Promise.all([reader.getBlobType(), reader.stakingState()]);
