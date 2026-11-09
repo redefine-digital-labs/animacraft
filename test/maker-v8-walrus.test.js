@@ -61,7 +61,9 @@ function memoryPersistence() {
   };
 }
 
-function harness(persistence = memoryPersistence(), clockStart = 100) {
+function harness(persistence = memoryPersistence(), clockStart = 100, {
+  readOwnedPublicBlobs, fetcher,
+} = {}) {
   const bytes = new TextEncoder().encode('fresh-v8-manifest');
   const calls = [];
   const queries = [];
@@ -156,11 +158,98 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
       network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
       allowWalletSignature: true, allowBroadcast: true,
     },
-    fetcher: async () => ({ ok: true, async arrayBuffer() { return bytes.buffer.slice(0); } }),
+    readOwnedPublicBlobs,
+    fetcher: fetcher ?? (async () => ({ ok: true, async arrayBuffer() { return bytes.buffer.slice(0); } })),
     now: (() => { let value = clockStart; return () => value++; })(),
   });
   return { publisher, bytes, calls, queries, walrusClient, buildClient, wallet, transport };
 }
+
+function ownedPublicBlob(bytes, {
+  endEpoch = 123, certifiedEpoch = 120, deletable = false,
+} = {}) {
+  return { id: OBJECT, blob_id: blobIdToInt(BLOB_ID).toString(), size: bytes.length,
+    certified_epoch: certifiedEpoch, storage: { end_epoch: endEpoch }, deletable };
+}
+
+test('a certified public asset reuses the existing Blob with sufficient Walrus retention and no signature', async () => {
+  const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  let statusReads = 0;
+  let terms = { endEpoch: 122 };
+  const h = harness(persistence, 100, {
+    async readOwnedPublicBlobs({ owner, blobId }) {
+      assert.equal(blobId, BLOB_ID);
+      assert.equal(owner, OWNER);
+      statusReads++;
+      return { epoch: 120, blobs: [ownedPublicBlob(h.bytes, terms)] };
+    },
+    async fetcher(url) {
+      assert.equal(url, `https://aggregator.walrus-mainnet.walrus.space/v1/blobs/by-object-id/${OBJECT}?strict_consistency_check=true`);
+      return new Response(h.bytes);
+    },
+  });
+  const uploadId = 'pack-public-reuse';
+  await h.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(h.bytes) });
+  const review = await h.publisher.prepareReview(uploadId);
+  assert.equal(await h.publisher.reuseCertifiedPublicAsset(uploadId), null);
+  assert.equal((await h.publisher.load(uploadId)).revision, review.revision);
+  terms = { deletable: true };
+  assert.equal(await h.publisher.reuseCertifiedPublicAsset(uploadId), null);
+  terms = { certifiedEpoch: null };
+  await assert.rejects(h.publisher.reuseCertifiedPublicAsset(uploadId), { code: 'MAKER_V8_WALRUS_PUBLIC_CERTIFICATION_PENDING' });
+  assert.equal((await h.publisher.load(uploadId)).revision, review.revision);
+  terms = {};
+  const completed = await h.publisher.reuseCertifiedPublicAsset(uploadId);
+  assert.equal(completed.status, 'COMPLETE');
+  assert.equal(completed.reusedCertification, true);
+  assert.equal(completed.blobId, BLOB_ID);
+  assert.equal(completed.blobObjectId, OBJECT);
+  assert.equal(completed.transactionDigest, null);
+  assert.equal((await persistence.load(uploadId)).readback.endEpoch, '123');
+  assert.deepEqual(await harness(persistence).publisher.load(uploadId), completed);
+  await assert.rejects(h.publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REVIEW_STALE' });
+  assert.equal(statusReads, 4);
+  assert.deepEqual(h.calls.filter(([step]) => ['sign', 'broadcast', 'upload'].includes(step)), []);
+  await persistence.close();
+});
+
+test('public reuse rejects altered readback bytes and a winning original signature keeps its digest', async () => {
+  const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  let wrongBytes = true;
+  let signalLookup;
+  let resumeLookup;
+  const started = new Promise(resolve => { signalLookup = resolve; });
+  const gate = new Promise(resolve => { resumeLookup = resolve; });
+  const h = harness(persistence, 100, {
+    async readOwnedPublicBlobs() {
+      if (!wrongBytes) { signalLookup(); await gate; }
+      return { epoch: 120, blobs: [ownedPublicBlob(h.bytes)] };
+    },
+    async fetcher() {
+      return new Response(wrongBytes ? h.bytes.map(byte => byte ^ 1) : h.bytes);
+    },
+  });
+  const uploadId = 'pack-public-race';
+  await h.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(h.bytes) });
+  const review = await h.publisher.prepareReview(uploadId);
+  await assert.rejects(h.publisher.reuseCertifiedPublicAsset(uploadId), { code: 'MAKER_V8_WALRUS_READBACK_DRIFT' });
+  wrongBytes = false;
+  const reuse = h.publisher.reuseCertifiedPublicAsset(uploadId);
+  await started;
+  await h.publisher.signReviewed(uploadId, review);
+  resumeLookup();
+  await assert.rejects(reuse, { code: 'MAKER_V8_WALRUS_CAS_MISMATCH' });
+  assert.equal(await h.publisher.reuseCertifiedPublicAsset(uploadId), null);
+  const pending = await h.publisher.load(uploadId);
+  assert.equal(pending.status, 'RECOVERY_REQUIRED');
+  assert.equal(pending.transactionDigest, review.digest);
+  assert.deepEqual(h.calls.filter(([step]) => ['sign', 'broadcast', 'upload'].includes(step)), [['sign', review.digest]]);
+  await persistence.close();
+});
 
 async function preparedBatch(h, persistence) {
   const ids = ['batch-render', 'batch-soul', 'batch-memory', 'batch-skill'];
