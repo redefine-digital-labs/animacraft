@@ -1788,6 +1788,19 @@ export function createMakerV8PlayerControllerV8({
     return freeze(clone(record));
   };
 
+  const readFinalizedPackPurchase = async ({ rootId, signer, input }) => {
+    if (typeof persistence.findFinalizedPackPurchaseId !== 'function') return null;
+    const actionId = await persistence.findFinalizedPackPurchaseId({ rootId, signer, releaseId: input.releaseId });
+    if (actionId === null) return null;
+    const record = await readRecord(actionId);
+    if (record.action !== MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS || record.status !== 'FINALIZED_SUCCESS'
+      || record.playerIdentity.rootId !== rootId || record.plan.signer !== signer
+      || record.input.releaseId !== input.releaseId || record.input.semanticPackId !== input.semanticPackId) {
+      fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'Stored Pack receipt differs from the current wallet and exact Release.', 'PERSISTENCE');
+    }
+    return record;
+  };
+
   const certifyFinalizedReadback = async (record, query) => assertReadback(
     await custody.readbackPlayerAction({ record: clone(record), query: clone(query) }),
     record,
@@ -1881,6 +1894,16 @@ export function createMakerV8PlayerControllerV8({
     const account = await exactChainAndAccount();
     if (account.address !== record.plan.signer) {
       fail('MAKER_V8_PLAYER_ACCOUNT_DRIFT', 'Wallet differs from the durable Player signer.', 'WALLET');
+    }
+    if (record.status === 'PREPARED' && record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS) {
+      const purchase = await readFinalizedPackPurchase({ rootId: player.rootId, signer: account.address, input });
+      if (purchase) {
+        // Older clients could have prepared another attempt after the original
+        // finalized. Retire only that unsigned attempt and keep both receipts.
+        await persistCas(record, { status: 'CANCELLED_UNSIGNED', error: null });
+        fail('MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED', 'This Pack was already acquired. Open its original receipt.', 'SIGNING',
+          { actionId: purchase.actionId, transactionDigest: purchase.transaction.digest });
+      }
     }
     const context = await liveContext({
       action: record.action, player, recipe, loadout, input, account,
@@ -2330,6 +2353,11 @@ export function createMakerV8PlayerControllerV8({
           fail('MAKER_V8_PLAYER_PERSISTENCE_DRIFT', 'Prepared Player action durable reread drifted.', 'PERSISTENCE');
         }
       } catch (cause) {
+        if (cause?.code === 'MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED') {
+          const purchase = await controller.recoverActivePlayerAction({ action, input: checkedInput });
+          if (purchase.actionId === cause.details?.actionId && purchase.status === 'FINALIZED_SUCCESS') return purchase;
+          fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'The original Pack purchase changed during preparation.', 'PERSISTENCE');
+        }
         throw asPlayerError(cause, 'MAKER_V8_PLAYER_PREPARE_PERSIST_FAILED', 'Prepared Player action was not durably stored.', 'PERSISTENCE');
       }
       return actionView(written);
@@ -2572,6 +2600,17 @@ export function createMakerV8PlayerControllerV8({
       }
       const checkedInput = assertActionInput(action, input, state.recipe, state.player.document);
       const account = await exactChainAndAccount();
+      if (action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS) {
+        const rootId = state.player.rootId;
+        const purchase = await readFinalizedPackPurchase({ rootId, signer: account.address, input: checkedInput });
+        if (purchase) {
+          const confirmed = await exactChainAndAccount();
+          if (state.player?.rootId !== rootId || confirmed.address !== account.address) {
+            fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'Wallet or Maker changed while reading the original Pack purchase.', 'RECOVERY');
+          }
+          return actionView(purchase);
+        }
+      }
       const scopeKey = playerActionScope({
         action,
         signer: account.address,

@@ -9,6 +9,7 @@ import {
 import {
   projectMakerV8PlayerView,
   renderApprovedMakerV8Player,
+  renderPlayerPackReceipt,
 } from './maker-player-v8-view.js';
 import { createDocsCenter } from './docs-center.js';
 import { makerV8PlayerPart, makerV8PlayerPartUiKey, makerV8PlayerColor } from './maker-v8-player-definition-resolution.js';
@@ -2418,7 +2419,8 @@ export function createOriginalProductApp({
       playerMount.innerHTML = `<section class="v4-player-expansions" role="status">
         <h2>${escapeHtml(makerWorkspaceText(state.locale, 'playerPackRecover'))}</h2>
         <p>${escapeHtml(state.playerError)}</p><p>${escapeHtml(record.rootId)}</p>
-        <p>${escapeHtml(record.transactionDigest || record.actionId)}</p>
+        ${renderPlayerPackReceipt(record, { releaseId: playerPackActionRelease(record), rootId: record.rootId,
+          wallet: recovery.walletAddress, locale: state.locale }) || `<p>${escapeHtml(record.actionId)}</p>`}
         <p>${escapeHtml(record.status)}</p><p>${escapeHtml(recovery.error || '')}</p>
         ${['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status) ? ''
           : `<button type="button" data-action="player-recover-pack-v8" data-action-id="${escapeHtml(record.actionId)}" ${recovery.pending ? 'disabled' : ''}>${escapeHtml(makerWorkspaceText(state.locale, 'playerPackRecover'))}</button>`}

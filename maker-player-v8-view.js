@@ -957,6 +957,25 @@ function renderPalette(view, part) {
     </section>`;
 }
 
+export function renderPlayerPackReceipt(record, { releaseId, rootId, wallet, locale }) {
+  if (!record?.transactionDigest) return '';
+  const certificate = record.certificate;
+  const outputs = certificate?.evidence?.objects;
+  const output = Array.isArray(outputs) && outputs.length === 1 ? outputs[0] : null;
+  const passId = record.status === 'FINALIZED_SUCCESS' && record.action === 'acquirePackAccess'
+    && certificate?.status === 'CERTIFIED' && certificate.action === record.action
+    && certificate.actionId === record.actionId && certificate.rootId === rootId
+    && certificate.transactionDigest === record.transactionDigest
+    && typeof output?.type === 'string' && output.type.endsWith('::runtime_v8::PackPassV8') && output.change === 'created'
+    && EXACT_ROOT_ID.test(output.objectId) && output.fields?.rootId === rootId
+    && output.fields.releaseId === releaseId && output.fields.holder === wallet
+    ? output.objectId : null;
+  return `<dl data-player-pack-receipt style="overflow-wrap:anywhere">
+    <dt>${escapeHtml(makerWorkspaceText(locale, 'playerReceiptDigest'))}</dt><dd>${escapeHtml(record.transactionDigest)}</dd>
+    ${passId ? `<dt>Pack Pass ID</dt><dd>${escapeHtml(passId)}</dd>` : ''}
+  </dl>`;
+}
+
 function renderExpansionPacks(view) {
   const releases = new Map();
   view.contextualChoices.filter((choice) => choice.source === 'PACK').forEach((choice) => {
@@ -1016,6 +1035,7 @@ function renderExpansionPacks(view) {
       const record = acquisition.record;
       const detach = acquisition.detach === true || record?.action === 'detachPack';
       const quote = record?.packEntryQuote;
+      const canRefreshReceipt = acquisition.error || !detach && exactAccess.availableForAcquire;
       const attributes = `data-release-id="${escapeHtml(releaseId)}" data-action-id="${escapeHtml(record?.actionId || '')}"`;
       const button = (action, label) => `<button type="button" data-action="${action}" ${attributes}${controlAttributes(view, action)}>${escapeHtml(tr(view, label))}</button>`;
       const price = quote?.kind === 1
@@ -1026,15 +1046,16 @@ function renderExpansionPacks(view) {
           : `${detach ? `<p>${escapeHtml(tr(view, 'playerPackDetachCopy'))}</p>${record?.gasBudgetMist
             ? `<small>${escapeHtml(tr(view, 'publicationGas'))} ${escapeHtml(record.gasBudgetMist)}</small>` : ''}`
             : quote ? `<p>${escapeHtml(price)}</p><small>${escapeHtml(tr(view, 'playerPackEntryOnly'))}</small>` : ''}
-            ${detach && record?.transactionDigest ? `<p style="overflow-wrap:anywhere">${escapeHtml(record.transactionDigest)}</p>` : ''}
+            ${renderPlayerPackReceipt(record, { releaseId, rootId: view.rootId,
+              wallet: view.player.contextualChoices?.address, locale: view.locale })}
             ${acquisition.error ? `<p>${escapeHtml(acquisition.error)}</p>` : ''}
             ${record && record.status !== 'PREPARED' && record.status !== 'FINALIZED_SUCCESS'
               ? `<p>${escapeHtml(record.status)}</p>` : ''}
             ${record?.status === 'FINALIZED_SUCCESS' ? `${escapeHtml(tr(view, 'playerPackTransactionFinalized'))}
-              ${detach && acquisition.error ? button('player-recover-pack-v8', 'playerPackRecover') : ''}`
+              ${canRefreshReceipt ? button('player-recover-pack-v8', 'playerPackRecover') : ''}`
               : record?.status === 'PREPARED' && !acquisition.error && (quote || detach)
                 ? button('player-confirm-pack-v8', detach ? 'playerPackDetachConfirm' : 'playerPackConfirm')
-                : record && !['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status)
+                : record && !['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'CANCELLED_UNSIGNED'].includes(record.status)
                   ? button('player-recover-pack-v8', 'playerPackRecover') : ''}
             ${button('player-cancel-pack-v8', 'playerPackDismiss')}`}
       </div>`;

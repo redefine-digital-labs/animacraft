@@ -576,6 +576,25 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     await transactionDone(transaction);
     return raw === undefined ? null : clone(raw, 'stored Player action by digest');
   }
+  async function finalizedPackPurchase(actions, { rootId, signer, releaseId }) {
+    const key = [address(rootId, 'Pack purchase Root'), address(signer, 'Pack purchase signer'),
+      MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS, 'FINALIZED_SUCCESS'];
+    const release = address(releaseId, 'Pack purchase Release');
+    const records = await requestResult(actions.index('byRootActionStatus').getAll(key));
+    const matches = records.filter(record => record.input?.releaseId === release);
+    if (matches.length > 1) {
+      fail('MAKER_V8_PLAYER_PACK_RECEIPT_CONFLICT', 'More than one finalized purchase is stored for this exact Pack Release.');
+    }
+    return matches[0] ?? null;
+  }
+  async function findFinalizedPackPurchaseId(input) {
+    exact(input, ['rootId', 'signer', 'releaseId'], 'finalized Pack purchase lookup');
+    const db = await database;
+    const transaction = db.transaction(ACTION_STORE, 'readonly');
+    const record = await finalizedPackPurchase(transaction.objectStore(ACTION_STORE), input);
+    await transactionDone(transaction);
+    return record?.actionId ?? null;
+  }
   async function listFinalizedPackDetachIds({ rootId, signer, since }) {
     const key = [address(rootId, 'Pack removal Root'), address(signer, 'Pack removal signer'),
       MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, 'FINALIZED_SUCCESS'];
@@ -594,11 +613,19 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     const scopes = transaction.objectStore(ACTIVE_STORE);
     const roots = transaction.objectStore(ROOT_ACTIVE_STORE);
     const rootKey = rootScopeKey(record.playerIdentity?.rootId, record.plan?.signer);
-    const [existingRaw, activeRaw, rootActiveRaw] = await Promise.all([
+    const [existingRaw, activeRaw, rootActiveRaw, priorPurchase] = await Promise.all([
       requestResult(actions.get(record.actionId)),
       requestResult(scopes.get(record.scopeKey)),
       requestResult(roots.get(rootKey)),
+      record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS && record.input?.releaseId
+        ? finalizedPackPurchase(actions, { rootId: record.playerIdentity.rootId,
+          signer: record.plan.signer, releaseId: record.input.releaseId }) : null,
     ]);
+    if (priorPurchase && priorPurchase.actionId !== record.actionId) {
+      await transactionDone(transaction);
+      fail('MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED', 'The original Pack purchase is already finalized.',
+        { actionId: priorPurchase.actionId });
+    }
     if (existingRaw !== undefined) {
       if (!same(existingRaw, record)
         || !same(activeRaw, { scopeKey: record.scopeKey, actionId: record.actionId })
@@ -749,6 +776,7 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     create,
     load,
     loadByDigest,
+    findFinalizedPackPurchaseId,
     listFinalizedPackDetachIds,
     compareAndSwap,
     resolveActive,
