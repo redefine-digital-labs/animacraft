@@ -696,6 +696,7 @@ export function createMakerV8PackPublicationControllerV8({
   wallet,
   rpc,
   oneShot = false,
+  recoverPackReceipts = !oneShot,
   execution = { allowWalletSignature: false, allowBroadcast: false },
   now = () => Date.now(),
 } = {}) {
@@ -922,12 +923,12 @@ export function createMakerV8PackPublicationControllerV8({
     const pastWindow = query.status === 'NOT_FOUND' && epochWindow !== null
       && BigInt(query.absence.watermarkEpoch) > BigInt(epochWindow.end);
     const covered = pastWindow && makerV8AbsenceCoversEpochWindow(query.absence, epochWindow.start);
-    if (covered && (signing || !oneShot)) {
+    if (covered && (signing || recoverPackReceipts)) {
       return restoreReady(plan, signing ? 'SIGNING_INTENT_EXPIRED' : 'SIGNED_TRANSACTION_EXPIRED', query.absence);
     }
     const expired = query.status === 'NOT_FOUND' && epochWindow !== null
       && (pastWindow || plan.current.outcome.code === 'PACK_TRANSACTION_EXPIRED');
-    if (!oneShot && expired && !covered
+    if (recoverPackReceipts && expired && !covered
       && typeof boundary.recoverArchivedFinality === 'function') {
       const recovered = await boundary.recoverArchivedFinality({
         bytes: plan.current.fullTransaction, digest, signer: plan.immutable.signer,
@@ -1124,6 +1125,7 @@ export function createMakerV8PackPublicationControllerV8({
       const review = freeze({
         id: plan.attemptId, revision: plan.revision, digest: proof.digest, stage: authorized.descriptor.stage,
         gasBudgetMist: String(gas.budget), gasPriceMist: String(gas.price),
+        ...(plan.current.outcome.retiredDigest ? { retiredDigest: plan.current.outcome.retiredDigest } : {}),
       });
       preparedReview = { review, proof };
       return review;
@@ -1134,7 +1136,7 @@ export function createMakerV8PackPublicationControllerV8({
       }
       let plan = await loadReady(id);
       const prepared = preparedReview;
-      if (!oneShot && plan.current.outcome.retiredDigest && review === null) {
+      if (recoverPackReceipts && plan.current.outcome.retiredDigest && review === null) {
         fail('MAKER_V8_PACK_PUBLICATION_REVIEW_REQUIRED', 'Review the replacement Pack transaction before signing.');
       }
       if (review && (!prepared || !same(prepared.review, review)

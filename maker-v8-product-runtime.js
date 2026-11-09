@@ -531,7 +531,8 @@ export function createMakerV8ProductRuntime({
             fail('MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT', 'Certified Pack terms or Style count differ from the ACTIVE Release.');
           }
           packs.push(freeze({ releaseId: release.objectId, name: content.metadata.name,
-            summary: content.metadata.summary, accessKind, priceAtomic: release.entry.priceAtomic }));
+            summary: content.metadata.summary, version: content.metadata.lineage?.version ?? '1',
+            accessKind, priceAtomic: release.entry.priceAtomic }));
         } catch {
           unavailableCount += 1;
         }

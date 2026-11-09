@@ -2129,6 +2129,7 @@ export function createMakerV8ProductBridge({
 
   if (pack) {
     const createPackDraft = method(pack, 'createPackDraft', 'pack');
+    const createPackVersion = method(pack, 'createPackVersion', 'pack', { optional: true });
     const listPackDrafts = method(pack, 'list', 'pack', { optional: true });
     const upsertPackAsset = method(pack, 'upsertAsset', 'pack', { optional: true });
     const loadPackDraft = method(pack, 'load', 'pack');
@@ -2157,6 +2158,35 @@ export function createMakerV8ProductBridge({
         fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed while capturing the Pack parent.', 'WALLET');
       }
       return createPackDraft({ ...input, parent });
+    };
+    if (createPackVersion) bridge.createPackVersion = async ({ draftId, expectedRevision } = {}) => {
+      const id = exactDraftId(draftId);
+      const account = (await requireConnected()).address;
+      const generation = publicationGeneration;
+      const requireSource = async (releaseId = null) => {
+        const draft = await loadPackDraft(id);
+        const release = draft?.publication?.chain?.release.objectRef.objectId;
+        if (disposed || (await requireConnected()).address !== account || generation !== publicationGeneration
+          || draft?.revision !== expectedRevision || draft.document.author.address !== account
+          || draft.publication.status !== 'COMPLETE' || !EXACT_ID.test(release ?? '')
+          || (releaseId && releaseId !== release)) {
+          fail('MAKER_V8_PRODUCT_PACK_VERSION_SCOPE', 'Reopen the current published Pack with its controlling wallet.', 'PACK');
+        }
+        return release;
+      };
+      const releaseId = await requireSource();
+      return publicationLock(`pack-lifecycle:${releaseId}:${account}`, async () => {
+        await requireSource(releaseId);
+        const next = await createPackVersion({
+          draftId: id, expectedRevision, assertCurrent: () => requireSource(releaseId),
+        });
+        await requireSource(releaseId);
+        if (next.draftId === id || next.document.metadata.lineage?.predecessorReleaseId !== releaseId
+          || next.document.author.address !== account) {
+          fail('MAKER_V8_PRODUCT_PACK_VERSION_SCOPE', 'The saved Pack version differs from its exact published source.', 'PACK');
+        }
+        return next;
+      });
     };
     if (listPackDrafts) bridge.listPackDrafts = listPackDrafts;
     bridge.loadPackDraft = loadPackDraft;
@@ -2342,7 +2372,92 @@ export function createMakerV8ProductBridge({
           : 'Pack release progress was saved. Continue here after the transaction settles.',
       });
     };
-    bridge.performPackLifecycle = method(pack, 'performLifecycle', 'pack');
+    const performPackLifecycle = method(pack, 'performLifecycle', 'pack');
+    bridge.performPackLifecycle = performPackLifecycle;
+    let lifecycleReview = null;
+    let lifecycleReviewSequence = 0;
+    bridge.managePackLifecycle = async ({
+      draftId, expectedRevision, phase = 'INSPECT', action = null, amountAtomic = null, reviewId = null,
+    } = {}) => {
+      const id = exactDraftId(draftId);
+      const account = (await requireConnected()).address;
+      const generation = publicationGeneration;
+      const readDraft = async (revision, releaseId = null) => {
+        const active = await requireConnected();
+        const draft = await loadPackDraft(id);
+        if (disposed || generation !== publicationGeneration || active.address !== account
+          || draft?.revision !== revision || draft.document.author.address !== account
+          || draft.publication?.status !== 'COMPLETE'
+          || (releaseId && draft.publication.chain?.release.objectRef.objectId !== releaseId)) {
+          fail('MAKER_V8_PRODUCT_PACK_LIFECYCLE_SCOPE', 'Reopen the current published Pack and wallet.', 'PACK');
+        }
+        return draft;
+      };
+      const draft = await readDraft(expectedRevision);
+      const releaseId = draft.publication.chain.release.objectRef.objectId;
+      const requireScope = (revision = expectedRevision) => readDraft(revision, releaseId);
+      const run = (stage, options = {}, revision = expectedRevision) => performPackLifecycle({
+        draftId: id, expectedRevision: revision, stage, ...options,
+      });
+      return publicationLock(`pack-lifecycle:${releaseId}:${account}`, async () => {
+        await requireScope();
+        if (phase === 'INSPECT') {
+          lifecycleReview = null;
+          const result = await run('INSPECT');
+          await requireScope();
+          return result;
+        }
+        if (!gates.allowWalletSignature || !gates.allowBroadcast) {
+          fail('MAKER_V8_PRODUCT_EXECUTION_DISABLED', 'Pack lifecycle signing and recovery are disabled.', 'PACK');
+        }
+        if (phase === 'REVIEW') {
+          lifecycleReview = null;
+          if (!['PAUSE', 'RESUME', 'ARCHIVE', 'WITHDRAW_PACK_REVENUE'].includes(action)) {
+            fail('MAKER_V8_PRODUCT_PACK_LIFECYCLE_ACTION', 'Choose a supported Pack lifecycle action.', 'PACK');
+          }
+          const result = await run('REVIEW', {
+            action, request: action === 'WITHDRAW_PACK_REVENUE' ? { amountAtomic, recipient: account } : {},
+          });
+          await requireScope();
+          const review = freeze({ id: String(++lifecycleReviewSequence), action, amountAtomic, step: result.step });
+          lifecycleReview = { review, account, generation, releaseId, draftId: id, revision: expectedRevision };
+          return freeze({ draft: result.draft, review });
+        }
+        if (phase !== 'CONTINUE') {
+          fail('MAKER_V8_PRODUCT_PACK_LIFECYCLE_PHASE', 'Choose a valid Pack lifecycle step.', 'PACK');
+        }
+        let pending;
+        if (reviewId !== null) {
+          const saved = lifecycleReview;
+          if (saved?.review.id !== reviewId || saved.account !== account || saved.generation !== generation
+            || saved.releaseId !== releaseId || saved.draftId !== id || saved.revision !== expectedRevision) {
+            fail('MAKER_V8_PRODUCT_PACK_LIFECYCLE_REVIEW_STALE', 'Review the current Pack transaction again.', 'PACK');
+          }
+          lifecycleReview = null;
+          const signed = await run('SIGN_REVIEWED', {
+            action: saved.review.action, step: saved.review.step, assertCurrent: () => requireScope(),
+          });
+          pending = { action: saved.review.action, ticket: signed.prepared };
+        } else {
+          pending = (await run('INSPECT')).pending;
+          if (!pending) {
+            fail('MAKER_V8_PRODUCT_PACK_LIFECYCLE_RECOVERY_MISSING', 'There is no saved Pack lifecycle transaction to recover.', 'PACK');
+          }
+        }
+        await requireScope();
+        const outcome = await run('RECOVER', pending);
+        await requireScope(outcome.draft.revision);
+        const latest = await run('INSPECT', {}, outcome.draft.revision).catch(error => ({
+          draft: outcome.draft,
+          state: null,
+          pending: outcome.stage === 'OUTCOME_UNKNOWN' ? pending : null,
+          execution: gates,
+          readbackError: String(error?.message || 'Refresh to read the current Pack state.'),
+        }));
+        await requireScope(outcome.draft.revision);
+        return freeze({ ...latest, outcome: outcome.result });
+      });
+    };
   }
 
   if (composable) {
