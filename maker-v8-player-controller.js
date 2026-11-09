@@ -1821,10 +1821,12 @@ export function createMakerV8PlayerControllerV8({
     );
   };
 
-  const queryExact = async (record) => {
+  const queryExact = async (record, { recoverArchive = false } = {}) => {
     try {
       const query = await rpc.queryTransaction({
         digest: record.transaction.digest, epochWindow: record.transaction.build.epochWindow,
+        ...(recoverArchive && record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS
+          ? { recoverArchivedPack: true } : {}),
       });
       assertJson(query, 'transactionQuery');
       return freeze(clone(assertTransactionQuery(
@@ -2435,25 +2437,37 @@ export function createMakerV8PlayerControllerV8({
       let record = await readRecord(actionId);
       if (record.status === 'CANCELLED_UNSIGNED') return actionView(record, 'CANCELLED_UNSIGNED');
       if (record.status === 'PREPARED') return actionView(record, 'AWAITING_SIGNATURE');
-      if (['SIGNING', 'SIGNING_UNKNOWN'].includes(record.status)) {
-        return actionView(record, 'SIGNATURE_OUTCOME_UNKNOWN');
+      if (['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status)) {
+        return actionView(record, record.status === 'EXPIRED_NOT_FOUND' ? record.status : null);
       }
-      if (!['SIGNED', 'BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN', 'FINALIZED_UNCERTIFIED',
-        'FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status)
+      if (['SIGNING', 'SIGNING_UNKNOWN'].includes(record.status)) {
+        if (typeof boundary.recoverFinalizedSignature !== 'function') {
+          return actionView(record, 'SIGNATURE_OUTCOME_UNKNOWN');
+        }
+        const query = await queryExact(record, { recoverArchive: true });
+        if (query.status === 'NOT_FOUND') return actionView(record, 'SIGNATURE_OUTCOME_UNKNOWN');
+        const signature = assertSignatureArtifact(await boundary.recoverFinalizedSignature({
+          bytes: record.transaction.bytes,
+          digest: record.transaction.digest,
+          signer: record.plan.signer,
+          query,
+        }), record.transaction, record.plan.signer);
+        record = await persistCas(record, {
+          status: 'SIGNED', signatureIntent: null, signature, error: null,
+        });
+        return actionView(await settleQuery(record, query));
+      }
+      if (!['SIGNED', 'BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN', 'FINALIZED_UNCERTIFIED'].includes(record.status)
         || !plain(record.signature)) {
         fail('MAKER_V8_PLAYER_RECOVERY_STATE_INVALID', 'Player action has no recoverable exact signed artifact.', 'RECOVERY');
       }
-      const terminal = ['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status);
       let query;
       try {
-        query = await queryExact(record);
+        query = await queryExact(record, { recoverArchive: true });
       } catch (error) {
-        if (!terminal) {
-          record = await persistCas(record, { status: 'OUTCOME_UNKNOWN', error: durableError(error) });
-        }
+        record = await persistCas(record, { status: 'OUTCOME_UNKNOWN', error: durableError(error) });
         throw error;
       }
-      if (query.status === 'NOT_FOUND' && terminal) return actionView(record, record.status);
       const finalized = await settleQuery(record, query);
       if (finalized) return actionView(finalized);
       if (!plain(query.absence)

@@ -1391,6 +1391,100 @@ test('entry recovery after recipe changes queries the original signed Pack purch
   assert.deepEqual(current.persistence.inspect(prepared.actionId).transaction, original.transaction);
 });
 
+test('a paid Pack purchase with a lost wallet response recovers exact finalized success or failure', async t => {
+  for (const succeeds of [true, false]) await t.test(succeeds ? 'Pass issued' : 'Move failure', async () => {
+    const indexedDB = new IDBFactory();
+    const options = { databaseName: 'paid-pack-ledger', storageManager: {
+      async persist() { return true; }, async persisted() { return true; },
+      async estimate() { return { quota: 100_000_000, usage: 0 }; },
+    } };
+    const persistence = createMakerV8PlayerPersistenceV8(indexedDB, options);
+    const h = harness({ persistenceOverride: persistence });
+    const input = { action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+      input: { releaseId: id(700), semanticPackId: 'moon-pack' } };
+    h.controls.expected = { packEntryQuote: { releaseId: input.input.releaseId,
+      kind: 1, priceAtomic: '1000', paymentCoinType: MAKER_V8_PAYMENT_COIN_TYPE } };
+    await h.controller.loadPlayer(ROOT_ID);
+    const prepared = await h.controller.preparePlayerAction(input);
+    h.controls.signError = new Error('Wallet callback lost');
+    await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+    const original = await persistence.load(prepared.actionId);
+    assert.equal(original.status, 'SIGNING_UNKNOWN');
+    const { digest, bytes } = original.transaction;
+    const queryTransaction = h.rpc.queryTransaction;
+    h.rpc.queryTransaction = async request => {
+      assert.deepEqual(request, { digest, epochWindow: original.transaction.build.epochWindow, recoverArchivedPack: true });
+      return queryTransaction(request);
+    };
+    let ledgerReads = 0;
+    h.boundary.recoverFinalizedSignature = async request => {
+      ledgerReads++;
+      assert.equal(request.digest, digest);
+      assert.equal(request.bytes, bytes);
+      assert.equal(request.signer, HOLDER);
+      assert.equal(request.query.status, succeeds ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE');
+      return { bytes, digest, signer: HOLDER, signature: SIGNATURE };
+    };
+    const coldPersistence = createMakerV8PlayerPersistenceV8(indexedDB, options);
+    const cold = createMakerV8PlayerControllerV8({
+      productRuntime: h.productRuntime, compiler: h.compiler, custody: h.custody,
+      boundary: h.boundary, wallet: h.wallet, rpc: h.rpc, persistence: coldPersistence,
+      execution: { allowWalletSignature: true, allowBroadcast: true }, now: () => 1000,
+    });
+    await cold.loadPlayer(ROOT_ID);
+    cold.updateRecipe({ colors: [{ channelKey: 'primary', swatchKey: 'blue' }] });
+    const pending = await cold.getPendingPlayerAction({ rootId: ROOT_ID });
+    assert.equal(pending.actionId, original.actionId);
+    h.controls.custodyError = new Error('Recovery must precede new purchase preflight');
+    // An absent digest can be pruned or simply pending. Preserve the original
+    // intent even when the current checkpoint is beyond the transaction epoch.
+    h.controls.queryResults.push(notFound(digest, '105'));
+    assert.equal((await cold.preparePlayerAction(input)).status, 'SIGNING_UNKNOWN');
+    assert.equal(ledgerReads, 0);
+    assert.deepEqual(await coldPersistence.load(prepared.actionId), original);
+    h.controls.queryResults.push(succeeds ? finalizedSuccess(digest) : finalizedFailure(digest, 'Move abort'));
+    const finalized = await cold.preparePlayerAction(input);
+    assert.equal(finalized.status, succeeds ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE');
+    assert.equal(finalized.transactionDigest, digest);
+    assert.equal(finalized.packEntryQuote.priceAtomic, '1000');
+    assert.equal(finalized.actionId, prepared.actionId);
+    assert.equal(h.calls.sign, 1);
+    assert.equal(h.calls.broadcast, 0);
+    assert.equal(h.calls.compile, 1);
+    assert.equal(h.calls.readback, succeeds ? 1 : 0);
+    assert.equal(ledgerReads, 1);
+    assert.deepEqual((await coldPersistence.load(prepared.actionId)).transaction, original.transaction);
+  });
+});
+
+test('looking up an old terminal Player receipt leaves the next active action indexed', async () => {
+  const persistence = createMakerV8PlayerPersistenceV8(new IDBFactory(), {
+    databaseName: 'player-terminal-root-isolation', storageManager: {
+      async persist() { return true; }, async persisted() { return true; },
+      async estimate() { return { quota: 100_000_000, usage: 0 }; },
+    },
+  });
+  const h = harness({ persistenceOverride: persistence });
+  await h.controller.loadPlayer(ROOT_ID);
+  const first = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+  await h.controller.executePlayerAction(first.actionId);
+  const previous = await persistence.load(first.actionId);
+  const next = await h.controller.preparePlayerAction({
+    action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    input: { releaseId: id(700), semanticPackId: 'moon-pack' },
+  });
+  const queryCount = h.calls.query;
+  assert.equal((await h.controller.recoverPlayerAction(first.actionId)).status, 'FINALIZED_SUCCESS');
+  assert.equal((await h.controller.getPlayerAction(first.actionId)).transactionDigest, first.transactionDigest);
+  assert.equal(h.calls.query, queryCount);
+  assert.equal(await persistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), next.actionId);
+  await assert.rejects(persistence.compareAndSwap(previous.actionId, previous.revision, {
+    ...previous, revision: previous.revision + 1,
+  }), { code: 'MAKER_V8_PLAYER_CAS_CONFLICT' });
+  assert.equal(await persistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), next.actionId);
+  assert.deepEqual(await persistence.load(first.actionId), previous);
+});
+
 test('pending Root discovery survives unavailable Pack custody without signing, querying, or rebuilding', async () => {
   const current = harness();
   await current.controller.loadPlayer(ROOT_ID);
