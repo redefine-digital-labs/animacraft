@@ -38,6 +38,9 @@ export const ANIMACRAFT_PRODUCT_APP_SCHEMA = 'animacraft.product-app.v8';
 export const ANIMACRAFT_WALRUS_MAINNET_AGGREGATOR =
   'https://aggregator.walrus-mainnet.walrus.space';
 
+const WALRUS_MAINNET_FALLBACK_AGGREGATOR = 'https://walrus-mainnet-aggregator.imperator.co';
+const WALRUS_READ_TIMEOUT_MS = 15_000;
+const WALRUS_RETRYABLE_STATUSES = new Set([0, 403, 404, 408, 410, 429]);
 const SAFE_BLOB_ID = /^[A-Za-z0-9_-]{1,512}$/;
 
 export class AnimacraftProductAppError extends Error {
@@ -342,7 +345,7 @@ export function createLazyMakerV8ComposableFacade(resolveComposable) {
   });
 }
 
-/** Official Mainnet Walrus read path. Integrity is independently rechecked by the manifest adapter. */
+/** Mainnet read transport. The Maker, Pack and asset adapters verify the returned bytes. */
 export function createMainnetWalrusManifestFetcher({
   fetcher = globalThis.fetch,
   aggregator = ANIMACRAFT_WALRUS_MAINNET_AGGREGATOR,
@@ -360,40 +363,58 @@ export function createMainnetWalrusManifestFetcher({
     fail('ANIMACRAFT_WALRUS_ENDPOINT_INVALID', 'Walrus aggregator must be a credential-free HTTPS origin.', 'CONFIGURATION');
   }
   const basePath = base.pathname === '/' ? '' : base.pathname.replace(/\/+$/, '');
+  const endpoints = [`${base.origin}${basePath}`];
+  if (aggregator === ANIMACRAFT_WALRUS_MAINNET_AGGREGATOR) {
+    endpoints.push(WALRUS_MAINNET_FALLBACK_AGGREGATOR);
+  }
+
   return async ({ blobId, signal } = {}) => {
     if (typeof blobId !== 'string' || !SAFE_BLOB_ID.test(blobId)) {
       fail('ANIMACRAFT_WALRUS_BLOB_ID_INVALID', 'Walrus Blob ID is not canonical bounded text.', 'MANIFEST');
     }
     const path = blobId.length === 50 ? makerV8WalrusAssetPathV8(blobId) : `/v1/blobs/${encodeURIComponent(blobId)}`;
-    const url = new URL(`${basePath}${path}`, base.origin);
-    let response;
-    try {
-      response = await fetcher(url.href, freeze({
-        method: 'GET',
-        signal,
-        cache: 'no-store',
-        credentials: 'omit',
-        redirect: 'error',
-        referrerPolicy: 'no-referrer',
-        headers: freeze({ Accept: 'application/json, application/octet-stream;q=0.9' }),
-      }));
-    } catch (cause) {
-      fail(
-        'ANIMACRAFT_WALRUS_READ_FAILED',
-        'Certified Walrus Manifest could not be read.',
-        'MANIFEST',
-        { cause: String(cause?.message ?? cause ?? 'unknown') },
-      );
+    let details;
+    for (const endpoint of endpoints) {
+      signal?.throwIfAborted();
+      const deadline = new AbortController();
+      const attemptSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+      const timer = setTimeout(() => deadline.abort(new DOMException(
+        'Walrus aggregator did not respond in time.', 'TimeoutError',
+      )), WALRUS_READ_TIMEOUT_MS);
+      let response;
+      try {
+        response = await fetcher(new URL(`${endpoint}${path}`).href, Object.freeze({
+          method: 'GET',
+          signal: attemptSignal,
+          cache: 'no-store',
+          credentials: 'omit',
+          redirect: 'error',
+          referrerPolicy: 'no-referrer',
+          headers: Object.freeze({ Accept: 'application/json, application/octet-stream;q=0.9' }),
+        }));
+      } catch (cause) {
+        signal?.throwIfAborted();
+        details = { cause: String(cause?.message ?? cause ?? 'unknown') };
+        continue;
+      } finally {
+        clearTimeout(timer);
+      }
+      signal?.throwIfAborted();
+      if (response?.ok === true) return response;
+
+      const status = Number(response?.status ?? 0);
+      details = { status };
+      void response?.body?.cancel?.().catch(() => {});
+      if (!WALRUS_RETRYABLE_STATUSES.has(status) && status < 500) break;
     }
-    if (!response || response.ok !== true) {
-      fail(
-        'ANIMACRAFT_WALRUS_READ_FAILED',
-        'Certified Walrus Manifest is temporarily unavailable.',
-        'MANIFEST',
-        { status: Number(response?.status ?? 0) },
-      );
-    }
-    return response;
+    fail(
+      'ANIMACRAFT_WALRUS_READ_FAILED',
+      details.status === undefined
+        ? 'Certified Walrus Manifest could not be read.'
+        : 'Certified Walrus Manifest is temporarily unavailable.',
+      'MANIFEST',
+      details,
+    );
   };
 }
 
