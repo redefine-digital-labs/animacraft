@@ -183,7 +183,13 @@ function updateDocument(current, fields = {}) {
   if (fields.rootId && fields.rootId !== document.bindings.root?.objectRef.objectId) {
     fail('MAKER_V8_PACK_ROOT_IMMUTABLE', 'A Pack draft cannot silently change its Maker Root.', 'BINDING');
   }
-  if (fields.semanticPackId !== undefined) document.metadata.semanticPackId = safeKey(fields.semanticPackId, 'semanticPackId');
+  if (fields.semanticPackId !== undefined) {
+    const semanticPackId = safeKey(fields.semanticPackId, 'semanticPackId');
+    if (document.metadata.lineage && semanticPackId !== document.metadata.semanticPackId) {
+      fail('MAKER_V8_PACK_LINEAGE_IMMUTABLE', 'A successor Pack retains its version and predecessor Release.', 'BINDING');
+    }
+    document.metadata.semanticPackId = semanticPackId;
+  }
   if (fields.name !== undefined) document.metadata.name = String(fields.name).trim();
   if (fields.summary !== undefined) document.metadata.summary = String(fields.summary).trim();
   if (fields.accessKind !== undefined) document.access.kind = String(fields.accessKind);
@@ -455,6 +461,74 @@ export function createMakerV8PackStudioV8({
         draftId,
         document: createDocument({ bindings, account, metadata, access, completion }),
         createdAt: draftTime(null, now),
+      });
+    },
+
+    async createPackVersion({ draftId, expectedRevision, assertCurrent = null } = {}) {
+      const source = await controller.load(draftId);
+      const published = source.publication.chain;
+      if (source.revision !== expectedRevision || source.publication.status !== 'COMPLETE' || !published) {
+        fail('MAKER_V8_PACK_VERSION_SOURCE_INVALID', 'Open the current published Pack before creating its next version.', 'CONTEXT');
+      }
+      const account = exactAccount(await wallet.getCurrentAccount());
+      if (source.document.author.address !== account || published.release.owner !== account) {
+        fail('MAKER_V8_PACK_ACCOUNT_DRIFT', 'Connect the author and controlling wallet of this Pack.', 'CONTEXT');
+      }
+      if (typeof lifecycle?.readState !== 'function') {
+        fail('MAKER_V8_PACK_VERSION_AUTHORITY_REQUIRED', 'The exact Pack Release reader is required to create a new version.', 'CONFIGURATION');
+      }
+      const originalRoot = source.document.bindings.root;
+      const releaseId = published.release.objectRef.objectId;
+      const [resolved, live, storedAssets] = await Promise.all([
+        loadBindings(originalRoot.objectRef.objectId),
+        lifecycle.readState({ draftId, rootId: published.rootId, packRegistryId: published.packRegistryId,
+          semanticPackId: published.semanticPackId, chain: structuredClone(published) }),
+        persistence.listAssets(draftId),
+      ]);
+      const { bindings } = resolved;
+      if (resolved.account !== account || !live.canManage || live.releaseId !== releaseId || live.owner !== account
+        || bindings.root.objectRef.objectId !== originalRoot.objectRef.objectId
+        || bindings.root.makerVersion !== originalRoot.makerVersion
+        || bindings.root.contentCommitment !== originalRoot.contentCommitment
+        || bindings.packRegistry.objectRef.objectId !== published.packRegistryId
+        || bindings.packRegistry.revision !== live.registryRevision
+        || BigInt(bindings.packRegistry.revision) < BigInt(published.packRegistryRevision)) {
+        fail('MAKER_V8_PACK_VERSION_SOURCE_DRIFT', 'The live Pack or its Maker version differs from the published source.', 'CONTEXT');
+      }
+      const byId = new Map(storedAssets.map(asset => [asset.assetId, asset]));
+      const sourceAssets = [];
+      const document = structuredClone(source.document);
+      for (const style of document.styles) {
+        const asset = byId.get(style.asset.assetId);
+        if (!asset || asset.sha256 !== style.asset.contentCommitment) {
+          fail('MAKER_V8_PACK_VERSION_ASSET_REQUIRED', 'Restore the original Pack artwork before creating a new version.', 'ASSET');
+        }
+        sourceAssets.push(asset);
+        style.asset = { ...style.asset, mediaType: asset.mediaType, byteLength: asset.byteLength,
+          sha256: asset.sha256, blobId: null, sealBindingCommitment: null };
+      }
+      const nextId = `pack-next-${releaseId.slice(2)}`;
+      const meta = source.document.metadata;
+      document.metadata = { ...document.metadata, semanticPackId: nextId,
+        lineage: {
+          familySemanticPackId: meta.lineage?.familySemanticPackId ?? meta.semanticPackId,
+          version: (BigInt(meta.lineage?.version ?? '1') + 1n).toString(),
+          predecessorReleaseId: releaseId,
+          predecessorSemanticPackId: meta.semanticPackId,
+        },
+      };
+      document.bindings = bindings;
+      document.admission.expectedPackRegistryRevision = bindings.packRegistry.revision;
+      if (document.authoring !== undefined) document.authoring = packAuthoringDocument(document);
+      return controller.createPackDraft({
+        draftId: nextId, document, createdAt: draftTime(source, now),
+        sourceVersion: { sourceDraftId: draftId, expectedSourceRevision: expectedRevision, sourceAssets },
+        assertCurrent: async () => {
+          if (exactAccount(await wallet.getCurrentAccount()) !== account) {
+            fail('MAKER_V8_PACK_ACCOUNT_DRIFT', 'Wallet changed while creating the new Pack version.', 'CONTEXT');
+          }
+          await assertCurrent?.();
+        },
       });
     },
 

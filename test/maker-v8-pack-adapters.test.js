@@ -13,7 +13,7 @@ import {
 } from '../maker-v8-pack-adapters.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
 import {
-  MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA, MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA,
+  MAKER_V8_PACK_CHAIN_READBACK_SCHEMA, MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA, MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA,
 } from '../maker-v8-pack-controller.js';
 import { currentRuntimeAuthorityFixture } from './fixtures/maker-v8-current-runtime-authority.js';
 import { createMakerV8PackPersistenceV8 } from '../maker-v8-pack-persistence.js';
@@ -23,7 +23,9 @@ import { assertPackAuthoring, assertPackAuthoringContent, packAuthoringContent, 
 import { prepareCreatorColorChange } from '../maker-v8-creator-colors.js';
 import { evaluateMakerV8Visibility } from '../maker-v8-visibility.js';
 import { makerV8RuleIssue } from '../maker-v8-rules.js';
-import { createMakerV8PackTransportV8 } from '../maker-v8-pack-transport.js';
+import {
+  buildMakerV8PackManifestV8, createMakerV8PackTransportV8, deriveMakerV8PackSemanticContentCommitmentV8,
+} from '../maker-v8-pack-transport.js';
 import { createMakerV8ProductBridge } from '../maker-v8-product-bridge.js';
 import { MAKER_V8_DEFAULT_ASSET_BASE64 } from './fixtures/maker-v8-minimal-artwork.js';
 
@@ -105,7 +107,7 @@ function bindings() {
   };
 }
 
-function harness({ loadParent = null, transport = null, execution } = {}) {
+function harness({ loadParent = null, transport = null, execution, lifecycle = null, registryRevision = '7' } = {}) {
   const rootId = id(1);
   const calls = { discover: 0, context: 0, bindings: 0 };
   const chain = {
@@ -121,7 +123,9 @@ function harness({ loadParent = null, transport = null, execution } = {}) {
       calls.bindings += 1;
       assert.equal(root.objectId, rootId);
       assert.equal(account, id(90));
-      return bindings();
+      const current = bindings();
+      current.packRegistry.revision = typeof registryRevision === 'function' ? registryRevision() : registryRevision;
+      return current;
     },
   };
   const wallet = { async getCurrentAccount() { return { address: id(90) }; } };
@@ -135,11 +139,96 @@ function harness({ loadParent = null, transport = null, execution } = {}) {
     wallet,
     persistence,
     transport,
+    lifecycle,
     execution,
     now: () => time++,
   });
   return { studio, persistence, calls, rootId, wallet };
 }
+
+test('a published Pack forks one durable next version with exact original artwork and immutable lineage', async () => {
+  const noTransaction = () => assert.fail('Creating a version may only read Mainnet and write a local draft');
+  let canManage = true;
+  let registryRevision = '10';
+  const lifecycle = {
+    schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
+    execution: { allowWalletSignature: false, allowBroadcast: false },
+    build: noTransaction, prepare: noTransaction, recover: noTransaction,
+    async readState({ chain }) {
+      return { releaseId: chain.release.objectRef.objectId, owner: id(90), canManage, registryRevision };
+    },
+  };
+  const { studio, persistence, rootId } = harness({ lifecycle, registryRevision: () => registryRevision });
+  try {
+    const original = await studio.createPackDraft({ draftId: 'moon-pack-v1', rootId,
+      metadata: { semanticPackId: 'moon-pack', name: 'Moon Pack' }, access: { kind: 'PAID', priceAtomic: '1000' } });
+    const artwork = await studio.upsertAsset({ draftId: original.draftId, expectedRevision: original.revision,
+      style: { partKey: 'base', itemKey: 'default', styleKey: 'added', layerTrackKey: 'base', protected: true },
+      asset: { assetId: 'added-png', mediaType: 'image/png', bytesBase64: MAKER_V8_DEFAULT_ASSET_BASE64 } });
+    const asPublished = async (row, releaseNumber) => {
+      const next = structuredClone(row);
+      const releaseId = id(releaseNumber);
+      next.revision++;
+      next.updatedAt++;
+      const { asset } = next.document.styles[0];
+      Object.assign(asset, { mediaType: 'application/octet-stream', byteLength: 99, sha256: hash('a'),
+        blobId: 'old-ciphertext', sealBindingCommitment: hash('b') });
+      next.publication = { attemptId: `publication-${releaseNumber}`, status: 'COMPLETE', updatedAt: next.updatedAt,
+        lastError: null, chain: { schemaVersion: MAKER_V8_PACK_CHAIN_READBACK_SCHEMA,
+          rootId, semanticPackId: row.document.metadata.semanticPackId,
+          packRegistryId: row.document.bindings.packRegistry.objectRef.objectId,
+          release: { objectRef: ref(releaseNumber), owner: id(90), controlEpoch: '0' },
+          adminCap: { objectRef: ref(releaseNumber + 1), releaseId, owner: id(90), controlEpoch: '0' },
+          treasury: { objectRef: ref(releaseNumber + 2), releaseId },
+          lifecycle: 'ARCHIVED',
+          packRegistryRevision: (BigInt(row.document.admission.expectedPackRegistryRevision) + 1n).toString(),
+          finalizedDigest: digest(releaseNumber),
+        } };
+      return persistence.compareAndSwap({ draftId: row.draftId, expectedRevision: row.revision, next });
+    };
+    const published = await asPublished(artwork.draft, 100);
+    const scope = { draftId: published.draftId, expectedRevision: published.revision };
+    await assert.rejects(studio.createPackVersion(scope), { code: 'MAKER_V8_PACK_VERSION_SOURCE_DRIFT' });
+    registryRevision = '12';
+    canManage = false;
+    await assert.rejects(studio.createPackVersion(scope), { code: 'MAKER_V8_PACK_VERSION_SOURCE_DRIFT' });
+    assert.equal((await studio.list()).length, 1);
+    canManage = true;
+    const [next, retry] = await Promise.all([studio.createPackVersion(scope), studio.createPackVersion(scope)]);
+    assert.deepEqual(next, retry);
+    assert.notEqual(next.document.metadata.semanticPackId, published.document.metadata.semanticPackId);
+    assert.deepEqual(next.document.metadata.lineage, {
+      familySemanticPackId: 'moon-pack', predecessorSemanticPackId: 'moon-pack',
+      predecessorReleaseId: id(100), version: '2',
+    });
+    assert.equal(next.publication.status, 'UNPREPARED');
+    assert.equal(next.publication.attemptId, null);
+    assert.equal(next.publication.chain, null);
+    assert.equal(next.document.admission.expectedPackRegistryRevision, '12');
+    assert.equal(await studio.getTransportPin(next.draftId), null);
+    assert.deepEqual(next.document.access, published.document.access);
+    assert.deepEqual(next.document.styles[0].asset, artwork.draft.document.styles[0].asset);
+    assert.equal((await persistence.loadAsset(next.draftId, 'added-png')).bytesBase64, artwork.asset.bytesBase64);
+    assert.deepEqual(await studio.load(published.draftId), published);
+    assert.equal((await studio.list()).length, 2);
+    await assert.rejects(studio.save({ draftId: next.draftId, expectedRevision: next.revision,
+      fields: { semanticPackId: 'other-pack' } }), { code: 'MAKER_V8_PACK_LINEAGE_IMMUTABLE' });
+    const changed = structuredClone(next.document);
+    changed.metadata.lineage.predecessorReleaseId = id(999);
+    assert.notEqual(deriveMakerV8PackSemanticContentCommitmentV8(changed),
+      deriveMakerV8PackSemanticContentCommitmentV8(next.document));
+    const publishedSecond = await asPublished(next, 120);
+    const encoded = buildMakerV8PackManifestV8(publishedSecond.document);
+    assert.deepEqual(encoded.manifest.content.metadata.lineage, next.document.metadata.lineage);
+    assert.equal(encoded.contentCommitment, deriveMakerV8PackSemanticContentCommitmentV8(next.document));
+    registryRevision = '14';
+    const third = await studio.createPackVersion({ draftId: next.draftId, expectedRevision: publishedSecond.revision });
+    assert.deepEqual(third.document.metadata.lineage, {
+      familySemanticPackId: 'moon-pack', predecessorSemanticPackId: next.document.metadata.semanticPackId,
+      predecessorReleaseId: id(120), version: '3',
+    });
+  } finally { persistence.close(); }
+});
 
 test('Pack artwork cannot be persisted by a different connected author', async () => {
   const { studio, persistence, rootId, wallet } = harness();

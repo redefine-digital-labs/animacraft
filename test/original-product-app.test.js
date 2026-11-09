@@ -196,7 +196,7 @@ test('Pack Studio presents a saved transaction review before invoking the wallet
   } finally { app.destroy(); }
 });
 
-test('published Pack Studio shows lifecycle review, treasury and exact recovery without another wallet prompt', async () => {
+test('published Pack Studio opens the next version and keeps exact lifecycle recovery on the original', async () => {
   const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
   const parent = { draft: draftRecord(), draftSha256: 'c'.repeat(64) };
   const draft = {
@@ -215,10 +215,22 @@ test('published Pack Studio shows lifecycle review, treasury and exact recovery 
     totalCollectedAtomic: '1700', totalWithdrawnAtomic: '200' };
   const step = { digest: 'original-pack-lifecycle-digest', gasBudgetMist: '5000000' };
   const calls = [];
+  let next = null;
   h.bridge.createPackDraft = async () => assert.fail('Open the published Pack');
-  h.bridge.listPackDrafts = async () => [draft];
-  h.bridge.loadPackDraft = async () => draft;
+  h.bridge.listPackDrafts = async () => next ? [draft, next] : [draft];
+  h.bridge.loadPackDraft = async id => id === next?.draftId ? next : draft;
   h.bridge.savePackDraft = async () => assert.fail('Lifecycle does not edit published content');
+  h.bridge.createPackVersion = async ({ draftId, expectedRevision }) => {
+    assert.equal(draftId, draft.draftId);
+    assert.equal(expectedRevision, draft.revision);
+    next = structuredClone(draft);
+    next.draftId = 'managed-pack-v2';
+    next.revision = 1;
+    next.document.metadata.semanticPackId = 'managed-pack-v2';
+    next.document.metadata.lineage = { version: '2', predecessorReleaseId: ROOT_ONE };
+    next.publication = { status: 'UNPREPARED', chain: null };
+    return next;
+  };
   h.bridge.managePackLifecycle = async input => {
     calls.push(input);
     if (input.phase === 'INSPECT') return { draft, state, execution, pending: null };
@@ -242,11 +254,21 @@ test('published Pack Studio shows lifecycle review, treasury and exact recovery 
     assert.match(mount.innerHTML, /Available revenue \(atomic units\)<\/strong> 1500/);
     assert.match(mount.innerHTML, /Pause Pack/);
     assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
+    assert.match(mount.innerHTML, /Create next version draft/);
+    await click('create-pack-version');
+    assert.match(mount.innerHTML, /Pack version 2/);
+    assert.match(mount.innerHTML, /Previous Release/);
+    assert.doesNotMatch(mount.innerHTML, /Published Pack lifecycle/);
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT']);
+    await click('request-back-to-maker');
+    assert.match(mount.innerHTML, /Pack v2/);
+    await click('open-expansion-pack-studio', { packProjectKey: draft.draftId });
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT', 'INSPECT']);
     await click('review-pack-lifecycle', { lifecycleAction: 'PAUSE' });
     assert.match(mount.innerHTML, /original-pack-lifecycle-digest/);
     assert.match(mount.innerHTML, /5000000/);
     await click('advance-pack-lifecycle', { lifecycleReviewId: 'stale' });
-    assert.deepEqual(calls.map(input => input.phase), ['INSPECT', 'REVIEW']);
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT', 'INSPECT', 'REVIEW']);
     await click('advance-pack-lifecycle', { lifecycleReviewId: 'review-1' });
     assert.match(mount.innerHTML, /Continue saved transaction/);
     assert.doesNotMatch(mount.innerHTML, /Review in wallet/);

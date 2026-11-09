@@ -446,6 +446,7 @@ test('walletless Pack catalog verifies exact release policies and only returns p
       async load(input) {
         const fixture = fixtures.find(row => row.release.semanticPackId === input.semanticPackId);
         const result = await fixture.packManifestAdapter.load(input);
+        if (fixture === paid) result.manifest.content.metadata.lineage = { version: '2' };
         if (fixture === paid && breakPaidTerms) result.manifest.content.access.priceAtomic = '1';
         return result;
       },
@@ -456,7 +457,7 @@ test('walletless Pack catalog verifies exact release policies and only returns p
   assert.deepEqual(first, { rootId, unavailableCount: 0,
     packs: ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'].map((accessKind, kind) => ({
       releaseId: objectId(960 + kind), name: 'Moon Pack', summary: 'Moon hats',
-      accessKind, priceAtomic: kind === 1 ? '1250000' : '0',
+      version: kind === 1 ? '2' : '1', accessKind, priceAtomic: kind === 1 ? '1250000' : '0',
     })) });
   assert.equal(calls.account + calls.reconnect + calls.inventory + calls.asset, 0);
   assert.equal(paid.reads[0].sha256, paid.release.manifestSha256);

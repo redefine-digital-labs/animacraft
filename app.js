@@ -291,6 +291,7 @@ export function createLazyMakerV8PackFacade(resolvePack, resolveLocalPack = reso
   };
   return freeze({
     createPackDraft: async (input) => (await (input?.parent ? loadLocal() : load())).createPackDraft(input),
+    createPackVersion: async (input) => (await load()).createPackVersion(input),
     list: async () => (await loadLocal()).list(),
     load: async (draftId) => (await loadLocal()).load(draftId),
     getTransportPin: async (draftId) => (await loadLocal()).getTransportPin?.(draftId) ?? null,
