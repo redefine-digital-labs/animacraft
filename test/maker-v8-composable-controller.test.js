@@ -17,9 +17,11 @@ import {
 import {
   MAKER_V8_COMPOSABLE_ACTIONS,
   MAKER_V8_COMPOSABLE_CONTROLLER_SCHEMA,
+  assertMakerV8ComposableSignedArtifactV8,
   buildMakerV8ComposableRequestV8,
   buildMakerV8ComposableTransactionV8,
   createMakerV8ComposableAuthorityLoaderV8,
+  createMakerV8ComposableCompilerV8,
   createMakerV8ComposableControllerV8,
   createMakerV8ComposablePersistenceV8,
   createMakerV8ComposableReadbackV8,
@@ -252,6 +254,38 @@ test('combined publication consumes the newly created Product and sends the newl
   assert.deepEqual(share, [createdProduct]);
   assert.deepEqual(transferCap[0], createdCap);
   assert.deepEqual(transferItem, [{ $kind: 'Result', Result: 3 }]);
+});
+
+test('cold Composable recovery supplies the exact signed transaction kind to the production broadcast boundary', async () => {
+  const checked = request('CREATE_ADMIT_MINT');
+  const compilerOptions = {
+    runtime,
+    loadFreshRequest: async () => checked,
+    certifyFinalized: async () => assert.fail('only exact replay is being prepared'),
+  };
+  const built = await createMakerV8ComposableCompilerV8(compilerOptions).prepare(checked);
+  const { transaction, descriptor } = built;
+  transaction.setExpiration({ Epoch: '2' });
+  transaction.setGasPrice(1n);
+  transaction.setGasBudget(1_000_000n);
+  transaction.setGasPayment([{ objectId: gas, version: '1', digest: suiDigest(7) }]);
+  const raw = await transaction.build();
+  const artifact = {
+    digest: TransactionDataBuilder.getDigestFromBytes(raw),
+    signer,
+    bytes: toBase64(raw),
+    signature: toBase64(new Uint8Array(97).fill(1)),
+  };
+  const reopened = createMakerV8ComposableCompilerV8(compilerOptions);
+  await reopened.rehydrate({
+    requireFreshAuthority: true,
+    plan: {
+      immutable: { request: checked },
+      current: { signature: artifact.signature, fullTransaction: artifact.bytes, outcome: { digest: artifact.digest } },
+    },
+  });
+  const proof = assertMakerV8ComposableSignedArtifactV8(reopened.authority, artifact);
+  assert.equal(proof.kindBytes, descriptor.kindBytes);
 });
 
 test('Composable request rejects invalid lifecycle, authority, unused fields and transfer-to-self', () => {
