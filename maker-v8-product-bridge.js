@@ -374,6 +374,7 @@ export function createMakerV8ProductBridge({
   lifecycle = null,
   player = null,
   playerJourney = null,
+  lookupCompletionReceipt = null,
   pack = null,
   composable = null,
   composableTransport = null,
@@ -2057,6 +2058,14 @@ export function createMakerV8ProductBridge({
     }
   }
 
+  if (typeof lookupCompletionReceipt === 'function') bridge.lookupPlayerCompletionReceipt = async ({ rootId, transactionDigest }) => {
+    const account = await requireConnected();
+    const receipt = await lookupCompletionReceipt({ rootId, signer: account.address, transactionDigest });
+    if (walletIdentity(await requireConnected()) !== walletIdentity(account)) {
+      fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed while reading the completion receipt.', 'WALLET');
+    }
+    return receipt;
+  };
   if (playerJourney) {
     const complete = method(playerJourney, 'complete', 'playerJourney');
     if (typeof playerJourney.openReception === 'function') bridge.openPlayerReception = ({ rootId }) => {
