@@ -3747,6 +3747,62 @@ public fun attach_pack_definitions_v8<PaymentCoin>(
         pack_definitions_v8(release).commitment, &profiles);
 }
 
+/// Remove an exact Pack from a Player loadout, including its selected Styles.
+/// Recovery depends only on holder and revision, so paused or revoked Packs
+/// can be removed without borrowing their Release or spending their Pass.
+public fun detach_pack_definitions_v8(
+    loadout: &mut MakerLoadoutV8, release_id: ID, expected_revision: u64, ctx: &TxContext,
+) {
+    assert_loadout_holder_revision(loadout, expected_revision, ctx);
+    assert!(!has_equipment_layout(loadout), EEquipLocked);
+    let mut binding_index = 0;
+    while (binding_index < loadout.attached_pack_definitions.length()
+        && loadout.attached_pack_definitions[binding_index].release_id != release_id) {
+        binding_index = binding_index + 1;
+    };
+    assert!(binding_index < loadout.attached_pack_definitions.length(), EMissing);
+
+    let mut slots = vector[];
+    let mut selections = vector[];
+    let mut removed = 0;
+    loadout.definition_slots.do_ref!(|slot| {
+        let keep_slot = slot.source_definition_id != release_id;
+        if (keep_slot) {
+            let mut retained = *slot;
+            retained.start = selections.length();
+            slots.push_back(retained);
+        };
+        let mut index = slot.start;
+        while (index < slot.start + slot.capacity) {
+            let mut selection = loadout.selections[index];
+            if (selection.is_some()) {
+                let selected = selection.borrow_mut();
+                let is_removed_style = selected.source_class == SOURCE_PACK
+                    && selected.source_definition_id == release_id;
+                if (is_removed_style) {
+                    selection = option::none();
+                    removed = removed + 1;
+                } else {
+                    assert!(keep_slot, EEquipLocked);
+                    if (index != selections.length()) {
+                        // Owned Items keep their original selection index and lock.
+                        assert!(selected.source_class == SOURCE_PACK, EEquipLocked);
+                        selected.selection_index = selections.length();
+                    };
+                };
+            };
+            if (keep_slot) selections.push_back(selection);
+            index = index + 1;
+        };
+    });
+    let _ = loadout.attached_pack_definitions.remove(binding_index);
+    loadout.definition_slots = slots;
+    loadout.selections = selections;
+    loadout.selection_count = loadout.selection_count - removed;
+    loadout.revision = loadout.revision + 1;
+    recompute_loadout(loadout);
+}
+
 fun append_pack_definition_slots(
     loadout: &mut MakerLoadoutV8, release_id: ID, definition_commitment: vector<u8>, profiles: &vector<PartProfileV8>,
 ) {
@@ -7777,6 +7833,87 @@ fun pack_definition_proof_equipment_keeps_pending_complete_rule() { pack_definit
 #[test, expected_failure(abort_code = ERuleViolation)]
 fun pack_definition_proof_completion_requires_pack_rule() { pack_definition_proof_case(15) }
 
+#[test]
+fun pack_detach_compacts_only_pack_ranges_and_preserves_other_selections() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 912, 0, 0, 0);
+    let mut loadout = test_loadout_with_capacity(&mut ctx, 3);
+    let removed_release = object::id_from_address(@0x21);
+    let retained_release = object::id_from_address(@0x22);
+    let retained_empty_release = object::id_from_address(@0x23);
+    let profile = test_profile(WARDROBE_SLOT, BEHAVIOR_HYBRID, false);
+    append_pack_definition_slots(&mut loadout, removed_release, test_hash(21), &vector[profile]);
+    append_pack_definition_slots(&mut loadout, retained_empty_release, test_hash(23), &vector[]);
+    append_pack_definition_slots(&mut loadout, retained_release, test_hash(22), &vector[profile]);
+    let root_id = loadout.root_id;
+    let mut retained_base = test_selection(0, b"base".to_string(), SOURCE_BASE, root_id);
+    retained_base.access_subject = object::id_from_address(@0x31);
+    install_selection(&mut loadout, 0, retained_base);
+    let lock = EquipLockV8 { loadout_id: object::id(&loadout), equip_revision: loadout.revision + 1, selection_index: 1 };
+    let mut external_item = OwnedExternalItemV8 {
+        id: object::new(&mut ctx), version: VERSION,
+        product_id: object::id_from_address(@0x24),
+        product_content_commitment: test_hash(4), asset_content_commitment: test_hash(2),
+        holder: ctx.sender(), ownership_epoch: 0, transferable: true,
+        equip_lock: option::some(lock),
+    };
+    let mut retained_external = test_selection(1, b"external".to_string(), SOURCE_EXTERNAL, external_item.product_id);
+    retained_external.access_subject = object::id(&external_item);
+    install_selection(&mut loadout, 1, retained_external);
+    let shifted_from = loadout.definition_slots[2].start;
+    let mut retained_pack = test_selection(shifted_from, b"keep".to_string(), SOURCE_PACK, retained_release);
+    retained_pack.access_subject = object::id_from_address(@0x32);
+    install_selection(&mut loadout, 2, test_selection(2, b"base-slot".to_string(), SOURCE_PACK, removed_release));
+    install_selection(&mut loadout, 3, test_selection(3, b"own-slot".to_string(), SOURCE_PACK, removed_release));
+    install_selection(&mut loadout, shifted_from, retained_pack);
+    let previous_revision = loadout.revision;
+    let previous_commitment = loadout.commitment;
+    detach_pack_definitions_v8(&mut loadout, removed_release, previous_revision, &ctx);
+    retained_pack.selection_index = 3;
+    assert!(loadout.revision == previous_revision + 1 && loadout.commitment != previous_commitment, 100);
+    assert!(loadout.selection_count == 3 && loadout.selections.length() == 3 + profile.capacity, 101);
+    assert!(*loadout.selections[0].borrow() == retained_base && loadout.selections[2].is_none(), 102);
+    assert!(*loadout.selections[3].borrow() == retained_pack, 103);
+    assert!(loadout.definition_slots.length() == 2 && loadout.definition_slots[1].start == 3
+        && loadout.definition_slots[1].source_definition_id == retained_release, 104);
+    assert!(loadout.attached_pack_definitions == vector[
+        AttachedPackDefinitionV8 { release_id: retained_empty_release, definition_commitment: test_hash(23) },
+        AttachedPackDefinitionV8 { release_id: retained_release, definition_commitment: test_hash(22) },
+    ], 105);
+    assert!(*loadout.selections[1].borrow() == retained_external && *external_item.equip_lock.borrow() == lock, 106);
+    unequip_external_style_v8(&mut loadout, &mut external_item, previous_revision + 1, &ctx);
+    assert!(external_item.equip_lock.is_none() && loadout.selections[1].is_none()
+        && *loadout.selections[3].borrow() == retained_pack, 107);
+    destroy_test_owned_item(external_item);
+    destroy_test_loadout(loadout);
+}
+
+#[test, expected_failure(abort_code = EStaleRevision)]
+fun pack_detach_rejects_stale_revision() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 913, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    let release_id = object::id_from_address(@0x21);
+    append_pack_definition_slots(&mut loadout, release_id, test_hash(21), &vector[]);
+    detach_pack_definitions_v8(&mut loadout, release_id, 0, &ctx);
+    destroy_test_loadout(loadout);
+}
+
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun pack_detach_rejects_other_holder() {
+    let mut ctx = tx_context::new_from_hint(@0xA12, 914, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    detach_pack_definitions_v8(&mut loadout, object::id_from_address(@0x21), 0, &ctx);
+    destroy_test_loadout(loadout);
+}
+
+#[test, expected_failure(abort_code = EEquipLocked)]
+fun pack_detach_rejects_soul_equipment_even_during_atomic_update() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 915, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    df::add(&mut loadout.id, SoulEquipmentLayoutKeyV8 {}, true);
+    detach_pack_definitions_v8(&mut loadout, object::id_from_address(@0x21), 0, &ctx);
+    destroy_test_loadout(loadout);
+}
+
 #[test_only]
 fun pack_definition_public_producer_case(case: u8) {
     let mut ctx = tx_context::new_from_hint(@0xA11, 911, 0, 0, 0);
@@ -7817,13 +7954,32 @@ fun pack_definition_public_producer_case(case: u8) {
     admit_pack_release_v8(&mut packs, &authority, &definitions, &root, &maker_admin, &mut release, 0, &ctx);
     let pass = new_pack_pass(&mut release, 0, 0, &mut ctx);
     append_pack_definition_slots(&mut loadout, object::id(&release), commitment, &vector[]);
-    if (case == 1) packs.releases.borrow_mut(object::id(&release)).admission_state = ADMISSION_REVOKED;
-    if (case == 2) release.lifecycle = PACK_PAUSED;
-    let proof = prove_attached_pack_definitions_v8(&loadout, &definitions, &registry, &root, &packs, &release, &pass, &access, 0, &ctx);
+    if (case == 1 || case == 4) packs.releases.borrow_mut(object::id(&release)).admission_state = ADMISSION_REVOKED;
+    if (case == 2 || case == 3) release.lifecycle = PACK_PAUSED;
+    let mut proofs = vector[];
+    if (case == 3 || case == 4) {
+        let release_id = object::id(&release);
+        let previous_revision = loadout.revision;
+        let pass_commitment = pack_pass_commitment_v8(&pass);
+        detach_pack_definitions_v8(&mut loadout, release_id, previous_revision, &ctx);
+        assert!(loadout.attached_pack_definitions.is_empty() && loadout.revision == previous_revision + 1, 100);
+        assert!(loadout.selection_count == 1 && loadout.selections[0].is_some(), 101);
+        assert!(pack_pass_commitment_v8(&pass) == pass_commitment && release.pass_count == 1, 102);
+    } else {
+        proofs.push_back(prove_attached_pack_definitions_v8(&loadout, &definitions, &registry, &root, &packs,
+            &release, &pass, &access, 0, &ctx));
+    };
     let selection = prove_base_selection_v8(&loadout, &definitions, &registry, &root, &access, 0, &ctx);
-    let authorization = seal_ordered_selection_proofs_v8(&loadout, &definitions, &registry, vector[proof], vector[selection], &ctx);
+    let authorization = seal_ordered_selection_proofs_v8(&loadout, &definitions, &registry, proofs, vector[selection], &ctx);
     assert!(authorization.used_packs.is_empty(), EInvalidProof);
     let (_, _, _, _, _, _, _, _, _, _) = consume_loadout_authorization_v8(authorization, &loadout);
+    if (case == 3) {
+        resume_pack_release_v8(&mut release, &cap, &packs, &ctx);
+        let previous_revision = loadout.revision;
+        attach_pack_definitions_v8(&mut loadout, &root, &definitions, &packs, &release, &pass, &access,
+            previous_revision, &ctx);
+        assert!(loadout.attached_pack_definitions.length() == 1 && release.pass_count == 1, 103);
+    };
     std::unit_test::destroy(release); std::unit_test::destroy(pass); std::unit_test::destroy(cap);
     std::unit_test::destroy(packs); std::unit_test::destroy(authority); std::unit_test::destroy(access);
     destroy_test_loadout(loadout); destroy_test_definitions(definitions);
@@ -7838,6 +7994,10 @@ fun pack_definition_public_producer_authorizes_real_entitlements() { pack_defini
 fun pack_definition_public_producer_rejects_revoked_admission() { pack_definition_public_producer_case(1) }
 #[test, expected_failure(abort_code = EInvalidLifecycle)]
 fun pack_definition_public_producer_rejects_paused_release() { pack_definition_public_producer_case(2) }
+#[test]
+fun pack_detach_restores_base_authorization_and_retains_pass_for_resume() { pack_definition_public_producer_case(3) }
+#[test]
+fun pack_detach_restores_base_authorization_after_revocation() { pack_definition_public_producer_case(4) }
 
 #[test_only]
 fun pack_attachment_case(case: u8) {
