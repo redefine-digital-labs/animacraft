@@ -20,6 +20,7 @@ import {
 import {
   MAKER_V8_PRODUCT_RUNTIME_SCHEMA,
 } from './maker-v8-product-runtime.js';
+import { hasOnlyUnavailablePackDiagnostics, makerV8UnavailablePackManifestIds } from './maker-v8-player-pack-preferences.js';
 import { MAKER_V8_CLOCK_OBJECT_ID, assertMakerV8Runtime } from './maker-v8-runtime.js';
 import { makerV8PlayerRecipeConstraintIssue } from './maker-v8-player-recipe-constraints.js';
 import { assertMakerV8NativeCompletionInputV8 } from './maker-v8-native-completion.js';
@@ -50,6 +51,7 @@ export const MAKER_V8_PLAYER_ACTIONS = Object.freeze({
   ACQUIRE_BASE_ITEM: 'acquireBaseItem',
   ACQUIRE_PACK_ACCESS: 'acquirePackAccess',
   COMMIT_LOADOUT: 'commitLoadout',
+  DETACH_PACK: 'detachPack',
   COMPLETE_OUTPUT: 'completeOutput',
   MATERIALIZE_PHYSICAL: 'materializePhysical',
 });
@@ -120,6 +122,9 @@ const ACTION_TARGETS = Object.freeze({
     'runtime::runtime_seal_v8::select_protected_base_style_v8',
     'runtime::runtime_seal_v8::equip_protected_owned_base_style_v8',
   ]),
+  [MAKER_V8_PLAYER_ACTIONS.DETACH_PACK]: new Set([
+    'playerPackDetach::runtime_v8::detach_pack_definitions_v8',
+  ]),
   [MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT]: new Set([
     'runtime::runtime_v8::prove_attached_pack_definitions_v8',
     'runtime::runtime_v8::prove_base_selection_v8',
@@ -174,6 +179,7 @@ const ACTION_INPUT_FIELDS = Object.freeze({
     'releaseId', 'semanticPackId',
   ]),
   [MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT]: Object.freeze([]),
+  [MAKER_V8_PLAYER_ACTIONS.DETACH_PACK]: Object.freeze(['releaseId']),
   [MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT]: Object.freeze([
     'render', 'nativeSoul',
   ]),
@@ -832,6 +838,7 @@ function assertActionInput(action, input, recipe, document) {
     exactId(input.releaseId, 'action.input.releaseId');
     exactKey(input.semanticPackId, 'action.input.semanticPackId');
   }
+  if (action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) exactId(input.releaseId, 'action.input.releaseId');
   if (action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM) {
     exactKey(input.partKey, 'action.input.partKey');
     exactKey(input.itemKey, 'action.input.itemKey');
@@ -984,6 +991,9 @@ function normalizeTarget(target) {
 }
 
 function actionPackageRoles(action, runtime) {
+  if (action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) {
+    return new Map(runtime.playerPackDetach ? [[runtime.playerPackDetach.packageId, 'playerPackDetach']] : []);
+  }
   const packageRoles = new Map(Object.entries(runtime.roles)
     .map(([role, identity]) => [identity.callablePackageId, role]));
   if (action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT && runtime.nativeSoulIntegration) {
@@ -1072,7 +1082,9 @@ function assertBuiltTransaction(built, plan, runtime) {
       `${call.package}::${call.module}::${call.function}`,
     ));
   const plannedTargets = assertActionTargets(plan.action, plan.targets, runtime);
-  if (!sameCanonical(observedTargets, plannedTargets)) {
+  const singleDetach = plan.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK;
+  if (!sameCanonical(observedTargets, plannedTargets)
+    || singleDetach && (plannedTargets.length !== 1 || snapshot.commands.length !== 1)) {
     fail(
       'MAKER_V8_PLAYER_TRANSACTION_TARGET_DRIFT',
       'Built TransactionData Move calls differ from the compiler plan.',
@@ -1188,8 +1200,9 @@ function playerActionScope({ action, signer, playerIdentity, recipeCommitment, i
   // visual recipe. A color/style edit must not hide an uncertain paid acquisition
   // behind a second scope. Exact original recipe/plan/bytes remain in the record
   // and are revalidated before any signature; Complete remains recipe-specific.
-  const acquisition = [MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS,
-    MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS].includes(action);
+  const recipeIndependent = [MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS,
+    MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    MAKER_V8_PLAYER_ACTIONS.DETACH_PACK].includes(action);
   return hashValue({
     chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
     action,
@@ -1197,7 +1210,7 @@ function playerActionScope({ action, signer, playerIdentity, recipeCommitment, i
     rootId: playerIdentity.rootId,
     makerVersion: playerIdentity.makerVersion,
     rootContentCommitment: playerIdentity.rootContentCommitment,
-    recipeCommitment: acquisition ? null : recipeCommitment,
+    recipeCommitment: recipeIndependent ? null : recipeCommitment,
     input,
   });
 }
@@ -1353,6 +1366,12 @@ function actionView(record, recoveryState = null) {
     makerVersion: record.playerIdentity.makerVersion,
     recipeCommitment: record.loadout.recipeCommitment,
     transactionDigest: record.transaction.digest,
+    ...(record.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK ? {
+      releaseId: record.input.releaseId,
+      gasBudgetMist: String(TransactionDataBuilder.fromBytes(
+        canonicalTransactionBytes(record.transaction.bytes),
+      ).snapshot().gasData.budget),
+    } : {}),
     makerEntryQuote: record.plan.descriptor.expected?.makerEntryQuote == null
       ? null : clone(record.plan.descriptor.expected.makerEntryQuote),
     completePaymentQuote: record.plan.descriptor.expected?.completePaymentQuote == null
@@ -1518,6 +1537,7 @@ export function createMakerV8PlayerControllerV8({
     execution: freeze({
       ...gates,
       writeEnabled,
+      ...(runtime.playerPackDetach ? { packDetachEnabled: writeEnabled } : {}),
       disabledReason: writeEnabled
         ? null : 'Player chain actions are disabled until exact signing and broadcast gates are enabled.',
     }),
@@ -1598,12 +1618,14 @@ export function createMakerV8PlayerControllerV8({
           'externalStyles', 'certifiedAssets', 'diagnostics'], 'Player choices', 'MAKER_V8_PLAYER_DEFINITION_CONTEXT_INVALID');
         exactRecord(definitions, ['schemaVersion', 'address', 'rootId', 'packs', 'currentLoadout'],
           'Player definitions', 'MAKER_V8_PLAYER_DEFINITION_CONTEXT_INVALID');
+        const unavailablePacks = new Set(makerV8UnavailablePackManifestIds(choices));
         if (definitions.schemaVersion !== 'animacraft.maker-v8-player-definitions.v1'
           || definitions.address !== signer || definitions.rootId !== rootId || !Array.isArray(definitions.packs)
           || choices?.schemaVersion !== 'animacraft.maker-v8-contextual-choices.v1'
           || choices.address !== signer || choices.rootId !== rootId
           || !['baseEntitlements', 'packStyles', 'externalStyles', 'certifiedAssets'].every(key => Array.isArray(choices[key]))
-          || !Array.isArray(choices.diagnostics) || choices.diagnostics.length) {
+          || !hasOnlyUnavailablePackDiagnostics(choices)
+          || definitions.packs.some(row => unavailablePacks.has(row?.releaseId))) {
           fail('MAKER_V8_PLAYER_DEFINITION_CONTEXT_INVALID', 'Player definitions differ from the exact signer/Root choices.', 'READ');
         }
         if (definitions.currentLoadout !== null) {
@@ -1612,6 +1634,9 @@ export function createMakerV8PlayerControllerV8({
           exactId(current.objectId, 'Player current Loadout ID');
           exactDecimal(current.revision, 'Player current Loadout revision');
           makerV8PlayerSlotLayout({ rootId, parts: player.document.parts, packDefinitionLayout: current.layout });
+          if (current.layout?.bindings.some(row => unavailablePacks.has(row.releaseId))) {
+            fail('MAKER_V8_PLAYER_DEFINITION_CONTEXT_INVALID', 'Attached Pack definitions must remain readable.', 'READ');
+          }
         }
         return freeze({ ...clone(player), definitionContext: clone(definitions), contextualChoices: clone(choices) });
       } finally { if (typeof unsubscribe === 'function') unsubscribe(); }
@@ -1650,6 +1675,13 @@ export function createMakerV8PlayerControllerV8({
     return observed;
   };
 
+  const requireReadablePacks = (player, loadout, entryReleaseId = null) => {
+    const unavailable = new Set(makerV8UnavailablePackManifestIds(player.contextualChoices));
+    if (unavailable.has(entryReleaseId) || loadout.usedPacks.some(row => unavailable.has(row.releaseId))) {
+      fail('MAKER_V8_PLAYER_PACK_MANIFEST_UNAVAILABLE', 'A Pack used by this action could not be read.', 'READ', {}, true);
+    }
+  };
+
   const exactChainAndAccount = async () => {
     try {
       assertMainnetIdentifier(await rpc.getChainIdentifier());
@@ -1675,6 +1707,7 @@ export function createMakerV8PlayerControllerV8({
   };
 
   const liveContext = async ({ action, player, recipe, loadout, input, account }) => {
+    requireReadablePacks(player, loadout, action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS ? input.releaseId : null);
     let context;
     try {
       context = await custody.loadPlayerContext({
@@ -1706,6 +1739,7 @@ export function createMakerV8PlayerControllerV8({
       MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS,
       MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM,
       MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+      MAKER_V8_PLAYER_ACTIONS.DETACH_PACK,
     ].includes(action);
     if (protectedAction && !gates.allowProtectedContent
       && protectedRequired(player, recipe, context)) {
@@ -1768,6 +1802,19 @@ export function createMakerV8PlayerControllerV8({
     return freeze(clone(record));
   };
 
+  const readFinalizedPackPurchase = async ({ rootId, signer, input }) => {
+    if (typeof persistence.findFinalizedPackPurchaseId !== 'function') return null;
+    const actionId = await persistence.findFinalizedPackPurchaseId({ rootId, signer, releaseId: input.releaseId });
+    if (actionId === null) return null;
+    const record = await readRecord(actionId);
+    if (record.action !== MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS || record.status !== 'FINALIZED_SUCCESS'
+      || record.playerIdentity.rootId !== rootId || record.plan.signer !== signer
+      || record.input.releaseId !== input.releaseId || record.input.semanticPackId !== input.semanticPackId) {
+      fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'Stored Pack receipt differs from the current wallet and exact Release.', 'PERSISTENCE');
+    }
+    return record;
+  };
+
   const certifyFinalizedReadback = async (record, query) => assertReadback(
     await custody.readbackPlayerAction({ record: clone(record), query: clone(query) }),
     record,
@@ -1821,10 +1868,12 @@ export function createMakerV8PlayerControllerV8({
     );
   };
 
-  const queryExact = async (record) => {
+  const queryExact = async (record, { recoverArchive = false } = {}) => {
     try {
       const query = await rpc.queryTransaction({
         digest: record.transaction.digest, epochWindow: record.transaction.build.epochWindow,
+        ...(recoverArchive && record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS
+          ? { recoverArchivedPack: true } : {}),
       });
       assertJson(query, 'transactionQuery');
       return freeze(clone(assertTransactionQuery(
@@ -1849,8 +1898,9 @@ export function createMakerV8PlayerControllerV8({
       || player.evidence.contentCommitment !== record.playerIdentity.rootContentCommitment) {
       fail('MAKER_V8_PLAYER_ACTION_ROOT_DRIFT', 'Durable action belongs to another Root version.', 'CONTEXT');
     }
-    const recipe = normalizeRecipe(player.document, record.recipe, player);
-    const loadout = loadoutFor(player, recipe);
+    const detach = record.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK;
+    const recipe = detach ? record.recipe : normalizeRecipe(player.document, record.recipe, player);
+    const loadout = detach ? record.loadout : loadoutFor(player, recipe);
     if (!sameCanonical(loadout, record.loadout)) {
       fail('MAKER_V8_PLAYER_ACTION_RECIPE_DRIFT', 'Durable action Recipe/loadout drifted.', 'CONTEXT');
     }
@@ -1858,6 +1908,16 @@ export function createMakerV8PlayerControllerV8({
     const account = await exactChainAndAccount();
     if (account.address !== record.plan.signer) {
       fail('MAKER_V8_PLAYER_ACCOUNT_DRIFT', 'Wallet differs from the durable Player signer.', 'WALLET');
+    }
+    if (record.status === 'PREPARED' && record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS) {
+      const purchase = await readFinalizedPackPurchase({ rootId: player.rootId, signer: account.address, input });
+      if (purchase) {
+        // Older clients could have prepared another attempt after the original
+        // finalized. Retire only that unsigned attempt and keep both receipts.
+        await persistCas(record, { status: 'CANCELLED_UNSIGNED', error: null });
+        fail('MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED', 'This Pack was already acquired. Open its original receipt.', 'SIGNING',
+          { actionId: purchase.actionId, transactionDigest: purchase.transaction.digest });
+      }
     }
     const context = await liveContext({
       action: record.action, player, recipe, loadout, input, account,
@@ -2029,6 +2089,7 @@ export function createMakerV8PlayerControllerV8({
         assertCurrent();
         const player = samePlayer(snapshot.player, await readExact(snapshot.player.rootId));
         assertCurrent();
+        requireReadablePacks(player, loadout);
         const quote = await custody.quotePlayerCompletion({
           player: clone(player), recipe: clone(recipe), loadout: clone(loadout), account,
         });
@@ -2079,6 +2140,7 @@ export function createMakerV8PlayerControllerV8({
       const loadout = loadoutFor(state.player, recipe);
       const account = await exactChainAndAccount();
       const player = samePlayer(state.player, await readExact(state.player.rootId));
+      requireReadablePacks(player, loadout);
       const identity = await custody.resolveProtectedOutputIdentity({
         action: MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT,
         player: clone(player),
@@ -2171,6 +2233,9 @@ export function createMakerV8PlayerControllerV8({
 
     async preparePlayerAction({ action, input = {} } = {}) {
       requireWrite();
+      if (action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK && !runtime.playerPackDetach) {
+        fail('MAKER_V8_PLAYER_PACK_DETACH_UNAVAILABLE', 'Pack removal requires a finalized Runtime upgrade.', 'GATE');
+      }
       if (state.status !== 'READY' || !state.player || !state.recipe || !state.loadout) {
         fail('MAKER_V8_PLAYER_NOT_READY', 'Load and validate one exact Player Recipe first.');
       }
@@ -2304,6 +2369,11 @@ export function createMakerV8PlayerControllerV8({
           fail('MAKER_V8_PLAYER_PERSISTENCE_DRIFT', 'Prepared Player action durable reread drifted.', 'PERSISTENCE');
         }
       } catch (cause) {
+        if (cause?.code === 'MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED') {
+          const purchase = await controller.recoverActivePlayerAction({ action, input: checkedInput });
+          if (purchase.actionId === cause.details?.actionId && purchase.status === 'FINALIZED_SUCCESS') return purchase;
+          fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'The original Pack purchase changed during preparation.', 'PERSISTENCE');
+        }
         throw asPlayerError(cause, 'MAKER_V8_PLAYER_PREPARE_PERSIST_FAILED', 'Prepared Player action was not durably stored.', 'PERSISTENCE');
       }
       return actionView(written);
@@ -2435,25 +2505,37 @@ export function createMakerV8PlayerControllerV8({
       let record = await readRecord(actionId);
       if (record.status === 'CANCELLED_UNSIGNED') return actionView(record, 'CANCELLED_UNSIGNED');
       if (record.status === 'PREPARED') return actionView(record, 'AWAITING_SIGNATURE');
-      if (['SIGNING', 'SIGNING_UNKNOWN'].includes(record.status)) {
-        return actionView(record, 'SIGNATURE_OUTCOME_UNKNOWN');
+      if (['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status)) {
+        return actionView(record, record.status === 'EXPIRED_NOT_FOUND' ? record.status : null);
       }
-      if (!['SIGNED', 'BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN', 'FINALIZED_UNCERTIFIED',
-        'FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status)
+      if (['SIGNING', 'SIGNING_UNKNOWN'].includes(record.status)) {
+        if (typeof boundary.recoverFinalizedSignature !== 'function') {
+          return actionView(record, 'SIGNATURE_OUTCOME_UNKNOWN');
+        }
+        const query = await queryExact(record, { recoverArchive: true });
+        if (query.status === 'NOT_FOUND') return actionView(record, 'SIGNATURE_OUTCOME_UNKNOWN');
+        const signature = assertSignatureArtifact(await boundary.recoverFinalizedSignature({
+          bytes: record.transaction.bytes,
+          digest: record.transaction.digest,
+          signer: record.plan.signer,
+          query,
+        }), record.transaction, record.plan.signer);
+        record = await persistCas(record, {
+          status: 'SIGNED', signatureIntent: null, signature, error: null,
+        });
+        return actionView(await settleQuery(record, query));
+      }
+      if (!['SIGNED', 'BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN', 'FINALIZED_UNCERTIFIED'].includes(record.status)
         || !plain(record.signature)) {
         fail('MAKER_V8_PLAYER_RECOVERY_STATE_INVALID', 'Player action has no recoverable exact signed artifact.', 'RECOVERY');
       }
-      const terminal = ['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status);
       let query;
       try {
-        query = await queryExact(record);
+        query = await queryExact(record, { recoverArchive: true });
       } catch (error) {
-        if (!terminal) {
-          record = await persistCas(record, { status: 'OUTCOME_UNKNOWN', error: durableError(error) });
-        }
+        record = await persistCas(record, { status: 'OUTCOME_UNKNOWN', error: durableError(error) });
         throw error;
       }
-      if (query.status === 'NOT_FOUND' && terminal) return actionView(record, record.status);
       const finalized = await settleQuery(record, query);
       if (finalized) return actionView(finalized);
       if (!plain(query.absence)
@@ -2534,6 +2616,17 @@ export function createMakerV8PlayerControllerV8({
       }
       const checkedInput = assertActionInput(action, input, state.recipe, state.player.document);
       const account = await exactChainAndAccount();
+      if (action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS) {
+        const rootId = state.player.rootId;
+        const purchase = await readFinalizedPackPurchase({ rootId, signer: account.address, input: checkedInput });
+        if (purchase) {
+          const confirmed = await exactChainAndAccount();
+          if (state.player?.rootId !== rootId || confirmed.address !== account.address) {
+            fail('MAKER_V8_PLAYER_ACTIVE_SCOPE_DRIFT', 'Wallet or Maker changed while reading the original Pack purchase.', 'RECOVERY');
+          }
+          return actionView(purchase);
+        }
+      }
       const scopeKey = playerActionScope({
         action,
         signer: account.address,
@@ -2606,6 +2699,39 @@ export function createMakerV8PlayerControllerV8({
       // Discovery is read-only: do not require the Pack to remain purchasable,
       // query finality, sign, or replay while restoring the recovery UI.
       return actionView(record);
+    },
+
+    async getFinalizedPlayerPackDetaches(input = {}) {
+      if (!writeEnabled || !runtime.playerPackDetach) return [];
+      exactRecord(input, ['rootId', 'since'], 'finalizedPackDetach.input');
+      const rootId = exactId(input.rootId, 'finalizedPackDetach.rootId');
+      if (!Number.isSafeInteger(input.since) || input.since < 0) {
+        fail('MAKER_V8_PLAYER_PACK_DETACH_LOOKUP_INVALID', 'Pack removal lookup requires a saved project time.', 'PERSISTENCE');
+      }
+      requireMethod(persistence, 'listFinalizedPackDetachIds', 'persistence');
+      const { address: signer } = await exactChainAndAccount();
+      const ids = await persistence.listFinalizedPackDetachIds({ rootId, signer, since: input.since });
+      const records = await Promise.all(ids.map(readRecord));
+      const receipts = records.map(record => {
+        const outputs = record.certificate?.evidence?.objects;
+        if (record.action !== MAKER_V8_PLAYER_ACTIONS.DETACH_PACK || record.status !== 'FINALIZED_SUCCESS'
+          || record.plan.signer !== signer || record.playerIdentity.rootId !== rootId
+          || record.updatedAt < input.since || outputs?.length !== 1
+          || outputs[0].objectId !== record.plan.descriptor.expected.packDetach.objectId
+          || String(outputs[0].fields?.revision) !== record.plan.descriptor.expected.packDetach.transition.revision) {
+          fail('MAKER_V8_PLAYER_PACK_DETACH_LOOKUP_DRIFT', 'Pack removal receipt differs from the saved wallet or loadout.', 'RECOVERY');
+        }
+        return freeze({
+          releaseId: record.input.releaseId,
+          transactionDigest: record.transaction.digest,
+          loadoutId: outputs[0].objectId,
+          revision: String(outputs[0].fields.revision),
+        });
+      });
+      if ((await exactChainAndAccount()).address !== signer) {
+        fail('MAKER_V8_PLAYER_ACCOUNT_DRIFT', 'Wallet changed during Pack removal receipt lookup.', 'WALLET');
+      }
+      return freeze(receipts);
     },
 
     async readFinalizedCompletion({ rootId, signer, actionId }) {

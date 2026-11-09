@@ -37,7 +37,7 @@ export const MAKER_V8_PLAYER_JOURNEY_SCHEMA =
 
 const EXACT_ID = /^0x[0-9a-f]{64}$/;
 const HASH = /^[0-9a-f]{64}$/;
-import { assertMakerV8EnabledPackReleaseIds } from './maker-v8-player-pack-preferences.js';
+import { assertMakerV8EnabledPackReleaseIds, hasOnlyUnavailablePackDiagnostics } from './maker-v8-player-pack-preferences.js';
 
 const FINAL_SUCCESS = 'FINALIZED_SUCCESS';
 const encoder = new TextEncoder();
@@ -342,7 +342,7 @@ export async function renderMakerV8PlayerRecipePngV8({
     || choices.schemaVersion !== 'animacraft.maker-v8-contextual-choices.v1'
     || choices.rootId !== player.rootId
     || !contextualRows.every(Array.isArray)
-    || choices.diagnostics.length !== 0
+    || !hasOnlyUnavailablePackDiagnostics(choices)
     || choices.address !== signer) {
     fail('MAKER_V8_PLAYER_JOURNEY_CONTEXT_DRIFT', 'Render choices differ from the exact Player Root or signer.', 'RENDER');
   }

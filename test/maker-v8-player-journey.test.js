@@ -1024,7 +1024,7 @@ test('public renderer always point-reads live choices and ignores forged caller 
   assert.equal(assetLoads, 0);
 });
 
-test('bridge-shaped Pack and External players exact-dedupe live certified assets and render PNG', async () => {
+test('bridge-shaped Pack and External players render verified PNG through an unrelated Pack outage', async () => {
   const cases = [
     {
       label: 'Pack',
@@ -1073,6 +1073,10 @@ test('bridge-shaped Pack and External players exact-dedupe live certified assets
       }],
       certifiedAssets: [structuredClone(asset)],
     });
+    contextualChoices.diagnostics = [{
+      schemaVersion: 'animacraft.maker-v8-catalog-diagnostic.v1', severity: 'WARNING', layer: 'MANIFEST',
+      code: 'MAKER_V8_PRODUCT_PACK_MANIFEST_UNAVAILABLE', rootId: ROOT, details: { releaseId: id(59) },
+    }];
     const player = playerFixture();
     // This is the actual public Player shape after bridge.mergeContextualChoices:
     // the contextual descriptor is already in the top-level certified asset set.

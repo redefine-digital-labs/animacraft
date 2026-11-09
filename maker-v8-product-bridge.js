@@ -20,6 +20,7 @@ import {
   renderMakerV8PlayerRecipePngV8,
 } from './maker-v8-player-journey.js';
 import { makerV8PlayerRecipeCommitmentV8 } from './maker-v8-player-controller.js';
+import { hasOnlyUnavailablePackDiagnostics } from './maker-v8-player-pack-preferences.js';
 import { createMakerV8LocalPlayer } from './maker-v8-local-player.js';
 import { exactMakerV8ExportOptions, makerV8ExportSizes } from './maker-v8-render-core.js';
 import { makerV8DraftAuthorUpgrade } from './maker-v8-draft-store.js';
@@ -375,6 +376,7 @@ export function createMakerV8ProductBridge({
   player = null,
   playerJourney = null,
   lookupCompletionReceipt = null,
+  lookupPackReceipt = null,
   pack = null,
   composable = null,
   composableTransport = null,
@@ -657,11 +659,10 @@ export function createMakerV8ProductBridge({
       || !Array.isArray(value.packStyles)
       || !Array.isArray(value.externalStyles)
       || !Array.isArray(value.certifiedAssets)
-      || !Array.isArray(value.diagnostics)
-      || value.diagnostics.length !== 0) {
+      || !hasOnlyUnavailablePackDiagnostics(value)) {
       fail(
         'MAKER_V8_PRODUCT_CONTEXTUAL_AUTHORITY_INVALID',
-        'Contextual choices lack one exact clean wallet and active Root authority.',
+        'Contextual choices lack one exact wallet and active Root authority.',
         'PLAYER',
       );
     }
@@ -2056,16 +2057,21 @@ export function createMakerV8ProductBridge({
     if (typeof player.getPendingPlayerAction === 'function') {
       bridge.getPendingPlayerAction = method(player, 'getPendingPlayerAction', 'player');
     }
+    if (typeof player.getFinalizedPlayerPackDetaches === 'function') {
+      bridge.getFinalizedPlayerPackDetaches = method(player, 'getFinalizedPlayerPackDetaches', 'player');
+    }
   }
 
-  if (typeof lookupCompletionReceipt === 'function') bridge.lookupPlayerCompletionReceipt = async ({ rootId, transactionDigest }) => {
+  const receiptLookupForWallet = lookup => async ({ rootId, transactionDigest }) => {
     const account = await requireConnected();
-    const receipt = await lookupCompletionReceipt({ rootId, signer: account.address, transactionDigest });
+    const receipt = await lookup({ rootId, signer: account.address, transactionDigest });
     if (walletIdentity(await requireConnected()) !== walletIdentity(account)) {
-      fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed while reading the completion receipt.', 'WALLET');
+      fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed while reading the original receipt.', 'WALLET');
     }
     return receipt;
   };
+  if (typeof lookupCompletionReceipt === 'function') bridge.lookupPlayerCompletionReceipt = receiptLookupForWallet(lookupCompletionReceipt);
+  if (typeof lookupPackReceipt === 'function') bridge.lookupPlayerPackReceipt = receiptLookupForWallet(lookupPackReceipt);
   if (playerJourney) {
     const complete = method(playerJourney, 'complete', 'playerJourney');
     if (typeof playerJourney.openReception === 'function') bridge.openPlayerReception = ({ rootId }) => {

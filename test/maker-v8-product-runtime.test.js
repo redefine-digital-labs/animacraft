@@ -510,6 +510,53 @@ test('Maker discovery and Player agree on exact Pack entry and Complete economic
   });
 });
 
+test('a temporarily unreadable unowned Pack leaves other verified Player choices usable', async () => {
+  const lost = publicPackFixture(1), free = publicPackFixture();
+  free.release.objectId = objectId(961);
+  free.release.semanticPackId = 'independent-pack';
+  const error = Object.assign(new Error('Walrus returned 503'), { code: 'ANIMACRAFT_WALRUS_READ_FAILED' });
+  const owned = { packPasses: [], makerLoadouts: [], ownedBaseItems: [
+    { objectId: objectId(942), partKey: 'body', itemKey: 'default', ownershipEpoch: 3n, equipLock: null },
+  ] };
+  let problem = error;
+  const { options } = harness({ ownedInventory: owned, publicPacks: [lost.release, free.release], packManifestAdapter: {
+    async load(input) {
+      if (input.semanticPackId === free.release.semanticPackId) return free.packManifestAdapter.load(input);
+      if (problem) throw problem;
+      return lost.packManifestAdapter.load(input);
+    },
+  } });
+  const product = createMakerV8ProductRuntime(options);
+  const read = () => product.choices.load({ address: objectId(902), rootId });
+  const partial = await read();
+  assert.deepEqual(partial.packStyles.map(row => row.releaseId), [free.release.objectId]);
+  assert.equal(partial.certifiedAssets.length, 1);
+  assert.equal(partial.baseEntitlements[0].access.canEquip, true);
+  assert.deepEqual(partial.diagnostics.map(row => [row.severity, row.rootId, row.details.releaseId]),
+    [['WARNING', rootId, lost.release.objectId]]);
+
+  owned.packPasses.push({ objectId: objectId(941), releaseId: lost.release.objectId,
+    releaseContentCommitment: lost.release.contentCommitment, release: lost.release, admission: lost.release.admission });
+  await assert.rejects(read(), value => value === error);
+  owned.packPasses.length = 0;
+  owned.makerLoadouts.push({ objectId: objectId(950), rootId, holder: objectId(902), revision: '4',
+    packDefinitionLayout: { bindings: [], profiles: [] }, selections: [{ fields: { vec: [{ fields: {
+      source_class: '1', source_definition_id: { id: lost.release.objectId },
+    } }] } }] });
+  await assert.rejects(read(), value => value === error);
+  owned.makerLoadouts[0].selections = [];
+  owned.makerLoadouts[0].packDefinitionLayout.bindings = [{ releaseId: lost.release.objectId }];
+  await assert.rejects(read(), value => value === error);
+  owned.makerLoadouts.length = 0;
+
+  problem = Object.assign(new Error('Manifest bytes changed'), { code: 'MAKER_V8_PACK_MANIFEST_HASH_DRIFT' });
+  await assert.rejects(read(), value => value === problem);
+  problem = null;
+  const restored = await read();
+  assert.equal(restored.packStyles.length, 2);
+  assert.deepEqual(restored.diagnostics, []);
+});
+
 test('different Releases can expose same-named artwork without merging content identities', async () => {
   const first = publicPackFixture();
   const second = { ...structuredClone(first.release), objectId: objectId(961), semanticPackId: 'other_pack',

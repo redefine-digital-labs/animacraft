@@ -14,7 +14,11 @@ import { createProductionMakerV8PublicationAdaptersV8 } from './maker-v8-publica
 import { createMakerV8PublicationTransportV8 } from './maker-v8-publication-transport.js';
 import { createProductionMakerV8WalrusPublisherV8 } from './maker-v8-walrus.js';
 import { createProductionMakerV8LifecycleAdaptersV8 } from './maker-v8-lifecycle-adapters.js';
-import { createProductionMakerV8PlayerAdaptersV8, readMakerV8PlayerReceiptByDigestV8 } from './maker-v8-player-adapters.js';
+import {
+  createProductionMakerV8PlayerAdaptersV8,
+  readMakerV8PackReceiptByDigestV8,
+  readMakerV8PlayerReceiptByDigestV8,
+} from './maker-v8-player-adapters.js';
 import { MAKER_V8_PLAYER_ACTIONS } from './maker-v8-player-controller.js';
 import { createMakerV8PlayerJourneyV8 } from './maker-v8-player-journey.js';
 import { createProductionMakerV8NativeContentV8 } from './maker-v8-native-content-production.js';
@@ -38,6 +42,9 @@ export const ANIMACRAFT_PRODUCT_APP_SCHEMA = 'animacraft.product-app.v8';
 export const ANIMACRAFT_WALRUS_MAINNET_AGGREGATOR =
   'https://aggregator.walrus-mainnet.walrus.space';
 
+const WALRUS_MAINNET_FALLBACK_AGGREGATOR = 'https://walrus-mainnet-aggregator.imperator.co';
+const WALRUS_READ_TIMEOUT_MS = 15_000;
+const WALRUS_RETRYABLE_STATUSES = new Set([0, 403, 404, 408, 410, 429]);
 const SAFE_BLOB_ID = /^[A-Za-z0-9_-]{1,512}$/;
 
 export class AnimacraftProductAppError extends Error {
@@ -245,6 +252,16 @@ export function createLazyMakerV8PlayerFacade(resolvePlayer) {
       return player.recoverActivePlayerAction(...args);
     },
     getPlayerAction: async (...args) => (await load()).getPlayerAction(...args),
+    getPendingPlayerAction: async (...args) => {
+      const player = await load();
+      return typeof player.getPendingPlayerAction === 'function'
+        ? player.getPendingPlayerAction(...args) : null;
+    },
+    getFinalizedPlayerPackDetaches: async (...args) => {
+      const player = await load();
+      return typeof player.getFinalizedPlayerPackDetaches === 'function'
+        ? player.getFinalizedPlayerPackDetaches(...args) : [];
+    },
   });
 }
 
@@ -343,7 +360,7 @@ export function createLazyMakerV8ComposableFacade(resolveComposable) {
   });
 }
 
-/** Official Mainnet Walrus read path. Integrity is independently rechecked by the manifest adapter. */
+/** Mainnet read transport. The Maker, Pack and asset adapters verify the returned bytes. */
 export function createMainnetWalrusManifestFetcher({
   fetcher = globalThis.fetch,
   aggregator = ANIMACRAFT_WALRUS_MAINNET_AGGREGATOR,
@@ -361,40 +378,58 @@ export function createMainnetWalrusManifestFetcher({
     fail('ANIMACRAFT_WALRUS_ENDPOINT_INVALID', 'Walrus aggregator must be a credential-free HTTPS origin.', 'CONFIGURATION');
   }
   const basePath = base.pathname === '/' ? '' : base.pathname.replace(/\/+$/, '');
+  const endpoints = [`${base.origin}${basePath}`];
+  if (aggregator === ANIMACRAFT_WALRUS_MAINNET_AGGREGATOR) {
+    endpoints.push(WALRUS_MAINNET_FALLBACK_AGGREGATOR);
+  }
+
   return async ({ blobId, signal } = {}) => {
     if (typeof blobId !== 'string' || !SAFE_BLOB_ID.test(blobId)) {
       fail('ANIMACRAFT_WALRUS_BLOB_ID_INVALID', 'Walrus Blob ID is not canonical bounded text.', 'MANIFEST');
     }
     const path = blobId.length === 50 ? makerV8WalrusAssetPathV8(blobId) : `/v1/blobs/${encodeURIComponent(blobId)}`;
-    const url = new URL(`${basePath}${path}`, base.origin);
-    let response;
-    try {
-      response = await fetcher(url.href, freeze({
-        method: 'GET',
-        signal,
-        cache: 'no-store',
-        credentials: 'omit',
-        redirect: 'error',
-        referrerPolicy: 'no-referrer',
-        headers: freeze({ Accept: 'application/json, application/octet-stream;q=0.9' }),
-      }));
-    } catch (cause) {
-      fail(
-        'ANIMACRAFT_WALRUS_READ_FAILED',
-        'Certified Walrus Manifest could not be read.',
-        'MANIFEST',
-        { cause: String(cause?.message ?? cause ?? 'unknown') },
-      );
+    let details;
+    for (const endpoint of endpoints) {
+      signal?.throwIfAborted();
+      const deadline = new AbortController();
+      const attemptSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+      const timer = setTimeout(() => deadline.abort(new DOMException(
+        'Walrus aggregator did not respond in time.', 'TimeoutError',
+      )), WALRUS_READ_TIMEOUT_MS);
+      let response;
+      try {
+        response = await fetcher(new URL(`${endpoint}${path}`).href, Object.freeze({
+          method: 'GET',
+          signal: attemptSignal,
+          cache: 'no-store',
+          credentials: 'omit',
+          redirect: 'error',
+          referrerPolicy: 'no-referrer',
+          headers: Object.freeze({ Accept: 'application/json, application/octet-stream;q=0.9' }),
+        }));
+      } catch (cause) {
+        signal?.throwIfAborted();
+        details = { cause: String(cause?.message ?? cause ?? 'unknown') };
+        continue;
+      } finally {
+        clearTimeout(timer);
+      }
+      signal?.throwIfAborted();
+      if (response?.ok === true) return response;
+
+      const status = Number(response?.status ?? 0);
+      details = { status };
+      void response?.body?.cancel?.().catch(() => {});
+      if (!WALRUS_RETRYABLE_STATUSES.has(status) && status < 500) break;
     }
-    if (!response || response.ok !== true) {
-      fail(
-        'ANIMACRAFT_WALRUS_READ_FAILED',
-        'Certified Walrus Manifest is temporarily unavailable.',
-        'MANIFEST',
-        { status: Number(response?.status ?? 0) },
-      );
-    }
-    return response;
+    fail(
+      'ANIMACRAFT_WALRUS_READ_FAILED',
+      details.status === undefined
+        ? 'Certified Walrus Manifest could not be read.'
+        : 'Certified Walrus Manifest is temporarily unavailable.',
+      'MANIFEST',
+      details,
+    );
   };
 }
 
@@ -727,6 +762,7 @@ export async function createProductionAnimacraftApp({
     player,
     playerJourney,
     lookupCompletionReceipt: input => readMakerV8PlayerReceiptByDigestV8({ ...input, client: transport, runtime }),
+    lookupPackReceipt: input => readMakerV8PackReceiptByDigestV8({ ...input, client: transport, runtime }),
     protectedTransport,
     pack,
     composable,
