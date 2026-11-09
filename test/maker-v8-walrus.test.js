@@ -62,7 +62,7 @@ function memoryPersistence() {
 }
 
 function harness(persistence = memoryPersistence(), clockStart = 100, {
-  readOwnedPublicBlobs, fetcher,
+  readOwnedPublicBlobs, fetcher, simulateReviewedRegistration,
 } = {}) {
   const bytes = new TextEncoder().encode('fresh-v8-manifest');
   const calls = [];
@@ -158,7 +158,7 @@ function harness(persistence = memoryPersistence(), clockStart = 100, {
       network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
       allowWalletSignature: true, allowBroadcast: true,
     },
-    readOwnedPublicBlobs,
+    readOwnedPublicBlobs, simulateReviewedRegistration,
     fetcher: fetcher ?? (async () => ({ ok: true, async arrayBuffer() { return bytes.buffer.slice(0); } })),
     now: (() => { let value = clockStart; return () => value++; })(),
   });
@@ -382,6 +382,59 @@ test('publication review freezes one transaction; signing alone never broadcasts
   assert.equal(signed.status, 'RECOVERY_REQUIRED');
   assert.deepEqual(value.calls.filter(([name]) => ['sign', 'broadcast', 'upload'].includes(name)), [['sign', review.digest]]);
   await assert.rejects(value.publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REVIEW_STALE' });
+});
+
+test('a Walrus registration that no longer simulates is refreshed before any wallet request', async () => {
+  const persistence = memoryPersistence();
+  const simulations = [];
+  let verdict = 'FailedTransaction';
+  const value = harness(persistence, 100, {
+    async simulateReviewedRegistration(bytes) {
+      const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
+      simulations.push(digest);
+      const success = verdict === 'Transaction';
+      return { $kind: verdict, [verdict]: { digest, bcs: bytes, status: { success }, effects: { status: { success } } } };
+    },
+  });
+  let resets = 0;
+  value.walrusClient.reset = () => { resets++; };
+  const { publisher, calls } = value;
+  const uploadId = 'registration-fee-changed-after-review';
+  await publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(value.bytes) });
+  const original = await publisher.prepareReview(uploadId);
+  const encoded = await persistence.load(uploadId);
+  await assert.rejects(publisher.signReviewed(uploadId, original), { code: 'MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FAILED' });
+  assert.deepEqual(simulations, [original.digest]);
+  assert.equal(resets, 1);
+  assert.deepEqual(await persistence.load(uploadId), encoded, 'the original encoding stays unsigned');
+  assert.deepEqual(calls.filter(([name]) => ['sign', 'query', 'broadcast', 'upload'].includes(name)), []);
+  await assert.rejects(publisher.signReviewed(uploadId, original), { code: 'MAKER_V8_WALRUS_REVIEW_STALE' });
+
+  const replacement = await publisher.prepareReview(uploadId);
+  assert.notEqual(replacement.digest, original.digest);
+  assert.equal(replacement.storageEpochs, 3);
+  verdict = 'Transaction';
+  assert.equal((await publisher.signReviewed(uploadId, replacement)).transactionDigest, replacement.digest);
+  assert.deepEqual(simulations, [original.digest, replacement.digest]);
+  assert.deepEqual(calls.filter(([name]) => ['sign', 'query', 'broadcast', 'upload'].includes(name)), [['sign', replacement.digest]]);
+});
+
+test('Walrus registration rejects simulation evidence for different TransactionData', async () => {
+  const persistence = memoryPersistence();
+  const value = harness(persistence, 100, {
+    async simulateReviewedRegistration(bytes) {
+      const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
+      return { $kind: 'Transaction', Transaction: {
+        digest, bcs: new Uint8Array(bytes.length), status: { success: true }, effects: { status: { success: true } },
+      } };
+    },
+  });
+  const uploadId = 'registration-simulation-drift';
+  await value.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(value.bytes) });
+  const review = await value.publisher.prepareReview(uploadId);
+  await assert.rejects(value.publisher.signReviewed(uploadId, review), { code: 'MAKER_V8_WALRUS_REGISTRATION_SIMULATION_UNVERIFIED' });
+  assert.equal((await persistence.load(uploadId)).transaction, null);
+  assert.deepEqual(value.calls.filter(([name]) => ['sign', 'query', 'broadcast', 'upload'].includes(name)), []);
 });
 
 test('a rejected Walrus wallet request keeps its reviewed digest until the exact envelope expires', async () => {
