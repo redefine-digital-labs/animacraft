@@ -14,7 +14,11 @@ import { createProductionMakerV8PublicationAdaptersV8 } from './maker-v8-publica
 import { createMakerV8PublicationTransportV8 } from './maker-v8-publication-transport.js';
 import { createProductionMakerV8WalrusPublisherV8 } from './maker-v8-walrus.js';
 import { createProductionMakerV8LifecycleAdaptersV8 } from './maker-v8-lifecycle-adapters.js';
-import { createProductionMakerV8PlayerAdaptersV8, readMakerV8PlayerReceiptByDigestV8 } from './maker-v8-player-adapters.js';
+import {
+  createProductionMakerV8PlayerAdaptersV8,
+  readMakerV8PackReceiptByDigestV8,
+  readMakerV8PlayerReceiptByDigestV8,
+} from './maker-v8-player-adapters.js';
 import { MAKER_V8_PLAYER_ACTIONS } from './maker-v8-player-controller.js';
 import { createMakerV8PlayerJourneyV8 } from './maker-v8-player-journey.js';
 import { createProductionMakerV8NativeContentV8 } from './maker-v8-native-content-production.js';
@@ -736,6 +740,7 @@ export async function createProductionAnimacraftApp({
     player,
     playerJourney,
     lookupCompletionReceipt: input => readMakerV8PlayerReceiptByDigestV8({ ...input, client: transport, runtime }),
+    lookupPackReceipt: input => readMakerV8PackReceiptByDigestV8({ ...input, client: transport, runtime }),
     protectedTransport,
     pack,
     composable,

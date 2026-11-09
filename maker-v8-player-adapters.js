@@ -4865,7 +4865,9 @@ export function createMakerV8PlayerBoundaryAdapterV8({
       };
       await requireSigner();
       await pinnedMainnet(client);
-      const { evidence } = await readPlayerActionEvidence(client, record);
+      const { evidence } = await readPlayerActionEvidence(client, record.transaction.digest, {
+        recoverArchivedPack: record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+      });
       await pinnedMainnet(client);
       if (evidence?.digest !== proof.digest || evidence.transactionBcsBase64 !== proof.base64
         || evidence.effectsStatus?.success !== (query.status === 'FINALIZED_SUCCESS')
@@ -5028,13 +5030,11 @@ export function createMakerV8PlayerWalletAdapterV8({
   });
 }
 
-async function readPlayerActionEvidence(client, record) {
-  const { digest } = record.transaction;
+async function readPlayerActionEvidence(client, digest, { recoverArchivedPack = false } = {}) {
   try {
     return { evidence: await client.getFinalizedTransactionEvidence({ digest }), archived: false };
   } catch (error) {
-    if (record.action !== MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS
-      || !isMakerV8SuiGrpcNotFoundError(error, digest)) throw error;
+    if (!recoverArchivedPack || !isMakerV8SuiGrpcNotFoundError(error, digest)) throw error;
     const evidence = await client.getArchivedPlayerTransactionEvidence({ digest });
     if (evidence === null) throw error;
     return { evidence, archived: true };
@@ -5204,9 +5204,8 @@ function readbackFieldList(type, types) {
   fail('MAKER_V8_PLAYER_READBACK_TYPE_INVALID', 'Player readback requested an unknown exact v8 object type.');
 }
 
-export function assertMakerV8PlayerPackPassReadbackV8(record, object) {
+function assertPackPassIdentity(object, scope) {
   const fields = object.fields;
-  const quote = record.plan.descriptor.expected.packEntryQuote;
   const releaseId = moveId(fields.releaseId, 'PackPass.releaseId');
   const rootId = moveId(fields.rootId, 'PackPass.rootId');
   const holder = address(fields.holder, 'PackPass.holder');
@@ -5215,16 +5214,12 @@ export function assertMakerV8PlayerPackPassReadbackV8(record, object) {
   const version = decimal(fields.version, 'PackPass.version');
   const releaseContentCommitment = hex(fields.releaseContentCommitment, 'PackPass.releaseContentCommitment');
   const rootContentCommitment = hex(fields.rootContentCommitment, 'PackPass.rootContentCommitment');
-  // Earlier finalized records can lack the original custody snapshot. Their
-  // signed quote, exact Ledger bytes and Move commitment still bind the Pass.
-  const custody = record.transaction.build?.custodyContext;
-  const release = custody?.builderInput?.objects?.releases?.find(row => row.objectId === releaseId);
   if (object.change !== 'created' || object.owner?.kind !== 'AddressOwner' || object.owner.value !== holder
-    || holder !== record.plan.signer || rootId !== record.playerIdentity.rootId || version !== '8'
-    || rootVersion !== record.playerIdentity.makerVersion || rootContentCommitment !== record.playerIdentity.rootContentCommitment
-    || releaseId !== record.input.releaseId || quote?.releaseId !== releaseId || paidAtomic !== quote.priceAtomic
-    || custody && (!release || hex(release.fields.content_commitment, 'reviewed Pack content') !== releaseContentCommitment)) {
-    fail('MAKER_V8_PLAYER_READBACK_PACK_DRIFT', 'Finalized Pack Pass differs from the reviewed wallet, Release or payment.');
+    || holder !== scope.holder || rootId !== scope.rootId || version !== '8'
+    || rootVersion !== scope.rootVersion || rootContentCommitment !== scope.rootContentCommitment
+    || releaseId !== scope.releaseId || paidAtomic !== scope.paidAtomic
+    || scope.releaseContentCommitment !== undefined && scope.releaseContentCommitment !== releaseContentCommitment) {
+    fail('MAKER_V8_PLAYER_READBACK_PACK_DRIFT', 'Finalized Pack Pass differs from the wallet, Maker, Release or payment.');
   }
   const preimage = PACK_PASS_COMMITMENT_BCS.serialize({
     domain: 'animacraft-v8/runtime/pack-pass', version, releaseId, rootId, rootVersion,
@@ -5236,6 +5231,24 @@ export function assertMakerV8PlayerPackPassReadbackV8(record, object) {
     fail('MAKER_V8_PLAYER_READBACK_PACK_DRIFT', 'Finalized Pack Pass commitment does not authenticate its exact fields.');
   }
   return true;
+}
+
+export function assertMakerV8PlayerPackPassReadbackV8(record, object) {
+  const { releaseId } = record.input;
+  const quote = record.plan.descriptor.expected.packEntryQuote;
+  const custody = record.transaction.build?.custodyContext;
+  const release = custody?.builderInput?.objects?.releases?.find(row => row.objectId === releaseId);
+  if (quote?.releaseId !== releaseId || custody && !release) {
+    fail('MAKER_V8_PLAYER_READBACK_PACK_DRIFT', 'Finalized Pack Pass differs from the reviewed Release.');
+  }
+  // Older records can lack the original custody snapshot. Their signed quote
+  // and the Pass commitment still bind the exact holder, Root and Release.
+  return assertPackPassIdentity(object, {
+    releaseId, holder: record.plan.signer, paidAtomic: quote.priceAtomic,
+    rootId: record.playerIdentity.rootId, rootVersion: record.playerIdentity.makerVersion,
+    rootContentCommitment: record.playerIdentity.rootContentCommitment,
+    releaseContentCommitment: release ? hex(release.fields.content_commitment, 'reviewed Pack content') : undefined,
+  });
 }
 
 function assertReadbackObject(record, type, object, all, types) {
@@ -5801,6 +5814,102 @@ async function readArchivedPackPassEffects(client, evidence, signer, packPassTyp
   };
 }
 
+const PACK_RECEIPT_ENTRYPOINTS = Object.freeze({
+  issue_free_pack_pass_v8: { kind: 0, arity: 3, makerInput: null },
+  purchase_pack_pass_v8: { kind: 1, arity: 8, makerInput: 3 },
+  issue_included_pack_pass_v8: { kind: 2, arity: 5, makerInput: 2 },
+});
+
+function packReceiptIntent(transaction, runtime, rootId) {
+  const { commands, inputs } = transaction.getData();
+  const calls = commands.flatMap(({ MoveCall }, index) => MoveCall ? [{ call: MoveCall, index }] : []);
+  const entries = calls.filter(({ call }) => Object.hasOwn(PACK_RECEIPT_ENTRYPOINTS, call.function));
+  const transfers = calls.filter(({ call }) => call.function === 'transfer_pack_pass_to_holder_v8');
+  const failScope = () => fail('MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID',
+    'Transaction must contain one exact Animacraft Pack entry and transfer for this Maker.');
+  if (entries.length !== 1 || transfers.length !== 1) failScope();
+  const [{ call: entry, index }] = entries;
+  const [{ call: transfer, index: transferIndex }] = transfers;
+  const { kind, arity, makerInput } = PACK_RECEIPT_ENTRYPOINTS[entry.function];
+  const runtimeCall = call => call.package === runtime.roles.runtime.callablePackageId && call.module === 'runtime_v8';
+  const transferArg = transfer.arguments[0];
+  const returnedPass = transferArg?.Result === index
+    || same(transferArg?.NestedResult ?? null, [index, 0]);
+  let paymentCoinType;
+  try { paymentCoinType = normalizeStructTag(entry.typeArguments[0]); } catch { failScope(); }
+  if (!runtimeCall(entry) || !runtimeCall(transfer) || transferIndex <= index
+    || entry.arguments.length !== arity || entry.typeArguments.length !== 1
+    || paymentCoinType !== normalizeStructTag(runtime.paymentCoinType)
+    || transfer.arguments.length !== 1 || transfer.typeArguments.length !== 0 || !returnedPass) failScope();
+  const shared = position => inputs[entry.arguments[position]?.Input]?.Object?.SharedObject?.objectId;
+  const releaseId = shared(0);
+  const registryId = shared(1);
+  if (!EXACT_ID.test(releaseId) || !EXACT_ID.test(registryId)
+    || makerInput !== null && shared(makerInput) !== rootId) failScope();
+  return { releaseId, registryId, kind };
+}
+
+/** Read a Pack entry receipt without consulting or creating a local Player action. */
+export async function readMakerV8PackReceiptByDigestV8({
+  client, runtime: runtimeInput, rootId, signer, transactionDigest,
+}, { assertTransport = assertMakerV8SuiGrpcTransport } = {}) {
+  assertTransport(client);
+  const runtime = assertMakerV8Runtime(runtimeInput, { requireEnabled: true });
+  const types = playerTypes(runtime);
+  const root = address(rootId, 'Pack receipt Maker Root');
+  const holder = address(signer, 'Pack receipt wallet');
+  const digest = suiDigest(transactionDigest, 'Pack receipt transaction digest');
+  const { evidence, archived } = await readPlayerActionEvidence(client, digest, { recoverArchivedPack: true });
+  if (evidence.digest !== digest || evidence.sender !== holder
+    || !(evidence.transactionBcs instanceof Uint8Array) || evidence.transactionBcs.length > MAX_TRANSACTION_BYTES
+    || typeof evidence.effectsStatus?.success !== 'boolean') {
+    fail('MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID', 'Finalized Pack transaction differs from the original wallet or digest.');
+  }
+  const transaction = Transaction.from(evidence.transactionBcs);
+  if (transaction.getData().sender !== holder) {
+    fail('MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID', 'Original Pack transaction sender differs from the current wallet.');
+  }
+  const { releaseId, registryId, kind } = packReceiptIntent(transaction, runtime, root);
+  const [release, registry] = await Promise.all([
+    readObject(client, releaseId, types.packRelease, 'Pack receipt Release'),
+    readObject(client, registryId, types.packRegistry, 'Pack receipt Registry'),
+  ]);
+  const rootVersion = decimal(release.fields.root_version, 'PackRelease.rootVersion');
+  const rootContentCommitment = hex(release.fields.root_content_commitment, 'PackRelease.rootContentCommitment');
+  const quote = packEntryQuote(runtime, release);
+  if (release.owner.kind !== 'SHARED' || registry.owner.kind !== 'SHARED'
+    || decimal(release.fields.version, 'PackRelease.version') !== '8'
+    || decimal(registry.fields.version, 'PackRegistry.version') !== '8'
+    || quote.kind !== kind || moveId(release.fields.root_id, 'PackRelease.rootId') !== root
+    || moveId(registry.fields.root_id, 'PackRegistry.rootId') !== root
+    || decimal(registry.fields.root_version, 'PackRegistry.rootVersion') !== rootVersion
+    || hex(registry.fields.root_content_commitment, 'PackRegistry.rootContentCommitment') !== rootContentCommitment) {
+    fail('MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID', 'Original Pack transaction does not belong to this Maker and Release.');
+  }
+  const receipt = { rootId: root, releaseId, transactionDigest: digest,
+    checkpoint: decimal(evidence.checkpoint, 'Pack receipt checkpoint'), paymentCoinType: quote.paymentCoinType };
+  if (!evidence.effectsStatus.success) {
+    return freeze({ ...receipt, status: 'FINALIZED_FAILURE', packPassId: null, paidAtomic: null });
+  }
+
+  const response = archived
+    ? await readArchivedPackPassEffects(client, evidence, holder, types.packPass)
+    : await assertFinalizedMakerV8CompilerTransactionV8(client, digest, transaction);
+  const { change, ref } = finalizedChange(response, types.packPass, 'Pack receipt Pass');
+  const created = makerV8FinalizedEffectsOutputRefs(evidence.effectsBcs, digest, { createdOnly: true });
+  if (!created.some(candidate => same(candidate, ref))) {
+    fail('MAKER_V8_PLAYER_EFFECTS_REF_DRIFT', 'Original Pack transaction does not create the returned Pass.');
+  }
+  const object = await readMakerV8CompilerHistoricalObjectV8({
+    getHistoricalObject: input => readPlayerHistoricalObject(client, input, { archived, decode: true }),
+  }, ref, types.packPass, 'Pack receipt Pass', readbackFieldList(types.packPass, types), digest);
+  assertPackPassIdentity({ ...object, change: change.type }, {
+    rootId: root, rootVersion, rootContentCommitment, releaseId, holder, paidAtomic: quote.priceAtomic,
+    releaseContentCommitment: hex(release.fields.content_commitment, 'PackRelease.contentCommitment'),
+  });
+  return freeze({ ...receipt, status: 'FINALIZED_SUCCESS', packPassId: change.objectId, paidAtomic: quote.priceAtomic });
+}
+
 /** Exact finalized Player effects and historical output certification. */
 export function createMakerV8PlayerReadbackAdapterV8({
   client,
@@ -5836,7 +5945,7 @@ export function createMakerV8PlayerReadbackAdapterV8({
       let evidence;
       let archived = false;
       if (packRecovery) {
-        ({ evidence, archived } = await readPlayerActionEvidence(client, record));
+        ({ evidence, archived } = await readPlayerActionEvidence(client, record.transaction.digest, { recoverArchivedPack: true }));
         if (!archived) response = await readLiveEffects();
       } else {
         [response, evidence] = await Promise.all([readLiveEffects(), client.getFinalizedTransactionEvidence({ digest: record.transaction.digest })]);
