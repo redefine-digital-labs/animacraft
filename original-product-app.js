@@ -59,6 +59,10 @@ const PROTECTED_PAGES = new Set(['make', 'creator']);
 const EXACT_ADDRESS = /^0x[0-9a-f]{64}$/;
 const ZERO_ADDRESS = `0x${'0'.repeat(64)}`;
 const EXACT_OBJECT_ID = /^0x[0-9a-f]{64}$/;
+const CREATOR_CHAIN_ACTION = /^chain-(pause|resume|archive|withdraw)-(review|sign|recover)$/;
+const CREATOR_LIFECYCLE_ACTIONS = Object.freeze({
+  pause: 'PAUSE', resume: 'RESUME', archive: 'ARCHIVE', withdraw: 'WITHDRAW_MAKER_REVENUE',
+});
 const PLAYER_SESSION_SCHEMA = 'animacraft.maker-v8-player-session.v1';
 const PLAYER_RENDER_SCHEMA = 'animacraft.maker-v8-player-render.v1';
 const PLAYER_PROJECT_SCHEMA = 'animacraft.local-player-project.v8';
@@ -917,6 +921,7 @@ export function createOriginalProductApp({
   const listDrafts = requiredMethod(bridge, 'listDrafts', 'bridge');
   const getDraft = requiredMethod(bridge, 'getDraft', 'bridge');
   const createPackDraft = optionalMethod(bridge, 'createPackDraft');
+  const createPackVersion = optionalMethod(bridge, 'createPackVersion');
   const listPackDrafts = optionalMethod(bridge, 'listPackDrafts');
   const listComposableProducts = optionalMethod(bridge, 'listComposableProducts');
   const reviewComposableItem = optionalMethod(bridge, 'reviewComposableItem');
@@ -941,6 +946,7 @@ export function createOriginalProductApp({
   const renderPackPreview = optionalMethod(bridge, 'renderPackPreview');
   const reviewPackPublication = optionalMethod(bridge, 'reviewPackPublication');
   const advancePackPublication = optionalMethod(bridge, 'advancePackPublication');
+  const managePackLifecycle = optionalMethod(bridge, 'managePackLifecycle');
   const upsertPackAsset = optionalMethod(bridge, 'upsertPackAsset');
   let packAssetFlight = null;
   let packSaveFlight = null;
@@ -979,6 +985,7 @@ export function createOriginalProductApp({
   const envelopeRecoveryByScope = new Map();
   let envelopeRecoveryStageGeneration = 0;
   let envelopeRecoveryScopeKey = '';
+  const getLifecycleSnapshot = optionalMethod(bridge, 'getLifecycleSnapshot');
   const prepareLifecycleAction = optionalMethod(bridge, 'prepareLifecycleAction');
   const prepareMakerPublication = optionalMethod(bridge, 'prepareMakerPublication');
   const inspectMakerPublication = optionalMethod(bridge, 'inspectMakerPublication');
@@ -990,7 +997,7 @@ export function createOriginalProductApp({
   let publicationFlight = null;
   let publicationGeneration = 0;
   let chainVersionFlight = null;
-  let archiveReview = null;
+  let lifecycleReview = null;
   const requestLifecycleSignature = optionalMethod(bridge, 'requestLifecycleSignature');
   const recoverLifecycleAction = optionalMethod(bridge, 'recoverLifecycleAction');
   const cleanups = [];
@@ -1132,6 +1139,7 @@ export function createOriginalProductApp({
     chainVersions: [],
     chainVersionStatus: '',
     chainVersionReview: null,
+    chainVersionBusy: false,
   };
 
   const byId = (id) => doc.getElementById(id);
@@ -1666,7 +1674,8 @@ export function createOriginalProductApp({
         : text(pack.accessKind === 'FREE' ? 'accessFree' : 'accessIncludedCore');
       const complete = makerWorkspacePackCompleteSummary(state.locale, pack.completion);
       return `<li data-public-pack-release="${escapeHtml(pack.releaseId)}">
-        <strong>${escapeHtml(pack.name)}</strong> <span>${escapeHtml(text('packAccess'))} · ${escapeHtml(entry)}</span>
+        <strong>${escapeHtml(pack.name)}</strong>${pack.version ? ` <span>v${escapeHtml(pack.version)}</span>` : ''}
+        <span>${escapeHtml(text('packAccess'))} · ${escapeHtml(entry)}</span>
         ${complete ? `<p data-pack-complete-terms>${escapeHtml(complete)}</p>` : ''}
         ${pack.summary ? `<p>${escapeHtml(pack.summary)}</p>` : ''}
       </li>`;
@@ -5427,14 +5436,16 @@ export function createOriginalProductApp({
     const request = ++state.versionHistoryRequest;
     const generation = state.creatorDraftGeneration;
     const draftId = state.record.draftId;
+    const address = state.connection.address;
     const current = () => request === state.versionHistoryRequest
-      && state.versionHistoryOpen && creatorDraftCurrent(generation, draftId);
+      && state.versionHistoryOpen && creatorDraftCurrent(generation, draftId)
+      && state.connection.address === address;
     state.versionHistoryStatus = 'loading';
     state.versionHistoryError = '';
     state.versionHistoryMessage = '';
     state.chainVersions = [];
     state.chainVersionStatus = makerWorkspaceText(state.locale, listMakerLineage ? 'chainLoading' : 'chainUnavailable');
-    state.chainVersionReview = null; archiveReview = null;
+    state.chainVersionReview = null; lifecycleReview = null;
     renderCreator({ focusVersion: true });
     try {
       const entries = await listDraftVersions({ draftId });
@@ -5444,10 +5455,28 @@ export function createOriginalProductApp({
       if (listMakerLineage) {
         const lineage = await listMakerLineage({ draftId });
         if (!current()) return;
-        state.chainVersions = Array.isArray(lineage) ? lineage.map(row => ({ ...row,
-          canManage: row.ownerAddress === state.connection.address && row.successorRootId === null,
-        })) : [];
+        const lifecycleAvailable = Boolean(prepareLifecycleAction && requestLifecycleSignature && recoverLifecycleAction);
+        const rows = Array.isArray(lineage) ? lineage.map(row => ({ ...row, lifecycleAvailable,
+          canManage: row.ownerAddress === address })) : [];
+        state.chainVersions = rows;
         state.chainVersionStatus = state.chainVersions.length ? '' : makerWorkspaceText(state.locale, 'chainEmpty');
+        renderCreator({ focusVersion: true });
+        if (getLifecycleSnapshot && state.connection.connected) {
+          const live = await Promise.allSettled(rows.map(async row => row.canManage
+            ? getLifecycleSnapshot({ rootId: row.rootId }) : null));
+          if (!current()) return;
+          state.chainVersions = rows.map((row, index) => {
+            const snapshot = live[index].value;
+            const treasury = snapshot?.treasury;
+            const verified = snapshot?.schemaVersion === 'animacraft.product-lifecycle-snapshot.v1'
+              && snapshot.rootId === row.rootId && snapshot.wallet?.address === address && snapshot.wallet.network === 'mainnet'
+              && snapshot.makerVersion === String(row.makerVersion) && snapshot.lifecycle === row.lifecycle
+              && EXACT_OBJECT_ID.test(treasury?.objectId || '')
+              && [treasury.balanceAtomic, treasury.totalCollectedAtomic, treasury.totalWithdrawnAtomic]
+                .every(value => typeof value === 'string' && /^(?:0|[1-9][0-9]*)$/.test(value));
+            return { ...row, treasury: verified ? { ...treasury, paymentCoinType: snapshot.paymentCoinType } : null };
+          });
+        }
       }
     } catch (error) {
       if (!current()) return;
@@ -5463,57 +5492,89 @@ export function createOriginalProductApp({
     const rootId = control?.dataset?.chainRoot;
     const row = state.chainVersions.find(value => value.rootId === rootId);
     if (!row?.canManage || !EXACT_OBJECT_ID.test(rootId || '')) return;
+    const match = CREATOR_CHAIN_ACTION.exec(action);
+    const operation = match && CREATOR_LIFECYCLE_ACTIONS[match[1]];
+    const phase = match?.[2];
     const draftId = state.record.draftId, generation = state.creatorDraftGeneration;
     const connection = creatorConnectionGeneration, address = state.connection.address;
     const current = () => creatorDraftCurrent(generation, draftId) && state.versionHistoryOpen
       && creatorConnectionGeneration === connection && state.connection.address === address;
-    const flight = {}; chainVersionFlight = flight;
+    const flight = {}; chainVersionFlight = flight; state.chainVersionBusy = true;
+    let attemptedDigest;
     try {
       if (!await finishCreatorChanges() || !current()) return;
       const revision = state.record.revision;
       const stable = () => current() && state.record.revision === revision && !creatorHasPendingChanges();
-      if (action === 'chain-archive-review') {
-        if (!prepareLifecycleAction || !['ACTIVE', 'PAUSED'].includes(row.lifecycle)) return;
-        archiveReview = null; state.chainVersionReview = null;
-        state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainPreparing');
+      if (phase === 'review') {
+        if (!row.lifecycleAvailable
+          || operation === 'PAUSE' && row.lifecycle !== 'ACTIVE'
+          || operation === 'RESUME' && row.lifecycle !== 'PAUSED'
+          || operation === 'ARCHIVE' && (row.successorRootId !== null || !['ACTIVE', 'PAUSED'].includes(row.lifecycle))
+          || operation === 'WITHDRAW_MAKER_REVENUE' && (!row.treasury || row.treasury.balanceAtomic === '0')) return;
+        lifecycleReview = null; state.chainVersionReview = null;
+        state.chainVersionStatus = makerWorkspaceText(state.locale, operation === 'ARCHIVE' ? 'chainPreparing' : 'chainLifecyclePreparing');
         renderCreator();
-        const prepared = await prepareLifecycleAction({ action: 'ARCHIVE', rootId, draftId, expectedRevision: revision });
+        const request = { action: operation, rootId };
+        if (operation === 'ARCHIVE') Object.assign(request, { draftId, expectedRevision: revision });
+        if (operation === 'WITHDRAW_MAKER_REVENUE') {
+          Object.assign(request, { amountAtomic: row.treasury.balanceAtomic, recipient: address });
+        }
+        const prepared = await prepareLifecycleAction(request);
         if (!stable()) return;
-        if (prepared?.built?.action !== 'ARCHIVE' || prepared.built.descriptor?.sender !== address
-          || !prepared.digest || !prepared.bytes) throw new TypeError('Archive review identity is invalid.');
-        archiveReview = { prepared, rootId, draftId, revision, address, connection };
-        state.chainVersionReview = { rootId, digest: prepared.digest };
-        state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainArchiveImpact');
-      } else if (action === 'chain-archive-sign') {
-        const review = archiveReview;
-        if (!review || review.rootId !== rootId || review.draftId !== draftId || review.revision !== revision
+        const descriptor = prepared?.built?.descriptor;
+        if (prepared?.built?.action !== operation || descriptor?.sender !== address
+          || descriptor?.preState?.root?.objectId !== rootId || !prepared.digest || !prepared.bytes
+          || operation === 'WITHDRAW_MAKER_REVENUE' && (
+            descriptor.arguments?.[2]?.objectId !== row.treasury.objectId
+            || descriptor.arguments?.[3]?.value !== request.amountAtomic
+            || descriptor.arguments?.[4]?.value !== request.recipient
+          )) throw new TypeError('Lifecycle review identity is invalid.');
+        lifecycleReview = { prepared, operation, rootId, draftId, revision, address, connection };
+        state.chainVersionReview = { rootId, digest: prepared.digest, action: match[1],
+          amountAtomic: request.amountAtomic, recipient: request.recipient };
+        state.chainVersionStatus = makerWorkspaceText(state.locale, operation === 'ARCHIVE' ? 'chainArchiveImpact' : 'chainLifecycleReady');
+      } else if (phase === 'sign') {
+        const review = lifecycleReview;
+        if (!review || review.operation !== operation || review.rootId !== rootId || review.draftId !== draftId || review.revision !== revision
           || review.address !== address || review.connection !== connection || !stable()
-          || !state.bridgeState?.publication?.signingEnabled || !state.bridgeState?.publication?.broadcastEnabled) return;
-        archiveReview = null; state.chainVersionReview = null;
+          || !requestLifecycleSignature || !state.bridgeState?.publication?.signingEnabled || !state.bridgeState?.publication?.broadcastEnabled) return;
+        lifecycleReview = null; state.chainVersionReview = null;
+        attemptedDigest = review.prepared.digest;
         await requestLifecycleSignature(review.prepared);
         if (!current()) return;
-        state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainArchiveSaved');
-      } else if (action === 'chain-archive-recover') {
+        state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainLifecycleSaved', { digest: review.prepared.digest });
+      } else if (phase === 'recover') {
         if (!recoverLifecycleAction) return;
-        await recoverLifecycleAction({ action: 'ARCHIVE', rootId });
+        lifecycleReview = null; state.chainVersionReview = null;
+        const recovered = await recoverLifecycleAction({ action: operation, rootId });
         if (!current()) return;
-        await loadVersionHistory();
+        if (recovered?.status === 'OUTCOME_UNKNOWN') {
+          state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainLifecyclePending', { digest: recovered.digest });
+        } else {
+          await loadVersionHistory();
+          if (current() && recovered?.status === 'FINALIZED_SUCCESS') {
+            state.chainVersionStatus = makerWorkspaceText(state.locale, 'chainLifecycleConfirmed', { digest: recovered.digest });
+          }
+        }
       } else {
-        if (!createSuccessorDraft || row.lifecycle !== 'ARCHIVED') return;
+        if (action !== 'chain-successor' || !createSuccessorDraft || row.lifecycle !== 'ARCHIVED' || row.successorRootId !== null) return;
         const bundle = await createSuccessorDraft({ draftId, expectedRevision: revision, previousRootId: rootId });
         if (!stable()) return;
         installCreatorRecord(exactDraftRecord(bundle.draft)); installDraftAssets(bundle.assets);
         state.undo = []; state.redo = []; state.saveState = 'saved'; state.versionHistoryOpen = false;
-        state.chainVersions = []; archiveReview = null; state.chainVersionReview = null;
+        state.chainVersions = []; lifecycleReview = null; state.chainVersionReview = null;
         invalidatePublicationReview();
         await requestCreatorPreview();
         state.status = makerWorkspaceText(state.locale, 'chainSuccessorReady');
       }
     } catch (error) {
-      if (current()) { archiveReview = null; state.chainVersionReview = null;
-        state.chainVersionStatus = String(error?.message || error); }
+      if (current()) {
+        lifecycleReview = null; state.chainVersionReview = null;
+        state.chainVersionStatus = String(error?.message || error) + (attemptedDigest
+          ? ` · ${makerWorkspaceText(state.locale, 'chainLifecycleDigest')} ${attemptedDigest}` : '');
+      }
     } finally {
-      if (chainVersionFlight === flight) chainVersionFlight = null;
+      if (chainVersionFlight === flight) { chainVersionFlight = null; state.chainVersionBusy = false; }
       if (!state.destroyed) renderCreator();
     }
   }
@@ -5570,9 +5631,6 @@ export function createOriginalProductApp({
   }
 
   function lifecycleActionMarkup(action, label) {
-    if (action === 'archive' && listMakerLineage && prepareLifecycleAction && requestLifecycleSignature && recoverLifecycleAction) {
-      return `<button class="maker-lifecycle-manager-action" type="button" data-lifecycle-action="chain-versions"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(makerWorkspaceText(state.locale, 'chainArchiveImpact'))}</small></button>`;
-    }
     const unavailable = t(
       'makerLifecycleDraftActionCopy',
       'This draft only exists in the current wallet workspace. Continue editing or delete its local record.',
@@ -5612,12 +5670,14 @@ export function createOriginalProductApp({
         : escapeHtml(getPublishedMaker ? makerWorkspaceText(state.locale, 'publicationUnknown') : t('makerLifecycleNoPublishedVersion', 'No version has been published on Sui yet.'))}</p>`;
     }
     if (byId('makerLifecycleManagerActions')) {
-      byId('makerLifecycleManagerActions').innerHTML = [
-        lifecycleActionMarkup('pause', t('makerLifecycleActionPause', 'Pause new Soul authorizations')),
-        lifecycleActionMarkup('resume', t('makerLifecycleActionResume', 'Resume new Soul authorizations')),
-        lifecycleActionMarkup('archive', t('makerLifecycleActionArchive', 'Archive chain version')),
-        lifecycleActionMarkup('withdraw', t('withdrawWallet', 'Withdraw to my wallet')),
-      ].join('');
+      byId('makerLifecycleManagerActions').innerHTML = controllerReady && listMakerLineage
+        ? `<button class="maker-lifecycle-manager-action" type="button" data-lifecycle-action="chain-versions"><strong>${escapeHtml(makerWorkspaceText(state.locale, 'chainManageActions'))}</strong></button>`
+        : [
+          lifecycleActionMarkup('pause', t('makerLifecycleActionPause', 'Pause new Soul authorizations')),
+          lifecycleActionMarkup('resume', t('makerLifecycleActionResume', 'Resume new Soul authorizations')),
+          lifecycleActionMarkup('archive', t('makerLifecycleActionArchive', 'Archive chain version')),
+          lifecycleActionMarkup('withdraw', t('withdrawWallet', 'Withdraw to my wallet')),
+        ].join('');
     }
     if (byId('makerLifecycleManagerStatus')) {
       byId('makerLifecycleManagerStatus').textContent = published
@@ -5778,6 +5838,7 @@ export function createOriginalProductApp({
     if (state.versionHistoryStatus === 'restoring') return;
     state.versionHistoryRequest += 1;
     state.versionHistoryOpen = false;
+    lifecycleReview = null; state.chainVersionReview = null;
     renderCreator();
     const selector = state.creatorTab === 'structure'
       ? '[data-action="open-version-history"]'
@@ -6299,7 +6360,61 @@ export function createOriginalProductApp({
       && creatorConnectionGeneration === editor.connection && state.connection.address === editor.address;
   }
 
+  const packLifecycleLabels = {
+    PAUSE: 'Pause Pack', RESUME: 'Resume Pack', ARCHIVE: 'Archive permanently',
+    WITHDRAW_PACK_REVENUE: 'Withdraw Pack revenue',
+  };
+
+  function renderPackLifecycle(editor) {
+    const chain = editor.draft.publication.chain;
+    const model = editor.lifecycle;
+    const current = model?.state;
+    const review = model?.review;
+    const pending = model?.pending;
+    const lifecycle = current?.lifecycle ?? chain.lifecycle;
+    const disabled = editor.lifecycleBusy ? ' disabled' : '';
+    const enabled = model?.execution?.allowWalletSignature && model.execution?.allowBroadcast;
+    const allowed = current?.canManage && enabled;
+    const button = action => `<button type="button" data-action="review-pack-lifecycle" data-lifecycle-action="${action}"${disabled}>${escapeHtml(packLifecycleLabels[action])}</button>`;
+    const line = (label, value) => value == null ? '' : `<p><strong>${escapeHtml(label)}</strong> ${escapeHtml(String(value))}</p>`;
+    const status = editor.lifecycleBusy ? 'Checking the Pack lifecycle transaction…'
+      : pending ? 'Continue the saved transaction by its original digest.'
+        : review ? 'Review the exact transaction before opening your wallet.'
+          : model?.outcome?.status === 'FINALIZED_SUCCESS' ? 'The Pack lifecycle transaction is finalized.'
+            : model?.outcome?.status === 'FINALIZED_FAILURE' ? 'The original transaction finalized with failure.'
+              : model?.outcome?.status === 'EXPIRED_UNEXECUTED' ? 'The original transaction expired before execution. Review the action again.'
+                : 'Manage the published Pack and its treasury.';
+    return `<section class="v4-pack-boundary-note" data-pack-lifecycle>
+      <h3>Published Pack lifecycle</h3><p role="status">${escapeHtml(status)}</p>
+      ${editor.lifecycleError || model?.readbackError ? `<p role="alert">${escapeHtml(editor.lifecycleError || model.readbackError)}</p>` : ''}
+      ${line('Release ID', chain.release.objectRef.objectId)}${line('Lifecycle', lifecycle)}
+      ${line('Pack owner', current?.owner)}
+      ${line('Treasury ID', current?.treasuryId)}
+      ${line('Available revenue (atomic units)', current?.balanceAtomic)}
+      ${line('Total collected (atomic units)', current?.totalCollectedAtomic)}
+      ${line('Total withdrawn (atomic units)', current?.totalWithdrawnAtomic)}
+      ${line('Review action', packLifecycleLabels[review?.action])}
+      ${line('Transaction digest', review?.step.digest ?? pending?.ticket.digest ?? model?.outcome?.digest)}
+      ${line('Expired transaction digest', review?.step.retiredDigest)}
+      ${line('Gas budget (MIST)', review?.step.gasBudgetMist)}
+      ${line('Withdrawal (atomic units)', review?.amountAtomic)}
+      ${review?.action === 'ARCHIVE' ? '<p>Archiving permanently retires this Release.</p>' : ''}
+      <button type="button" data-action="inspect-pack-lifecycle"${disabled}>Refresh Pack state</button>
+      ${pending ? `<button type="button" data-action="advance-pack-lifecycle"${enabled ? disabled : ' disabled'}>Continue saved transaction</button>`
+        : review ? `<button type="button" data-action="advance-pack-lifecycle" data-lifecycle-review-id="${escapeHtml(review.id)}"${disabled}>Review in wallet</button>`
+          : allowed ? `${lifecycle === 'ACTIVE' ? button('PAUSE') : ''}
+              ${lifecycle === 'PAUSED' ? button('RESUME') : ''}
+              ${lifecycle !== 'ARCHIVED' ? button('ARCHIVE') : ''}
+              ${current.balanceAtomic !== '0' ? `<label>Withdrawal amount (atomic units)<input type="text" inputmode="numeric" data-pack-withdrawal-amount${disabled}></label>${button('WITHDRAW_PACK_REVENUE')}` : ''}` : ''}
+      ${createPackVersion && current?.canManage && !pending && !review
+        ? `<button type="button" data-action="create-pack-version"${disabled}>Create next version draft</button>` : ''}
+    </section>`;
+  }
+
   function renderPackPublication(editor) {
+    if (editor.draft.publication.status === 'COMPLETE' && editor.draft.publication.chain && managePackLifecycle) {
+      return renderPackLifecycle(editor);
+    }
     if (!editor.draft.document.bindings.root || !reviewPackPublication || !advancePackPublication) return '';
     const review = editor.publicationReview;
     const busy = Boolean(editor.publicationBusy);
@@ -6487,7 +6602,10 @@ export function createOriginalProductApp({
       save: { phase: editor.error ? 'error' : packSaveFlight || packAssetFlight ? 'saving' : editor.dirty ? 'dirty' : 'saved',
         label: editor.error || (packSaveFlight || packAssetFlight ? tr('saving') : editor.dirty ? tr('packUnsaved') : tr('packSaved')) },
       actionsHtml: `<button type="button" data-action="request-back-to-maker"${publishing || packSaveFlight || packAssetFlight ? ' disabled' : ''}>← ${escapeHtml(tr('packBackToProjects'))}</button><button type="button" data-action="save-pack"${disabled}>${escapeHtml(tr('save'))}</button>`,
-      noticesHtml: `<div class="v4-pack-boundary-note" role="status">${escapeHtml(tr('packStudioBindingCopy'))}</div>${renderPackPublication(editor)}`,
+      noticesHtml: `<div class="v4-pack-boundary-note" role="status">${escapeHtml(tr('packStudioBindingCopy'))}</div>
+        ${row.document.metadata.lineage ? `<p data-pack-version>Pack version ${escapeHtml(row.document.metadata.lineage.version)}
+          · Previous Release <code>${escapeHtml(row.document.metadata.lineage.predecessorReleaseId)}</code></p>` : ''}
+        ${renderPackPublication(editor)}`,
       leftLabel: tr('partsItems'),
       leftHtml: `<h3>${escapeHtml(tr('partsItems'))}</h3><button type="button" data-action="pack-add-part"${disabled}>＋ ${escapeHtml(tr('addPartAria'))}</button>${renderMakerPartList(partList)}`,
       centerHtml: `<div class="v4-canvas-toolbar"><div><strong>${escapeHtml(tr('packMergedPreview'))}</strong><span id="expansionPackRenderStatus" role="status">${escapeHtml(editor.previewStatus || '')}</span></div><div class="v4-canvas-tools"><button type="button" data-action="pack-preview"${editor.previewPending || !renderPackPreview ? ' disabled' : ''}>${escapeHtml(tr('packRefreshPreview'))}</button><span class="v4-version-badge">${parent.canvas.width}×${parent.canvas.height}</span></div></div><div class="v4-canvas-viewport"><div class="v4-canvas-ruler"><span>0,0</span><span>${parent.canvas.width},${parent.canvas.height}</span></div><canvas id="expansionPackPreviewCanvas" class="v4-runtime-canvas" data-expansion-pack-preview-canvas width="${parent.canvas.width}" height="${parent.canvas.height}" aria-label="${escapeHtml(tr('packMergedPreview'))}"></canvas></div><p>${escapeHtml(tr('packInheritanceSummary'))}</p>`,
@@ -6538,6 +6656,70 @@ export function createOriginalProductApp({
     }
   }
 
+  async function runPackLifecycle(phase, control = null) {
+    const editor = state.packEditor;
+    const chain = editor?.draft.publication.chain;
+    if (!chain || !managePackLifecycle || !currentPackEditor(editor) || editor.lifecycleBusy) return;
+    const reviewId = control?.dataset.lifecycleReviewId ?? null;
+    if (phase === 'CONTINUE' && (reviewId
+      ? editor.lifecycle?.review?.id !== reviewId : !editor.lifecycle?.pending)) return;
+    const action = control?.dataset.lifecycleAction ?? null;
+    const amountAtomic = action === 'WITHDRAW_PACK_REVENUE'
+      ? control.closest('[data-pack-lifecycle]')?.querySelector('[data-pack-withdrawal-amount]')?.value.trim() ?? '' : null;
+    const scope = { draftId: editor.draft.draftId, expectedRevision: editor.draft.revision };
+    const apply = (result, reviewing) => {
+      if (result.draft.draftId !== scope.draftId || result.draft.revision < scope.expectedRevision
+        || result.draft.document.author.address !== editor.address
+        || result.draft.publication.chain?.release.objectRef.objectId !== chain.release.objectRef.objectId) {
+        throw new Error('The lifecycle result belongs to another Pack release.');
+      }
+      editor.draft = result.draft;
+      editor.lifecycle = reviewing ? { ...editor.lifecycle, review: result.review } : result;
+    };
+    editor.lifecycleBusy = true;
+    editor.lifecycleError = '';
+    renderCreator();
+    try {
+      const result = await managePackLifecycle({ ...scope, phase, action, amountAtomic, reviewId });
+      if (currentPackEditor(editor)) apply(result, phase === 'REVIEW');
+    } catch (error) {
+      if (currentPackEditor(editor)) {
+        editor.lifecycleError = String(error?.message || 'Pack lifecycle operation failed.');
+        if (phase === 'CONTINUE') {
+          editor.lifecycle = null;
+          try {
+            const latest = await managePackLifecycle({ ...scope, phase: 'INSPECT' });
+            if (currentPackEditor(editor)) apply(latest, false);
+          } catch { /* A manual refresh can read the saved attempt once the transport returns. */ }
+        }
+      }
+    } finally {
+      editor.lifecycleBusy = false;
+      if (currentPackEditor(editor)) renderCreator();
+    }
+  }
+
+  async function openNextPackVersion() {
+    const editor = state.packEditor;
+    const chain = editor?.draft.publication.chain;
+    if (!chain || !createPackVersion || !currentPackEditor(editor) || editor.lifecycleBusy
+      || editor.lifecycle?.pending || editor.lifecycle?.review || !editor.lifecycle?.state?.canManage) return;
+    editor.lifecycleBusy = true;
+    editor.lifecycleError = '';
+    renderCreator();
+    try {
+      const next = await createPackVersion({ draftId: editor.draft.draftId, expectedRevision: editor.draft.revision });
+      if (!currentPackEditor(editor)) return;
+      await loadCreatorPacks();
+      if (currentPackEditor(editor)) await openCreatorPack(next.draftId);
+    } catch (error) {
+      if (currentPackEditor(editor)) editor.lifecycleError = String(error?.message || 'The next Pack version could not be saved.');
+    } finally {
+      editor.lifecycleBusy = false;
+      if (currentPackEditor(editor)) renderCreator();
+    }
+  }
+
   async function requestPackPreview() {
     const editor = state.packEditor;
     if (!editor || !currentPackEditor(editor) || !renderPackPreview) return;
@@ -6584,6 +6766,7 @@ export function createOriginalProductApp({
         name: draft.document.metadata.name, dirty: false, error: '', transportPinned: Boolean(pin) };
       renderCreator();
       void requestPackPreview();
+      if (draft.publication.status === 'COMPLETE') void runPackLifecycle('INSPECT');
     } catch (error) {
       if (request === creatorPackRequest && creatorDraftCurrent(generation, parentId) && connection === creatorConnectionGeneration) {
         state.expansionPacksStatus = 'error'; state.expansionPacksError = String(error.message); renderCreator();
@@ -7077,6 +7260,7 @@ export function createOriginalProductApp({
         key: row.draftId, packId: row.document.metadata.semanticPackId,
         name: row.document.metadata.name, namespace: row.document.metadata.semanticPackId,
         version: String((row.document.authoringParent ?? row.document.bindings.parent).draft.document.lineage.version),
+        releaseVersion: row.document.metadata.lineage?.version ?? '1',
         revision: row.revision, status: row.publication?.chain?.lifecycle
           ?? (row.document.authoringParent ? 'Parent bound · Draft' : 'Draft'),
         publishable: Boolean(row.document.bindings.root && reviewPackPublication && advancePackPublication),
@@ -7279,7 +7463,7 @@ export function createOriginalProductApp({
       if (control?.disabled || !state.record) return;
       closePublication(); state.versionHistoryOpen = true; return loadVersionHistory();
     }
-    if (['chain-archive-review', 'chain-archive-sign', 'chain-archive-recover', 'chain-successor'].includes(action)) {
+    if (CREATOR_CHAIN_ACTION.test(action) || action === 'chain-successor') {
       return runChainVersionAction(action, control);
     }
     if (action === 'publication-close') { closePublication(); return; }
@@ -7435,6 +7619,10 @@ export function createOriginalProductApp({
     if (action === 'review-pack-publication' || action === 'advance-pack-publication') {
       return runPackPublicationReview(action, control);
     }
+    if (action === 'inspect-pack-lifecycle') return runPackLifecycle('INSPECT', control);
+    if (action === 'review-pack-lifecycle') return runPackLifecycle('REVIEW', control);
+    if (action === 'advance-pack-lifecycle') return runPackLifecycle('CONTINUE', control);
+    if (action === 'create-pack-version') return openNextPackVersion();
     if (action === 'request-back-to-maker') {
       const editor = state.packEditor;
       if (editor && await saveCreatorPack() && currentPackEditor(editor)) {

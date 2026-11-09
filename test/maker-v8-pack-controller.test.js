@@ -891,7 +891,7 @@ test('Pack governance persists certified control transfer and admission revocati
       recoveryId: ticket.recoveryId,
       digest: ticket.digest,
       readback: chainReadback(documentFixture(), {
-        packRegistryRevision: '9',
+        packRegistryRevision: '14',
         finalizedDigest: ticket.digest,
       }),
     }),
@@ -922,7 +922,7 @@ test('Pack governance persists certified control transfer and admission revocati
       digest: digest(41),
     },
   });
-  assert.equal(revokeResult.draft.publication.chain.packRegistryRevision, '9');
+  assert.equal(revokeResult.draft.publication.chain.packRegistryRevision, '14');
   assert.equal(revokeResult.draft.publication.chain.lifecycle, 'ACTIVE');
 });
 

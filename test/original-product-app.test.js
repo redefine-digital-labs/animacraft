@@ -196,6 +196,102 @@ test('Pack Studio presents a saved transaction review before invoking the wallet
   } finally { app.destroy(); }
 });
 
+test('published Pack Studio opens the next version and keeps exact lifecycle recovery on the original', async () => {
+  const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const parent = { draft: draftRecord(), draftSha256: 'c'.repeat(64) };
+  const draft = {
+    draftId: 'managed-pack', revision: 3,
+    document: {
+      author: { address: ROOT_ONE }, authoringParent: parent,
+      bindings: { root: { objectRef: { objectId: ROOT_TWO }, makerVersion: '1' } },
+      styles: [], metadata: { name: 'QA Pack', semanticPackId: 'managed-pack' },
+      access: { kind: 'FREE', priceAtomic: '0' },
+      completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '0' },
+    },
+    publication: { status: 'COMPLETE', chain: { lifecycle: 'ACTIVE', release: { objectRef: { objectId: ROOT_ONE } } } },
+  };
+  const execution = { allowWalletSignature: true, allowBroadcast: true };
+  const state = { lifecycle: 'ACTIVE', canManage: true, balanceAtomic: '1500',
+    totalCollectedAtomic: '1700', totalWithdrawnAtomic: '200' };
+  const step = { digest: 'original-pack-lifecycle-digest', gasBudgetMist: '5000000' };
+  const calls = [];
+  let next = null;
+  h.bridge.createPackDraft = async () => assert.fail('Open the published Pack');
+  h.bridge.listPackDrafts = async () => next ? [draft, next] : [draft];
+  h.bridge.loadPackDraft = async id => id === next?.draftId ? next : draft;
+  h.bridge.savePackDraft = async () => assert.fail('Lifecycle does not edit published content');
+  h.bridge.createPackVersion = async ({ draftId, expectedRevision }) => {
+    assert.equal(draftId, draft.draftId);
+    assert.equal(expectedRevision, draft.revision);
+    next = structuredClone(draft);
+    next.draftId = 'managed-pack-v2';
+    next.revision = 1;
+    next.document.metadata.semanticPackId = 'managed-pack-v2';
+    next.document.metadata.lineage = { version: '2', predecessorReleaseId: ROOT_ONE };
+    next.publication = { status: 'UNPREPARED', chain: null };
+    return next;
+  };
+  h.bridge.managePackLifecycle = async input => {
+    calls.push(input);
+    if (input.phase === 'INSPECT') return { draft, state, execution, pending: null };
+    if (input.phase === 'REVIEW') {
+      const replacement = calls.some(call => call.phase === 'CONTINUE' && call.reviewId === null);
+      return { draft, review: replacement
+        ? { id: 'review-2', action: 'PAUSE', step: { ...step, digest: 'replacement-pack-lifecycle-digest', retiredDigest: step.digest } }
+        : { id: 'review-1', action: 'PAUSE', step } };
+    }
+    if (input.reviewId !== null) {
+      return { draft, state: null, execution, pending: { action: 'PAUSE', ticket: { digest: step.digest } } };
+    }
+    return { draft, state, execution, pending: null, outcome: { status: 'EXPIRED_UNEXECUTED', digest: step.digest } };
+  };
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft(parent.draft.draftId);
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const click = async (action, dataset = {}) => {
+      const target = new FakeTarget(h.doc, { dataset: { action, ...dataset } });
+      target.parent = mount;
+      mount.fire('click', { target });
+      await settle(); await settle();
+    };
+    await click('creator-tab', { tab: 'expansions' });
+    await click('open-expansion-pack-studio', { packProjectKey: draft.draftId });
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT']);
+    assert.match(mount.innerHTML, /Published Pack lifecycle/);
+    assert.match(mount.innerHTML, /Available revenue \(atomic units\)<\/strong> 1500/);
+    assert.match(mount.innerHTML, /Pause Pack/);
+    assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
+    assert.match(mount.innerHTML, /Create next version draft/);
+    await click('create-pack-version');
+    assert.match(mount.innerHTML, /Pack version 2/);
+    assert.match(mount.innerHTML, /Previous Release/);
+    assert.doesNotMatch(mount.innerHTML, /Published Pack lifecycle/);
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT']);
+    await click('request-back-to-maker');
+    assert.match(mount.innerHTML, /Pack v2/);
+    await click('open-expansion-pack-studio', { packProjectKey: draft.draftId });
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT', 'INSPECT']);
+    await click('review-pack-lifecycle', { lifecycleAction: 'PAUSE' });
+    assert.match(mount.innerHTML, /original-pack-lifecycle-digest/);
+    assert.match(mount.innerHTML, /5000000/);
+    await click('advance-pack-lifecycle', { lifecycleReviewId: 'stale' });
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT', 'INSPECT', 'REVIEW']);
+    await click('advance-pack-lifecycle', { lifecycleReviewId: 'review-1' });
+    assert.match(mount.innerHTML, /Continue saved transaction/);
+    assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
+    await click('advance-pack-lifecycle');
+    assert.equal(calls.at(-1).reviewId, null);
+    assert.match(mount.innerHTML, /original-pack-lifecycle-digest/);
+    assert.match(mount.innerHTML, /The original transaction expired before execution/);
+    assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
+    await click('review-pack-lifecycle', { lifecycleAction: 'PAUSE' });
+    assert.match(mount.innerHTML, /replacement-pack-lifecycle-digest/);
+    assert.match(mount.innerHTML, /Expired transaction digest<\/strong> original-pack-lifecycle-digest/);
+    assert.deepEqual(calls.filter(input => input.phase === 'CONTINUE').map(input => input.reviewId), ['review-1', null]);
+  } finally { app.destroy(); }
+});
+
 test('publication review fences late results on route, wallet, close and reopened draft', async t => {
   for (const mode of ['route', 'wallet', 'close', 'reopen']) await t.test(mode, async () => {
     const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
@@ -3993,7 +4089,7 @@ test('public Maker detail shows certified Pack prices without connecting a walle
     return { rootId, unavailableCount: 1, packs: [
       { releaseId: ROOT_ONE, name: '<Free pack>', summary: 'Free styles', accessKind: 'FREE', priceAtomic: '0',
         completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '12' } },
-      { releaseId: ROOT_TWO, name: 'Paid pack', summary: '', accessKind: 'PAID', priceAtomic: '1000',
+      { releaseId: ROOT_TWO, name: 'Paid pack', version: '2', summary: '', accessKind: 'PAID', priceAtomic: '1000',
         completion: { mode: 'FREE_QUOTA_THEN_PAID', priceAtomic: '1250000', freeQuotaPerWallet: '2', totalCap: '0' } },
       { releaseId: `0x${'ff'.repeat(32)}`, name: 'Included pack', summary: '', accessKind: 'INCLUDED_WITH_MAKER', priceAtomic: '0',
         completion: { mode: 'PAID_EVERY_TIME', priceAtomic: '250', freeQuotaPerWallet: '0', totalCap: '0' } },
@@ -4005,9 +4101,9 @@ test('public Maker detail shows certified Pack prices without connecting a walle
   await app.openTemplate(ROOT_ONE);
   const markup = harness.doc.getElementById('templateDetail').innerHTML;
   assert.deepEqual(requests, [ROOT_ONE]);
-  assert.match(markup, /&lt;Free pack&gt;.*Free/);
-  assert.match(markup, /Paid pack.*0\.001 USDC/);
-  assert.match(markup, /Included pack.*Included with the Maker/);
+  assert.match(markup, /&lt;Free pack&gt;<\/strong>\s*<span>Pack access · Free<\/span>/);
+  assert.match(markup, /Paid pack<\/strong> <span>v2<\/span>\s*<span>Pack access · 0\.001 USDC<\/span>/);
+  assert.match(markup, /Included pack<\/strong>\s*<span>Pack access · Included with the Maker<\/span>/);
   const terms = [...markup.matchAll(/data-pack-complete-terms>([^<]+)/g)].map(([, text]) => text);
   assert.deepEqual(terms, [
     'Complete OC policy · Free · Total Complete cap 12',
@@ -6547,7 +6643,8 @@ test('Version history explicitly reviews and signs archive, cold-recovers it, th
   harness.bridge.listMakerLineage = async () => [{ rootId, makerVersion: 1, lifecycle, ownerAddress: address, successorRootId: null }];
   harness.bridge.prepareLifecycleAction = async input => { prepares++; assert.equal(input.action, 'ARCHIVE');
     assert.equal(input.draftId, 'approved-maker'); assert.equal(input.expectedRevision, 1);
-    return { built: { action: 'ARCHIVE', descriptor: { sender: address } }, digest: 'exact-archive', bytes: 'AA==' }; };
+    return { built: { action: 'ARCHIVE', descriptor: { sender: address, preState: { root: { objectId: rootId } } } },
+      digest: 'exact-archive', bytes: 'AA==' }; };
   harness.bridge.requestLifecycleSignature = async prepared => { signs++; assert.equal(prepared.digest, 'exact-archive'); return {}; };
   harness.bridge.recoverLifecycleAction = async input => { recoveries++; assert.deepEqual(input, { action: 'ARCHIVE', rootId }); lifecycle = 'ARCHIVED'; };
   harness.bridge.createSuccessorDraft = async input => { creates++; assert.equal(input.expectedRevision, 1);
@@ -6572,6 +6669,90 @@ test('Version history explicitly reviews and signs archive, cold-recovers it, th
   await action('chain-archive-recover'); assert.equal(signs, 1); assert.equal(recoveries, 1);
   await action('chain-successor'); assert.equal(creates, 1);
   assert.equal(app.getState().draftId, 'maker-successor-test');
+  app.destroy();
+});
+
+test('published Maker controls review pause, resume, and archived treasury recovery by exact Root', async () => {
+  const address = `0x${'78'.repeat(32)}`;
+  const rootId = `0x${'45'.repeat(32)}`;
+  const treasuryId = `0x${'46'.repeat(32)}`;
+  const successorId = `0x${'47'.repeat(32)}`;
+  const harness = browserHarness({ initialUrl: 'https://animacraft.soulidity.ai/#creator',
+    connection: { account: { address, chains: ['sui:mainnet'] } } });
+  let lifecycle = 'ACTIVE', successorRootId = null, balance = '900', withdrawn = '0', unknown = true, drift = false;
+  const prepared = [], signed = [], recovered = [];
+  harness.bridge.listMakerLineage = async () => [{ rootId, makerVersion: 1, lifecycle, ownerAddress: address, successorRootId }];
+  harness.bridge.getLifecycleSnapshot = async input => {
+    assert.deepEqual(input, { rootId });
+    return { schemaVersion: 'animacraft.product-lifecycle-snapshot.v1', rootId, makerVersion: '1', lifecycle,
+      wallet: { address, network: 'mainnet' }, paymentCoinType: '0x1::usdc::USDC',
+      treasury: { objectId: treasuryId, balanceAtomic: balance, totalCollectedAtomic: '900', totalWithdrawnAtomic: withdrawn } };
+  };
+  harness.bridge.prepareLifecycleAction = async input => {
+    prepared.push(input);
+    const args = input.action === 'WITHDRAW_MAKER_REVENUE'
+      ? [null, null, { objectId: treasuryId }, { value: input.amountAtomic }, { value: drift ? successorId : input.recipient }] : [];
+    return { built: { action: input.action, descriptor: { sender: address, preState: { root: { objectId: rootId } }, arguments: args } },
+      digest: `exact-${input.action}`, bytes: 'AA==' };
+  };
+  harness.bridge.requestLifecycleSignature = async review => {
+    signed.push(review.digest);
+    if (review.digest === 'exact-PAUSE') throw new Error('Wallet result is unknown');
+  };
+  harness.bridge.recoverLifecycleAction = async input => {
+    assert.equal(input.rootId, rootId);
+    recovered.push(input.action);
+    const digest = `exact-${input.action}`;
+    if (input.action === 'PAUSE' && unknown) { unknown = false; return { status: 'OUTCOME_UNKNOWN', digest }; }
+    if (input.action === 'PAUSE') lifecycle = 'PAUSED';
+    if (input.action === 'RESUME') lifecycle = 'ACTIVE';
+    if (input.action === 'WITHDRAW_MAKER_REVENUE') { balance = '0'; withdrawn = '900'; }
+    return { status: 'FINALIZED_SUCCESS', digest };
+  };
+  const oldSubscribe = harness.bridge.subscribe;
+  harness.bridge.subscribe = fn => oldSubscribe(value => fn({ ...value,
+    publication: { signingEnabled: true, broadcastEnabled: true } }));
+  const app = createOriginalProductApp(harness);
+  await app.ready; await app.openDraft('approved-maker');
+  const mount = harness.doc.getElementById('makerV4CreatorMount');
+  const action = async name => {
+    const target = new FakeTarget(harness.doc, { dataset: { action: name, chainRoot: rootId } });
+    target.parent = mount; await waitForEvent(mount.fire('click', { target })); await settle();
+  };
+  await action('manage-lifecycle');
+  assert.match(harness.doc.getElementById('makerLifecycleManagerActions').innerHTML, /Manage published versions and revenue/);
+  await action('open-version-history');
+  assert.match(mount.innerHTML, /Available 900 · Collected 900 · Withdrawn 0 · USDC atomic units/);
+  await action('chain-resume-review'); assert.equal(prepared.length, 0);
+  await action('chain-pause-review'); assert.deepEqual(prepared, [{ action: 'PAUSE', rootId }]);
+  assert.match(mount.innerHTML, /Transaction digest exact-PAUSE/); assert.deepEqual(signed, []);
+  await action('chain-resume-sign'); assert.deepEqual(signed, []);
+  await action('chain-pause-sign'); assert.deepEqual(signed, ['exact-PAUSE']);
+  assert.match(mount.innerHTML, /Wallet result is unknown · Transaction digest exact-PAUSE/);
+  await action('close-version-history'); await action('open-version-history');
+  await action('chain-pause-recover'); assert.match(mount.innerHTML, /Still checking exact-PAUSE/);
+  await action('chain-pause-recover'); assert.match(mount.innerHTML, /Chain version 1 · PAUSED/);
+  await action('chain-resume-review'); assert.deepEqual(prepared.at(-1), { action: 'RESUME', rootId });
+  await action('chain-resume-sign'); await action('chain-resume-recover');
+  assert.match(mount.innerHTML, /Chain version 1 · ACTIVE/);
+
+  lifecycle = 'ARCHIVED'; successorRootId = successorId;
+  await action('close-version-history'); await action('open-version-history');
+  assert.match(mount.innerHTML, /data-action="chain-successor"[^>]+disabled/);
+  drift = true;
+  await action('chain-withdraw-review');
+  assert.match(mount.innerHTML, /Lifecycle review identity is invalid/);
+  await action('chain-withdraw-sign');
+  assert.deepEqual(signed, ['exact-PAUSE', 'exact-RESUME']);
+  drift = false;
+  await action('chain-withdraw-review');
+  assert.deepEqual(prepared.at(-1), { action: 'WITHDRAW_MAKER_REVENUE', rootId, amountAtomic: '900', recipient: address });
+  assert.match(mount.innerHTML, new RegExp(`Withdraw 900 atomic USDC to ${address}`));
+  await action('chain-withdraw-sign'); await action('chain-withdraw-recover');
+  assert.deepEqual(signed, ['exact-PAUSE', 'exact-RESUME', 'exact-WITHDRAW_MAKER_REVENUE']);
+  assert.deepEqual(recovered, ['PAUSE', 'PAUSE', 'RESUME', 'WITHDRAW_MAKER_REVENUE']);
+  assert.match(mount.innerHTML, /Available 0 · Collected 900 · Withdrawn 900 · USDC atomic units/);
+  assert.match(mount.innerHTML, /data-action="chain-withdraw-review"[^>]+disabled/);
   app.destroy();
 });
 

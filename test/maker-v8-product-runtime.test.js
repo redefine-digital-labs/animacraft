@@ -452,6 +452,7 @@ test('walletless Pack catalog verifies exact release policies and only returns p
       async load(input) {
         const fixture = fixtures.find(row => row.release.semanticPackId === input.semanticPackId);
         const result = await fixture.packManifestAdapter.load(input);
+        if (fixture === paid) result.manifest.content.metadata.lineage = { version: '2' };
         if (fixture === paid && breakPaidTerms) result.manifest.content.access.priceAtomic = '1';
         return result;
       },
@@ -462,7 +463,7 @@ test('walletless Pack catalog verifies exact release policies and only returns p
   assert.deepEqual(first, { rootId, unavailableCount: 0,
     packs: ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'].map((accessKind, kind) => ({
       releaseId: objectId(960 + kind), name: 'Moon Pack', summary: 'Moon hats',
-      accessKind, priceAtomic: kind === 1 ? '1250000' : '0',
+      version: kind === 1 ? '2' : '1', accessKind, priceAtomic: kind === 1 ? '1250000' : '0',
       completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '0' },
     })) });
   assert.equal(calls.account + calls.reconnect + calls.inventory + calls.asset, 0);
@@ -702,6 +703,42 @@ test('owned Pack merges into one public release choice and cannot be purchased t
   assert.equal(f.reads.length, 1);
   assert.equal(choices.packStyles[0].owned, true);
   assert.deepEqual(choices.packStyles[0].access, { accessible: true, canEquip: true, availableForAcquire: false, reason: '' });
+});
+
+test('historical Pack Passes stay in inventory and a resumed release reuses its Pass', async () => {
+  const f = publicPackFixture(1);
+  const passFor = (release, passId, admissionState = 0) => ({
+    objectId: objectId(passId),
+    releaseId: release.objectId,
+    releaseContentCommitment: release.contentCommitment,
+    release,
+    admission: { ...release.admission, admissionState },
+  });
+  const historical = [3, 4, 2].map((lifecycle, index) => passFor({
+    ...f.release, objectId: objectId(961 + index), semanticPackId: `historical-${index}`, lifecycle,
+  }, 942 + index, lifecycle === 2 ? 1 : 0));
+  const publicPacks = [f.release];
+  const active = passFor(f.release, 941);
+  const { options } = harness({ publicPacks, packManifestAdapter: f.packManifestAdapter,
+    ownedInventory: { adminCaps: [], soulBundles: [], physicalAssets: [],
+      packPasses: [active, ...historical], makerAccessPasses: [] } });
+  const product = createMakerV8ProductRuntime(options);
+  const request = { address: objectId(902), rootId };
+  const inventory = await product.inventory.load(request);
+  assert.deepEqual(inventory.items.filter(row => row.kind === 'PACK_ACCESS').map(row => row.id).sort(),
+    [active, ...historical].map(pass => pass.objectId).sort());
+  const choices = await product.choices.load(request);
+  assert.deepEqual(choices.packStyles.map(row => [row.releaseId, row.access.canEquip]), [[active.releaseId, true]]);
+  assert.equal(f.reads.length, 1);
+
+  const paused = historical[0];
+  paused.release.lifecycle = 2;
+  publicPacks.push(paused.release);
+  const resumed = await product.choices.load(request);
+  const resumedStyle = resumed.packStyles.find(row => row.releaseId === paused.releaseId);
+  assert.equal(resumedStyle.access.canEquip, true);
+  assert.equal(resumedStyle.access.availableForAcquire, false);
+  assert.ok((await product.inventory.load(request)).items.some(row => row.id === paused.objectId));
 });
 
 test('Pack choices fail closed on public policy drift or owned/public evidence mismatch', async t => {
