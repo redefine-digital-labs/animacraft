@@ -531,7 +531,7 @@ export function deriveMakerV8PackCommitmentsV8(documentValue, contentCommitment)
     root_content_commitment: root,
     release_content_commitment: content,
   }).toBytes());
-  const rollingCommitments = [hashBytes(rolling)];
+  const rollingCommitments = [toHex(rolling)];
   for (const [index, style] of styles.entries()) {
     rolling = sha256(PackAdvance.serialize({
       domain: encoder.encode('animacraft-v8/runtime/pack-style'),
@@ -542,7 +542,7 @@ export function deriveMakerV8PackCommitmentsV8(documentValue, contentCommitment)
       previous: rolling,
       style,
     }).toBytes());
-    rollingCommitments.push(hashBytes(rolling));
+    rollingCommitments.push(toHex(rolling));
   }
   return freeze({
     styles,
