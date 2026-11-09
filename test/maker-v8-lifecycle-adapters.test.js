@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SuiGrpcClient } from '@mysten/sui/grpc';
-import { TestTransport } from '@protobuf-ts/runtime-rpc';
+import { GrpcTypes, SuiGrpcClient } from '@mysten/sui/grpc';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
+import { RpcError, TestTransport } from '@protobuf-ts/runtime-rpc';
+import { createHash } from 'node:crypto';
 
 import { bcs } from '@mysten/sui/bcs';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
@@ -44,6 +46,7 @@ import {
   MAKER_V8_RUNTIME_SCHEMA,
 } from '../maker-v8-runtime.js';
 import { attestFixtureRuntime } from './fixtures/maker-v8-runtime-attestation.js';
+import { createMakerV8SuiGrpcTransport } from '../maker-v8-sui-grpc.js';
 
 const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const digest = (fill) => toBase58(new Uint8Array(32).fill(fill));
@@ -316,6 +319,42 @@ function finalizedQuery(transactionDigest) {
     eventsDigest: digest(8),
     error: null,
     absence: null,
+  };
+}
+
+function prunedLifecycleLedger() {
+  const grpcClient = new SuiGrpcClient({ network: 'mainnet', transport: new TestTransport() });
+  grpcClient.ledgerService.getServiceInfo = async () => ({
+    response: GrpcTypes.GetServiceInfoResponse.create({
+      chainId: MAKER_V8_MAINNET_GENESIS_DIGEST, chain: 'mainnet', epoch: 102n, checkpointHeight: 920n,
+      lowestAvailableCheckpoint: 910n, lowestAvailableCheckpointObjects: 910n,
+    }),
+  });
+  grpcClient.ledgerService.getTransaction = async () => {
+    const error = new RpcError('Pruned fixture', 'NOT_FOUND');
+    error.serviceName = 'sui.rpc.v2.LedgerService';
+    error.methodName = 'GetTransaction';
+    throw error;
+  };
+  return createMakerV8SuiGrpcTransport({ grpcClient,
+    graphqlClient: new SuiGraphQLClient({ network: 'mainnet', url: 'https://graphql.mainnet.sui.io/graphql' }),
+  }).getFinalizedTransactionEvidence;
+}
+
+async function archivedLifecycleFixtureClient(live, digest) {
+  const [evidence, response] = await Promise.all([
+    live.getFinalizedTransactionEvidence({ digest }), live.core.getTransaction(),
+  ]);
+  const tx = response.Transaction;
+  const archived = { ...evidence, sender: tx.transaction.sender,
+    events: tx.events.map(event => ({ type: event.eventType, packageId: event.packageId,
+      transactionModule: event.module, sender: event.sender, parsedJson: event.json, bcs: toBase64(event.bcs) })),
+  };
+  return { ...live, getFinalizedTransactionEvidence: prunedLifecycleLedger(),
+    core: { async getTransaction() { assert.fail('Pruned lifecycle receipt must use certified archive effects'); } },
+    async getHistoricalObject() { assert.fail('Pruned lifecycle receipt must use historical archive objects'); },
+    async getArchivedPlayerTransactionEvidence(input) { assert.deepEqual(input, { digest }); return archived; },
+    getArchivedPlayerReceiptObject: input => live.getHistoricalObject(input),
   };
 }
 
@@ -703,6 +742,86 @@ test('unknown unsigned outcome remains locked until lease and exact external no-
     signer: owner,
   }), null);
   await assert.doesNotReject(() => recovery.reserveSignatureIntent(unsigned));
+});
+
+test('a lost Maker wallet callback recovers the original signature and terminal receipt by digest', async t => {
+  for (const [archived, succeeded] of [[false, true], [true, true], [true, false]]) {
+    await t.test(archived ? `archive ${succeeded ? 'success' : 'failure'}` : 'live Ledger success', async () => {
+      const keypair = new Ed25519Keypair();
+      const signer = keypair.toSuiAddress();
+      const context = { ...actionInput(), wallet: { address: signer, network: 'mainnet' },
+        root: { ...parsedRoot, ownerAddress: signer },
+        admin: { ...parsedAdmin, owner: { kind: 'address', address: signer }, holder: signer } };
+      const input = { ...context, action: 'PAUSE' };
+      const built = buildPauseMakerV8(runtime, context);
+      const tx = fullTransactionFromKind(await built.transaction.build({ onlyTransactionKind: true }), '101', signer);
+      const bytes = await tx.build();
+      const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
+      const { signature } = await keypair.signTransaction(bytes);
+      const effectsBcs = bcs.TransactionEffects.serialize({ V2: {
+        status: succeeded ? { Success: true } : { Failure: { error: { InsufficientGas: true }, command: null } },
+        executedEpoch: '100', gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
+        transactionDigest: digest, gasObjectIndex: null, eventsDigest: null, dependencies: [], lamportVersion: '10',
+        changedObjects: [], unchangedConsensusObjects: [], auxDataDigest: null,
+      } }).toBytes();
+      const result = { digest, sender: signer, checkpoint: '901', epoch: '100', transactionBcsBase64: toBase64(bytes),
+        signatures: [signature], effectsBcs, eventsDigest: null,
+        effectsStatus: { success: succeeded, error: succeeded ? null : { message: 'Insufficient gas' } } };
+      const missing = absence(digest);
+      if (archived) missing.absence.watermarkEpoch = '102';
+      const successQuery = { status: 'FINALIZED_SUCCESS', digest, epoch: '100',
+        effectsFingerprint: `0x${createHash('sha256').update(effectsBcs).digest('hex')}`,
+        eventsDigest: null, error: null, absence: null };
+      let known = false;
+      let reads = 0;
+      const client = {
+        async getChainIdentifier() { return { chainIdentifier: MAKER_V8_MAINNET_GENESIS_DIGEST }; },
+        async getFinalizedTransactionEvidence() { assert.equal(archived, false); return result; },
+        async getArchivedPlayerTransactionEvidence() { assert.equal(archived, true); return known ? result : null; },
+        core: { async executeTransaction() { assert.fail('A recovered receipt must never broadcast'); } },
+      };
+      let clock = 1_000;
+      const indexedDB = new IDBFactory();
+      const options = { storageManager: storageManager(), now: () => ++clock };
+      const persistence = createMakerV8LifecyclePersistenceV8(indexedDB, options);
+      const reserve = { schemaVersion: MAKER_V8_LIFECYCLE_CONTROLLER_SCHEMA, action: 'PAUSE',
+        descriptor: built.descriptor, input, bytes: toBase64(bytes), digest, signer };
+      const original = await persistence.reserveSignatureIntent(reserve);
+      const cold = createMakerV8LifecyclePersistenceV8(indexedDB, options);
+      const recovery = createMakerV8LifecycleRecoveryAdapterV8({ client, runtime, persistence: cold,
+        rpc: { async queryTransaction(request) {
+          reads++;
+          assert.deepEqual(request, { digest, epochWindow: { start: '100', end: '101' } });
+          return !archived && known ? successQuery : missing;
+        } },
+        wallet: { async getCurrentAccount() { return { address: signer, network: 'mainnet' }; },
+          async verifyExactSignature(value) {
+            return isValidTransactionSignature(fromBase64(value.bytes), value.signature, { address: value.signer });
+          } },
+        execution: { network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          allowWalletSignature: true, allowBroadcast: true },
+        loadRuntimeAttestation: async () => ({ runtime }), now: () => ++clock, assertTransport() {},
+      });
+      const scope = { action: 'PAUSE', rootId: binding.rootId, signer };
+      await assert.rejects(recovery.resolveActiveRecoveryByRoot(scope), { code: 'MAKER_V8_LIFECYCLE_SIGNATURE_OUTCOME_UNKNOWN' });
+      assert.equal(await cold.load(original.recoveryId), null);
+      assert.deepEqual(await cold.loadSignatureIntent(original.recoveryId), original);
+      known = true;
+      const found = archived ? await recovery.resolveActiveRecoveryByRoot(scope)
+        : await recovery.loadSignedArtifact({ recoveryId: original.recoveryId });
+      const recovered = { recoveryId: found.recoveryId, digest: found.digest };
+      assert.deepEqual(recovered, { recoveryId: original.recoveryId, digest });
+      const stored = await cold.load(original.recoveryId);
+      assert.equal(stored.signature, signature);
+      assert.equal(stored.status, succeeded ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE');
+      assert.equal(stored.broadcastCount, 0);
+      assert.equal(await cold.loadSignatureIntent(original.recoveryId), null);
+      const request = { ...recovered, signer, descriptor: built.descriptor };
+      if (succeeded) assert.equal((await recovery.recoverExactTransaction(request)).status, 'FINALIZED_SUCCESS');
+      else await assert.rejects(recovery.recoverExactTransaction(request), { code: 'MAKER_V8_LIFECYCLE_FINALIZED_FAILURE' });
+      assert.equal(reads, 2);
+    });
+  }
 });
 
 test('production boundary accepts official gRPC address-balance gas resolution and rejects unsafe envelopes', async t => {
@@ -1289,6 +1408,22 @@ test('readback binds durable bytes/signature, lifecycle event fields, raw effect
   );
 });
 
+test('a pruned Maker transition restores the exact archived Root version and event', async () => {
+  const value = await durableReadbackFixture();
+  const client = await archivedLifecycleFixtureClient(value.client, value.transactionDigest);
+  const adapter = createMakerV8LifecycleReadbackAdapterV8({ client, runtime,
+    persistence: value.persistence, assertTransport() {} });
+  const finalized = await adapter.readFinalizedTransaction({
+    digest: value.transactionDigest, expectedSender: owner, expectedEventTypes: [value.built.descriptor.expectedEventType],
+  });
+  const root = await adapter.readRoot({ rootId: binding.rootId, built: value.built, finalized });
+  assert.equal(root.lifecycleCode, MAKER_V8_LIFECYCLE_STATES.PAUSED);
+  assert.equal(root.objectRef.digest, postDigest);
+  value.controls.historicalDigest = digest(33);
+  await assert.rejects(adapter.readRoot({ rootId: binding.rootId, built: value.built, finalized }),
+    { code: 'MAKER_V8_LIFECYCLE_OBJECT_REF_DRIFT' });
+});
+
 test('withdraw readback binds read-only Root, written Treasury, exact event, and historical arithmetic', async () => {
   const treasury = {
     schemaVersion: MAKER_V8_CHAIN_SCHEMA,
@@ -1469,32 +1604,22 @@ test('withdraw readback binds read-only Root, written Treasury, exact event, and
       };
     },
   };
-  const adapter = createMakerV8LifecycleReadbackAdapterV8({
-    client,
-    runtime,
-    persistence,
-    assertTransport(value) { assert.equal(value, client); },
-  });
-  const finalized = await adapter.readFinalizedTransaction({
-    digest: transactionDigest,
-    expectedSender: owner,
-    expectedEventTypes: [built.descriptor.expectedEventType],
-  });
-  const root = await adapter.readRoot({ rootId: binding.rootId, built, finalized });
-  const makerTreasury = await adapter.readMakerTreasury({
-    treasuryId: binding.makerTreasuryId,
-    root,
-    built,
-    finalized,
-  });
-  const certified = certifyMakerV8LifecycleReadbackV8(built, {
-    finalized,
-    root,
-    makerTreasury,
-  });
-  assert.equal(certified.root.lifecycleCode, MAKER_V8_LIFECYCLE_STATES.ACTIVE);
-  assert.equal(certified.makerTreasury.balanceAtomic, '375');
-  assert.equal(certified.makerTreasury.totalWithdrawnAtomic, '325');
+  const archivedClient = await archivedLifecycleFixtureClient(client, transactionDigest);
+  for (const transport of [client, archivedClient]) {
+    const adapter = createMakerV8LifecycleReadbackAdapterV8({
+      client: transport, runtime, persistence,
+      assertTransport(value) { assert.equal(value, transport); },
+    });
+    const finalized = await adapter.readFinalizedTransaction({
+      digest: transactionDigest, expectedSender: owner, expectedEventTypes: [built.descriptor.expectedEventType],
+    });
+    const root = await adapter.readRoot({ rootId: binding.rootId, built, finalized });
+    const makerTreasury = await adapter.readMakerTreasury({ treasuryId: binding.makerTreasuryId, root, built, finalized });
+    const certified = certifyMakerV8LifecycleReadbackV8(built, { finalized, root, makerTreasury });
+    assert.equal(certified.root.lifecycleCode, MAKER_V8_LIFECYCLE_STATES.ACTIVE);
+    assert.equal(certified.makerTreasury.balanceAtomic, '375');
+    assert.equal(certified.makerTreasury.totalWithdrawnAtomic, '325');
+  }
 });
 
 test('production factory returns one directly injectable controller and exact shared execution projection', async () => {
