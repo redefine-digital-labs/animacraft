@@ -39,6 +39,8 @@ import { makerV8AbsenceCoversEpochWindow } from './maker-v8-publication-expirati
 import {
   assertMakerV8SuiGrpcTransport,
   createProductionMakerV8SuiGrpcTransport,
+  isMakerV8SuiGrpcHistoricalObjectNotFoundError,
+  isMakerV8SuiGrpcNotFoundError,
 } from './maker-v8-sui-grpc.js';
 
 export const MAKER_V8_LIFECYCLE_ADAPTERS_SCHEMA =
@@ -740,9 +742,21 @@ export function createMakerV8LifecyclePersistenceV8(indexedDB = globalThis.index
     const store = transaction.objectStore(STORE);
     const intents = transaction.objectStore(INTENT_STORE);
     const activeScopes = transaction.objectStore(ACTIVE_SCOPE_STORE);
-    const intentRaw = await requestResult(intents.get(record.recoveryId));
+    const [existingRaw, intentRaw, activeRaw] = await Promise.all([
+      requestResult(store.get(record.recoveryId)),
+      requestResult(intents.get(record.recoveryId)),
+      requestResult(activeScopes.get(record.scopeKey)),
+    ]);
+    const existing = existingRaw === undefined ? null : validateRecord(existingRaw);
+    if (existing) {
+      if (!sameArtifact(existing, record)) {
+        transaction.abort();
+        fail('MAKER_V8_LIFECYCLE_SIGNED_ARTIFACT_CONFLICT', 'This exact lifecycle action already has different durable signed bytes.');
+      }
+      await transactionDone(transaction);
+      return existing;
+    }
     const intent = intentRaw === undefined ? null : validateIntent(intentRaw);
-    const activeRaw = await requestResult(activeScopes.get(record.scopeKey));
     const active = activeRaw === undefined ? null : validateActiveScope(activeRaw);
     if (!intent || !active || active.recoveryId !== record.recoveryId
       || intent.scopeKey !== record.scopeKey
@@ -750,21 +764,11 @@ export function createMakerV8LifecyclePersistenceV8(indexedDB = globalThis.index
       transaction.abort();
       fail('MAKER_V8_LIFECYCLE_SIGNATURE_INTENT_REQUIRED', 'Signed lifecycle persistence requires its exact durable pre-wallet intent.');
     }
-    const existingRaw = await requestResult(store.get(record.recoveryId));
-    if (existingRaw === undefined) {
-      await requestResult(store.add(record));
-      await requestResult(intents.delete(record.recoveryId));
-    }
-    else {
-      const existing = validateRecord(existingRaw);
-      if (!sameArtifact(existing, record)) {
-        transaction.abort();
-        fail('MAKER_V8_LIFECYCLE_SIGNED_ARTIFACT_CONFLICT', 'This exact lifecycle action already has different durable signed bytes.');
-      }
-    }
+    await requestResult(store.add(record));
+    await requestResult(intents.delete(record.recoveryId));
     await transactionDone(transaction);
     const reread = await load(record.recoveryId);
-    if (!reread || canonical(reread) !== canonical(existingRaw === undefined ? record : validateRecord(existingRaw))) {
+    if (!reread || !sameArtifact(reread, record)) {
       fail('MAKER_V8_LIFECYCLE_DURABLE_READBACK_FAILED', 'Signed lifecycle WAL did not survive exact durable readback.');
     }
     return reread;
@@ -1107,6 +1111,46 @@ function verifiedSignature(value, artifact) {
     && value.signer === artifact.signer);
 }
 
+function lifecycleEpochWindow(proof) {
+  return { start: (BigInt(proof.expirationEpoch) - 1n).toString(), end: proof.expirationEpoch };
+}
+
+async function lifecycleTransactionEvidence(client, digest) {
+  try {
+    return { evidence: await client.getFinalizedTransactionEvidence({ digest }), archived: false };
+  } catch (error) {
+    if (!isMakerV8SuiGrpcNotFoundError(error, digest)) throw error;
+    const evidence = await client.getArchivedPlayerTransactionEvidence({ digest });
+    if (evidence === null) throw error;
+    return { evidence, archived: true };
+  }
+}
+
+function lifecycleEvidenceQuery(evidence, artifact, query = null) {
+  if (evidence?.digest !== artifact.digest || evidence.sender !== artifact.signer
+    || evidence.transactionBcsBase64 !== artifact.bytes || !(evidence.effectsBcs instanceof Uint8Array)
+    || !Array.isArray(evidence.signatures) || !evidence.signatures.length
+    || (artifact.signature && !evidence.signatures.includes(artifact.signature))
+    || typeof evidence.effectsStatus?.success !== 'boolean'
+    || !UINT.test(evidence.checkpoint ?? '')) {
+    fail('MAKER_V8_LIFECYCLE_FINALITY_DRIFT', 'Finality does not bind the exact lifecycle transaction and signer.');
+  }
+  const observed = validateQuery({
+    status: evidence.effectsStatus.success ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE',
+    digest: artifact.digest,
+    epoch: evidence.epoch,
+    effectsFingerprint: `0x${hashBytes(evidence.effectsBcs)}`,
+    eventsDigest: evidence.eventsDigest,
+    error: evidence.effectsStatus.error,
+    absence: null,
+  }, artifact.digest);
+  if (query && (query.status !== observed.status || query.epoch !== observed.epoch
+    || query.effectsFingerprint !== observed.effectsFingerprint || query.eventsDigest !== observed.eventsDigest)) {
+    fail('MAKER_V8_LIFECYCLE_FINALITY_DRIFT', 'Lifecycle finality query differs from certified effects.');
+  }
+  return observed;
+}
+
 // Immutable facts from the durable Root snapshot, not a rediscovered activation event.
 function activationAnchor(record, runtime) {
   const root = record.input?.root;
@@ -1384,13 +1428,89 @@ export function createMakerV8LifecycleRecoveryAdapterV8({
 
   async function loadSignedArtifact(input) {
     exact(input, ['recoveryId'], 'loadSignedArtifact input');
-    const record = await persistence.load(input.recoveryId);
-    if (!record) fail('MAKER_V8_LIFECYCLE_RECOVERY_NOT_FOUND', 'No durable lifecycle signed artifact exists for recoveryId.');
+    let record = await persistence.load(input.recoveryId);
+    if (!record) {
+      const intent = await persistence.loadSignatureIntent(input.recoveryId);
+      if (!intent) fail('MAKER_V8_LIFECYCLE_RECOVERY_NOT_FOUND', 'No durable lifecycle artifact exists for recoveryId.');
+      record = await recoverSignatureIntent(intent);
+    }
     await attestRecord(record);
     return freeze(Object.fromEntries(LOADED_ARTIFACT_FIELDS.map((field) => [
       field,
       field === 'schemaVersion' ? MAKER_V8_LIFECYCLE_CONTROLLER_SCHEMA : record[field],
     ])));
+  }
+
+  async function queryLifecycleArtifact(artifact, proof) {
+    const epochWindow = lifecycleEpochWindow(proof);
+    const query = validateQuery(await rpc.queryTransaction({ digest: artifact.digest, epochWindow }), artifact.digest);
+    if (query.status === 'NOT_FOUND' && BigInt(query.absence.watermarkEpoch) > BigInt(epochWindow.end)
+      && !makerV8AbsenceCoversEpochWindow(query.absence, epochWindow.start)
+      && typeof client.getArchivedPlayerTransactionEvidence === 'function') {
+      const evidence = await client.getArchivedPlayerTransactionEvidence({ digest: artifact.digest });
+      await pinnedMainnet(client);
+      if (evidence !== null) return { query: lifecycleEvidenceQuery(evidence, artifact), evidence };
+    }
+    return { query, evidence: null };
+  }
+
+  async function persistFinality(record, query) {
+    if (record.status === query.status) return record;
+    try {
+      return await advance(record, query.status, query);
+    } catch (error) {
+      if (error?.code !== 'MAKER_V8_LIFECYCLE_RECOVERY_CAS_CONFLICT') throw error;
+      const current = await persistence.load(record.recoveryId);
+      if (!current || !sameArtifact(current, record) || canonical(current.query) !== canonical(query)) throw error;
+      return current;
+    }
+  }
+
+  async function recoverSignatureIntent(intent) {
+    const requireSigner = async () => {
+      const account = await wallet.getCurrentAccount();
+      if (account?.address !== intent.signer || account.network !== MAKER_V8_CHAIN_NETWORK) {
+        fail('MAKER_V8_LIFECYCLE_WALLET_DRIFT', 'Current wallet differs from the original lifecycle signer.');
+      }
+    };
+    await requireSigner();
+    await pinnedMainnet(client);
+    const proof = transactionDataProof(intent.bytes, { sender: intent.signer, digest: intent.digest });
+    const { query, evidence } = await queryLifecycleArtifact(intent, proof);
+    if (!query.status.startsWith('FINALIZED_')) {
+      fail('MAKER_V8_LIFECYCLE_SIGNATURE_OUTCOME_UNKNOWN', 'The original lifecycle digest is still awaiting finalized evidence.', {
+        recoveryId: intent.recoveryId, digest: intent.digest,
+      });
+    }
+    const finalized = evidence ?? (await lifecycleTransactionEvidence(client, intent.digest)).evidence;
+    lifecycleEvidenceQuery(finalized, intent, query);
+    for (const signature of finalized.signatures) {
+      const artifact = { ...unsignedIntent(intent), signature };
+      let verified;
+      try { verified = await wallet.verifyExactSignature(artifact); } catch { continue; }
+      if (verifiedSignature(verified, artifact)) {
+        await requireSigner();
+        const { recoveryId } = await persistSignedArtifact(artifact);
+        return persistFinality(await persistence.load(recoveryId), query);
+      }
+    }
+    fail('MAKER_V8_LIFECYCLE_SIGNATURE_INVALID', 'Finalized lifecycle transaction lacks the original signer signature.');
+  }
+
+  async function resolveActiveRecord(active, matches) {
+    let record = await persistence.load(active.recoveryId);
+    if (!record) {
+      const intent = await persistence.loadSignatureIntent(active.recoveryId);
+      if (!intent || !matches(intent)) {
+        fail('MAKER_V8_LIFECYCLE_SCOPE_INVALID', 'Active lifecycle scope has no matching original signature intent.');
+      }
+      record = await recoverSignatureIntent(intent);
+    }
+    if (!matches(record)) {
+      fail('MAKER_V8_LIFECYCLE_SCOPE_INVALID', 'Active lifecycle scope resolved another durable action.');
+    }
+    await attestRecord(record);
+    return freeze({ recoveryId: record.recoveryId, digest: record.digest });
   }
 
   async function resolveActiveRecovery(input) {
@@ -1410,22 +1530,8 @@ export function createMakerV8LifecycleRecoveryAdapterV8({
     if (!active) {
       fail('MAKER_V8_LIFECYCLE_ACTIVE_RECOVERY_NOT_FOUND', 'No active durable lifecycle attempt exists for this semantic action.');
     }
-    const record = await persistence.load(active.recoveryId);
-    if (!record) {
-      const intent = await persistence.loadSignatureIntent(active.recoveryId);
-      if (intent) {
-        fail('MAKER_V8_LIFECYCLE_SIGNATURE_OUTCOME_UNKNOWN', 'The active lifecycle attempt has no durable signed artifact; reclaim requires its lease and external confirmation.', {
-          recoveryId: active.recoveryId,
-        });
-      }
-      fail('MAKER_V8_LIFECYCLE_SCOPE_INVALID', 'Active lifecycle scope has neither a signed WAL nor an unsigned intent.');
-    }
-    if (record.action !== input.action || record.signer !== input.signer
-      || canonical(record.descriptor) !== canonical(input.descriptor)) {
-      fail('MAKER_V8_LIFECYCLE_SCOPE_INVALID', 'Active lifecycle scope resolved another durable action.');
-    }
-    await attestRecord(record);
-    return freeze({ recoveryId: record.recoveryId, digest: record.digest });
+    return resolveActiveRecord(active, record => record.action === input.action && record.signer === input.signer
+      && canonical(record.descriptor) === canonical(input.descriptor));
   }
 
   async function resolveActiveRecoveryByRoot(input) {
@@ -1437,22 +1543,8 @@ export function createMakerV8LifecycleRecoveryAdapterV8({
     if (!active) {
       fail('MAKER_V8_LIFECYCLE_ACTIVE_RECOVERY_NOT_FOUND', 'No active durable lifecycle attempt exists for this Root action.');
     }
-    const record = await persistence.load(active.recoveryId);
-    if (!record) {
-      const intent = await persistence.loadSignatureIntent(active.recoveryId);
-      if (intent) {
-        fail('MAKER_V8_LIFECYCLE_SIGNATURE_OUTCOME_UNKNOWN', 'The stable Root action has no durable signed artifact; use the controller lease-reclaim path.', {
-          recoveryId: active.recoveryId,
-        });
-      }
-      fail('MAKER_V8_LIFECYCLE_SCOPE_INVALID', 'Stable Root action has neither a signed WAL nor an unsigned intent.');
-    }
-    if (record.action !== input.action || record.signer !== input.signer
-      || record.descriptor.preState.root.objectId !== input.rootId) {
-      fail('MAKER_V8_LIFECYCLE_SCOPE_INVALID', 'Stable Root action resolved another durable record.');
-    }
-    await attestRecord(record);
-    return freeze({ recoveryId: record.recoveryId, digest: record.digest });
+    return resolveActiveRecord(active, record => record.action === input.action && record.signer === input.signer
+      && record.descriptor.preState.root.objectId === input.rootId);
   }
 
   async function reclaimActiveSignatureIntent(input) {
@@ -1475,30 +1567,24 @@ export function createMakerV8LifecycleRecoveryAdapterV8({
       fail('MAKER_V8_LIFECYCLE_RECOVERY_DRIFT', 'Recovery request differs from the exact durable signed artifact.');
     }
     const proof = await attestRecord(record);
-    const epochWindow = {
-      start: (BigInt(proof.expirationEpoch) - 1n).toString(),
-      end: proof.expirationEpoch,
-    };
-    const rawQuery = await rpc.queryTransaction({ digest: record.digest, epochWindow });
-    const query = validateQuery(rawQuery, record.digest);
-    if (query.status === 'FINALIZED_SUCCESS') {
-      if (record.status !== MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_SUCCESS) {
-        record = await advance(record, MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_SUCCESS, query);
-      }
+    let query = record.query;
+    if (![MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_SUCCESS,
+      MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_FAILURE,
+      MAKER_V8_LIFECYCLE_RECOVERY_STATUS.EXPIRED_NOT_FOUND].includes(record.status)) {
+      ({ query } = await queryLifecycleArtifact(record, proof));
+      if (query.status.startsWith('FINALIZED_')) record = await persistFinality(record, query);
+    }
+    if (record.status === MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_SUCCESS) {
       return freeze({ status: 'FINALIZED_SUCCESS', recoveryId: record.recoveryId, digest: record.digest });
     }
-    if (query.status === 'FINALIZED_FAILURE') {
-      if (record.status !== MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_FAILURE) {
-        record = await advance(record, MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_FAILURE, query);
-      }
+    if (record.status === MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_FAILURE) {
       fail('MAKER_V8_LIFECYCLE_FINALIZED_FAILURE', 'Lifecycle transaction finalized with a Move failure.', {
         recoveryId: record.recoveryId,
         digest: record.digest,
-        error: query.error,
+        error: record.query?.error ?? null,
       });
     }
-    if (record.status === MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_FAILURE
-      || record.status === MAKER_V8_LIFECYCLE_RECOVERY_STATUS.EXPIRED_NOT_FOUND) {
+    if (record.status === MAKER_V8_LIFECYCLE_RECOVERY_STATUS.EXPIRED_NOT_FOUND) {
       fail('MAKER_V8_LIFECYCLE_RECOVERY_TERMINAL', 'Terminal lifecycle recovery cannot be replayed.');
     }
     if (query.status === 'PENDING') {
@@ -1506,7 +1592,7 @@ export function createMakerV8LifecycleRecoveryAdapterV8({
       return freeze({ status: 'OUTCOME_UNKNOWN', recoveryId: record.recoveryId, digest: record.digest });
     }
     if (BigInt(query.absence.watermarkEpoch) > BigInt(proof.expirationEpoch)) {
-      if (!makerV8AbsenceCoversEpochWindow(query.absence, epochWindow.start)) {
+      if (!makerV8AbsenceCoversEpochWindow(query.absence, lifecycleEpochWindow(proof).start)) {
         record = await advance(record, MAKER_V8_LIFECYCLE_RECOVERY_STATUS.OUTCOME_PENDING, query);
         return freeze({ status: 'OUTCOME_UNKNOWN', recoveryId: record.recoveryId, digest: record.digest });
       }
@@ -1658,10 +1744,9 @@ function coreEffectsForObject(response, objectId) {
   }) });
 }
 
-function effectRef(response, evidence, objectId, expectedInput, { readOnly = false } = {}) {
+function effectRef(response, evidence, objectId, expectedInput, { readOnly = false, archived = false } = {}) {
   const raw = rawEffectsForObject(evidence, objectId);
-  const core = coreEffectsForObject(response, objectId);
-  if (canonical(raw) !== canonical(core)) {
+  if (!archived && canonical(raw) !== canonical(coreEffectsForObject(response, objectId))) {
     fail('MAKER_V8_LIFECYCLE_EFFECTS_CORE_DRIFT', 'Raw TransactionEffects and Core object refs differ.', { objectId });
   }
   if (readOnly) {
@@ -1803,12 +1888,20 @@ function certifyLifecycleEvent(runtime, record, response) {
   return event;
 }
 
-async function historicalResponse(client, ref, expectedType, outputDigest, label) {
-  requireMethod(client, 'getHistoricalObject', 'Sui gRPC transport');
-  const historical = await client.getHistoricalObject({
-    objectId: ref.objectId,
-    version: BigInt(ref.version),
-  });
+async function historicalResponse(client, ref, expectedType, outputDigest, label, archived) {
+  const input = { objectId: ref.objectId, version: BigInt(ref.version) };
+  let historical;
+  if (archived) {
+    historical = await client.getArchivedPlayerReceiptObject(input);
+  } else {
+    requireMethod(client, 'getHistoricalObject', 'Sui gRPC transport');
+    try {
+      historical = await client.getHistoricalObject(input);
+    } catch (error) {
+      if (!isMakerV8SuiGrpcHistoricalObjectNotFoundError(error)) throw error;
+      historical = await client.getArchivedPlayerReceiptObject(input);
+    }
+  }
   const observed = exactObjectRef(historical, ref, `${label} historical ref`);
   if (normalizeStructTag(historical.type) !== normalizeStructTag(expectedType)
     || (outputDigest !== null && historical.previousTransaction !== outputDigest)
@@ -1848,11 +1941,7 @@ export function createMakerV8LifecycleReadbackAdapterV8({
         fail('MAKER_V8_LIFECYCLE_FINALITY_DRIFT', 'Finality request differs from the exact durable lifecycle WAL.');
       }
       await pinnedMainnet(client);
-      const transaction = transactionFromDescriptor(record.descriptor);
-      const [response, evidence] = await Promise.all([
-        assertFinalizedMakerV8CompilerTransactionV8(client, record.digest, transaction),
-        client.getFinalizedTransactionEvidence({ digest: record.digest }),
-      ]);
+      const { evidence, archived } = await lifecycleTransactionEvidence(client, record.digest);
       await pinnedMainnet(client);
       if (evidence?.digest !== record.digest
         || evidence.transactionBcsBase64 !== record.bytes
@@ -1861,13 +1950,18 @@ export function createMakerV8LifecycleReadbackAdapterV8({
         || evidence.effectsStatus?.success !== true) {
         fail('MAKER_V8_LIFECYCLE_FINALITY_DRIFT', 'Ledger finality does not bind exact durable bytes, signature, and successful effects.');
       }
+      if (archived) lifecycleEvidenceQuery(evidence, record, record.query);
+      const response = archived ? evidence : await assertFinalizedMakerV8CompilerTransactionV8(
+        client, record.digest, transactionFromDescriptor(record.descriptor),
+      );
+      await pinnedMainnet(client);
       const event = certifyLifecycleEvent(runtime, record, response);
       const finalized = freeze({
         digest: record.digest,
         sender: record.signer,
         events: freeze([{ eventType: event.type, sender: event.sender }]),
       });
-      FINALIZED_CONTEXTS.set(finalized, freeze({ record, response, evidence }));
+      FINALIZED_CONTEXTS.set(finalized, freeze({ record, response, evidence, archived }));
       return finalized;
     },
     async readRoot(input) {
@@ -1880,7 +1974,7 @@ export function createMakerV8LifecycleReadbackAdapterV8({
       const pre = context.record.descriptor.preState.root;
       const expected = { objectId: pre.objectId, version: pre.version, digest: pre.digest };
       const readOnly = context.record.action === MAKER_V8_LIFECYCLE_ACTIONS.WITHDRAW_MAKER_REVENUE;
-      const ref = effectRef(context.response, context.evidence, pre.objectId, expected, { readOnly });
+      const ref = effectRef(context.response, context.evidence, pre.objectId, expected, { readOnly, archived: context.archived });
       await pinnedMainnet(client);
       const response = await historicalResponse(
         client,
@@ -1888,6 +1982,7 @@ export function createMakerV8LifecycleReadbackAdapterV8({
         makerV8ChainTypes(runtime).root,
         readOnly ? null : context.record.digest,
         'MakerRootV8',
+        context.archived,
       );
       await pinnedMainnet(client);
       return parseMakerRootV8(response, runtime, activationAnchor(context.record, runtime));
@@ -1905,7 +2000,7 @@ export function createMakerV8LifecycleReadbackAdapterV8({
         objectId: pre.objectId,
         version: pre.version,
         digest: pre.digest,
-      });
+      }, { archived: context.archived });
       await pinnedMainnet(client);
       const response = await historicalResponse(
         client,
@@ -1913,6 +2008,7 @@ export function createMakerV8LifecycleReadbackAdapterV8({
         makerV8ChainTypes(runtime).makerTreasury,
         context.record.digest,
         'MakerTreasuryV8',
+        context.archived,
       );
       await pinnedMainnet(client);
       return parseMakerTreasuryV8(response, runtime, input.root);
