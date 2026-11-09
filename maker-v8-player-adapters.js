@@ -3032,6 +3032,7 @@ const NON_GENERIC_PLAYER_FUNCTIONS = new Set([
   'transfer_maker_loadout_to_holder_v8',
   'clear_non_external_selection_v8',
   'unequip_owned_base_style_v8',
+  'unequip_external_style_v8',
   'certify_physical_selection_v8',
   'seal_ordered_selection_proofs_v8',
   'transfer_new_physical_asset_to_holder_v8',
