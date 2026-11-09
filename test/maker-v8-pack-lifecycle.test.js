@@ -187,11 +187,12 @@ function absence(transactionDigest, checkpoint = '9') {
 
 function harness({
   action = 'PAUSE', unknown = false, finalizedFailure = false, requestOverride = null,
+  persistence = createMakerV8PackPublicationMemoryPersistenceV8(), walletError = null,
+  now = (() => { let value = 100; return () => value += 1; })(),
 } = {}) {
   const order = [];
   const targets = [];
   const durableRequest = requestOverride ?? request(action);
-  const persistence = createMakerV8PackPublicationMemoryPersistenceV8();
   let queryCount = 0;
   const lifecycle = createMakerV8PackLifecycleControllerV8({
     runtime,
@@ -218,8 +219,10 @@ function harness({
       },
     },
     wallet: {
+      async getCurrentAccount() { return { address: signer }; },
       async signExactTransaction({ bytes, digest: transactionDigest, signer: address }) {
         order.push('sign');
+        if (walletError) throw walletError;
         return { bytes, digest: transactionDigest, signer: address, signature: toBase64(Uint8Array.of(1, 2, 3)) };
       },
       async verifyExactSignature() {
@@ -276,7 +279,7 @@ function harness({
       finalizedDigest: artifact.digest,
     }),
     execution: { allowWalletSignature: true, allowBroadcast: true },
-    now: (() => { let value = 100; return () => value += 1; })(),
+    now,
   });
   return { lifecycle, durableRequest, order, targets, get queryCount() { return queryCount; } };
 }
@@ -293,6 +296,31 @@ test('independent Pack lifecycle compiles exact Runtime target and performs dura
     'build', 'dry-run', 'sign', 'verify',
     'query', 'query', 'verify', 'broadcast', 'query', 'verify',
   ]);
+});
+
+test('review simulates without opening a wallet and cold recovery uses the displayed digest', async () => {
+  const persistence = createMakerV8PackPublicationMemoryPersistenceV8();
+  const first = harness({ persistence, walletError: new Error('wallet response disappeared') });
+  const checked = first.durableRequest;
+  const scope = { draftId: checked.draftId, draftRevision: checked.draftRevision, releaseId: checked.pack.releaseId };
+  const step = await first.lifecycle.review(checked);
+  assert.deepEqual(first.order, ['build', 'dry-run']);
+  assert.equal(step.gasBudgetMist, '1000000');
+  await assert.rejects(first.lifecycle.signReviewed({ ...scope, releaseId: id(666), action: checked.action, step }),
+    { code: 'MAKER_V8_PACK_LIFECYCLE_REVIEW_SCOPE' });
+  await assert.rejects(first.lifecycle.signReviewed({ ...scope, action: checked.action, step }), /wallet response disappeared/);
+  const restarted = harness({ persistence, unknown: true, now: () => 200 });
+  const pending = await restarted.lifecycle.inspect(scope);
+  assert.equal(pending.action, checked.action);
+  assert.equal(pending.status, 'SIGNING');
+  assert.equal(pending.ticket.digest, step.digest);
+  await assert.rejects(restarted.lifecycle.review(checked), { code: 'MAKER_V8_PACK_LIFECYCLE_RECOVERY_REQUIRED' });
+  await assert.rejects(restarted.lifecycle.recover({ ...pending.ticket, digest: suiDigest(40) }),
+    { code: 'MAKER_V8_PACK_LIFECYCLE_TICKET_DRIFT' });
+  assert.deepEqual(restarted.order, []);
+  await assert.rejects(restarted.lifecycle.recover(pending.ticket), /transport unavailable/);
+  assert.deepEqual(restarted.order, ['query']);
+  assert.equal((await restarted.lifecycle.inspect(scope)).ticket.digest, step.digest);
 });
 
 test('Pack lifecycle unknown outcome never fabricates finalized readback or rebroadcasts', async () => {
@@ -440,6 +468,54 @@ test('production Pack lifecycle authority cold-reads exact refs and rejects curr
     load(authorityBuildInput(checked)),
     { code: 'MAKER_V8_PACK_LIFECYCLE_CURRENT_BCS_DRIFT' },
   );
+});
+
+test('new Pack lifecycle reviews use later sales and registry state while durable requests stay pinned', async () => {
+  const published = request('WITHDRAW_PACK_REVENUE');
+  const names = ['release', 'adminCap', 'treasury', 'packRegistry'];
+  const inputs = Object.fromEntries(names.map(name => [
+    published.inputs[name].objectRef.objectId, structuredClone(published.inputs[name]),
+  ]));
+  const release = inputs[published.pack.releaseId];
+  const treasury = inputs[published.pack.treasuryId];
+  const registry = inputs[published.pack.packRegistryId];
+  release.objectRef = { ...release.objectRef, version: '120', digest: suiDigest(24) };
+  treasury.objectRef = { ...treasury.objectRef, version: '121', digest: suiDigest(25) };
+  treasury.fields.revenue.fields.value = '1500';
+  treasury.fields.total_collected = '1500';
+  registry.fields.revision = '13';
+  registry.objectRef = { ...registry.objectRef, version: '122', digest: suiDigest(26) };
+  const client = {
+    async getObject({ id: objectId }) { return currentResponse(inputs[objectId]); },
+    async getHistoricalObject({ objectId }) { return historicalValue(inputs[objectId]); },
+  };
+  const load = createMakerV8PackLifecycleAuthorityLoaderV8({
+    client, runtime,
+    wallet: { async getCurrentAccount() { return { address: signer }; } },
+    assertTransport: () => {},
+  });
+  const input = { ...authorityBuildInput(published), amountAtomic: '750' };
+  const state = await load.readState(input.pack);
+  assert.equal(state.lifecycle, 'ARCHIVED');
+  assert.equal(state.balanceAtomic, '1500');
+  assert.equal(state.totalCollectedAtomic, '1500');
+  assert.equal(state.totalWithdrawnAtomic, '0');
+  assert.equal(state.canManage, true);
+  const updated = await load(input);
+  assert.deepEqual(updated.inputs.release.objectRef, release.objectRef);
+  assert.deepEqual(updated.inputs.treasury.objectRef, treasury.objectRef);
+  assert.equal(updated.pack.packRegistryRevision, '13');
+  assert.equal(updated.inputs.amountAtomic, '750');
+  assert.deepEqual(await load(updated), updated);
+  await assert.rejects(load(published), { code: 'MAKER_V8_PACK_LIFECYCLE_OBJECT_REF_DRIFT' });
+  await assert.rejects(load({ ...input, amountAtomic: '1501' }), {
+    code: 'MAKER_V8_PACK_LIFECYCLE_BALANCE_INVALID',
+  });
+  registry.fields.revision = '11';
+  await assert.rejects(load(input), { code: 'MAKER_V8_PACK_LIFECYCLE_AUTHORITY_DRIFT' });
+  registry.fields.revision = '13';
+  treasury.objectRef = { ...published.inputs.treasury.objectRef, digest: suiDigest(25) };
+  await assert.rejects(load(input), { code: 'MAKER_V8_PACK_LIFECYCLE_OBJECT_REF_DRIFT' });
 });
 
 test('Pack admission revocation cold-loads the exact Maker governance tuple', async () => {

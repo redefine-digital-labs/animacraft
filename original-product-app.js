@@ -941,6 +941,7 @@ export function createOriginalProductApp({
   const renderPackPreview = optionalMethod(bridge, 'renderPackPreview');
   const reviewPackPublication = optionalMethod(bridge, 'reviewPackPublication');
   const advancePackPublication = optionalMethod(bridge, 'advancePackPublication');
+  const managePackLifecycle = optionalMethod(bridge, 'managePackLifecycle');
   const upsertPackAsset = optionalMethod(bridge, 'upsertPackAsset');
   let packAssetFlight = null;
   let packSaveFlight = null;
@@ -6267,7 +6268,57 @@ export function createOriginalProductApp({
       && creatorConnectionGeneration === editor.connection && state.connection.address === editor.address;
   }
 
+  const packLifecycleLabels = {
+    PAUSE: 'Pause Pack', RESUME: 'Resume Pack', ARCHIVE: 'Archive permanently',
+    WITHDRAW_PACK_REVENUE: 'Withdraw Pack revenue',
+  };
+
+  function renderPackLifecycle(editor) {
+    const chain = editor.draft.publication.chain;
+    const model = editor.lifecycle;
+    const current = model?.state;
+    const review = model?.review;
+    const pending = model?.pending;
+    const lifecycle = current?.lifecycle ?? chain.lifecycle;
+    const disabled = editor.lifecycleBusy ? ' disabled' : '';
+    const enabled = model?.execution?.allowWalletSignature && model.execution?.allowBroadcast;
+    const allowed = current?.canManage && enabled;
+    const button = action => `<button type="button" data-action="review-pack-lifecycle" data-lifecycle-action="${action}"${disabled}>${escapeHtml(packLifecycleLabels[action])}</button>`;
+    const line = (label, value) => value == null ? '' : `<p><strong>${escapeHtml(label)}</strong> ${escapeHtml(String(value))}</p>`;
+    const status = editor.lifecycleBusy ? 'Checking the Pack lifecycle transaction…'
+      : pending ? 'Continue the saved transaction by its original digest.'
+        : review ? 'Review the exact transaction before opening your wallet.'
+          : model?.outcome?.status === 'FINALIZED_SUCCESS' ? 'The Pack lifecycle transaction is finalized.'
+            : model?.outcome?.status === 'FINALIZED_FAILURE' ? 'The original transaction finalized with failure.'
+              : 'Manage the published Pack and its treasury.';
+    return `<section class="v4-pack-boundary-note" data-pack-lifecycle>
+      <h3>Published Pack lifecycle</h3><p role="status">${escapeHtml(status)}</p>
+      ${editor.lifecycleError || model?.readbackError ? `<p role="alert">${escapeHtml(editor.lifecycleError || model.readbackError)}</p>` : ''}
+      ${line('Release ID', chain.release.objectRef.objectId)}${line('Lifecycle', lifecycle)}
+      ${line('Pack owner', current?.owner)}
+      ${line('Treasury ID', current?.treasuryId)}
+      ${line('Available revenue (atomic units)', current?.balanceAtomic)}
+      ${line('Total collected (atomic units)', current?.totalCollectedAtomic)}
+      ${line('Total withdrawn (atomic units)', current?.totalWithdrawnAtomic)}
+      ${line('Review action', packLifecycleLabels[review?.action])}
+      ${line('Transaction digest', review?.step.digest ?? pending?.ticket.digest ?? model?.outcome?.digest)}
+      ${line('Gas budget (MIST)', review?.step.gasBudgetMist)}
+      ${line('Withdrawal (atomic units)', review?.amountAtomic)}
+      ${review?.action === 'ARCHIVE' ? '<p>Archiving permanently retires this Release.</p>' : ''}
+      <button type="button" data-action="inspect-pack-lifecycle"${disabled}>Refresh Pack state</button>
+      ${pending ? `<button type="button" data-action="advance-pack-lifecycle"${enabled ? disabled : ' disabled'}>Continue saved transaction</button>`
+        : review ? `<button type="button" data-action="advance-pack-lifecycle" data-lifecycle-review-id="${escapeHtml(review.id)}"${disabled}>Review in wallet</button>`
+          : allowed ? `${lifecycle === 'ACTIVE' ? button('PAUSE') : ''}
+              ${lifecycle === 'PAUSED' ? button('RESUME') : ''}
+              ${lifecycle !== 'ARCHIVED' ? button('ARCHIVE') : ''}
+              ${current.balanceAtomic !== '0' ? `<label>Withdrawal amount (atomic units)<input type="text" inputmode="numeric" data-pack-withdrawal-amount${disabled}></label>${button('WITHDRAW_PACK_REVENUE')}` : ''}` : ''}
+    </section>`;
+  }
+
   function renderPackPublication(editor) {
+    if (editor.draft.publication.status === 'COMPLETE' && editor.draft.publication.chain && managePackLifecycle) {
+      return renderPackLifecycle(editor);
+    }
     if (!editor.draft.document.bindings.root || !reviewPackPublication || !advancePackPublication) return '';
     const review = editor.publicationReview;
     const busy = Boolean(editor.publicationBusy);
@@ -6501,6 +6552,49 @@ export function createOriginalProductApp({
     }
   }
 
+  async function runPackLifecycle(phase, control = null) {
+    const editor = state.packEditor;
+    const chain = editor?.draft.publication.chain;
+    if (!chain || !managePackLifecycle || !currentPackEditor(editor) || editor.lifecycleBusy) return;
+    const reviewId = control?.dataset.lifecycleReviewId ?? null;
+    if (phase === 'CONTINUE' && (reviewId
+      ? editor.lifecycle?.review?.id !== reviewId : !editor.lifecycle?.pending)) return;
+    const action = control?.dataset.lifecycleAction ?? null;
+    const amountAtomic = action === 'WITHDRAW_PACK_REVENUE'
+      ? control.closest('[data-pack-lifecycle]')?.querySelector('[data-pack-withdrawal-amount]')?.value.trim() ?? '' : null;
+    const scope = { draftId: editor.draft.draftId, expectedRevision: editor.draft.revision };
+    const apply = (result, reviewing) => {
+      if (result.draft.draftId !== scope.draftId || result.draft.revision < scope.expectedRevision
+        || result.draft.document.author.address !== editor.address
+        || result.draft.publication.chain?.release.objectRef.objectId !== chain.release.objectRef.objectId) {
+        throw new Error('The lifecycle result belongs to another Pack release.');
+      }
+      editor.draft = result.draft;
+      editor.lifecycle = reviewing ? { ...editor.lifecycle, review: result.review } : result;
+    };
+    editor.lifecycleBusy = true;
+    editor.lifecycleError = '';
+    renderCreator();
+    try {
+      const result = await managePackLifecycle({ ...scope, phase, action, amountAtomic, reviewId });
+      if (currentPackEditor(editor)) apply(result, phase === 'REVIEW');
+    } catch (error) {
+      if (currentPackEditor(editor)) {
+        editor.lifecycleError = String(error?.message || 'Pack lifecycle operation failed.');
+        if (phase === 'CONTINUE') {
+          editor.lifecycle = null;
+          try {
+            const latest = await managePackLifecycle({ ...scope, phase: 'INSPECT' });
+            if (currentPackEditor(editor)) apply(latest, false);
+          } catch { /* A manual refresh can read the saved attempt once the transport returns. */ }
+        }
+      }
+    } finally {
+      editor.lifecycleBusy = false;
+      if (currentPackEditor(editor)) renderCreator();
+    }
+  }
+
   async function requestPackPreview() {
     const editor = state.packEditor;
     if (!editor || !currentPackEditor(editor) || !renderPackPreview) return;
@@ -6547,6 +6641,7 @@ export function createOriginalProductApp({
         name: draft.document.metadata.name, dirty: false, error: '', transportPinned: Boolean(pin) };
       renderCreator();
       void requestPackPreview();
+      if (draft.publication.status === 'COMPLETE') void runPackLifecycle('INSPECT');
     } catch (error) {
       if (request === creatorPackRequest && creatorDraftCurrent(generation, parentId) && connection === creatorConnectionGeneration) {
         state.expansionPacksStatus = 'error'; state.expansionPacksError = String(error.message); renderCreator();
@@ -7398,6 +7493,9 @@ export function createOriginalProductApp({
     if (action === 'review-pack-publication' || action === 'advance-pack-publication') {
       return runPackPublicationReview(action, control);
     }
+    if (action === 'inspect-pack-lifecycle') return runPackLifecycle('INSPECT', control);
+    if (action === 'review-pack-lifecycle') return runPackLifecycle('REVIEW', control);
+    if (action === 'advance-pack-lifecycle') return runPackLifecycle('CONTINUE', control);
     if (action === 'request-back-to-maker') {
       const editor = state.packEditor;
       if (editor && await saveCreatorPack() && currentPackEditor(editor)) {

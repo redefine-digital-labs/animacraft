@@ -197,6 +197,14 @@ function objectRef(value, label) {
   });
 }
 
+function currentRefMatches(current, saved, pinned) {
+  const before = objectRef(saved, 'saved Pack lifecycle object');
+  return current.objectId === before.objectId
+    && (current.version === before.version
+      ? current.digest === before.digest
+      : !pinned && BigInt(current.version) > BigInt(before.version));
+}
+
 function owner(value, label) {
   if (!plain(value)) fail('MAKER_V8_PACK_LIFECYCLE_OWNER_INVALID', `${label} owner is invalid.`, 'READBACK');
   const shared = value.Shared ?? value.shared;
@@ -970,8 +978,9 @@ export function createMakerV8PackLifecycleAuthorityLoaderV8({
     }
     return current;
   };
-  return async (raw) => {
-    if (raw?.schemaVersion === MAKER_V8_PACK_LIFECYCLE_REQUEST_SCHEMA) {
+  const resolve = async (raw, readOnly = false) => {
+    const pinned = raw?.schemaVersion === MAKER_V8_PACK_LIFECYCLE_REQUEST_SCHEMA;
+    if (pinned) {
       const durable = assertRequest(raw);
       raw = {
         action: durable.action,
@@ -999,7 +1008,7 @@ export function createMakerV8PackLifecycleAuthorityLoaderV8({
         },
       };
     }
-    if (!plain(raw) || !plain(raw.pack?.chain) || !Object.hasOwn(ACTIONS, raw.action)) {
+    if (!plain(raw) || !plain(raw.pack?.chain) || (!readOnly && !Object.hasOwn(ACTIONS, raw.action))) {
       fail('MAKER_V8_PACK_LIFECYCLE_INPUT_INVALID', 'Pack lifecycle build input is invalid.', 'INPUT');
     }
     const signer = accountAddress(await wallet.getCurrentAccount());
@@ -1018,10 +1027,12 @@ export function createMakerV8PackLifecycleAuthorityLoaderV8({
     if (sourceLifecycle === null || sourceLifecycle !== chain.lifecycle) {
       fail('MAKER_V8_PACK_LIFECYCLE_STATE_DRIFT', 'Live Pack lifecycle differs from the certified Pack draft.', 'CONTEXT');
     }
-    assertSourceLifecycle(raw.action, sourceLifecycle);
+    if (!readOnly) assertSourceLifecycle(raw.action, sourceLifecycle);
     const controlEpoch = decimal(field(release.fields, 'control_epoch', 'PackRelease'), 'PackRelease.controlEpoch');
     const packOwner = address(field(release.fields, 'owner', 'PackRelease'), 'PackRelease.owner');
-    const packControlled = raw.action !== 'REVOKE_ADMISSION';
+    const registryRevision = decimal(field(packRegistry.fields, 'revision', 'PackRegistry'), 'PackRegistry.revision');
+    const savedRevision = decimal(chain.packRegistryRevision, 'saved Pack registry revision', { positive: true });
+    const packControlled = !readOnly && raw.action !== 'REVOKE_ADMISSION';
     if (release.owner.kind !== 'SHARED' || adminCap.owner.kind !== 'ADDRESS'
       || adminCap.owner.address !== packOwner || treasury.owner.kind !== 'SHARED'
       || packRegistry.owner.kind !== 'SHARED'
@@ -1030,18 +1041,34 @@ export function createMakerV8PackLifecycleAuthorityLoaderV8({
       || moveId(field(release.fields, 'treasury_id', 'PackRelease'), 'PackRelease.treasuryId') !== treasuryId
       || moveText(field(release.fields, 'semantic_pack_id', 'PackRelease'), 'PackRelease.semanticPackId') !== raw.pack.semanticPackId
       || (packControlled && packOwner !== signer)
+      || (chain.release.owner !== undefined && chain.release.owner !== packOwner)
+      || (chain.release.controlEpoch !== undefined && String(chain.release.controlEpoch) !== controlEpoch)
       || moveId(field(adminCap.fields, 'release_id', 'PackAdminCap'), 'PackAdminCap.releaseId') !== releaseId
       || address(field(adminCap.fields, 'owner', 'PackAdminCap'), 'PackAdminCap.owner') !== packOwner
       || decimal(field(adminCap.fields, 'control_epoch', 'PackAdminCap'), 'PackAdminCap.controlEpoch') !== controlEpoch
       || moveId(field(treasury.fields, 'release_id', 'PackTreasury'), 'PackTreasury.releaseId') !== releaseId
       || moveId(field(packRegistry.fields, 'root_id', 'PackRegistry'), 'PackRegistry.rootId') !== address(raw.pack.rootId, 'pack.rootId')
-      || decimal(field(packRegistry.fields, 'revision', 'PackRegistry'), 'PackRegistry.revision') !== String(chain.packRegistryRevision)) {
+      || BigInt(registryRevision) < BigInt(savedRevision)) {
       fail('MAKER_V8_PACK_LIFECYCLE_AUTHORITY_DRIFT', 'Live Pack control objects differ from the certified publication chain.', 'CONTEXT');
     }
-    if (canonical(release.objectRef) !== canonical(chain.release.objectRef)
-      || canonical(adminCap.objectRef) !== canonical(chain.adminCap.objectRef)
-      || canonical(treasury.objectRef) !== canonical(chain.treasury.objectRef)) {
+    if ((pinned && registryRevision !== savedRevision)
+      || !currentRefMatches(release.objectRef, chain.release.objectRef, pinned)
+      || !currentRefMatches(adminCap.objectRef, chain.adminCap.objectRef, pinned)
+      || !currentRefMatches(treasury.objectRef, chain.treasury.objectRef, pinned)) {
       fail('MAKER_V8_PACK_LIFECYCLE_OBJECT_REF_DRIFT', 'Live Pack control refs changed before lifecycle preparation.', 'CONTEXT');
+    }
+    if (readOnly) {
+      const collected = decimal(field(treasury.fields, 'total_collected', 'PackTreasury'), 'PackTreasury.totalCollected');
+      const withdrawn = decimal(field(treasury.fields, 'total_withdrawn', 'PackTreasury'), 'PackTreasury.totalWithdrawn');
+      const available = balance(treasury.fields, 'PackTreasury');
+      if (BigInt(collected) !== available + BigInt(withdrawn)) {
+        fail('MAKER_V8_PACK_LIFECYCLE_TREASURY_DRIFT', 'Live Pack treasury totals are inconsistent.', 'READBACK');
+      }
+      return freeze({
+        releaseId, treasuryId, owner: packOwner, canManage: packOwner === signer,
+        lifecycle: sourceLifecycle, registryRevision, paymentCoinType: runtime.paymentCoinType,
+        balanceAtomic: available.toString(), totalCollectedAtomic: collected, totalWithdrawnAtomic: withdrawn,
+      });
     }
     let admissionAuthority = null;
     let definitionRegistry = null;
@@ -1093,7 +1120,7 @@ export function createMakerV8PackLifecycleAuthorityLoaderV8({
       rootId: address(raw.pack.rootId, 'pack.rootId'),
       packRegistryId,
       semanticPackId: raw.pack.semanticPackId,
-      packRegistryRevision: decimal(chain.packRegistryRevision, 'packRegistryRevision', { positive: true }),
+      packRegistryRevision: registryRevision,
       sourceLifecycle,
       releaseId,
       adminCapId,
@@ -1113,6 +1140,7 @@ export function createMakerV8PackLifecycleAuthorityLoaderV8({
       inputs,
     });
   };
+  return Object.assign(resolve, { readState: (pack) => resolve({ pack }, true) });
 }
 
 export function createMakerV8PackLifecycleControllerV8({
@@ -1138,29 +1166,73 @@ export function createMakerV8PackLifecycleControllerV8({
     execution,
     ...(now === undefined ? {} : { now }),
   });
-  const gates = freeze({
-    allowWalletSignature: execution?.allowWalletSignature === true,
-    allowBroadcast: execution?.allowBroadcast === true,
+  return packLifecycleOperations({ engine, persistence, loadRequest, wallet });
+}
+
+function packLifecycleOperations({ engine, persistence, loadRequest, wallet }) {
+  const planDigest = (plan) => plan?.current?.outcome?.digest
+    ?? plan?.current?.outcome?.retiredDigest ?? plan?.terminal?.digest;
+  const ticketFor = (plan) => freeze({
+    schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
+    recoveryId: plan.attemptId,
+    digest: digest(planDigest(plan), 'Pack lifecycle digest'),
   });
+  const inspect = async ({ draftId, draftRevision, releaseId }) => {
+    const signer = accountAddress(await wallet.getCurrentAccount());
+    const plans = await persistence.listPlans(signer);
+    const pending = plans.filter((plan) => plan.immutable.request.pack?.releaseId === releaseId
+      && ((plan.status === 'ACTIVE' && plan.current?.outcome.status !== 'READY')
+        || (plan.status === 'COMPLETE' && plan.immutable.draftId === draftId
+          && plan.immutable.draftRevision === draftRevision)));
+    if (pending.length > 1 || (pending.length === 1 && pending[0].immutable.draftId !== draftId)) {
+      fail('MAKER_V8_PACK_LIFECYCLE_ATTEMPT_SCOPE', 'Recover the outstanding transaction from its original Pack draft.', 'RECOVERY');
+    }
+    const plan = pending[0];
+    return plan ? freeze({
+      action: plan.immutable.request.action,
+      status: plan.current?.outcome.status ?? 'FINALIZED_SUCCESS',
+      ticket: ticketFor(plan),
+    }) : null;
+  };
+  const scopeOf = (request) => ({
+    draftId: request.draftId, draftRevision: request.draftRevision, releaseId: request.pack.releaseId,
+  });
+  const requireSettled = async (request) => {
+    if (await inspect(scopeOf(request))) {
+      fail('MAKER_V8_PACK_LIFECYCLE_RECOVERY_REQUIRED', 'Continue the original Pack lifecycle transaction first.', 'RECOVERY');
+    }
+  };
   return freeze({
     schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
-    execution: gates,
+    execution: engine.execution,
     build: (input) => loadRequest(input),
+    inspect,
+    readState: (pack) => loadRequest.readState(pack),
+    async review(builtInput) {
+      const request = assertRequest(await builtInput);
+      await requireSettled(request);
+      const plan = await engine.prepare(request);
+      return engine.prepareReview(plan.attemptId);
+    },
+    async signReviewed({ step, draftId, draftRevision, releaseId, action, assertCurrent }) {
+      const plan = await engine.load(step?.id);
+      const request = assertRequest(plan?.immutable.request);
+      const scope = scopeOf(request);
+      if (scope.draftId !== draftId || scope.draftRevision !== draftRevision
+        || scope.releaseId !== releaseId || request.action !== action
+        || request.signer !== accountAddress(await wallet.getCurrentAccount())) {
+        fail('MAKER_V8_PACK_LIFECYCLE_REVIEW_SCOPE', 'Review the current wallet and Pack release again.', 'CONTEXT');
+      }
+      await requireSettled(request);
+      return ticketFor(await engine.requestSignature(plan.attemptId, { review: step, assertCurrent }));
+    },
     async prepare(builtInput) {
       const request = assertRequest(await builtInput);
       let plan = await engine.prepare(request);
       if (plan.status === 'ACTIVE' && plan.current?.outcome.status === 'READY') {
         plan = await engine.requestSignature(plan.attemptId);
       }
-      const digestValue = plan.current?.outcome?.digest ?? plan.terminal?.digest;
-      if (typeof digestValue !== 'string') {
-        fail('MAKER_V8_PACK_LIFECYCLE_SIGNATURE_REQUIRED', 'Pack lifecycle preparation did not durably persist one signed digest.', 'RECOVERY');
-      }
-      return freeze({
-        schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
-        recoveryId: plan.attemptId,
-        digest: digestValue,
-      });
+      return ticketFor(plan);
     },
     async recover(ticket) {
       exact(ticket, ['schemaVersion', 'recoveryId', 'digest'], 'Pack lifecycle ticket');
@@ -1168,40 +1240,25 @@ export function createMakerV8PackLifecycleControllerV8({
         fail('MAKER_V8_PACK_LIFECYCLE_TICKET_INVALID', 'Pack lifecycle ticket has another schema.', 'RECOVERY');
       }
       digest(ticket.digest, 'ticket.digest');
-      let plan = await engine.recoverOutcome(ticket.recoveryId);
-      const observedDigest = plan.current?.outcome?.digest ?? plan.current?.outcome?.retiredDigest ?? plan.terminal?.digest;
-      if (observedDigest !== ticket.digest) {
+      if (planDigest(await engine.load(ticket.recoveryId)) !== ticket.digest) {
         fail('MAKER_V8_PACK_LIFECYCLE_TICKET_DRIFT', 'Pack lifecycle durable attempt has another digest.', 'RECOVERY');
       }
+      let plan = await engine.recoverOutcome(ticket.recoveryId);
       if (plan.status === 'ACTIVE'
         && plan.current?.outcome.status === 'OUTCOME_PENDING'
         && plan.current.outcome.code === 'TYPED_GRPC_NOT_FOUND') {
         plan = await engine.replayExact(ticket.recoveryId);
       }
-      if (plan.status === 'COMPLETE') {
-        return freeze({
-          schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
-          status: 'FINALIZED_SUCCESS',
-          recoveryId: ticket.recoveryId,
-          digest: ticket.digest,
-          readback: freeze(clone(plan.terminal.chain)),
-        });
-      }
-      if (plan.status === 'FAILED') {
-        return freeze({
-          schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
-          status: 'FINALIZED_FAILURE',
-          recoveryId: ticket.recoveryId,
-          digest: ticket.digest,
-          readback: null,
-        });
+      if (planDigest(plan) !== ticket.digest) {
+        fail('MAKER_V8_PACK_LIFECYCLE_TICKET_DRIFT', 'Pack lifecycle durable attempt has another digest.', 'RECOVERY');
       }
       return freeze({
         schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
-        status: 'OUTCOME_UNKNOWN',
+        status: plan.status === 'COMPLETE' ? 'FINALIZED_SUCCESS'
+          : plan.status === 'FAILED' ? 'FINALIZED_FAILURE' : 'OUTCOME_UNKNOWN',
         recoveryId: ticket.recoveryId,
         digest: ticket.digest,
-        readback: null,
+        readback: plan.status === 'COMPLETE' ? freeze(clone(plan.terminal.chain)) : null,
       });
     },
   });
@@ -1249,44 +1306,7 @@ export async function createProductionMakerV8PackLifecycleV8({
     execution,
     ...(now === undefined ? {} : { now }),
   });
-  const controller = freeze({
-    schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
-    execution: freeze({
-      allowWalletSignature: execution?.allowWalletSignature === true,
-      allowBroadcast: execution?.allowBroadcast === true,
-    }),
-    build: (input) => loadRequest(input),
-    async prepare(builtInput) {
-      const request = assertRequest(await builtInput);
-      let plan = await engine.prepare(request);
-      if (plan.status === 'ACTIVE' && plan.current?.outcome.status === 'READY') {
-        plan = await engine.requestSignature(plan.attemptId);
-      }
-      const digestValue = plan.current?.outcome?.digest ?? plan.terminal?.digest;
-      if (typeof digestValue !== 'string') fail('MAKER_V8_PACK_LIFECYCLE_SIGNATURE_REQUIRED', 'Pack lifecycle signature was not durably persisted.', 'RECOVERY');
-      return freeze({ schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA, recoveryId: plan.attemptId, digest: digestValue });
-    },
-    async recover(ticket) {
-      exact(ticket, ['schemaVersion', 'recoveryId', 'digest'], 'Pack lifecycle ticket');
-      let plan = await engine.recoverOutcome(ticket.recoveryId);
-      const observedDigest = plan.current?.outcome?.digest ?? plan.current?.outcome?.retiredDigest ?? plan.terminal?.digest;
-      if (ticket.schemaVersion !== MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA || observedDigest !== ticket.digest) {
-        fail('MAKER_V8_PACK_LIFECYCLE_TICKET_DRIFT', 'Pack lifecycle durable attempt differs from its ticket.', 'RECOVERY');
-      }
-      if (plan.status === 'ACTIVE' && plan.current?.outcome.status === 'OUTCOME_PENDING'
-        && plan.current.outcome.code === 'TYPED_GRPC_NOT_FOUND') {
-        plan = await engine.replayExact(ticket.recoveryId);
-      }
-      return freeze({
-        schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
-        status: plan.status === 'COMPLETE' ? 'FINALIZED_SUCCESS'
-          : plan.status === 'FAILED' ? 'FINALIZED_FAILURE' : 'OUTCOME_UNKNOWN',
-        recoveryId: ticket.recoveryId,
-        digest: ticket.digest,
-        readback: plan.status === 'COMPLETE' ? freeze(clone(plan.terminal.chain)) : null,
-      });
-    },
-  });
+  const controller = packLifecycleOperations({ engine, persistence, loadRequest, wallet });
   return freeze({
     schemaVersion: MAKER_V8_PACK_LIFECYCLE_CONTROLLER_SCHEMA,
     runtime,

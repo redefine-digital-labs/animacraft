@@ -1462,42 +1462,71 @@ export function createMakerV8PackControllerV8({
       stage = 'PREPARE',
       request = {},
       ticket = null,
+      step = null,
+      assertCurrent = null,
     } = {}) {
       if (lifecycle === null) {
         fail('COMPILER', 'MAKER_V8_PACK_BLOCKED_COMPILER', 'Independent Pack lifecycle compilation and certified readback are not connected.', undefined, false);
       }
-      if (!gates.allowWalletSignature || !gates.allowBroadcast) {
+      if (stage !== 'INSPECT' && (!gates.allowWalletSignature || !gates.allowBroadcast)) {
         fail('CONFIG', 'MAKER_V8_PACK_EXECUTION_DISABLED', 'Pack lifecycle signing and exact-byte recovery are disabled.', undefined, false);
       }
-      if (!MAKER_V8_PACK_LIFECYCLE_ACTIONS.includes(action)) {
+      if (stage !== 'INSPECT' && !MAKER_V8_PACK_LIFECYCLE_ACTIONS.includes(action)) {
         fail('LIFECYCLE', 'MAKER_V8_PACK_LIFECYCLE_ACTION_INVALID', 'Pack lifecycle action is invalid.');
       }
-      if (!['PREPARE', 'RECOVER'].includes(stage)) {
-        fail('LIFECYCLE', 'MAKER_V8_PACK_LIFECYCLE_STAGE_INVALID', 'Pack lifecycle stage must be PREPARE or RECOVER.');
+      if (!['PREPARE', 'INSPECT', 'REVIEW', 'SIGN_REVIEWED', 'RECOVER'].includes(stage)) {
+        fail('LIFECYCLE', 'MAKER_V8_PACK_LIFECYCLE_STAGE_INVALID', 'Pack lifecycle stage is invalid.');
       }
       const current = await loadRequired(draftId);
       if (expectedRevision !== null) requireExpectedRevision(current, expectedRevision);
       if (current.publication.status !== 'COMPLETE' || current.publication.chain === null) {
         fail('LIFECYCLE', 'MAKER_V8_PACK_LIFECYCLE_PUBLICATION_REQUIRED', 'Pack lifecycle actions require certified completed publication.');
       }
+      const pack = {
+        draftId: current.draftId,
+        semanticPackId: current.document.metadata.semanticPackId,
+        rootId: current.document.bindings.root.objectRef.objectId,
+        packRegistryId: current.document.bindings.packRegistry.objectRef.objectId,
+        bindings: snapshot(current.document.bindings),
+        chain: snapshot(current.publication.chain),
+      };
+      const scope = { draftId, draftRevision: current.revision, releaseId: pack.chain.release.objectRef.objectId };
+      if (stage === 'INSPECT') {
+        requireMethod(lifecycle, 'inspect', 'lifecycle');
+        requireMethod(lifecycle, 'readState', 'lifecycle');
+        const pending = await lifecycle.inspect(scope);
+        const state = pending ? null : await lifecycle.readState(pack);
+        requireExpectedRevision(await loadRequired(draftId), current.revision);
+        return freeze({ draft: current, pending, state, execution: gates });
+      }
       if (!lifecycleTransitionAllowed(action, current.publication.chain.lifecycle)) {
         fail('LIFECYCLE', 'MAKER_V8_PACK_LIFECYCLE_TRANSITION_INVALID', `Cannot ${action} a ${current.publication.chain.lifecycle} Pack.`);
       }
       if (!plain(request)) fail('LIFECYCLE', 'MAKER_V8_PACK_LIFECYCLE_REQUEST_INVALID', 'Lifecycle request must be a plain record.');
-      if (stage === 'PREPARE') {
+      if (stage === 'SIGN_REVIEWED') {
+        requireMethod(lifecycle, 'signReviewed', 'lifecycle');
+        const prepared = await lifecycle.signReviewed({
+          ...scope, action, step,
+          assertCurrent: async () => {
+            requireExpectedRevision(await loadRequired(draftId), current.revision);
+            await assertCurrent?.();
+          },
+        });
+        return freeze({ draft: current, prepared });
+      }
+      if (stage === 'REVIEW' || stage === 'PREPARE') {
         const built = await lifecycle.build({
           ...snapshot(request),
           action,
           draftRevision: current.revision,
-          pack: {
-            draftId: current.draftId,
-            semanticPackId: current.document.metadata.semanticPackId,
-            rootId: current.document.bindings.root.objectRef.objectId,
-            packRegistryId: current.document.bindings.packRegistry.objectRef.objectId,
-            bindings: snapshot(current.document.bindings),
-            chain: snapshot(current.publication.chain),
-          },
+          pack,
         });
+        if (stage === 'REVIEW') {
+          requireMethod(lifecycle, 'review', 'lifecycle');
+          const reviewed = await lifecycle.review(built);
+          requireExpectedRevision(await loadRequired(draftId), current.revision);
+          return freeze({ draft: current, step: reviewed });
+        }
         const prepared = await lifecycle.prepare(built);
         publish('LIFECYCLE_PREPARED', current);
         return Object.freeze({
@@ -1572,11 +1601,9 @@ export function createMakerV8PackControllerV8({
         || chain.release.controlEpoch !== priorChain.release.controlEpoch) {
         fail('READBACK', 'MAKER_V8_PACK_LIFECYCLE_CONTROL_DRIFT', 'Pack lifecycle action changed control authority unexpectedly.');
       }
-      const expectedRegistryRevision = action === 'REVOKE_ADMISSION'
-        ? (BigInt(priorChain.packRegistryRevision) + 1n).toString()
-        : priorChain.packRegistryRevision;
-      if (chain.packRegistryRevision !== expectedRegistryRevision) {
-        fail('READBACK', 'MAKER_V8_PACK_LIFECYCLE_REVISION_DRIFT', 'Pack lifecycle action changed the registry revision outside its exact authority.');
+      const minimumRegistryRevision = BigInt(priorChain.packRegistryRevision) + (action === 'REVOKE_ADMISSION' ? 1n : 0n);
+      if (BigInt(chain.packRegistryRevision) < minimumRegistryRevision) {
+        fail('READBACK', 'MAKER_V8_PACK_LIFECYCLE_REVISION_DRIFT', 'Pack lifecycle readback predates the saved registry or its required revision advance.');
       }
       for (const field of ['release', 'adminCap', 'treasury']) {
         if (chain[field].objectRef.objectId
