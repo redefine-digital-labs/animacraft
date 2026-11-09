@@ -21,10 +21,13 @@ const testSigner = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(19));
 const OWNER = testSigner.toSuiAddress(), RELAY = `0x${'22'.repeat(32)}`;
 const PACKAGE = `0x${'33'.repeat(32)}`, COIN = `0x${'44'.repeat(32)}`;
 const WAL = `${'0x' + '55'.repeat(32)}::wal::WAL`;
+const SUI = '0x2::sui::SUI';
 const SYSTEM = MAINNET_WALRUS_PACKAGE_CONFIG.systemObjectId;
 const DIGEST = toBase58(new Uint8Array(32).fill(6));
 const system = { id: SYSTEM, package_id: PACKAGE };
 const QUOTED_AT = '2026-10-03T00:00:00.000Z';
+const simulatedGas = { computationCost: '10', storageCost: '4', storageRebate: '5' };
+const simulatedCharge = 9n;
 
 async function sdkTransaction(addressBalance, { tip = 257n } = {}) {
   const client = new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://unused.invalid' });
@@ -242,6 +245,7 @@ test('publisher review binds detailed SDK quote to the exact digest signed witho
   };
   value.client.core.getCurrentSystemState = async () => ({ systemState: { epoch: '10' } });
   const rows = new Map(), signed = [], writes = [];
+  let walDrift = true;
   const publisher = createMakerV8WalrusPublisherV8({ walrusClient: value.walrus, buildClient: value.client,
     persistence: {
       async requirePersistentStorage() {}, async create(record) { rows.set(record.uploadId, structuredClone(record)); return structuredClone(record); },
@@ -255,6 +259,16 @@ test('publisher review binds detailed SDK quote to the exact digest signed witho
       async verifyExactSignature() { return { verified: true }; } },
     execution: { network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, allowWalletSignature: true, allowBroadcast: true },
     quoteAuthority: async () => ({ system, walCoinType: WAL, relayAddress: RELAY }), now: () => 123,
+    async simulateReviewedRegistration(bytes) {
+      return { $kind: 'Transaction', Transaction: {
+        digest: TransactionDataBuilder.getDigestFromBytes(bytes), bcs: bytes,
+        status: { success: true }, effects: { status: { success: true }, gasUsed: simulatedGas },
+        balanceChanges: [
+          { address: OWNER, coinType: WAL, amount: String(-value.expected.totalCost + (walDrift ? 1n : 0n)) },
+          { address: OWNER, coinType: SUI, amount: String(-value.tip - simulatedCharge) },
+        ],
+      } };
+    },
   });
   await publisher.prepare({ uploadId: 'frozen-sdk-quote', owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(new Uint8Array(1031)) });
   const review = await publisher.prepareReview('frozen-sdk-quote');
@@ -265,8 +279,19 @@ test('publisher review binds detailed SDK quote to the exact digest signed witho
   await assert.rejects(publisher.signReviewed('frozen-sdk-quote', { ...review,
     quote: { ...review.quote, walrusTotalCostFrost: '0' } }), { code: 'MAKER_V8_WALRUS_REVIEW_STALE' });
   value.walrus.storageCost = async () => { throw new Error('must not reprice frozen transaction'); };
-  await publisher.signReviewed('frozen-sdk-quote', review);
-  assert.equal(signed.length, 1); assert.equal(signed[0].digest, review.digest);
+  const original = await publisher.load('frozen-sdk-quote');
+  await assert.rejects(publisher.signReviewed('frozen-sdk-quote', review), {
+    code: 'MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FEE_MISMATCH',
+  });
+  assert.deepEqual(await publisher.load('frozen-sdk-quote'), original);
+  assert.deepEqual(signed, []);
+  walDrift = false;
+  value.walrus.storageCost = async () => value.expected;
+  const refreshed = await publisher.prepareReview('frozen-sdk-quote');
+  assert.notEqual(refreshed.digest, review.digest);
+  value.walrus.storageCost = async () => { throw new Error('must not reprice frozen transaction'); };
+  await publisher.signReviewed('frozen-sdk-quote', refreshed);
+  assert.equal(signed.length, 1); assert.equal(signed[0].digest, refreshed.digest);
   assert.equal(quote(Buffer.from(signed[0].bytes, 'base64')).walrusTotalCostFrost, review.quote.walrusTotalCostFrost);
   assert.deepEqual(writes, []);
 });
@@ -275,7 +300,7 @@ test('publisher review binds detailed SDK quote to the exact digest signed witho
 // Synthetic network/relay responses and a deterministic test-only Ed25519 key
 // around real signature verification, SDK builders and
 // real IndexedDB. This proves recovery boundaries, not real Mainnet acceptance.
-async function batchRuntime() {
+async function batchRuntime({ simulateReviewedRegistration } = {}) {
   const sdk = await sdkTransaction(true);
   const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
     persisted: async () => true, persist: async () => true,
@@ -409,6 +434,7 @@ async function batchRuntime() {
     held = true; try { return await fn({}); } finally { held = false; }
   } };
   const options = { walrusClient: sdk.walrus, directUploadClient, buildClient: sdk.client, persistence, rpc, wallet, locks,
+    simulateReviewedRegistration,
     execution: { network: 'mainnet', chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, allowWalletSignature: true, allowBroadcast: true },
     quoteAuthority: async () => ({ system, walCoinType: WAL, relayAddress: RELAY }), now: () => 123,
     fetcher: async url => {
@@ -436,6 +462,61 @@ const signBatch = async h => {
 const finalizeRegister = async h => {
   await signBatch(h); await h.publisher.resumeBatch(h.batch.key); return h.publisher.resumeBatch(h.batch.key);
 };
+
+test('the cold batch checks its exact fee debits before signing and refreshes only a disproven unsigned review', async () => {
+  const simulations = [];
+  let outcome = 'missing';
+  let reviewed;
+  const h = await batchRuntime({ async simulateReviewedRegistration(bytes) {
+    const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
+    assert.equal(digest, reviewed.digest);
+    simulations.push(digest);
+    const success = outcome !== 'failed';
+    const kind = success ? 'Transaction' : 'FailedTransaction';
+    const balanceChanges = [
+      { address: OWNER, coinType: WAL, amount: String(-BigInt(reviewed.quote.walrusTotalCostFrost)) },
+      { address: OWNER, coinType: SUI, amount: String(-BigInt(reviewed.quote.relayTipMist) - simulatedCharge) },
+      { address: RELAY, coinType: SUI, amount: reviewed.quote.relayTipMist },
+    ];
+    if (outcome === 'wal') balanceChanges[0].amount = '-1';
+    if (outcome === 'sui') balanceChanges[1].amount = String(-BigInt(reviewed.gasBudgetMist) - BigInt(reviewed.quote.relayTipMist) - 1n);
+    if (outcome === 'missing-sui') balanceChanges.splice(1, 1);
+    if (outcome === 'extra') balanceChanges.push({ address: OWNER, coinType: '0x2::test::OTHER', amount: '-1' });
+    return { $kind: kind, [kind]: { digest, bcs: bytes, status: { success }, effects: { status: { success }, gasUsed: simulatedGas },
+      balanceChanges: outcome === 'missing' ? undefined : balanceChanges } };
+  } });
+  const key = h.batch.key;
+  reviewed = await h.publisher.prepareBatchReview(key);
+  const first = reviewed;
+  const prepared = await h.persistence.loadPublicationBinding(key);
+  await assert.rejects(h.cold().signBatchReviewed(key, first, async () => {}),
+    { code: 'MAKER_V8_WALRUS_REGISTRATION_SIMULATION_UNVERIFIED' });
+  assert.deepEqual(await h.persistence.loadPublicationBinding(key), prepared);
+
+  for (const rejected of ['failed', 'wal', 'sui', 'missing-sui', 'extra']) {
+    outcome = rejected;
+    await assert.rejects(h.cold().signBatchReviewed(key, reviewed, async () => {}), {
+      code: rejected === 'failed' ? 'MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FAILED'
+        : 'MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FEE_MISMATCH',
+    });
+    const unsigned = await h.persistence.loadPublicationBinding(key);
+    assert.equal(unsigned.status, 'ENCODED');
+    assert.equal(unsigned.transaction, null);
+    assert.equal(unsigned.review, null);
+    assert.deepEqual(unsigned.members, prepared.members);
+    const previous = reviewed;
+    reviewed = await h.cold().prepareBatchReview(key);
+    assert.notEqual(reviewed.digest, previous.digest);
+    assert.deepEqual(reviewed.memberIds, first.memberIds);
+  }
+  assert.deepEqual(h.calls, []);
+  outcome = 'success';
+  const signed = await h.cold().signBatchReviewed(key, reviewed, async () => {});
+  assert.equal(signed.status, 'RECOVERY_REQUIRED');
+  assert.equal(simulations.length, 7);
+  assert.equal(simulations.at(-1), reviewed.digest);
+  assert.deepEqual(h.calls.map(([name, digest]) => [name, digest]), [['sign', reviewed.digest]]);
+});
 
 test('four-member SDK batch completes with two signatures, correct per-member relay IDs and atomic cold checkpoints', async () => {
   const h = await batchRuntime();
