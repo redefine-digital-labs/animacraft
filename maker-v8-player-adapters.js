@@ -1521,10 +1521,7 @@ export async function readMakerV8ExternalAdmissionsV8({ client, runtime, packReg
       'External execution requires the official gRPC dynamic-field point reader.',
     );
   }
-  const parentId = moveId(
-    packRegistry.fields.external_admissions,
-    'PackRegistry.externalAdmissions.tableId',
-  );
+  const parentId = moveTableId(packRegistry.fields.external_admissions, 'PackRegistry.externalAdmissions.tableId');
   const valueType = stableType(runtime, 'runtime', 'runtime_v8', 'ExternalAdmissionRecordV8');
   const rows = [];
   for (const product of products) {

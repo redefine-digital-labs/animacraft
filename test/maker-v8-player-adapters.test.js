@@ -2176,7 +2176,7 @@ test('external admission authority is read by exact gRPC dynamic-field key and c
   const rows = await readMakerV8ExternalAdmissionsV8({
     client,
     runtime,
-    packRegistry: { fields: { external_admissions: tableId } },
+    packRegistry: { fields: { external_admissions: { id: tableId, size: '1' } } },
     products: [{ objectId: productId }],
   });
   assert.equal(request.parentId, tableId);
