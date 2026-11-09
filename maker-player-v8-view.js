@@ -8,7 +8,7 @@ import {
   makerV8PlayerRecipeCommitmentV8,
 } from './maker-v8-player-controller.js';
 import { assertMakerV8LocalPlayerSnapshot } from './maker-v8-local-player.js';
-import { assertMakerV8EnabledPackReleaseIds } from './maker-v8-player-pack-preferences.js';
+import { assertMakerV8EnabledPackReleaseIds, hasOnlyUnavailablePackDiagnostics } from './maker-v8-player-pack-preferences.js';
 import { makerV8PlayerRecipeLayout } from './maker-v8-player-slot-layout.js';
 import { makerV8PlayerTrack, makerV8PlayerPart, makerV8PlayerPartUiKey, makerV8PlayerColor } from './maker-v8-player-definition-resolution.js';
 import { makerV8PlayerColorFields, makerV8PlayerColorMap, makerV8PlayerSwatchKey, makerV8PlayerColorEntry, makerV8PlayerColorControlKey } from './maker-v8-player-colors.js';
@@ -429,8 +429,7 @@ function exactSession(session) {
       || !Array.isArray(choices.packStyles)
       || !Array.isArray(choices.externalStyles)
       || !Array.isArray(choices.certifiedAssets)
-      || !Array.isArray(choices.diagnostics)
-      || choices.diagnostics.length !== 0) {
+      || !hasOnlyUnavailablePackDiagnostics(choices)) {
       throw new TypeError('Fresh-v8 Player contextual choices lack exact wallet and Root authority.');
     }
   }
@@ -815,6 +814,7 @@ function projectPlayerPresentation(exact, state, capabilities, assetRecords) {
     pickerPanel: PICKER_PANELS.has(state.pickerPanel) ? state.pickerPanel : 'parts',
     contextualChoices,
     enabledPackReleaseIds,
+    packCatalogNotice: String(state.packCatalogNotice || ''),
     packAcquisition: plain(state.packAcquisition) ? structuredClone(state.packAcquisition) : null,
     completionConfirmation: plain(state.completionConfirmation) ? clone(state.completionConfirmation) : null,
     completedSoul: plain(state.completedSoul) ? clone(state.completedSoul) : null,
@@ -958,6 +958,7 @@ function renderPalette(view, part) {
 }
 
 function renderExpansionPacks(view) {
+  const catalogNotice = view.packCatalogNotice ? `<p class="v4-player-commerce-error" role="status">${escapeHtml(view.packCatalogNotice)}</p>` : '';
   const releases = new Map();
   view.contextualChoices.filter((choice) => choice.source === 'PACK').forEach((choice) => {
     const key = String(choice.releaseId || choice.semanticPackId || choice.id);
@@ -971,7 +972,7 @@ function renderExpansionPacks(view) {
     releases.set(pendingRelease, [{ label: `${tr(view, 'playerPackRecover')} · ${pendingRelease}`,
       access: { accessible: false, availableForAcquire: false, canRetryRuntime: false } }]);
   }
-  if (!releases.size) return '';
+  if (!releases.size) return catalogNotice;
   const cards = [...releases.entries()].map(([releaseId, choices]) => {
     const access = choices[0].access;
     const accessDrift = choices.some((choice) => (
@@ -1032,7 +1033,7 @@ function renderExpansionPacks(view) {
   const notice = view.packBoundaryReason
     ? `<div class="v4-player-commerce-error" role="status">${escapeHtml(view.packBoundaryReason)}</div>`
     : '';
-  return `<details class="v4-player-expansions"><summary>${escapeHtml(tr(view, 'expansionPacks'))}</summary><p>${escapeHtml(tr(view, 'expansionSelectionSaved'))}</p>${notice}<div class="v4-player-expansion-grid">${cards}</div></details>`;
+  return `${catalogNotice}<details class="v4-player-expansions"><summary>${escapeHtml(tr(view, 'expansionPacks'))}</summary><p>${escapeHtml(tr(view, 'expansionSelectionSaved'))}</p>${notice}<div class="v4-player-expansion-grid">${cards}</div></details>`;
 }
 
 function renderPartPicker(view, part) {
