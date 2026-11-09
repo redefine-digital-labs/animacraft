@@ -2391,6 +2391,7 @@ export function createOriginalProductApp({
     if (!playerMount) return;
     if (playerComposition && doc.activeElement === playerComposition && playerMount.contains?.(playerComposition)) return;
     const active = doc.activeElement;
+    const packPanelOpen = playerMount.querySelector?.('details.v4-player-expansions')?.open;
     const textAction = playerMount.contains?.(active) ? active?.dataset?.action : '';
     const localTextFocus = state.localPlayer
       && (['player-profile-name', 'player-profile-world', 'player-profile-description', 'player-profile-tags'].includes(textAction)
@@ -2411,6 +2412,8 @@ export function createOriginalProductApp({
       return;
     }
     playerMount.innerHTML = view ? renderApprovedMakerV8Player(view) : '';
+    const packPanel = playerMount.querySelector?.('details.v4-player-expansions');
+    if (packPanel) packPanel.open = packPanelOpen ?? Boolean(view?.packAcquisition);
     const recovery = !view && state.playerRecovery?.request === state.playerRequest
       && state.playerRecovery?.walletAddress === state.connection.address
       ? state.playerRecovery : null;
