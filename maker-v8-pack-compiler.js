@@ -1589,7 +1589,7 @@ export function createMakerV8PackCompilerV8({
       return attestBuilt(compiled, await successorCursor(compiled, head));
     },
 
-    async certifyFinalized({ plan, query, artifact }) {
+    async certifyFinalized({ plan, query, artifact, archived = null }) {
       const compiled = validateCompiled(plan?.immutable?.request?.publicationInput);
       const descriptor = plan.current.descriptor;
       const cursor = descriptor.stage === 'INIT' ? initialCursor(compiled) : await successorCursor(compiled, plan.head);
@@ -1602,6 +1602,7 @@ export function createMakerV8PackCompilerV8({
         predecessor: structuredClone(plan.head),
         query: structuredClone(query),
         artifact: structuredClone(artifact),
+        ...(archived === null ? {} : { archived }),
       });
       exact(result, ['checkpoint', 'chain'], 'Pack stage readback');
       const checkpoint = assertCheckpoint(result.checkpoint, compiled, descriptor.ordinal);

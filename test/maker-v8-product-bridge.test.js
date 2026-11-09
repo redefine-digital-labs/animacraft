@@ -2090,6 +2090,58 @@ test('Pack review signs only the reviewed stage and recovers the saved digest on
   } finally { bridge.dispose(); reopened.dispose(); drafts.close(); }
 });
 
+test('Pack Studio shows an expired digest alongside a separately signed replacement review', async () => {
+  const { productRuntime } = runtimeHarness({ connected: true });
+  const { drafts } = draftHarness();
+  const draft = { draftId: 'qa-pack', revision: 2, document: { author: { address } },
+    publication: { status: 'ACTIVE', chain: null } };
+  const retiredDigest = 'original-pack-digest';
+  const step = { id: 'pack-attempt', revision: 5, stage: 'APPEND', digest: 'replacement-pack-digest' };
+  const calls = [];
+  const plan = { status: 'ACTIVE', current: { descriptor: { stage: 'APPEND' },
+    outcome: { status: 'OUTCOME_PENDING', digest: retiredDigest, code: 'PACK_TRANSACTION_EXPIRED', absence: null } } };
+  const pack = {
+    async createPackDraft() {}, async load() { return structuredClone(draft); },
+    async save() {}, async preview() {}, async export() {}, async performLifecycle() {},
+    async requestPublicationSignature() { assert.fail('The Studio requires an exact review'); },
+    async recoverPublicationOutcome() { assert.fail('Sui uses the publication cursor'); },
+    async replayPackPublication() { assert.fail('Expired bytes must not be replayed'); },
+    async reviewPublication() {
+      return { draft: structuredClone(draft), plan: structuredClone(plan),
+        step: plan.current.outcome.status === 'READY' ? step : null };
+    },
+    async resumePublication() {
+      calls.push('recover');
+      draft.revision++;
+      draft.publication.status = 'READY';
+      plan.current.outcome = { status: 'READY', retiredDigest };
+      return { draft: structuredClone(draft), plan: structuredClone(plan) };
+    },
+    async signReviewedPublication(input) {
+      await input.assertCurrent();
+      assert.equal(input.reviewKind, 'SUI');
+      assert.deepEqual(input.review, step);
+      calls.push('sign');
+      plan.current.outcome = { status: 'SIGNED', digest: step.digest };
+      return { draft: structuredClone(draft) };
+    },
+  };
+  const bridge = createMakerV8ProductBridge({ productRuntime, drafts, pack,
+    execution: { allowWalletSignature: true, allowBroadcast: true } });
+  try {
+    const { review: prior } = await bridge.reviewPackPublication({ draftId: draft.draftId, expectedRevision: draft.revision });
+    assert.equal(prior.digest, retiredDigest);
+    assert.equal(prior.nextAction, 'RECOVER');
+    const { review } = await bridge.advancePackPublication({ reviewId: prior.id, action: 'RECOVER' });
+    assert.equal(review.nextAction, 'SIGN');
+    assert.equal(review.digest, step.digest);
+    assert.equal(review.retiredDigest, retiredDigest);
+    assert.deepEqual(calls, ['recover']);
+    await bridge.advancePackPublication({ reviewId: review.id, action: 'SIGN' });
+    assert.deepEqual(calls, ['recover', 'sign']);
+  } finally { bridge.dispose(); drafts.close(); }
+});
+
 test('Start Making opens one exact Fresh-v8 Player session for the selected Maker', async () => {
   const rootId = `0x${'44'.repeat(32)}`;
   const commitment = '44'.repeat(32);
