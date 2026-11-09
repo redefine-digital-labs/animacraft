@@ -1185,29 +1185,29 @@ function renderExportModal(view) {
         ${view.completedSoul && !view.completionConfirmation ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.completedSoul.matchesProject ? tr(view, 'playerCompletionConfirmed') : tr(view, 'playerStepRecoveredOtherDraft'))}</p>${receiptDetails}<button type="button" data-action="player-open-completed-soul" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-open-completed-soul', '', view.completedSoul.handoffUrl ? '' : view.boundaryReason)}>${escapeHtml(tr(view, 'playerStepOpenSoul'))}</button><button type="button" data-action="player-start-new-completion" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-start-new-completion')}>${escapeHtml(tr(view, 'playerStepStartAnother'))}</button></section>` : ''}
         ${view.pendingHandoffReceipt && !view.completedSoul && !view.completionConfirmation
           ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.pendingHandoffReceipt.message)}</p>${receiptDetails}</section>` : ''}
-        ${renderReceiptLookup(view)}
+        ${!view.completionConfirmation && !view.completedSoul ? renderMakerV8ReceiptLookup(view.receiptLookup, view.locale) : ''}
         ${renderEnvelopeRecovery(view)}
         <footer><p id="makerPlayerExportCompletionIssue" class="v4-player-export-completion-issue" ${completionIssue ? '' : 'hidden'}>${escapeHtml(completionIssue)}</p><button type="button" data-action="close-player-export"${controlAttributes(view, 'close-player-export')}>${escapeHtml(tr(view, 'continueEditing'))}</button><button type="button" data-action="player-export-recipe"${controlAttributes(view, 'player-export-recipe')}>${escapeHtml(tr(view, 'downloadRecipePackage'))}</button><button type="button" data-action="player-download-png"${controlAttributes(view, 'player-download-png', '', canDownload ? '' : tr(view, 'playerDownloadAfterComplete'))}>${escapeHtml(canDownload ? tr(view, 'downloadPng') : tr(view, 'playerDownloadAfterComplete'))}</button><button type="button" class="primary" data-action="player-confirm-complete" aria-describedby="makerPlayerExportCompletionIssue"${controlAttributes(view, 'player-confirm-complete', '', canComplete ? '' : completionIssue || view.boundaryReason)}>${escapeHtml(tr(view, 'completeOc'))}</button></footer>
       </section>
     </div>`;
 }
 
-function renderReceiptLookup(view) {
-  const lookup = view.receiptLookup;
-  if (!lookup || view.completionConfirmation || view.completedSoul) return '';
+export function renderMakerV8ReceiptLookup(lookup, locale) {
+  if (!lookup) return '';
+  const text = key => makerWorkspaceText(locale, key);
   const loading = lookup.status === 'loading';
   const receipt = lookup.receipt;
   return `<form class="v4-player-export-status" data-player-receipt-lookup>
-    <label>${escapeHtml(tr(view, 'playerReceiptDigest'))}
+    <label>${escapeHtml(text('playerReceiptDigest'))}
       <input name="transactionDigest" data-player-receipt-digest type="text" spellcheck="false"
         autocomplete="off" maxlength="44" pattern="[1-9A-HJ-NP-Za-km-z]{32,44}" required
         value="${escapeHtml(lookup.digest)}"${loading ? ' disabled' : ''}>
     </label>
-    <button type="submit"${loading ? ' disabled' : ''}>${escapeHtml(tr(view, loading ? 'playerReceiptChecking' : 'playerReceiptLookup'))}</button>
-    ${lookup.status === 'error' ? `<p role="alert">${escapeHtml(tr(view, 'playerReceiptLookupError'))}</p>` : ''}
+    <button type="submit"${loading ? ' disabled' : ''}>${escapeHtml(text(loading ? 'playerReceiptChecking' : 'playerReceiptLookup'))}</button>
+    ${lookup.status === 'error' ? `<p role="alert">${escapeHtml(text('playerReceiptLookupError'))}</p>` : ''}
     ${receipt ? `<section role="status" data-player-verified-receipt>
       <dl style="overflow-wrap: anywhere"><dt>Soul ID</dt><dd>${escapeHtml(receipt.soulId)}</dd>
-        <dt>${escapeHtml(tr(view, 'playerReceiptDigest'))}</dt><dd>${escapeHtml(receipt.transactionDigest)}</dd></dl>
+        <dt>${escapeHtml(text('playerReceiptDigest'))}</dt><dd>${escapeHtml(receipt.transactionDigest)}</dd></dl>
     </section>` : ''}
   </form>`;
 }
