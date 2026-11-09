@@ -123,6 +123,9 @@ const NATIVE_SOUL_BOUND_BCS = bcs.struct('NativeSoulBoundV8', {
   original_holder: bcs.Address,
   authorization_commitment: bcs.vector(bcs.u8()),
 });
+const NATIVE_SOUL_BOUND_IDS = [
+  'binding_id', 'soul_id', 'soul_state_id', 'root_id', 'output_id', 'receipt_id', 'original_holder',
+];
 const PHYSICAL_ASSET_ISSUED_BCS = bcs.struct('PhysicalAssetIssuedV8', {
   asset_id: bcs.Address,
   root_id: bcs.Address,
@@ -1518,10 +1521,7 @@ export async function readMakerV8ExternalAdmissionsV8({ client, runtime, packReg
       'External execution requires the official gRPC dynamic-field point reader.',
     );
   }
-  const parentId = moveId(
-    packRegistry.fields.external_admissions,
-    'PackRegistry.externalAdmissions.tableId',
-  );
+  const parentId = moveTableId(packRegistry.fields.external_admissions, 'PackRegistry.externalAdmissions.tableId');
   const valueType = stableType(runtime, 'runtime', 'runtime_v8', 'ExternalAdmissionRecordV8');
   const rows = [];
   for (const product of products) {
@@ -3029,6 +3029,7 @@ const NON_GENERIC_PLAYER_FUNCTIONS = new Set([
   'transfer_maker_loadout_to_holder_v8',
   'clear_non_external_selection_v8',
   'unequip_owned_base_style_v8',
+  'unequip_external_style_v8',
   'certify_physical_selection_v8',
   'seal_ordered_selection_proofs_v8',
   'transfer_new_physical_asset_to_holder_v8',
@@ -5196,16 +5197,26 @@ function ledgerBoundPlayerEvent(event, layout, fields, addressFields, hashFields
   return authority;
 }
 
-function certifyPlayerEvent(runtime, record, response, outputs, types) {
-  const expectedType = record.plan.descriptor.expected.expectedEventType;
-  if (expectedType === null) return null;
+function selectPlayerEvent(response, expectedType, signer) {
   const matches = response.events.filter((event) => {
     try { return normalizeStructTag(event.type) === normalizeStructTag(expectedType); } catch { return false; }
   });
-  if (matches.length !== 1 || matches[0].sender !== record.plan.signer) {
+  if (matches.length !== 1 || matches[0].sender !== signer) {
     fail('MAKER_V8_PLAYER_EVENT_INVALID', 'Finalized Player action must emit one exact signer-bound event.');
   }
-  const event = matches[0];
+  return matches[0];
+}
+
+function nativeSoulBoundFields(event) {
+  return ledgerBoundPlayerEvent(event, NATIVE_SOUL_BOUND_BCS,
+    [...NATIVE_SOUL_BOUND_IDS, 'authorization_commitment'], new Set(NATIVE_SOUL_BOUND_IDS),
+    new Set(['authorization_commitment']), new Set());
+}
+
+function certifyPlayerEvent(runtime, record, response, outputs, types) {
+  const expectedType = record.plan.descriptor.expected.expectedEventType;
+  if (expectedType === null) return null;
+  const event = selectPlayerEvent(response, expectedType, record.plan.signer);
   let layout;
   let fields;
   let role;
@@ -5221,14 +5232,9 @@ function certifyPlayerEvent(runtime, record, response, outputs, types) {
     hashFields = new Set();
     numericFields = new Set(['paid_atomic', 'protocol_atomic', 'maker_atomic', 'issued_at_ms']);
   } else if (record.action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT) {
-    layout = NATIVE_SOUL_BOUND_BCS;
-    fields = ['binding_id', 'soul_id', 'soul_state_id', 'root_id', 'output_id', 'receipt_id', 'original_holder', 'authorization_commitment'];
     // The AC event type is emitted inside Soulidity's top-level native mint.
     // Sui records that PTB entrypoint in packageId/transactionModule.
     role = 'output'; moduleName = 'market';
-    addressFields = new Set(['binding_id', 'soul_id', 'soul_state_id', 'root_id', 'output_id', 'receipt_id', 'original_holder']);
-    hashFields = new Set(['authorization_commitment']);
-    numericFields = new Set();
   } else if (record.action === MAKER_V8_PLAYER_ACTIONS.MATERIALIZE_PHYSICAL) {
     layout = PHYSICAL_ASSET_ISSUED_BCS;
     fields = [
@@ -5249,9 +5255,9 @@ function certifyPlayerEvent(runtime, record, response, outputs, types) {
     || event.transactionModule !== moduleName) {
     fail('MAKER_V8_PLAYER_EVENT_INVALID', 'Player event emitter differs from the exact callable package/module.');
   }
-  const bound = ledgerBoundPlayerEvent(
-    event, layout, fields, addressFields, hashFields, numericFields,
-  );
+  const bound = record.action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT
+    ? nativeSoulBoundFields(event)
+    : ledgerBoundPlayerEvent(event, layout, fields, addressFields, hashFields, numericFields);
   const output = outputs[0];
   if (bound.root_id !== record.playerIdentity.rootId || (bound.holder ?? bound.original_holder) !== record.plan.signer) {
     fail('MAKER_V8_PLAYER_EVENT_INVALID', 'Player event differs from the signed Root/holder.');
@@ -5297,6 +5303,66 @@ function certifyPlayerEvent(runtime, record, response, outputs, types) {
 export function certifyMakerV8PlayerFinalizedEventV8({ runtime: runtimeInput, record, response, outputs } = {}) {
   const runtime = assertMakerV8Runtime(runtimeInput);
   return certifyPlayerEvent(runtime, record, response, outputs, playerTypes(runtime));
+}
+
+/** Read a historical receipt using the finalized transaction as authority. The
+ * result is display-only and carries no local project or completion authority. */
+export async function readMakerV8PlayerReceiptByDigestV8({
+  client, runtime: runtimeInput, rootId, signer, transactionDigest,
+}) {
+  assertMakerV8SuiGrpcTransport(client);
+  const runtime = assertMakerV8Runtime(runtimeInput, { requireEnabled: true });
+  const types = playerTypes(runtime);
+  const root = address(rootId, 'Maker Root');
+  const holder = address(signer, 'original holder');
+  const digest = suiDigest(transactionDigest, 'Complete transaction digest');
+  const evidence = await client.getFinalizedTransactionEvidence({ digest });
+  if (evidence.digest !== digest || evidence.sender !== holder || evidence.effectsStatus?.success !== true) {
+    fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Transaction must be a successful finalized Complete from this wallet.');
+  }
+  const transaction = Transaction.from(evidence.transactionBcs);
+  const callable = runtime.nativeSoulIntegration?.soulidityCallablePackageId;
+  const mints = transaction.getData().commands.filter(({ MoveCall: call }) =>
+    call?.package === callable && call.module === 'market' && call.function === 'mint_animacraft_v8_in_personal_kiosk');
+  if (mints.length !== 1) {
+    fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Transaction does not contain one exact Animacraft native mint.');
+  }
+  const response = await assertFinalizedMakerV8CompilerTransactionV8(client, digest, transaction);
+  const expectedType = stableType(runtime, 'output', 'output_v8', 'NativeSoulBoundV8');
+  const event = selectPlayerEvent(response, expectedType, holder);
+  const bound = nativeSoulBoundFields(event);
+  if (event.packageId !== callable || event.transactionModule !== 'market'
+    || bound.root_id !== root || bound.original_holder !== holder) {
+    fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Original Complete does not belong to this Maker and wallet.');
+  }
+  const created = (type, objectId) => {
+    const { change, ref } = finalizedChange(response, type, type);
+    if (change.type !== 'created' || change.objectId !== objectId) {
+      fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Complete event differs from the exact finalized objects.');
+    }
+    return ref;
+  };
+  created(types.nativeSoul, bound.soul_id);
+  created(types.nativeSoulState, bound.soul_state_id);
+  created(types.completeOutput, bound.output_id);
+  const [binding, receipt] = await Promise.all([
+    readMakerV8CompilerHistoricalObjectV8(client, created(types.nativeSoulBinding, bound.binding_id),
+      types.nativeSoulBinding, 'Complete binding', ['protocolConfigId', 'rootId', 'soulId', 'soulStateId',
+        'outputId', 'receiptId', 'originalHolder', 'authorizationCommitment', 'receiptCommitment'], digest),
+    readMakerV8CompilerHistoricalObjectV8(client, created(types.completeReceipt, bound.receipt_id),
+      types.completeReceipt, 'Complete receipt', ['rootId', 'outputId', 'originalHolder', 'receiptCommitment'], digest),
+  ]);
+  if (binding.owner?.kind !== 'Immutable' || receipt.owner?.kind !== 'Immutable'
+    || binding.fields.protocolConfigId !== runtime.protocolConfigId
+    || binding.fields.rootId !== root || binding.fields.soulId !== bound.soul_id
+    || binding.fields.soulStateId !== bound.soul_state_id
+    || binding.fields.outputId !== bound.output_id || binding.fields.receiptId !== bound.receipt_id
+    || binding.fields.originalHolder !== holder || binding.fields.authorizationCommitment !== bound.authorization_commitment
+    || receipt.fields.rootId !== root || receipt.fields.outputId !== bound.output_id
+    || receipt.fields.originalHolder !== holder || receipt.fields.receiptCommitment !== binding.fields.receiptCommitment) {
+    fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Immutable Complete receipt and native binding differ from finalized evidence.');
+  }
+  return freeze({ soulId: bound.soul_id, transactionDigest: digest, checkpoint: response.checkpoint });
 }
 
 /** Raw Ledger/Core finality plus exact historical output certification. */
