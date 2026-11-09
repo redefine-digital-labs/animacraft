@@ -5034,6 +5034,68 @@ test('saved Pack availability cannot authorize a Style after current access is l
   await app.destroy();
 });
 
+test('Player keeps a finalized Pack Pass and digest visible while the owned inventory catches up', async () => {
+  const session = playerSessionWithPackChoice(ROOT_ONE);
+  const choice = session.player.contextualChoices.packStyles[0];
+  choice.access = { accessible: false, canEquip: false, availableForAcquire: true };
+  const holder = `0x${'63'.repeat(32)}`;
+  const passId = `0x${'65'.repeat(32)}`;
+  session.player.contextualChoices.address = holder;
+  const digest = '7'.repeat(44);
+  const record = { action: 'acquirePackAccess', actionId: 'ab'.repeat(32), rootId: ROOT_ONE,
+    status: 'FINALIZED_SUCCESS', transactionDigest: digest,
+    packEntryQuote: { ...choice.entry, releaseId: choice.releaseId, requiresMakerAccess: false },
+    certificate: { status: 'CERTIFIED', action: 'acquirePackAccess', actionId: 'ab'.repeat(32),
+      rootId: ROOT_ONE, transactionDigest: digest, evidence: { objects: [{
+        type: `${ROOT_ONE}::runtime_v8::PackPassV8`, change: 'created', objectId: passId,
+        fields: { releaseId: choice.releaseId, rootId: ROOT_ONE, holder },
+      }] } } };
+  const h = browserHarness({
+    connection: { account: { address: holder, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult: session, renderPlayerPreviewResult: canonicalPreview(),
+  });
+  const calls = [];
+  h.bridge.preparePlayerAction = async () => { calls.push('open-receipt'); return structuredClone(record); };
+  h.bridge.executePlayerAction = async () => assert.fail('An acquired Pack must not prompt for a new signature');
+  const readSnapshot = h.bridge.getPlayerSnapshot.bind(h.bridge);
+  h.bridge.getPlayerSnapshot = async () => {
+    const snapshot = await readSnapshot();
+    snapshot.player.contextualChoices.packStyles[0].access = structuredClone(choice.access);
+    return snapshot;
+  };
+  h.bridge.recoverPlayerAction = async (actionId, options) => {
+    calls.push('refresh');
+    assert.equal(actionId, record.actionId);
+    assert.deepEqual(options, { replayIfNotFound: false });
+    choice.access = { accessible: true, canEquip: true, availableForAcquire: false };
+    return structuredClone(record);
+  };
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready;
+    await app.openPlayer(ROOT_ONE);
+    const mount = h.doc.getElementById('makerV4PlayerMount');
+    const click = async action => {
+      const control = new FakeTarget(h.doc, { dataset: {
+        action, releaseId: choice.releaseId, actionId: record.actionId,
+      } });
+      control.parent = mount;
+      await waitForEvent(mount.fire('click', { target: control }));
+    };
+    await click('player-acquire-expansion-v8');
+    assert.match(mount.innerHTML, new RegExp(digest));
+    assert.match(mount.innerHTML, new RegExp(passId));
+    assert.match(mount.innerHTML, /data-action="player-recover-pack-v8"/);
+    assert.doesNotMatch(mount.innerHTML, /data-action="player-confirm-pack-v8"/);
+    await click('player-recover-pack-v8');
+    assert.deepEqual(calls, ['open-receipt', 'refresh']);
+    assert.match(mount.innerHTML, new RegExp(passId));
+    assert.doesNotMatch(mount.innerHTML, /data-action="player-recover-pack-v8"/);
+    assert.match(mount.innerHTML, /independent-v8 accessible enabled/);
+  } finally { await app.destroy(); }
+});
+
 test('Pack entry shows exact transaction quote before signature and queries uncertain results without a replacement purchase', async () => {
   const session = playerSessionWithPackChoice(ROOT_ONE);
   const choice = session.player.contextualChoices.packStyles[0];

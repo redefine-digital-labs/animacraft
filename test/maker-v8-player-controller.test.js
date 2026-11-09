@@ -1456,7 +1456,54 @@ test('a paid Pack purchase with a lost wallet response recovers exact finalized 
     assert.equal(h.calls.readback, succeeds ? 1 : 0);
     assert.equal(ledgerReads, 1);
     assert.deepEqual((await coldPersistence.load(prepared.actionId)).transaction, original.transaction);
+    if (succeeds) {
+      const reopened = createMakerV8PlayerControllerV8({
+        productRuntime: h.productRuntime, compiler: h.compiler, custody: h.custody,
+        boundary: h.boundary, wallet: h.wallet, rpc: h.rpc,
+        persistence: createMakerV8PlayerPersistenceV8(indexedDB, options),
+        execution: { allowWalletSignature: true, allowBroadcast: true }, now: () => 1000,
+      });
+      await reopened.loadPlayer(ROOT_ID);
+      assert.equal(await reopened.getPendingPlayerAction({ rootId: ROOT_ID }), null);
+      assert.deepEqual(await reopened.preparePlayerAction(input), finalized);
+      const replacement = { ...original, actionId: 'ef'.repeat(32), status: 'PREPARED', signatureIntent: null };
+      await assert.rejects(coldPersistence.create(replacement), error =>
+        error.code === 'MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED'
+        && error.details.actionId === original.actionId);
+      assert.equal(await coldPersistence.load(replacement.actionId), null);
+      assert.equal(await coldPersistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), null);
+      assert.equal(h.calls.compile, 1);
+      assert.equal(h.calls.sign, 1);
+      assert.equal(h.calls.broadcast, 0);
+    }
   });
+});
+
+test('an unsigned duplicate from an older client is retired before opening the wallet', async () => {
+  const h = harness();
+  const input = { action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    input: { releaseId: id(700), semanticPackId: 'moon-pack' } };
+  await h.controller.loadPlayer(ROOT_ID);
+  const first = await h.controller.preparePlayerAction(input);
+  const finalized = await h.controller.executePlayerAction(first.actionId);
+  assert.equal(finalized.status, 'FINALIZED_SUCCESS');
+
+  h.controller.updateRecipe({ colors: [{ channelKey: 'primary', swatchKey: 'blue' }] });
+  const duplicate = await h.controller.preparePlayerAction(input);
+  assert.notEqual(duplicate.actionId, first.actionId);
+  h.persistence.findFinalizedPackPurchaseId = async request => {
+    assert.deepEqual(request, { rootId: ROOT_ID, signer: HOLDER, releaseId: input.input.releaseId });
+    return first.actionId;
+  };
+  h.controls.custodyError = new Error('Must check the durable purchase before trying custody again');
+  await assert.rejects(h.controller.executePlayerAction(duplicate.actionId),
+    { code: 'MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED' });
+  assert.equal(h.persistence.inspect(duplicate.actionId).status, 'CANCELLED_UNSIGNED');
+  assert.equal(h.persistence.inspect(first.actionId).status, 'FINALIZED_SUCCESS');
+  assert.deepEqual(await h.controller.preparePlayerAction(input), finalized);
+  assert.equal(h.calls.compile, 2);
+  assert.equal(h.calls.sign, 1);
+  assert.equal(h.calls.broadcast, 1);
 });
 
 test('looking up an old terminal Player receipt leaves the next active action indexed', async () => {

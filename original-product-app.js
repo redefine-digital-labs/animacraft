@@ -9,6 +9,7 @@ import {
 import {
   projectMakerV8PlayerView,
   renderApprovedMakerV8Player,
+  renderPlayerPackReceipt,
 } from './maker-player-v8-view.js';
 import { createDocsCenter } from './docs-center.js';
 import { makerV8PlayerPart, makerV8PlayerPartUiKey, makerV8PlayerColor } from './maker-v8-player-definition-resolution.js';
@@ -2390,6 +2391,7 @@ export function createOriginalProductApp({
     if (!playerMount) return;
     if (playerComposition && doc.activeElement === playerComposition && playerMount.contains?.(playerComposition)) return;
     const active = doc.activeElement;
+    const packPanelOpen = playerMount.querySelector?.('details.v4-player-expansions')?.open;
     const textAction = playerMount.contains?.(active) ? active?.dataset?.action : '';
     const localTextFocus = state.localPlayer
       && (['player-profile-name', 'player-profile-world', 'player-profile-description', 'player-profile-tags'].includes(textAction)
@@ -2410,6 +2412,8 @@ export function createOriginalProductApp({
       return;
     }
     playerMount.innerHTML = view ? renderApprovedMakerV8Player(view) : '';
+    const packPanel = playerMount.querySelector?.('details.v4-player-expansions');
+    if (packPanel) packPanel.open = packPanelOpen ?? Boolean(view?.packAcquisition);
     const recovery = !view && state.playerRecovery?.request === state.playerRequest
       && state.playerRecovery?.walletAddress === state.connection.address
       ? state.playerRecovery : null;
@@ -2418,7 +2422,8 @@ export function createOriginalProductApp({
       playerMount.innerHTML = `<section class="v4-player-expansions" role="status">
         <h2>${escapeHtml(makerWorkspaceText(state.locale, 'playerPackRecover'))}</h2>
         <p>${escapeHtml(state.playerError)}</p><p>${escapeHtml(record.rootId)}</p>
-        <p>${escapeHtml(record.transactionDigest || record.actionId)}</p>
+        ${renderPlayerPackReceipt(record, { releaseId: playerPackActionRelease(record), rootId: record.rootId,
+          wallet: recovery.walletAddress, locale: state.locale }) || `<p>${escapeHtml(record.actionId)}</p>`}
         <p>${escapeHtml(record.status)}</p><p>${escapeHtml(recovery.error || '')}</p>
         ${['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status) ? ''
           : `<button type="button" data-action="player-recover-pack-v8" data-action-id="${escapeHtml(record.actionId)}" ${recovery.pending ? 'disabled' : ''}>${escapeHtml(makerWorkspaceText(state.locale, 'playerPackRecover'))}</button>`}
