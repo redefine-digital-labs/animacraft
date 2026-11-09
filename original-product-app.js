@@ -9,6 +9,7 @@ import {
 import {
   projectMakerV8PlayerView,
   renderApprovedMakerV8Player,
+  renderMakerV8ReceiptLookup,
 } from './maker-player-v8-view.js';
 import { createDocsCenter } from './docs-center.js';
 import { makerV8PlayerPart, makerV8PlayerPartUiKey, makerV8PlayerColor } from './maker-v8-player-definition-resolution.js';
@@ -1057,6 +1058,7 @@ export function createOriginalProductApp({
     templateDetailError: '',
     templateDetailCoverUrl: '',
     templateDetailRequest: 0,
+    templateReceiptLookup: null,
     playerSession: null,
     playerStatus: 'idle',
     playerError: '',
@@ -1681,6 +1683,19 @@ export function createOriginalProductApp({
     </section>`;
   }
 
+  function activeTemplateReceiptLookup() {
+    const rootId = makerReferenceFromLocation(win);
+    const wallet = state.connection.address;
+    if (!lookupPlayerCompletionReceipt || !state.connection.connected || !EXACT_OBJECT_ID.test(wallet)
+      || state.route !== 'template' || state.templateDetailStatus !== 'error'
+      || !rootId || rootId !== state.templateId) return null;
+    const request = state.templateDetailRequest;
+    const current = state.templateReceiptLookup;
+    if (current?.rootId === rootId && current.wallet === wallet && current.request === request) return current;
+    state.templateReceiptLookup = { rootId, wallet, request, digest: '', status: 'idle', receipt: null };
+    return state.templateReceiptLookup;
+  }
+
   function renderTemplateDetail() {
     const root = byId('templateDetail');
     if (!root) return;
@@ -1696,7 +1711,8 @@ export function createOriginalProductApp({
         <section class="empty-state" role="status">
           <h2>${escapeHtml(t('unavailable', 'Maker unavailable'))}</h2>
           <p>${escapeHtml(state.templateDetailError || 'The certified Maker could not be read.')}</p>
-        </section>`;
+        </section>
+        ${renderMakerV8ReceiptLookup(activeTemplateReceiptLookup(), state.locale)}`;
       return;
     }
     const listed = selectedTemplate();
@@ -3712,8 +3728,13 @@ export function createOriginalProductApp({
     renderPlayer({ drawPreview: false });
     const current = () => !state.destroyed && state.playerUi === playerUi && state.playerSession?.rootId === playerSession.rootId
       && playerUi.export.open && playerUi.receiptLookup === lookup && state.connection.address === wallet;
+    await verifyOriginalPlayerReceipt(playerSession.rootId, lookup, current, () => renderPlayer({ drawPreview: false }));
+  }
+
+  async function verifyOriginalPlayerReceipt(rootId, lookup, current, render) {
+    const { digest } = lookup;
     try {
-      const receipt = await lookupPlayerCompletionReceipt({ rootId: playerSession.rootId, transactionDigest: digest });
+      const receipt = await lookupPlayerCompletionReceipt({ rootId, transactionDigest: digest });
       if (!receipt || !EXACT_OBJECT_ID.test(receipt.soulId) || receipt.transactionDigest !== digest) {
         throw new TypeError('Complete receipt does not match the requested digest.');
       }
@@ -3724,7 +3745,18 @@ export function createOriginalProductApp({
       if (!current()) return;
       lookup.status = 'error';
     }
-    renderPlayer({ drawPreview: false });
+    render();
+  }
+
+  async function lookupOriginalTemplateReceipt(digestInput) {
+    const lookup = activeTemplateReceiptLookup();
+    if (!lookup || lookup.status === 'loading') return;
+    lookup.digest = String(digestInput ?? '').trim();
+    lookup.status = 'loading';
+    lookup.receipt = null;
+    renderTemplateDetail();
+    await verifyOriginalPlayerReceipt(lookup.rootId, lookup,
+      () => !state.destroyed && activeTemplateReceiptLookup() === lookup, renderTemplateDetail);
   }
 
   async function openPlayerExport() {
@@ -4460,6 +4492,7 @@ export function createOriginalProductApp({
     const restartDraftRead = walletChanged && next.connected && state.draftListRequest > 0
       && (state.draftsStatus === 'loading' || state.drafts.some(row => row.document.metadata.coverAssetId));
     if (walletChanged) {
+      state.templateReceiptLookup = null;
       invalidatePublicationReview();
       cancelCreatorStyleInteraction();
       creatorConnectionGeneration += 1;
@@ -8011,6 +8044,17 @@ export function createOriginalProductApp({
     event.stopPropagation?.();
     void openTemplateDetail(templateId);
   });
+  listen(byId('templateDetail'), 'submit', (event) => {
+    const form = event.target?.closest?.('[data-player-receipt-lookup]');
+    if (!form) return;
+    event.preventDefault();
+    return lookupOriginalTemplateReceipt(form.elements.namedItem('transactionDigest')?.value);
+  });
+  listen(byId('templateDetail'), 'input', (event) => {
+    if (!event.target?.closest?.('[data-player-receipt-digest]')) return;
+    const lookup = activeTemplateReceiptLookup();
+    if (lookup && lookup.status !== 'loading') lookup.digest = event.target.value;
+  });
   listen(byId('templateDetail'), 'click', (event) => {
     if (!event.target?.closest?.('[data-detail-start]')) return;
     void (async () => {
@@ -8409,7 +8453,8 @@ export function createOriginalProductApp({
       if (state.destroyed) return;
       state.templatesStatus = 'error';
       state.templatesError = String(error?.message || 'The certified Fresh-v8 runtime is unavailable.');
-      renderTemplateCards();
+      if (state.route === 'template' && makerReferenceFromLocation(win)) syncBrowserLocation();
+      else renderTemplateCards();
       renderBridgeState();
       return;
     }

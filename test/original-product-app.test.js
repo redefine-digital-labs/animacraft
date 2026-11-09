@@ -7302,6 +7302,77 @@ test('cold Player preview displays the saved mint receipt without running Comple
   }
 });
 
+test('an unavailable Maker deep link keeps original Complete receipt lookup independent of Player', async t => {
+  const digest = '7'.repeat(44);
+  const wallet = { account: { address: ROOT_TWO, chains: ['sui:mainnet'] } };
+  for (const scenario of ['manifest unavailable', 'Player unavailable', 'runtime unavailable', 'wallet changed', 'Maker changed']) {
+    await t.test(scenario, async () => {
+      const calls = [];
+      const response = deferred();
+      const h = browserHarness({
+        connection: wallet,
+        initialUrl: `https://animacraft.soulidity.ai/maker/${ROOT_ONE}#template`,
+        templatesResult: scenario === 'Player unavailable'
+          ? { status: 'READY', makers: [certifiedMaker()], diagnostics: [] }
+          : { status: 'ERROR', makers: [], diagnostics: [{ message: 'Maker manifest unavailable' }] },
+        playerSessionResult: () => { throw new TypeError('Certified Player unavailable'); },
+        bridgeReadyError: scenario === 'runtime unavailable' ? Error('Mainnet readiness unavailable') : null,
+        completePlayerJourneyResult: () => assert.fail('A receipt lookup must not run Complete'),
+      });
+      h.bridge.lookupPlayerCompletionReceipt = async input => {
+        calls.push(input);
+        return input.transactionDigest === digest
+          ? response.promise : { soulId: ROOT_TWO, transactionDigest: digest };
+      };
+      const app = createOriginalProductApp(h);
+      try {
+        await app.ready;
+        if (scenario === 'Player unavailable') await assert.rejects(app.openPlayer(ROOT_ONE), /Certified Player unavailable/);
+        const mount = h.doc.getElementById('templateDetail');
+        assert.match(mount.innerHTML, /Maker unavailable/);
+        assert.match(mount.innerHTML, /Look up original receipt/);
+        assert.doesNotMatch(mount.innerHTML, /data-detail-start|data-player-verified-receipt/);
+        const submit = transactionDigest => {
+          const form = {
+            closest: selector => selector === '[data-player-receipt-lookup]' ? form : null,
+            elements: { namedItem: name => name === 'transactionDigest' ? { value: transactionDigest } : null },
+          };
+          return waitForCompletionEvent(mount.fire('submit', { target: form }));
+        };
+
+        const lookup = submit(digest);
+        await settle();
+        assert.deepEqual(calls, [{ rootId: ROOT_ONE, transactionDigest: digest }]);
+        assert.match(mount.innerHTML, /Checking receipt/);
+        await submit(digest);
+        assert.equal(calls.length, 1, 'a duplicate submit cannot launch another lookup');
+        if (scenario === 'wallet changed') {
+          app.refreshConnection(null);
+          assert.doesNotMatch(mount.innerHTML, /data-player-receipt-lookup/);
+          app.refreshConnection(wallet);
+        }
+        if (scenario === 'Maker changed') {
+          h.win.setLocation(`/maker/${ROOT_TWO}#template`);
+          h.win.fire('popstate');
+        }
+        response.resolve({ soulId: ROOT_TWO, transactionDigest: digest });
+        await lookup;
+
+        if (scenario.endsWith('changed')) {
+          assert.doesNotMatch(mount.innerHTML, /data-player-verified-receipt/);
+        } else {
+          assert.match(mount.innerHTML, new RegExp(`<dt>Soul ID</dt><dd>${ROOT_TWO}</dd>`));
+          await submit('8'.repeat(44));
+          assert.doesNotMatch(mount.innerHTML, /data-player-verified-receipt/);
+          assert.match(mount.innerHTML, /Could not verify a finalized Complete receipt/);
+        }
+        assert.equal(h.calls.openPlayer.length, scenario === 'Player unavailable' ? 1 : 0);
+        assert.equal(h.calls.completePlayerJourney.length, 0);
+      } finally { response.resolve(); await app.destroy(); }
+    });
+  }
+});
+
 test('cold Player can verify a supplied original digest without a saved action or starting Complete', async () => {
   const digest = '7'.repeat(44);
   const lookups = [];
