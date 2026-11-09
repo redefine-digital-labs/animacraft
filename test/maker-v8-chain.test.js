@@ -1134,14 +1134,14 @@ test('contextual inventory certifies access, owned Base/external Items, active P
     admitted_revision: bcs.u64(),
     admission_state: bcs.u8(),
   });
-  const admissionBcs = admissionLayout.serialize({
+  const admissionRecord = {
     release_id: releaseId,
     semantic_pack_id: 'pack-one',
     release_content_commitment: hash(20),
     admitted_revision: 4n,
-    admission_state: 0,
-  }).toBytes();
+  };
   let servedRelease = release;
+  let servedAdmissionState = 0;
   let servedPackRegistry = packRegistry;
   const ownedRows = { semantic_pack_id: 'pack-one', tracks: [], colors: [], rules: [], visibility: [],
     parts: [{ sequence: '0', key: 'plume', label: 'Plume', kind: 0, render_order: '0', menu_order: '0',
@@ -1191,7 +1191,9 @@ test('contextual inventory certifies access, owned Base/external Items, active P
         name: input.name,
         value: {
           type: `${rt.roles.runtime.typeOriginPackageId}::runtime_v8::PackAdmissionRecordV8`,
-          bcsBase64: toBase64(admissionBcs),
+          bcsBase64: toBase64(admissionLayout.serialize({
+            ...admissionRecord, admission_state: servedAdmissionState,
+          }).toBytes()),
         },
       };
     },
@@ -1295,6 +1297,21 @@ test('contextual inventory certifies access, owned Base/external Items, active P
   await assert.rejects(listOwnedMakerV8Inventory(rpc, rt, wallet, root), { code: 'MAKER_V8_EXTERNAL_ADMISSION_DRIFT' });
   servedPackRegistry = packRegistry;
 
+  for (const [lifecycle, admissionState] of [[3, 0], [4, 0], [2, 1]]) {
+    servedRelease = structuredClone(release);
+    servedRelease.data.content.fields.lifecycle = String(lifecycle);
+    servedAdmissionState = admissionState;
+    const historical = await listOwnedMakerV8Inventory(rpc, rt, wallet, root);
+    assert.equal(historical.packPasses[0].objectId, inventory.packPasses[0].objectId);
+    assert.equal(historical.packPasses[0].release.lifecycle, lifecycle);
+    assert.equal(historical.packPasses[0].admission.admissionState, admissionState);
+    assert.equal(historical.makerLoadouts[0].objectId, inventory.makerLoadouts[0].objectId);
+    assert.equal(historical.ownedBaseItems[0].objectId, inventory.ownedBaseItems[0].objectId);
+  }
+  servedAdmissionState = 2;
+  await assert.rejects(listOwnedMakerV8Inventory(rpc, rt, wallet, root),
+    { code: 'MAKER_V8_PACK_ADMISSION_DRIFT' });
+  servedAdmissionState = 0;
   servedRelease = structuredClone(release);
   servedRelease.data.content.fields.lifecycle = '1';
   await assert.rejects(
