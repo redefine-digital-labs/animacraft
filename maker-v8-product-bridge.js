@@ -2120,6 +2120,7 @@ export function createMakerV8ProductBridge({
 
   if (pack) {
     const createPackDraft = method(pack, 'createPackDraft', 'pack');
+    const createPackVersion = method(pack, 'createPackVersion', 'pack', { optional: true });
     const listPackDrafts = method(pack, 'list', 'pack', { optional: true });
     const upsertPackAsset = method(pack, 'upsertAsset', 'pack', { optional: true });
     const loadPackDraft = method(pack, 'load', 'pack');
@@ -2148,6 +2149,35 @@ export function createMakerV8ProductBridge({
         fail('MAKER_V8_PRODUCT_WALLET_CHANGED', 'Wallet changed while capturing the Pack parent.', 'WALLET');
       }
       return createPackDraft({ ...input, parent });
+    };
+    if (createPackVersion) bridge.createPackVersion = async ({ draftId, expectedRevision } = {}) => {
+      const id = exactDraftId(draftId);
+      const account = (await requireConnected()).address;
+      const generation = publicationGeneration;
+      const requireSource = async (releaseId = null) => {
+        const draft = await loadPackDraft(id);
+        const release = draft?.publication?.chain?.release.objectRef.objectId;
+        if (disposed || (await requireConnected()).address !== account || generation !== publicationGeneration
+          || draft?.revision !== expectedRevision || draft.document.author.address !== account
+          || draft.publication.status !== 'COMPLETE' || !EXACT_ID.test(release ?? '')
+          || (releaseId && releaseId !== release)) {
+          fail('MAKER_V8_PRODUCT_PACK_VERSION_SCOPE', 'Reopen the current published Pack with its controlling wallet.', 'PACK');
+        }
+        return release;
+      };
+      const releaseId = await requireSource();
+      return publicationLock(`pack-lifecycle:${releaseId}:${account}`, async () => {
+        await requireSource(releaseId);
+        const next = await createPackVersion({
+          draftId: id, expectedRevision, assertCurrent: () => requireSource(releaseId),
+        });
+        await requireSource(releaseId);
+        if (next.draftId === id || next.document.metadata.lineage?.predecessorReleaseId !== releaseId
+          || next.document.author.address !== account) {
+          fail('MAKER_V8_PRODUCT_PACK_VERSION_SCOPE', 'The saved Pack version differs from its exact published source.', 'PACK');
+        }
+        return next;
+      });
     };
     if (listPackDrafts) bridge.listPackDrafts = listPackDrafts;
     bridge.loadPackDraft = loadPackDraft;

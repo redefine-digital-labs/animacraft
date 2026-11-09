@@ -232,6 +232,76 @@ export function createMakerV8PackPersistenceV8(
       });
     },
 
+    async createVersion({ draft: value, sourceDraftId, expectedSourceRevision, sourceAssets }) {
+      const draft = cloneDraft(value);
+      const sourceId = exactDraftId(sourceDraftId);
+      const revision = exactRevision(expectedSourceRevision, 'source Pack revision');
+      const lineage = draft.document.metadata.lineage;
+      if (!lineage || draft.draftId === sourceId || draft.revision !== 1 || draft.publication.status !== 'UNPREPARED') {
+        fail('MAKER_V8_PACK_VERSION_DRAFT_INVALID', 'The successor must be a new unpublished Pack version.');
+      }
+      if (!Array.isArray(sourceAssets)) {
+        fail('MAKER_V8_PACK_VERSION_ASSETS_INVALID', 'Original Pack artwork is required.');
+      }
+      const copies = sourceAssets.map(cloneAsset);
+      const descriptors = new Map(draft.document.styles.map(row => [row.asset.assetId, row.asset]));
+      if (copies.length !== descriptors.size || new Set(copies.map(asset => asset.assetId)).size !== copies.length) {
+        fail('MAKER_V8_PACK_VERSION_ASSETS_INVALID', 'A Pack version needs one original asset for each copied Style.');
+      }
+      for (const asset of copies) {
+        const descriptor = descriptors.get(asset.assetId);
+        if (asset.draftId !== sourceId || !descriptor || descriptor.blobId !== null
+          || descriptor.sealBindingCommitment !== null || descriptor.contentCommitment !== asset.sha256
+          || descriptor.sha256 !== asset.sha256 || descriptor.mediaType !== asset.mediaType
+          || descriptor.byteLength !== asset.byteLength) {
+          fail('MAKER_V8_PACK_VERSION_ASSETS_INVALID', 'Copied Pack artwork differs from the original bytes.');
+        }
+      }
+      return transact([DRAFT_STORE, ASSET_STORE], 'readwrite', async transaction => {
+        const drafts = transaction.objectStore(DRAFT_STORE);
+        const assets = transaction.objectStore(ASSET_STORE);
+        const sourceValue = await requestResult(drafts.get(sourceId));
+        const source = sourceValue && cloneDraft(sourceValue);
+        if (!source || source.revision !== revision || source.publication.status !== 'COMPLETE') {
+          fail('MAKER_V8_PACK_DRAFT_CAS_MISMATCH', 'The published Pack changed before its next version was saved.');
+        }
+        const sourceMeta = source.document.metadata;
+        const sourceRoot = source.document.bindings.root;
+        const nextRoot = draft.document.bindings.root;
+        if (source.publication.chain.release.objectRef.objectId !== lineage.predecessorReleaseId
+          || sourceMeta.semanticPackId !== lineage.predecessorSemanticPackId
+          || (sourceMeta.lineage?.familySemanticPackId ?? sourceMeta.semanticPackId) !== lineage.familySemanticPackId
+          || BigInt(lineage.version) !== BigInt(sourceMeta.lineage?.version ?? '1') + 1n
+          || sourceRoot.objectRef.objectId !== nextRoot?.objectRef.objectId
+          || sourceRoot.makerVersion !== nextRoot.makerVersion || sourceRoot.contentCommitment !== nextRoot.contentCommitment
+          || source.document.author.address !== draft.document.author.address) {
+          fail('MAKER_V8_PACK_VERSION_SOURCE_DRIFT', 'The successor differs from its exact published Pack or Maker version.');
+        }
+        const existing = await requestResult(drafts.get(draft.draftId));
+        if (existing) {
+          const saved = cloneDraft(existing);
+          if (saved.document.metadata.semanticPackId !== draft.document.metadata.semanticPackId
+            || !sameDraft(saved.document.metadata.lineage ?? null, lineage)
+            || saved.document.author.address !== draft.document.author.address
+            || saved.document.bindings.root?.objectRef.objectId !== nextRoot.objectRef.objectId) {
+            fail('MAKER_V8_PACK_DRAFT_EXISTS', 'The successor draft ID is already bound to another Pack.');
+          }
+          return saved;
+        }
+        for (const asset of copies) {
+          const actual = await requestResult(assets.get([sourceId, asset.assetId]));
+          if (!actual || !sameDraft(actual, asset)
+            || await requestResult(assets.get([draft.draftId, asset.assetId]))) {
+            fail('MAKER_V8_PACK_ASSET_CAS_MISMATCH', 'Pack artwork changed before the successor could be saved.');
+          }
+        }
+        for (const asset of copies) assets.add(cloneAsset({ ...asset, draftId: draft.draftId, revision: 1,
+          createdAt: draft.createdAt, updatedAt: draft.updatedAt }));
+        drafts.add(structuredClone(draft));
+        return draft;
+      });
+    },
+
     async load(draftId) {
       const value = await transact([DRAFT_STORE], 'readonly', (transaction) => (
         requestResult(transaction.objectStore(DRAFT_STORE).get(exactDraftId(draftId)))

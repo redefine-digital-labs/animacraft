@@ -275,11 +275,24 @@ async function sha256Canonical(value) {
 }
 
 function assertMetadata(value) {
-  exactKeys(value, ['semanticPackId', 'name', 'summary', 'coverAssetId'], 'document.metadata');
+  exactKeys(value, ['semanticPackId', 'name', 'summary', 'coverAssetId',
+    ...(value?.lineage === undefined ? [] : ['lineage'])], 'document.metadata');
   exactKey(value.semanticPackId, 'metadata.semanticPackId');
   exactText(value.name, 'metadata.name', 256);
   exactText(value.summary, 'metadata.summary', 2_000, { allowEmpty: true });
   if (value.coverAssetId !== null) exactKey(value.coverAssetId, 'metadata.coverAssetId');
+  if (value.lineage !== undefined) {
+    const lineage = value.lineage;
+    exactKeys(lineage, ['familySemanticPackId', 'version', 'predecessorReleaseId', 'predecessorSemanticPackId'], 'Pack lineage');
+    exactKey(lineage.familySemanticPackId, 'lineage.familySemanticPackId');
+    exactKey(lineage.predecessorSemanticPackId, 'lineage.predecessorSemanticPackId');
+    exactId(lineage.predecessorReleaseId, 'lineage.predecessorReleaseId');
+    exactU64(lineage.version, 'lineage.version', { positive: true });
+    if (BigInt(lineage.version) < 2n || value.semanticPackId === lineage.predecessorSemanticPackId
+      || value.semanticPackId === lineage.familySemanticPackId) {
+      fail('BINDING', 'MAKER_V8_PACK_LINEAGE_INVALID', 'A successor Pack needs a distinct identity and a version after the original Release.');
+    }
+  }
 }
 
 function assertAuthor(value, bindings) {
@@ -1134,7 +1147,7 @@ export function createMakerV8PackControllerV8({
       return () => listeners.delete(listener);
     },
 
-    async createPackDraft({ draftId, document, createdAt = clock() } = {}) {
+    async createPackDraft({ draftId, document, createdAt = clock(), sourceVersion = null, assertCurrent = null } = {}) {
       const at = exactTime(createdAt, 'createdAt');
       const draft = cloneRecord({
         schemaVersion: MAKER_V8_PACK_DRAFT_SCHEMA,
@@ -1150,9 +1163,16 @@ export function createMakerV8PackControllerV8({
         await validateLocalParent(draft.document.authoringParent ?? draft.document.bindings.parent);
       }
       await checkAuthoring(draft.document);
-      await persistence.create(draft);
+      await assertCurrent?.();
+      let expected = draft;
+      if (sourceVersion === null) {
+        await persistence.create(draft);
+      } else {
+        requireMethod(persistence, 'createVersion', 'persistence');
+        expected = await persistence.createVersion({ ...sourceVersion, draft });
+      }
       const reread = await loadRequired(draft.draftId);
-      if (canonicalMakerV8PackJson(reread) !== canonicalMakerV8PackJson(draft)) {
+      if (canonicalMakerV8PackJson(reread) !== canonicalMakerV8PackJson(expected)) {
         fail('PERSISTENCE', 'MAKER_V8_PACK_DURABLE_REREAD_FAILED', 'Created Pack draft failed its cold reread.');
       }
       publish('CREATED', reread);
@@ -1186,6 +1206,11 @@ export function createMakerV8PackControllerV8({
         fail('PUBLICATION', 'MAKER_V8_PACK_DRAFT_LOCKED', 'A Pack with a durable publication attempt cannot be edited silently.');
       }
       const checkedDocument = assertMakerV8PackDocumentV8(document, { mode: 'DRAFT' });
+      const lineage = current.document.metadata.lineage;
+      if (canonicalMakerV8PackJson(checkedDocument.metadata.lineage ?? null) !== canonicalMakerV8PackJson(lineage ?? null)
+        || (lineage && checkedDocument.metadata.semanticPackId !== current.document.metadata.semanticPackId)) {
+        fail('BINDING', 'MAKER_V8_PACK_LINEAGE_IMMUTABLE', 'A successor Pack retains its version and predecessor Release.');
+      }
       if (canonicalMakerV8PackJson(checkedDocument.authoringParent ?? null)
         !== canonicalMakerV8PackJson(current.document.authoringParent ?? null)) {
         fail('BINDING', 'MAKER_V8_PACK_PARENT_IMMUTABLE', 'Saving cannot replace the retained parent snapshot.');
