@@ -275,7 +275,7 @@ test('publisher review binds detailed SDK quote to the exact digest signed witho
 // Synthetic network/relay responses and a deterministic test-only Ed25519 key
 // around real signature verification, SDK builders and
 // real IndexedDB. This proves recovery boundaries, not real Mainnet acceptance.
-async function batchRuntime() {
+async function batchRuntime({ standalone = false } = {}) {
   const sdk = await sdkTransaction(true);
   const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
     persisted: async () => true, persist: async () => true,
@@ -283,7 +283,8 @@ async function batchRuntime() {
   const calls = [], receipts = new Map(), inputs = new Map();
   const controls = { epoch: '1272', signError: null, uploadFailure: null, readbackFailure: false,
     broadcastUnknown: false, finalizedSignature: false, signWait: null,
-    relayOnlyFirstInput: false, directUnavailable: false, cachedUncertifiedObjects: false };
+    relayOnlyFirstInput: false, directUnavailable: false, cachedUncertifiedObjects: false,
+    ledgerPruned: false, archiveUnavailable: false, archiveSender: OWNER };
   const objectId = i => `0x${(80 + i).toString(16).padStart(64, '0')}`;
   const signatures = new Map();
   const certificate = bcs.struct('Certificate', { signers: bcs.vector(bcs.u16()),
@@ -315,7 +316,14 @@ async function batchRuntime() {
     sdk.walrus[method] = input => configure(original(input));
   }
   sdk.walrus.writeBlobFlow = ({ blob, resume }) => ({
-    async encode() {}, async upload({ digest }) {
+    async encode() {},
+    register({ owner, epochs, deletable }) {
+      const tx = sdk.walrus.registerBlobTransaction({ owner, size: blob.length, epochs, deletable,
+        blobId: resume.blobId, rootHash: fromBase64(resume.rootHash) });
+      tx.setSender(owner);
+      return tx;
+    },
+    async upload({ digest }) {
       const member = [...inputs.values()].find(input => input.bytes.length === blob.length);
       calls.push(['upload', member.uploadId, resume.blobObjectId, digest]);
       assert.equal(resume.blobObjectId, member.objectId, 'Never let the SDK choose the first created object in a shared digest.');
@@ -355,6 +363,7 @@ async function batchRuntime() {
   sdk.walrus.getVerifiedBlobStatus = async () => ({ type: 'permanent', isCertified: true });
   const finalized = (digest, bytes) => {
     const data = bcs.TransactionData.parse(fromBase64(bytes)).V1;
+    const epoch = controls.epoch;
     const registering = data.kind.ProgrammableTransaction.commands.some(c => c.MoveCall?.function === 'register_blob');
     const objects = registering ? [...inputs.values()].map((input, i) => objectProof({ data: { Move: {
       type: { Other: TypeTagSerializer.parseFromStr(`${ORIGINAL}::blob::Blob`, true).struct }, version: '11',
@@ -362,13 +371,13 @@ async function batchRuntime() {
         blob_id: String(input.bytes.length), size: String(input.bytes.length), encoding_type: 1, certified_epoch: null,
         storage: { id: objectId(i + 10), start_epoch: 43, end_epoch: 46, storage_size: '66000000' }, deletable: false }).toBytes(),
     } }, owner: { AddressOwner: OWNER }, previousTransaction: digest, storageRebate: '0' })) : [];
-    const effects = { V2: { status: { Success: true }, executedEpoch: '1272',
+    const effects = { V2: { status: { Success: true }, executedEpoch: epoch,
       gasUsed: { computationCost: '1', storageCost: '0', storageRebate: '0', nonRefundableStorageFee: '0' },
       transactionDigest: digest, gasObjectIndex: null, eventsDigest: null, dependencies: [], lamportVersion: '11',
       changedObjects: objects.slice().reverse().map(object => [object.reference.objectId, { inputState: { NotExist: true },
         outputState: { ObjectWrite: [object.reference.digest, { AddressOwner: OWNER }] }, idOperation: { Created: true } }]),
       unchangedConsensusObjects: [], auxDataDigest: null } };
-    receipts.set(digest, { digest, effectsStatus: { success: true }, checkpoint: '331071794',
+    receipts.set(digest, { digest, effectsStatus: { success: true }, checkpoint: '331071794', sender: OWNER, epoch,
       transactionBcsBase64: bytes, effectsBcsBase64: bcs.TransactionEffects.serialize(effects).toBase64(), signatures: [signatures.get(digest)], objects });
   };
   const transport = { core: { async executeTransaction({ transaction, signatures }) {
@@ -377,15 +386,36 @@ async function batchRuntime() {
     finalized(digest, toBase64(transaction));
     if (controls.broadcastUnknown) throw new Error('response lost');
     return { $kind: 'Transaction', Transaction: { digest } };
-  } }, async getFinalizedTransactionEvidence({ digest }) { return structuredClone(receipts.get(digest)); },
+  } }, async getFinalizedTransactionEvidence({ digest }) {
+      assert.equal(controls.ledgerPruned, false, 'Archived recovery cannot depend on the pruned Ledger transaction.');
+      return structuredClone(receipts.get(digest));
+    },
+    async getArchivedPlayerTransactionEvidence({ digest }) {
+      calls.push(['archive', digest]);
+      const receipt = controls.archiveUnavailable ? null : receipts.get(digest);
+      return receipt ? structuredClone({ ...receipt, sender: controls.archiveSender }) : null;
+    },
+    async getArchivedPlayerReceiptObject({ objectId, version, decode }) {
+      assert.equal(decode, false);
+      calls.push(['archive-object', objectId]);
+      return this.getHistoricalObject({ objectId, version });
+    },
     async getHistoricalObject({ objectId, version }) {
       const object = [...receipts.values()].flatMap(r => r.objects).find(o => o.reference.objectId === objectId);
       assert.equal(version, 11n);
       return { objectId, version: '11', digest: object.reference.digest, objectBcs: fromBase64(object.objectBcsBase64) };
     } };
   const rpc = { async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
-    async queryTransaction({ digest }) { calls.push(['query', digest]); return receipts.has(digest)
-      ? { digest, status: 'FINALIZED_SUCCESS' } : { digest, status: 'NOT_FOUND', absence: { chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER } }; },
+    async queryTransaction({ digest }) {
+      calls.push(['query', digest]);
+      return !controls.ledgerPruned && receipts.has(digest) ? { digest, status: 'FINALIZED_SUCCESS' }
+        : { digest, status: 'NOT_FOUND', absence: {
+          schemaVersion: 'animacraft.sui-transaction-absence.v8', kind: 'SUI_GRPC_TRANSACTION_NOT_FOUND',
+          grpcCode: 'NOT_FOUND', grpcService: 'sui.rpc.v2.LedgerService', grpcMethod: 'GetTransaction',
+          requestedDigest: digest, chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          watermarkEpoch: controls.epoch, watermarkCheckpointSequence: '331071795', watermarkCheckpointDigest: DIGEST,
+        } };
+    },
     async getSuiClient() { return transport; } };
   const wallet = { async getCurrentAccount() { return { address: OWNER, network: 'mainnet' }; },
     async signExactTransaction(input) {
@@ -417,13 +447,13 @@ async function batchRuntime() {
       return { ok: true, arrayBuffer: async () => member.bytes.buffer };
     } };
   const publisher = createMakerV8WalrusPublisherV8(options);
-  const uploadIds = ['render', 'soul', 'memory', 'skill'];
+  const uploadIds = standalone ? ['render'] : ['render', 'soul', 'memory', 'skill'];
   for (const [i, uploadId] of uploadIds.entries()) {
     const bytes = new Uint8Array(1031 + i).fill(i);
     inputs.set(uploadId, { uploadId, bytes, blobId: blobIdFromInt(BigInt(bytes.length)), objectId: objectId(i) });
     await publisher.prepare({ uploadId, owner: OWNER, mediaType: 'application/octet-stream', bytesBase64: toBase64(bytes) });
   }
-  const batch = await publisher.prepareBatch({ owner: OWNER, rootId: PACKAGE, uploadIds });
+  const batch = standalone ? null : await publisher.prepareBatch({ owner: OWNER, rootId: PACKAGE, uploadIds });
   return { publisher, persistence, batch, controls, calls, inputs,
     cold: () => createMakerV8WalrusPublisherV8(options) };
 }
@@ -436,6 +466,82 @@ const signBatch = async h => {
 const finalizeRegister = async h => {
   await signBatch(h); await h.publisher.resumeBatch(h.batch.key); return h.publisher.resumeBatch(h.batch.key);
 };
+
+test('a pruned standalone Pack upload restores both original wallet stages without another signature or relay payment', async () => {
+  const h = await batchRuntime({ standalone: true });
+  const uploadId = 'render', objectId = h.inputs.get(uploadId).objectId;
+  try {
+    const register = await h.publisher.prepareReview(uploadId);
+    h.controls.finalizedSignature = true;
+    h.controls.signError = new Error('wallet response lost');
+    await assert.rejects(h.publisher.signReviewed(uploadId, register), /response lost/);
+    assert.equal((await h.persistence.load(uploadId)).status, 'REGISTER_SIGNING');
+    h.controls.ledgerPruned = true;
+    h.controls.epoch = '1274';
+    h.controls.archiveSender = PACKAGE;
+    await assert.rejects(h.cold().resume(uploadId), { code: 'MAKER_V8_WALRUS_TRANSACTION_DRIFT' });
+    assert.equal((await h.persistence.load(uploadId)).status, 'REGISTER_SIGNING');
+    h.controls.archiveSender = OWNER;
+    h.controls.directUnavailable = true;
+    await assert.rejects(h.cold().resume(uploadId), /no storage quorum/);
+    assert.equal((await h.persistence.load(uploadId)).transaction.digest, register.digest);
+    assert.equal((await h.persistence.load(uploadId)).status, 'REGISTER_FINALIZED');
+    h.controls.directUnavailable = false;
+    assert.equal((await h.cold().resume(uploadId)).stage, 'CERTIFY');
+    assert.equal((await h.persistence.load(uploadId)).upload.registrationDigest, register.digest);
+    const signingClient = h.cold();
+    const certify = await signingClient.prepareReview(uploadId);
+    await assert.rejects(signingClient.signReviewed(uploadId, certify), /response lost/);
+    h.controls.epoch = '1276';
+    h.controls.cachedUncertifiedObjects = true;
+    const recovered = await h.cold().resume(uploadId);
+    assert.equal(recovered.status, 'COMPLETE');
+    assert.equal(recovered.transactionDigest, certify.digest);
+    assert.equal(recovered.blobObjectId, objectId);
+    assert.equal(h.calls.some(([name]) => ['broadcast', 'upload'].includes(name)), false);
+    assert.deepEqual(h.calls.filter(([name]) => name === 'sign').map(call => call[1]), [register.digest, certify.digest]);
+    assert.deepEqual(h.calls.filter(([name]) => name === 'direct-upload').map(call => call.slice(2)), [
+      [objectId, register.digest], [objectId, register.digest],
+    ]);
+  } finally { await h.persistence.close(); }
+});
+
+test('an expired signed registration stays pinned when its original digest is absent from both readers', async () => {
+  const h = await batchRuntime({ standalone: true });
+  try {
+    const review = await h.publisher.prepareReview('render');
+    await h.publisher.signReviewed('render', review);
+    const signed = await h.persistence.load('render');
+    h.controls.ledgerPruned = true;
+    h.controls.epoch = '1274';
+    assert.equal((await h.cold().resume('render')).transactionDigest, review.digest);
+    assert.deepEqual(await h.persistence.load('render'), signed);
+    assert.deepEqual(h.calls.map(call => call[0]), ['sign', 'query', 'archive']);
+  } finally { await h.persistence.close(); }
+});
+
+test('cold batch recovery retains the archived mapping and resumes direct uploads without replaying registration', async () => {
+  const h = await batchRuntime();
+  try {
+    h.controls.finalizedSignature = true;
+    const review = await signBatch(h);
+    h.controls.ledgerPruned = true;
+    h.controls.epoch = '1274';
+    h.controls.directUnavailable = true;
+    await assert.rejects(h.cold().resumeBatch(h.batch.key), /no storage quorum/);
+    const retained = await h.persistence.loadPublicationBinding(h.batch.key);
+    assert.equal(retained.status, 'REGISTER_FINALIZED');
+    assert.equal(retained.registration.archived, true);
+    assert.equal(retained.registration.transaction.digest, review.digest);
+    h.controls.archiveUnavailable = true;
+    h.controls.directUnavailable = false;
+    assert.equal((await h.cold().resumeBatch(h.batch.key)).stage, 'CERTIFY');
+    assert.deepEqual(h.calls.filter(([name]) => name === 'archive'), [['archive', review.digest]]);
+    assert.equal(h.calls.some(([name]) => ['broadcast', 'upload'].includes(name)), false);
+    assert.deepEqual(h.calls.filter(([name]) => name === 'direct-upload').slice(-4).map(call => call[2]),
+      [...h.inputs.values()].map(input => input.objectId));
+  } finally { await h.persistence.close(); }
+});
 
 test('four-member SDK batch completes with two signatures, correct per-member relay IDs and atomic cold checkpoints', async () => {
   const h = await batchRuntime();
