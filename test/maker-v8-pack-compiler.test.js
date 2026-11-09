@@ -177,6 +177,41 @@ function documentFixture(styles = 2, owner = id(90)) {
   };
 }
 
+test('Pack INIT and APPEND use the Runtime single SHA-256 commitment bytes', () => {
+  const document = documentFixture(2);
+  const releaseContent = hex('c');
+  const commitments = deriveMakerV8PackCommitmentsV8(document, releaseContent);
+  const u64 = value => bcs.u64().serialize(value).toBytes();
+  const u8 = value => bcs.u8().serialize(value).toBytes();
+  const string = value => bcs.string().serialize(value).toBytes();
+  const optional = value => bcs.option(bcs.string()).serialize(value).toBytes();
+  const vector = value => bcs.byteVector().serialize(value).toBytes();
+  const prefix = domain => [
+    string(domain), u64(8),
+    vector(Buffer.from(document.bindings.root.contentCommitment, 'hex')),
+    vector(Buffer.from(releaseContent, 'hex')),
+  ];
+  let observed = sha256(Buffer.concat(prefix('animacraft-v8/runtime/pack-styles-empty')));
+  const expected = [Buffer.from(observed).toString('hex')];
+  for (const [sequence, style] of commitments.styles.entries()) {
+    const sources = style.definition_sources;
+    observed = sha256(Buffer.concat([
+      ...prefix('animacraft-v8/runtime/pack-style'), u64(sequence), vector(observed),
+      u64(style.index), u8(sources.part), u8(sources.track),
+      bcs.option(bcs.u8()).serialize(sources.color).toBytes(),
+      string(style.part_key), string(style.item_key), string(style.style_key), string(style.layer_track_key),
+      optional(style.color_channel_key), optional(style.default_swatch_key), string(style.asset_blob_id),
+      vector(style.asset_sha256), vector(style.asset_content_commitment),
+      bcs.bool().serialize(style.protected).toBytes(), vector(style.seal_binding_commitment),
+      vector(style.style_commitment),
+    ]));
+    expected.push(Buffer.from(observed).toString('hex'));
+  }
+  assert.equal(commitments.emptyStyleCommitment, expected[0]);
+  assert.deepEqual(commitments.rollingCommitments, expected);
+  assert.equal(commitments.expectedStyleCommitment, expected[2]);
+});
+
 async function preparedTransport(document) {
   const uploads = new Map();
   const transport = createMakerV8PackTransportV8({
