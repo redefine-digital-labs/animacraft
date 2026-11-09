@@ -55,6 +55,7 @@ import {
   createMakerV8PlayerRpcAdapterV8,
   readMakerV8CompleteCountersV8,
   readMakerV8ExternalAdmissionsV8,
+  readMakerV8PackReceiptByDigestV8,
   readMakerV8PackStylesV8,
   readMakerV8PhysicalPolicyV8,
 } from '../maker-v8-player-adapters.js';
@@ -1618,6 +1619,100 @@ test('archived paid Pack recovery certifies the original signed Pass and never b
   assert.deepEqual(certificate.evidence.objects.map(row => [row.objectId, row.fields.paidAtomic]), [[passId, '1000']]);
   objectDrift = true;
   await assert.rejects(readback.readbackPlayerAction({ record, query }), { code: 'MAKER_V8_PLAYER_EFFECTS_REF_DRIFT' });
+
+  // A fresh profile can verify the same receipt with the digest and wallet,
+  // independent of the saved transaction above.
+  const types = makerV8ChainTypes(runtime);
+  const tx = Transaction.from(fromBase64(bytes));
+  const entry = tx.getData().commands.find(({ MoveCall }) => MoveCall?.function === 'purchase_pack_pass_v8').MoveCall;
+  const registryId = tx.getData().inputs[entry.arguments[1].Input].Object.SharedObject.objectId;
+  const snapshots = new Map([
+    [releaseId, { type: types.packRelease, fields: { version: '8', lifecycle: '4', root_id: rootId,
+      root_version: '1', root_content_commitment: commitment('2'), content_commitment: releaseContentCommitment,
+      access_kind: '1', access_price_atomic: '1000' } }],
+    [registryId, { type: types.packRegistry, fields: { version: '8', root_id: rootId,
+      root_version: '1', root_content_commitment: commitment('2') } }],
+  ]);
+  client.getObject = async ({ id: objectId }) => {
+    const snapshot = snapshots.get(objectId);
+    assert(snapshot);
+    return { data: { objectId, version: '100', digest: digest(59),
+      owner: { Shared: { initialSharedVersion: '1' } }, content: { fields: structuredClone(snapshot.fields) },
+      type: snapshot.type } };
+  };
+  const lookup = (overrides = {}) => readMakerV8PackReceiptByDigestV8({
+    client, runtime, rootId, signer, transactionDigest, ...overrides,
+  }, { assertTransport() {} });
+  const expected = { rootId, releaseId, transactionDigest, checkpoint: '50', paymentCoinType: runtime.paymentCoinType,
+    status: 'FINALIZED_SUCCESS', packPassId: passId, paidAtomic: '1000' };
+  objectDrift = false;
+  archived = { ...evidence, sender: signer };
+  assert.deepEqual(await lookup(), expected);
+  await assert.rejects(lookup({ rootId: id(999) }), { code: 'MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID' });
+  await assert.rejects(lookup({ signer: id(999) }), { code: 'MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID' });
+  objectDrift = true;
+  await assert.rejects(lookup(), { code: 'MAKER_V8_PLAYER_EFFECTS_REF_DRIFT' });
+  objectDrift = false;
+  const failedEffects = bcs.TransactionEffects.parse(effectsBcs).V2;
+  failedEffects.status = { Failure: { error: { InsufficientGas: true }, command: null } };
+  failedEffects.changedObjects = [];
+  archived = { ...archived, effectsBcs: bcs.TransactionEffects.serialize({ V2: failedEffects }).toBytes(),
+    effectsStatus: { success: false, error: 'InsufficientGas' } };
+  assert.deepEqual(await lookup(), { ...expected, status: 'FINALIZED_FAILURE', packPassId: null, paidAtomic: null });
+  archived = null;
+  await assert.rejects(lookup(), error => error.code !== 'MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID');
+  archived = { ...evidence, sender: signer };
+
+  // The live read uses the same exact Core/effects cross-check as saved actions.
+  const liveReceipt = (transaction, raw, liveDigest, liveEffects, passFields) => {
+    client.getFinalizedTransactionEvidence = async () => ({ ...evidence, digest: liveDigest, sender: signer,
+      transactionBcs: raw, transactionBcsBase64: toBase64(raw), effectsBcs: liveEffects,
+      effectsBcsBase64: toBase64(liveEffects), transactionEvents: null });
+    client.core.getTransaction = async () => ({
+      $kind: 'Transaction', Transaction: {
+        digest: liveDigest, epoch: '41', status: { success: true }, bcs: raw,
+        transaction: transaction.getData(), events: [], objectTypes: { [passId]: passType },
+        effects: { status: { success: true }, transactionDigest: liveDigest, eventsDigest: null, bcs: liveEffects,
+          changedObjects: [{ objectId: passId, outputState: 'ObjectWrite', idOperation: 'Created',
+            outputVersion: '51', outputDigest: passDigest, outputOwner: { AddressOwner: signer } }] },
+      },
+    });
+    client.getHistoricalObject = async ({ objectId, version }) => {
+      assert.equal(objectId, passId);
+      assert.equal(version, 51n);
+      return { objectId, version: '51', digest: passDigest, type: passType, owner: { AddressOwner: signer },
+        previousTransaction: liveDigest, objectBcs: Uint8Array.of(1), contentBcs: Uint8Array.of(2), parsed: passFields };
+    };
+  };
+  liveReceipt(tx, fromBase64(bytes), transactionDigest, effectsBcs, fields);
+  assert.deepEqual(await lookup(), expected);
+
+  for (const kind of [0, 2]) {
+    const zeroRequest = await certifiedRequest(client, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS, state => {
+      Object.assign(state.objects.releases[0].fields, { access_kind: String(kind), access_price_atomic: '0' });
+    });
+    const { plan: zeroPlan } = await compiler.preparePlayerAction(zeroRequest);
+    const zeroTx = Transaction.fromKind(fromBase64(zeroPlan.descriptor.kindBytes));
+    zeroTx.setSender(signer);
+    zeroTx.setGasBudget(1_000_000);
+    zeroTx.setGasPrice(1);
+    zeroTx.setGasPayment([{ objectId: gasId, version: '1', digest: gasDigest }]);
+    const zeroBytes = await zeroTx.build();
+    const zeroDigest = TransactionDataBuilder.getDigestFromBytes(zeroBytes);
+    const rawEffects = bcs.TransactionEffects.parse(effectsBcs).V2;
+    rawEffects.transactionDigest = zeroDigest;
+    const zeroEffects = bcs.TransactionEffects.serialize({ V2: rawEffects }).toBytes();
+    const zeroCommitment = Buffer.from(sha256(bcs.tuple([bcs.string(), bcs.u64(), bcs.Address, bcs.Address, bcs.u64(),
+      bcs.vector(bcs.u8()), bcs.vector(bcs.u8()), bcs.Address, bcs.u64(), bcs.u64()]).serialize([
+      'animacraft-v8/runtime/pack-pass', 8, releaseId, rootId, 1, rawHex(commitment('2')),
+      rawHex(releaseContentCommitment), signer, 0, 2000,
+    ]).toBytes())).toString('hex');
+    Object.assign(snapshots.get(releaseId).fields, { access_kind: String(kind), access_price_atomic: '0' });
+    liveReceipt(zeroTx, zeroBytes, zeroDigest, zeroEffects,
+      { ...fields, paid_atomic: '0', commitment: zeroCommitment });
+    assert.deepEqual(await lookup({ transactionDigest: zeroDigest }),
+      { ...expected, transactionDigest: zeroDigest, paidAtomic: '0' });
+  }
 });
 
 test('Pack Pass readback authenticates wallet custody, signed price, and the Move commitment', () => {

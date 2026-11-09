@@ -7492,6 +7492,68 @@ test('cold Player preview displays the saved mint receipt without running Comple
   }
 });
 
+test('Maker detail verifies Pack receipts without a Player journal and preserves exact wallet and Maker scope', async t => {
+  const digest = '7'.repeat(44);
+  const wallet = { account: { address: ROOT_TWO, chains: ['sui:mainnet'] } };
+  for (const status of ['ready', 'error']) await t.test(status, async () => {
+    const confirmed = deferred();
+    const requests = [];
+    const h = browserHarness({
+      connection: wallet,
+      initialUrl: `https://animacraft.soulidity.ai/maker/${ROOT_ONE}#template`,
+      templatesResult: status === 'ready'
+        ? { status: 'READY', makers: [certifiedMaker()], diagnostics: [] }
+        : { status: 'ERROR', makers: [], diagnostics: [{ message: 'Maker manifest unavailable' }] },
+      completePlayerJourneyResult: () => assert.fail('Receipt lookup must not run Complete'),
+    });
+    const receipt = { rootId: ROOT_ONE, releaseId: ROOT_TWO, transactionDigest: digest,
+      checkpoint: '100', paymentCoinType: '0x2::coin::TEST',
+      status: 'FINALIZED_SUCCESS', packPassId: `0x${'77'.repeat(32)}`, paidAtomic: '1000' };
+    h.bridge.lookupPlayerPackReceipt = async request => {
+      requests.push(request);
+      if (request.transactionDigest === digest) return receipt;
+      if (request.transactionDigest === '8'.repeat(44)) return { ...receipt,
+        transactionDigest: request.transactionDigest, status: 'FINALIZED_FAILURE', packPassId: null, paidAtomic: null };
+      if (request.transactionDigest === '9'.repeat(44)) throw Error('Not found');
+      return confirmed.promise;
+    };
+    const app = createOriginalProductApp(h);
+    try {
+      await app.ready;
+      const mount = h.doc.getElementById('templateDetail');
+      assert.match(mount.innerHTML, /Look up original Pack receipt/);
+      const submit = transactionDigest => {
+        const form = { closest: selector => selector === '[data-pack-receipt-lookup]' ? form : null,
+          elements: { namedItem: () => ({ value: transactionDigest }) } };
+        return waitForCompletionEvent(mount.fire('submit', { target: form }));
+      };
+      await submit(digest);
+      assert.deepEqual(requests, [{ rootId: ROOT_ONE, transactionDigest: digest }]);
+      assert.match(mount.innerHTML, new RegExp(receipt.packPassId));
+      assert.match(mount.innerHTML, /1000 atomic units/);
+      await submit('8'.repeat(44));
+      assert.match(mount.innerHTML, /Pack transaction finalized with a failure/);
+      assert.doesNotMatch(mount.innerHTML, /Pack Pass ID/);
+      await submit('9'.repeat(44));
+      assert.match(mount.innerHTML, /Could not verify a finalized Pack receipt/);
+      assert.doesNotMatch(mount.innerHTML, /data-verified-pack-receipt/);
+
+      const request = submit('6'.repeat(44));
+      await settle();
+      await submit('6'.repeat(44));
+      assert.equal(requests.length, 4);
+      app.refreshConnection(null);
+      assert.doesNotMatch(mount.innerHTML, /data-pack-receipt-lookup/);
+      app.refreshConnection(wallet);
+      confirmed.resolve({ ...receipt, transactionDigest: '6'.repeat(44) });
+      await request;
+      assert.doesNotMatch(mount.innerHTML, /data-verified-pack-receipt/);
+      assert.equal(h.calls.openPlayer.length, 0);
+      assert.equal(h.calls.completePlayerJourney.length, 0);
+    } finally { confirmed.resolve(); await app.destroy(); }
+  });
+});
+
 test('cold Player can verify a supplied original digest without a saved action or starting Complete', async () => {
   const digest = '7'.repeat(44);
   const lookups = [];

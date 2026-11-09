@@ -995,6 +995,7 @@ export function createOriginalProductApp({
   const exportPlayerEnvelopeRecovery = optionalMethod(bridge, 'exportPlayerEnvelopeRecovery');
   const readPlayerCompletionReceipt = optionalMethod(bridge, 'readPlayerCompletionReceipt');
   const lookupPlayerCompletionReceipt = optionalMethod(bridge, 'lookupPlayerCompletionReceipt');
+  const lookupPlayerPackReceipt = optionalMethod(bridge, 'lookupPlayerPackReceipt');
   // Separate from playerUi/project autosave and diagnostic snapshots. Signed
   // envelope recovery is exported only through an explicit local download.
   const envelopeRecoveryByScope = new Map();
@@ -1078,6 +1079,7 @@ export function createOriginalProductApp({
     templateDetailError: '',
     templateDetailCoverUrl: '',
     templateDetailRequest: 0,
+    templatePackReceiptLookup: null,
     playerSession: null,
     playerStatus: 'idle',
     playerError: '',
@@ -1702,6 +1704,82 @@ export function createOriginalProductApp({
     </section>`;
   }
 
+  function activeTemplatePackReceiptLookup() {
+    const rootId = makerReferenceFromLocation(win);
+    const wallet = state.connection.address;
+    if (!lookupPlayerPackReceipt || !state.connection.connected || !EXACT_OBJECT_ID.test(wallet)
+      || state.route !== 'template' || !['ready', 'error'].includes(state.templateDetailStatus)
+      || !rootId || rootId !== state.templateId) return null;
+    const request = state.templateDetailRequest;
+    const current = state.templatePackReceiptLookup;
+    if (current?.rootId === rootId && current.wallet === wallet && current.request === request) return current;
+    state.templatePackReceiptLookup = { rootId, wallet, request, digest: '', status: 'idle', receipt: null };
+    return state.templatePackReceiptLookup;
+  }
+
+  function renderTemplatePackReceiptLookup() {
+    const lookup = activeTemplatePackReceiptLookup();
+    if (!lookup) return '';
+    const text = key => makerWorkspaceText(state.locale, key);
+    const loading = lookup.status === 'loading';
+    const receipt = lookup.receipt;
+    return `<section class="template-detail-license" aria-labelledby="packReceiptHeading">
+      <h2 id="packReceiptHeading">${escapeHtml(text('playerPackReceiptLookup'))}</h2>
+      <form class="v4-player-export-status" data-pack-receipt-lookup>
+        <label>${escapeHtml(text('playerReceiptDigest'))}
+          <input name="transactionDigest" data-pack-receipt-digest type="text" spellcheck="false"
+            autocomplete="off" maxlength="44" pattern="[1-9A-HJ-NP-Za-km-z]{43,44}" required
+            value="${escapeHtml(lookup.digest)}"${loading ? ' disabled' : ''}>
+        </label>
+        <button type="submit"${loading ? ' disabled' : ''}>${escapeHtml(text(loading ? 'playerReceiptChecking' : 'playerPackReceiptLookup'))}</button>
+        ${lookup.status === 'error' ? `<p role="alert">${escapeHtml(text('playerPackReceiptLookupError'))}</p>` : ''}
+        ${receipt ? `<section role="status" data-verified-pack-receipt>
+          <p>${escapeHtml(text(receipt.status === 'FINALIZED_SUCCESS' ? 'playerPackTransactionFinalized' : 'playerPackReceiptFailed'))}</p>
+          <dl style="overflow-wrap:anywhere">
+            <dt>${escapeHtml(text('playerReceiptDigest'))}</dt><dd>${escapeHtml(receipt.transactionDigest)}</dd>
+            <dt>${escapeHtml(text('playerPackReceiptRelease'))}</dt><dd>${escapeHtml(receipt.releaseId)}</dd>
+            ${receipt.packPassId ? `<dt>Pack Pass ID</dt><dd>${escapeHtml(receipt.packPassId)}</dd>
+              <dt>${escapeHtml(text('playerPackReceiptPaid'))}</dt><dd>${escapeHtml(receipt.paidAtomic)} ${escapeHtml(text('playerPackAtomicUnits'))} · ${escapeHtml(receipt.paymentCoinType)}</dd>` : ''}
+          </dl>
+        </section>` : ''}
+      </form>
+    </section>`;
+  }
+
+  async function lookupOriginalTemplatePackReceipt(digestInput) {
+    const lookup = activeTemplatePackReceiptLookup();
+    if (!lookup || lookup.status === 'loading') return;
+    const digest = String(digestInput ?? '').trim();
+    lookup.digest = digest;
+    lookup.status = 'loading';
+    lookup.receipt = null;
+    renderTemplateDetail();
+    const current = () => !state.destroyed && activeTemplatePackReceiptLookup() === lookup;
+    try {
+      const receipt = await lookupPlayerPackReceipt({ rootId: lookup.rootId, transactionDigest: digest });
+      if (!receipt || receipt.rootId !== lookup.rootId || receipt.transactionDigest !== digest
+        || !EXACT_OBJECT_ID.test(receipt.releaseId) || !/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(digest)
+        || !/^(0|[1-9][0-9]*)$/.test(receipt.checkpoint)) {
+        throw new TypeError('Pack receipt differs from the requested Maker and digest.');
+      }
+      if (receipt.status === 'FINALIZED_SUCCESS') {
+        if (!EXACT_OBJECT_ID.test(receipt.packPassId) || !/^(0|[1-9][0-9]*)$/.test(receipt.paidAtomic)
+          || typeof receipt.paymentCoinType !== 'string' || !receipt.paymentCoinType) {
+          throw new TypeError('Successful Pack receipt lacks an exact Pack Pass and payment.');
+        }
+      } else if (receipt.status !== 'FINALIZED_FAILURE' || receipt.packPassId !== null || receipt.paidAtomic !== null) {
+        throw new TypeError('Pack receipt does not prove a finalized outcome.');
+      }
+      if (!current()) return;
+      lookup.receipt = receipt;
+      lookup.status = 'ready';
+    } catch {
+      if (!current()) return;
+      lookup.status = 'error';
+    }
+    renderTemplateDetail();
+  }
+
   function renderTemplateDetail() {
     const root = byId('templateDetail');
     if (!root) return;
@@ -1717,7 +1795,8 @@ export function createOriginalProductApp({
         <section class="empty-state" role="status">
           <h2>${escapeHtml(t('unavailable', 'Maker unavailable'))}</h2>
           <p>${escapeHtml(state.templateDetailError || 'The certified Maker could not be read.')}</p>
-        </section>`;
+        </section>
+        ${renderTemplatePackReceiptLookup()}`;
       return;
     }
     const listed = selectedTemplate();
@@ -1754,6 +1833,7 @@ export function createOriginalProductApp({
         <div class="badge-row">${template.partLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join('')}</div>
         <div class="template-detail-license"><strong>${escapeHtml(template.license)}</strong><p>${escapeHtml(template.licenseNote)}</p></div>
         ${renderTemplatePublicPacks()}
+        ${renderTemplatePackReceiptLookup()}
         <div class="template-detail-actions">
           <button class="primary" type="button" data-detail-start>${escapeHtml(state.connection.connected ? t('startMaking', 'Make this OC') : t('connectToMake', 'Connect to make'))}</button>
         </div>
@@ -4541,6 +4621,7 @@ export function createOriginalProductApp({
     const restartDraftRead = walletChanged && next.connected && state.draftListRequest > 0
       && (state.draftsStatus === 'loading' || state.drafts.some(row => row.document.metadata.coverAssetId));
     if (walletChanged) {
+      state.templatePackReceiptLookup = null;
       invalidatePublicationReview();
       cancelCreatorStyleInteraction();
       creatorConnectionGeneration += 1;
@@ -8092,6 +8173,17 @@ export function createOriginalProductApp({
     event.stopPropagation?.();
     void openTemplateDetail(templateId);
   });
+  listen(byId('templateDetail'), 'submit', (event) => {
+    const form = event.target?.closest?.('[data-pack-receipt-lookup]');
+    if (!form) return;
+    event.preventDefault();
+    return lookupOriginalTemplatePackReceipt(form.elements.namedItem('transactionDigest')?.value);
+  });
+  listen(byId('templateDetail'), 'input', (event) => {
+    if (!event.target?.closest?.('[data-pack-receipt-digest]')) return;
+    const lookup = activeTemplatePackReceiptLookup();
+    if (lookup && lookup.status !== 'loading') lookup.digest = event.target.value;
+  });
   listen(byId('templateDetail'), 'click', (event) => {
     if (!event.target?.closest?.('[data-detail-start]')) return;
     void (async () => {
@@ -8490,7 +8582,8 @@ export function createOriginalProductApp({
       if (state.destroyed) return;
       state.templatesStatus = 'error';
       state.templatesError = String(error?.message || 'The certified Fresh-v8 runtime is unavailable.');
-      renderTemplateCards();
+      if (state.route === 'template' && makerReferenceFromLocation(win)) syncBrowserLocation();
+      else renderTemplateCards();
       renderBridgeState();
       return;
     }
