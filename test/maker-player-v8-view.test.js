@@ -1089,9 +1089,11 @@ test('contextual choices stay in the approved Part picker while Pack controls re
   assert.equal(actionCount(accessiblePackCard, 'player-acquire-expansion-v8'), 0);
 
   const acquirePackSession = sessionFixture();
-  acquirePackSession.player.contextualChoices.packStyles[0].access = {
-    accessible: false, availableForAcquire: true,
-  };
+  Object.assign(acquirePackSession.player.contextualChoices.packStyles[0], {
+    access: { accessible: false, availableForAcquire: true },
+    entry: { kind: 1, priceAtomic: '1000' },
+    completion: { mode: 'FREE_QUOTA_THEN_BLOCK', priceAtomic: '0', freeQuotaPerWallet: '3', totalCap: '7' },
+  });
   const acquirePack = renderApprovedMakerV8Player(projectMakerV8PlayerView(
     acquirePackSession,
     fullState({ pickerPanel: 'parts', export: { open: false } }),
@@ -1100,6 +1102,8 @@ test('contextual choices stay in the approved Part picker while Pack controls re
   const acquirePackCard = articleByAttribute(acquirePack, 'data-release-id', releaseId);
   assert.equal(actionCount(acquirePackCard, 'player-expansion-v8'), 0);
   assert.equal(actionCount(acquirePackCard, 'player-acquire-expansion-v8'), 1);
+  assert.match(acquirePackCard, /Pack access · 0\.001 USDC/);
+  assert.match(acquirePackCard, /Complete OC policy · Free quota, then blocked · Free Completes per wallet 3 · Total Complete cap 7/);
 
   const lockedPackSession = sessionFixture();
   lockedPackSession.player.contextualChoices.packStyles[0].access = {

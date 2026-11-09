@@ -344,6 +344,8 @@ test('contextual Player choices merge exact active PackPass manifests and holder
         return {
           manifest: { content: {
             metadata: { name: 'Moon Pack' },
+            access: { kind: 'FREE', priceAtomic: '0' },
+            completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '0' },
             styles: [{
               partKey: 'body', itemKey: 'moon_hat', styleKey: 'violet',
               layerTrackKey: 'body', colorChannelKey: null, defaultSwatchKey: null,
@@ -373,6 +375,7 @@ test('contextual Player choices merge exact active PackPass manifests and holder
           manifestBlobId: 'pack-manifest', manifestSha256: '2'.repeat(64),
           contentCommitment: packContentCommitment, expectedStyleCount: '1',
           entry: { kind: 0, priceAtomic: '0', paymentCoinType: MAKER_V8_PAYMENT_COIN_TYPE },
+          fields: { complete_mode: 0, complete_price_atomic: '0', complete_free_quota_per_wallet: '0', complete_total_cap: '0' },
         },
         admission: { admittedRevision: '4', admissionState: 0 },
       }],
@@ -417,13 +420,16 @@ function publicPackFixture(kind = 0) {
     manifestBlobId: 'pack-manifest', manifestSha256: '2'.repeat(64),
     contentCommitment: '1'.repeat(64), expectedStyleCount: '1',
     entry: { kind, priceAtomic: kind === 1 ? '1250000' : '0', paymentCoinType: MAKER_V8_PAYMENT_COIN_TYPE },
+    fields: { complete_mode: 0, complete_price_atomic: '0', complete_free_quota_per_wallet: '0', complete_total_cap: '0' },
     admission: { admittedRevision: '4', admissionState: 0 },
   };
   const reads = [];
   const packManifestAdapter = { async load(input) {
     reads.push(input);
     return { manifest: { content: { metadata: { name: 'Moon Pack', summary: 'Moon hats' },
-      access: { kind: ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'][kind], priceAtomic: release.entry.priceAtomic }, styles: [{
+      access: { kind: ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'][kind], priceAtomic: release.entry.priceAtomic },
+      completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '0' },
+      styles: [{
       partKey: 'body', itemKey: 'moon_hat', styleKey: 'violet', layerTrackKey: 'body',
       colorChannelKey: null, defaultSwatchKey: null, asset: { assetId: 'moon-asset', protected: true },
     }] } }, assets: [{ assetId: 'moon-asset', blobId: 'encrypted-asset-blob', mediaType: 'image/png',
@@ -457,6 +463,7 @@ test('walletless Pack catalog verifies exact release policies and only returns p
     packs: ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'].map((accessKind, kind) => ({
       releaseId: objectId(960 + kind), name: 'Moon Pack', summary: 'Moon hats',
       accessKind, priceAtomic: kind === 1 ? '1250000' : '0',
+      completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '0' },
     })) });
   assert.equal(calls.account + calls.reconnect + calls.inventory + calls.asset, 0);
   assert.equal(paid.reads[0].sha256, paid.release.manifestSha256);
@@ -465,6 +472,41 @@ test('walletless Pack catalog verifies exact release policies and only returns p
   assert.deepEqual(await read(), { rootId, unavailableCount: 1, packs: [first.packs[0], first.packs[2]] });
   paid.release.admission.admissionState = 1;
   await assert.rejects(read(), { code: 'MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT' });
+});
+
+test('Maker discovery and Player agree on exact Pack entry and Complete economics', async t => {
+  const request = { address: objectId(902), rootId };
+  for (const [name, changes] of Object.entries({
+    entryKind: content => { content.access = { kind: 'FREE', priceAtomic: '0' }; },
+    entryPrice: content => { content.access.priceAtomic = '1000000'; },
+    completeMode: content => { content.completion = { mode: 'PAID_EVERY_TIME', priceAtomic: '250', freeQuotaPerWallet: '0', totalCap: '100' }; },
+    completePrice: content => { content.completion.priceAtomic = '251'; },
+    completeQuota: content => { content.completion.freeQuotaPerWallet = '3'; },
+    completeCap: content => { content.completion.totalCap = '101'; },
+  })) await t.test(name, async () => {
+    const f = publicPackFixture(1);
+    f.release.fields = { complete_mode: 1, complete_price_atomic: '250', complete_free_quota_per_wallet: '2', complete_total_cap: '100' };
+    const pass = { objectId: objectId(941), releaseId: f.release.objectId,
+      releaseContentCommitment: f.release.contentCommitment, release: f.release, admission: f.release.admission };
+    let mismatch = false;
+    const { options, calls } = harness({ publicPacks: [f.release],
+      ownedInventory: { packPasses: [pass] }, packManifestAdapter: {
+        async load(input) {
+          const read = await f.packManifestAdapter.load(input);
+          const content = read.manifest.content;
+          content.completion = { mode: 'FREE_QUOTA_THEN_PAID', priceAtomic: '250', freeQuotaPerWallet: '2', totalCap: '100' };
+          if (mismatch) changes(content);
+          return read;
+        },
+      } });
+    const product = createMakerV8ProductRuntime(options);
+    assert.equal((await product.publicPacks.list({ rootId })).packs[0].priceAtomic, '1250000');
+    assert.equal((await product.choices.load(request)).packStyles[0].access.canEquip, true);
+    mismatch = true;
+    assert.deepEqual(await product.publicPacks.list({ rootId }), { rootId, unavailableCount: 1, packs: [] });
+    await assert.rejects(product.choices.load(request), { code: 'MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT' });
+    assert.equal(calls.asset, 0);
+  });
 });
 
 test('different Releases can expose same-named artwork without merging content identities', async () => {
@@ -619,9 +661,17 @@ test('unowned public free/paid/included Packs are visible without granting equip
   for (const kind of [0, 1, 2]) for (const makerAccess of [false, true]) {
     await t.test(`kind ${kind}, MakerAccess ${makerAccess}`, async () => {
       const f = publicPackFixture(kind);
-      const { options, calls } = harness({ publicPacks: [f.release], packManifestAdapter: f.packManifestAdapter,
-        ownedInventory: { packPasses: [], makerAccessPasses: makerAccess ? [{ objectId: objectId(980) }] : [] } });
-      const choices = await createMakerV8ProductRuntime(options).choices.load({ address: objectId(902), rootId });
+      const paidComplete = { mode: 'PAID_EVERY_TIME', priceAtomic: '250', freeQuotaPerWallet: '0', totalCap: '12' };
+      if (kind === 2) Object.assign(f.release.fields, { complete_mode: 2, complete_price_atomic: '250', complete_total_cap: '12' });
+      const { options, calls } = harness({ publicPacks: [f.release], packManifestAdapter: {
+        async load(input) {
+          const read = await f.packManifestAdapter.load(input);
+          if (kind === 2) read.manifest.content.completion = paidComplete;
+          return read;
+        },
+      }, ownedInventory: { packPasses: [], makerAccessPasses: makerAccess ? [{ objectId: objectId(980) }] : [] } });
+      const product = createMakerV8ProductRuntime(options);
+      const choices = await product.choices.load({ address: objectId(902), rootId });
       assert.equal(choices.packStyles.length, 1);
       const choice = choices.packStyles[0];
       assert.equal(choice.owned, false);
@@ -634,6 +684,9 @@ test('unowned public free/paid/included Packs are visible without granting equip
       assert.equal(f.reads.length, 1);
       assert.equal(f.reads[0].contentCommitment, f.release.contentCommitment);
       assert.equal(choices.certifiedAssets.length, 1);
+      const { packs } = await product.publicPacks.list({ rootId });
+      assert.deepEqual(choice.completion, packs[0].completion);
+      if (kind === 2) assert.deepEqual(choice.completion, paidComplete);
     });
   }
 });

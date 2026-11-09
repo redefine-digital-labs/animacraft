@@ -3991,9 +3991,12 @@ test('public Maker detail shows certified Pack prices without connecting a walle
   harness.bridge.listPublicPacks = async ({ rootId }) => {
     requests.push(rootId);
     return { rootId, unavailableCount: 1, packs: [
-      { releaseId: ROOT_ONE, name: '<Free pack>', summary: 'Free styles', accessKind: 'FREE', priceAtomic: '0' },
-      { releaseId: ROOT_TWO, name: 'Paid pack', summary: '', accessKind: 'PAID', priceAtomic: '1000' },
-      { releaseId: `0x${'ff'.repeat(32)}`, name: 'Included pack', summary: '', accessKind: 'INCLUDED_WITH_MAKER', priceAtomic: '0' },
+      { releaseId: ROOT_ONE, name: '<Free pack>', summary: 'Free styles', accessKind: 'FREE', priceAtomic: '0',
+        completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '12' } },
+      { releaseId: ROOT_TWO, name: 'Paid pack', summary: '', accessKind: 'PAID', priceAtomic: '1000',
+        completion: { mode: 'FREE_QUOTA_THEN_PAID', priceAtomic: '1250000', freeQuotaPerWallet: '2', totalCap: '0' } },
+      { releaseId: `0x${'ff'.repeat(32)}`, name: 'Included pack', summary: '', accessKind: 'INCLUDED_WITH_MAKER', priceAtomic: '0',
+        completion: { mode: 'PAID_EVERY_TIME', priceAtomic: '250', freeQuotaPerWallet: '0', totalCap: '0' } },
     ] };
   };
   const app = createOriginalProductApp(harness);
@@ -4005,6 +4008,12 @@ test('public Maker detail shows certified Pack prices without connecting a walle
   assert.match(markup, /&lt;Free pack&gt;.*Free/);
   assert.match(markup, /Paid pack.*0\.001 USDC/);
   assert.match(markup, /Included pack.*Included with the Maker/);
+  const terms = [...markup.matchAll(/data-pack-complete-terms>([^<]+)/g)].map(([, text]) => text);
+  assert.deepEqual(terms, [
+    'Complete OC policy · Free · Total Complete cap 12',
+    'Complete OC policy · Free quota, then paid · Free Completes per wallet 2 · 1.25 USDC',
+    'Complete OC policy · Paid every time · 0.00025 USDC',
+  ]);
   assert.match(markup, /Some expansion packs could not be verified/);
   assert.equal(harness.calls.selector, 0);
   assert.equal(harness.calls.openPlayer.length, 0);
