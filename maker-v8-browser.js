@@ -3094,7 +3094,7 @@ function finalizedMoveTargets(transactionData) {
   });
 }
 
-function finalizedEffectsOutputRefs(rawEffects, transactionDigest) {
+export function makerV8FinalizedEffectsOutputRefs(rawEffects, transactionDigest, { createdOnly = false } = {}) {
   let bytes; let parsed; let canonical;
   try {
     if (!(rawEffects instanceof Uint8Array) || rawEffects.length === 0) throw new Error('effects BCS missing');
@@ -3113,7 +3113,8 @@ function finalizedEffectsOutputRefs(rawEffects, transactionDigest) {
   }
   const refs = [];
   if (parsed.$kind === 'V1') {
-    for (const [objectRef, owner] of [...effects.created, ...effects.mutated, ...effects.unwrapped]) {
+    const writes = createdOnly ? effects.created : [...effects.created, ...effects.mutated, ...effects.unwrapped];
+    for (const [objectRef, owner] of writes) {
       refs.push(Object.freeze({
         objectId: id(objectRef.objectId, 'raw effects objectId'),
         version: decimal(objectRef.version, 'raw effects version'),
@@ -3123,7 +3124,8 @@ function finalizedEffectsOutputRefs(rawEffects, transactionDigest) {
     }
   } else if (parsed.$kind === 'V2') {
     for (const [objectId, change] of effects.changedObjects) {
-      if (change.outputState?.$kind !== 'ObjectWrite') continue;
+      if (change.outputState?.$kind !== 'ObjectWrite'
+        || (createdOnly && change.idOperation?.$kind !== 'Created')) continue;
       refs.push(Object.freeze({
         objectId: id(objectId, 'raw effects objectId'),
         version: decimal(effects.lamportVersion, 'raw effects lamportVersion'),
@@ -3245,7 +3247,7 @@ export async function assertFinalizedMakerV8CompilerTransactionV8(client, transa
     effects: finalized.effects,
     events,
     objectChanges: finalizedCoreObjectChanges(finalized),
-    compilerEffectsOutputRefs: finalizedEffectsOutputRefs(evidence.effectsBcs, transactionDigest),
+    compilerEffectsOutputRefs: makerV8FinalizedEffectsOutputRefs(evidence.effectsBcs, transactionDigest),
   };
   let transactionData; let transactionDataBytes; let observedKind;
   try {
