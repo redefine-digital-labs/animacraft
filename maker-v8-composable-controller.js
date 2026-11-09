@@ -739,6 +739,7 @@ export function createMakerV8ComposableCompilerV8({
         proofs.set(artifact.digest, freeze({
           digest: artifact.digest,
           signer: request.signer,
+          kindBytes: artifact.kindBytes,
           bytes: plan.current.fullTransaction,
           signature: plan.current.signature,
         }));
