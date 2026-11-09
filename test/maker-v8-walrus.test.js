@@ -216,6 +216,56 @@ test('a certified public asset reuses the existing Blob with sufficient Walrus r
   await persistence.close();
 });
 
+test('a timed-out public Blob inventory read retries without registering an already certified asset', async t => {
+  const expired = AbortSignal.abort(new DOMException('Inventory deadline expired', 'TimeoutError'));
+  const signals = [];
+  const h = harness(undefined, 100, {
+    async readOwnedPublicBlobs({ owner, blobId, signal }) {
+      assert.equal(owner, OWNER);
+      assert.equal(blobId, BLOB_ID);
+      signals.push(signal);
+      if (signals.length === 1) throw Object.assign(new Error('The operation was aborted due to timeout'), { code: 'INTERNAL' });
+      return { epoch: 120, blobs: [ownedPublicBlob(h.bytes)] };
+    },
+  });
+  const uploadId = 'pack-public-retry';
+  await h.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(h.bytes) });
+  const timeout = AbortSignal.timeout;
+  let firstDeadline = true;
+  t.mock.method(AbortSignal, 'timeout', delay => {
+    if (!firstDeadline) return timeout(delay);
+    firstDeadline = false;
+    return expired;
+  });
+
+  const result = await h.publisher.reuseCertifiedPublicAsset(uploadId);
+  assert.equal(signals.length, 2);
+  assert.equal(signals[0], expired);
+  assert.equal(signals[1].aborted, false);
+  assert.equal(result.status, 'COMPLETE');
+  assert.equal(result.reusedCertification, true);
+  assert.equal(result.blobObjectId, OBJECT);
+  assert.equal(result.transactionDigest, null);
+  assert.deepEqual(h.calls.filter(([step]) => ['sign', 'broadcast', 'upload'].includes(step)), []);
+});
+
+test('an unavailable public Blob inventory cannot fall back to a new registration', async () => {
+  const failure = Object.assign(new Error('Sui inventory unavailable'), { code: 'UNAVAILABLE' });
+  let reads = 0;
+  const h = harness(undefined, 100, {
+    async readOwnedPublicBlobs() { reads++; throw failure; },
+    async fetcher() { assert.fail('Strict byte verification requires a known certified Blob'); },
+  });
+  const uploadId = 'pack-public-retry-exhausted';
+  await h.publisher.prepare({ uploadId, owner: OWNER, mediaType: 'image/png', bytesBase64: toBase64(h.bytes) });
+  const prepared = await h.publisher.load(uploadId);
+
+  await assert.rejects(h.publisher.reuseCertifiedPublicAsset(uploadId), error => error === failure);
+  assert.equal(reads, 2);
+  assert.deepEqual(await h.publisher.load(uploadId), prepared);
+  assert.deepEqual(h.calls.filter(([step]) => ['sign', 'broadcast', 'upload'].includes(step)), []);
+});
+
 test('public reuse rejects altered readback bytes and a winning original signature keeps its digest', async () => {
   const persistence = createMakerV8WalrusPersistenceV8(new IDBFactory(), { storageManager: {
     persisted: async () => true, persist: async () => true,
