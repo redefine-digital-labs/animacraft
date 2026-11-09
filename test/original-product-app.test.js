@@ -196,6 +196,66 @@ test('Pack Studio presents a saved transaction review before invoking the wallet
   } finally { app.destroy(); }
 });
 
+test('published Pack Studio shows lifecycle review, treasury and exact recovery without another wallet prompt', async () => {
+  const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });
+  const parent = { draft: draftRecord(), draftSha256: 'c'.repeat(64) };
+  const draft = {
+    draftId: 'managed-pack', revision: 3,
+    document: {
+      author: { address: ROOT_ONE }, authoringParent: parent,
+      bindings: { root: { objectRef: { objectId: ROOT_TWO }, makerVersion: '1' } },
+      styles: [], metadata: { name: 'QA Pack', semanticPackId: 'managed-pack' },
+      access: { kind: 'FREE', priceAtomic: '0' },
+      completion: { mode: 'UNLIMITED_FREE', priceAtomic: '0', freeQuotaPerWallet: '0', totalCap: '0' },
+    },
+    publication: { status: 'COMPLETE', chain: { lifecycle: 'ACTIVE', release: { objectRef: { objectId: ROOT_ONE } } } },
+  };
+  const execution = { allowWalletSignature: true, allowBroadcast: true };
+  const state = { lifecycle: 'ACTIVE', canManage: true, balanceAtomic: '1500',
+    totalCollectedAtomic: '1700', totalWithdrawnAtomic: '200' };
+  const step = { digest: 'original-pack-lifecycle-digest', gasBudgetMist: '5000000' };
+  const calls = [];
+  h.bridge.createPackDraft = async () => assert.fail('Open the published Pack');
+  h.bridge.listPackDrafts = async () => [draft];
+  h.bridge.loadPackDraft = async () => draft;
+  h.bridge.savePackDraft = async () => assert.fail('Lifecycle does not edit published content');
+  h.bridge.managePackLifecycle = async input => {
+    calls.push(input);
+    if (input.phase === 'INSPECT') return { draft, state, execution, pending: null };
+    if (input.phase === 'REVIEW') return { draft, review: { id: 'review-1', action: 'PAUSE', step } };
+    return { draft, state: null, execution, pending: { action: 'PAUSE', ticket: { digest: step.digest } } };
+  };
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready; app.navigate('creator'); await app.openDraft(parent.draft.draftId);
+    const mount = h.doc.getElementById('makerV4CreatorMount');
+    const click = async (action, dataset = {}) => {
+      const target = new FakeTarget(h.doc, { dataset: { action, ...dataset } });
+      target.parent = mount;
+      mount.fire('click', { target });
+      await settle(); await settle();
+    };
+    await click('creator-tab', { tab: 'expansions' });
+    await click('open-expansion-pack-studio', { packProjectKey: draft.draftId });
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT']);
+    assert.match(mount.innerHTML, /Published Pack lifecycle/);
+    assert.match(mount.innerHTML, /Available revenue \(atomic units\)<\/strong> 1500/);
+    assert.match(mount.innerHTML, /Pause Pack/);
+    assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
+    await click('review-pack-lifecycle', { lifecycleAction: 'PAUSE' });
+    assert.match(mount.innerHTML, /original-pack-lifecycle-digest/);
+    assert.match(mount.innerHTML, /5000000/);
+    await click('advance-pack-lifecycle', { lifecycleReviewId: 'stale' });
+    assert.deepEqual(calls.map(input => input.phase), ['INSPECT', 'REVIEW']);
+    await click('advance-pack-lifecycle', { lifecycleReviewId: 'review-1' });
+    assert.match(mount.innerHTML, /Continue saved transaction/);
+    assert.doesNotMatch(mount.innerHTML, /Review in wallet/);
+    await click('advance-pack-lifecycle');
+    assert.equal(calls.at(-1).reviewId, null);
+    assert.match(mount.innerHTML, /original-pack-lifecycle-digest/);
+  } finally { app.destroy(); }
+});
+
 test('publication review fences late results on route, wallet, close and reopened draft', async t => {
   for (const mode of ['route', 'wallet', 'close', 'reopen']) await t.test(mode, async () => {
     const h = browserHarness({ connection: { account: { address: ROOT_ONE, chains: ['sui:mainnet'] } } });

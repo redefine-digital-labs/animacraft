@@ -2090,6 +2090,68 @@ test('Pack review signs only the reviewed stage and recovers the saved digest on
   } finally { bridge.dispose(); reopened.dispose(); drafts.close(); }
 });
 
+test('Pack lifecycle bridge binds a reviewed digest and reconnects to its saved attempt after a wallet error', async () => {
+  const { productRuntime } = runtimeHarness({ connected: true });
+  const { drafts } = draftHarness();
+  const releaseId = `0x${'43'.repeat(32)}`;
+  const draft = { draftId: 'qa-pack', revision: 2, document: { author: { address } },
+    publication: { status: 'COMPLETE', chain: { release: { objectRef: { objectId: releaseId } } } } };
+  const step = { id: 'lifecycle-attempt', revision: 1, digest: 'fixed-digest', gasBudgetMist: '6500000' };
+  const ticket = { recoveryId: step.id, digest: step.digest };
+  const calls = [];
+  let pending = null;
+  const pack = {
+    async createPackDraft() {}, async load() { return structuredClone(draft); },
+    async save() {}, async preview() {}, async export() {},
+    async requestPublicationSignature() {}, async replayPackPublication() {},
+    async resumePublication() {}, async recoverPublicationOutcome() {},
+    async performLifecycle(value) {
+      assert.equal(value.draftId, draft.draftId);
+      assert.equal(value.expectedRevision, draft.revision);
+      calls.push(value.stage);
+      if (value.stage === 'INSPECT') return { draft: structuredClone(draft), pending, state: null };
+      if (value.stage === 'REVIEW') {
+        assert.equal(value.action, 'WITHDRAW_PACK_REVENUE');
+        assert.deepEqual(value.request, { amountAtomic: '125', recipient: address });
+        return { draft: structuredClone(draft), step };
+      }
+      if (value.stage === 'SIGN_REVIEWED') {
+        assert.deepEqual(value.step, step);
+        await value.assertCurrent();
+        pending = { action: value.action, ticket, status: 'SIGNING' };
+        throw new Error('Wallet did not return');
+      }
+      assert.equal(value.stage, 'RECOVER');
+      assert.equal(value.action, 'WITHDRAW_PACK_REVENUE');
+      assert.deepEqual(value.ticket, ticket);
+      draft.revision++;
+      pending = null;
+      return { draft: structuredClone(draft), result: { status: 'FINALIZED_SUCCESS', digest: step.digest } };
+    },
+  };
+  const open = () => createMakerV8ProductBridge({ productRuntime, drafts, pack,
+    execution: { allowWalletSignature: true, allowBroadcast: true } });
+  const bridge = open();
+  const reopened = open();
+  const scope = { draftId: draft.draftId, expectedRevision: draft.revision };
+  try {
+    const { review } = await bridge.managePackLifecycle({
+      ...scope, phase: 'REVIEW', action: 'WITHDRAW_PACK_REVENUE', amountAtomic: '125',
+    });
+    assert.equal(review.step.digest, step.digest);
+    await assert.rejects(bridge.managePackLifecycle({ ...scope, phase: 'CONTINUE', reviewId: 'stale' }),
+      { code: 'MAKER_V8_PRODUCT_PACK_LIFECYCLE_REVIEW_STALE' });
+    assert.deepEqual(calls, ['REVIEW']);
+    await assert.rejects(bridge.managePackLifecycle({ ...scope, phase: 'CONTINUE', reviewId: review.id }),
+      /Wallet did not return/);
+    assert.equal((await reopened.managePackLifecycle(scope)).pending.ticket.digest, step.digest);
+    const recovered = await reopened.managePackLifecycle({ ...scope, phase: 'CONTINUE' });
+    assert.equal(recovered.outcome.digest, step.digest);
+    assert.equal(recovered.draft.revision, 3);
+    assert.deepEqual(calls, ['REVIEW', 'SIGN_REVIEWED', 'INSPECT', 'INSPECT', 'RECOVER', 'INSPECT']);
+  } finally { bridge.dispose(); reopened.dispose(); drafts.close(); }
+});
+
 test('Start Making opens one exact Fresh-v8 Player session for the selected Maker', async () => {
   const rootId = `0x${'44'.repeat(32)}`;
   const commitment = '44'.repeat(32);
