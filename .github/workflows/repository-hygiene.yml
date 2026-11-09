@@ -99,7 +99,7 @@ jobs:
       SOULIDITY_COMMIT_SHA: ${{ inputs.soulidity_commit_sha || vars.SOULIDITY_COMMIT_SHA }}
       # Official Ubuntu x86_64 archive digest, not the macOS executable hash.
       # Framework dependencies remain separately pinned in Move.toml.
-      SUI_RELEASE: mainnet-v1.80.1
+      SUI_ARCHIVE_ASSET_ID: '584195611'
       SUI_ARCHIVE: sui-mainnet-v1.80.1-ubuntu-x86_64.tgz
       SUI_ARCHIVE_SHA256: 97f9aed10e0c2fe3204ce4639ac992e1449b17c14f22f30e9f903ead54ac7336
 
@@ -148,7 +148,9 @@ jobs:
           archive="$RUNNER_TEMP/$SUI_ARCHIVE"
           mkdir -p "$bin_dir"
           curl --fail --location --proto '=https' --tlsv1.2 \
-            "https://github.com/MystenLabs/sui/releases/download/${SUI_RELEASE}/${SUI_ARCHIVE}" \
+            --connect-timeout 15 --max-time 240 --retry 2 --retry-delay 2 --retry-max-time 480 \
+            --header 'Accept: application/octet-stream' \
+            "https://api.github.com/repos/MystenLabs/sui/releases/assets/${SUI_ARCHIVE_ASSET_ID}?download=1&run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output "$archive"
           echo "${SUI_ARCHIVE_SHA256}  ${archive}" | sha256sum --check --strict
           member="$(tar -tzf "$archive" | grep -E '^(\./)?sui$')"

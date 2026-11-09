@@ -531,7 +531,7 @@ export function deriveMakerV8PackCommitmentsV8(documentValue, contentCommitment)
     root_content_commitment: root,
     release_content_commitment: content,
   }).toBytes());
-  const rollingCommitments = [hashBytes(rolling)];
+  const rollingCommitments = [toHex(rolling)];
   for (const [index, style] of styles.entries()) {
     rolling = sha256(PackAdvance.serialize({
       domain: encoder.encode('animacraft-v8/runtime/pack-style'),
@@ -542,7 +542,7 @@ export function deriveMakerV8PackCommitmentsV8(documentValue, contentCommitment)
       previous: rolling,
       style,
     }).toBytes());
-    rollingCommitments.push(hashBytes(rolling));
+    rollingCommitments.push(toHex(rolling));
   }
   return freeze({
     styles,
@@ -1589,7 +1589,7 @@ export function createMakerV8PackCompilerV8({
       return attestBuilt(compiled, await successorCursor(compiled, head));
     },
 
-    async certifyFinalized({ plan, query, artifact }) {
+    async certifyFinalized({ plan, query, artifact, archived = null }) {
       const compiled = validateCompiled(plan?.immutable?.request?.publicationInput);
       const descriptor = plan.current.descriptor;
       const cursor = descriptor.stage === 'INIT' ? initialCursor(compiled) : await successorCursor(compiled, plan.head);
@@ -1602,6 +1602,7 @@ export function createMakerV8PackCompilerV8({
         predecessor: structuredClone(plan.head),
         query: structuredClone(query),
         artifact: structuredClone(artifact),
+        ...(archived === null ? {} : { archived }),
       });
       exact(result, ['checkpoint', 'chain'], 'Pack stage readback');
       const checkpoint = assertCheckpoint(result.checkpoint, compiled, descriptor.ordinal);

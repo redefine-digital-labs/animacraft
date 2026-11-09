@@ -35,6 +35,7 @@ import {
   makerV8LifecycleTargetsV8,
 } from './maker-v8-lifecycle.js';
 import { assertMakerV8Runtime } from './maker-v8-runtime.js';
+import { makerV8AbsenceCoversEpochWindow } from './maker-v8-publication-expiration.js';
 import {
   assertMakerV8SuiGrpcTransport,
   createProductionMakerV8SuiGrpcTransport,
@@ -522,6 +523,7 @@ function validateQuery(value, digest) {
       'schemaVersion', 'kind', 'grpcCode', 'grpcService', 'grpcMethod',
       'requestedDigest', 'chainIdentifier',
       'watermarkEpoch', 'watermarkCheckpointSequence', 'watermarkCheckpointDigest',
+      ...(Object.hasOwn(absence ?? {}, 'retention') ? ['retention'] : []),
     ], 'transaction absence');
     if (absence.schemaVersion !== MAKER_V8_TRANSACTION_ABSENCE_SCHEMA
       || absence.kind !== 'SUI_GRPC_TRANSACTION_NOT_FOUND'
@@ -529,7 +531,9 @@ function validateQuery(value, digest) {
       || absence.grpcService !== 'sui.rpc.v2.LedgerService'
       || absence.grpcMethod !== 'GetTransaction'
       || absence.requestedDigest !== digest
-      || absence.chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER) {
+      || absence.chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER
+      || (Object.hasOwn(absence, 'retention')
+        && !makerV8AbsenceCoversEpochWindow(absence, absence.retention?.startEpoch))) {
       fail('MAKER_V8_LIFECYCLE_ABSENCE_INVALID', 'NOT_FOUND evidence is not bound to this Mainnet digest.');
     }
     decimal(absence.watermarkEpoch, 'absence.watermarkEpoch');
@@ -1471,7 +1475,11 @@ export function createMakerV8LifecycleRecoveryAdapterV8({
       fail('MAKER_V8_LIFECYCLE_RECOVERY_DRIFT', 'Recovery request differs from the exact durable signed artifact.');
     }
     const proof = await attestRecord(record);
-    const rawQuery = await rpc.queryTransaction({ digest: record.digest });
+    const epochWindow = {
+      start: (BigInt(proof.expirationEpoch) - 1n).toString(),
+      end: proof.expirationEpoch,
+    };
+    const rawQuery = await rpc.queryTransaction({ digest: record.digest, epochWindow });
     const query = validateQuery(rawQuery, record.digest);
     if (query.status === 'FINALIZED_SUCCESS') {
       if (record.status !== MAKER_V8_LIFECYCLE_RECOVERY_STATUS.FINALIZED_SUCCESS) {
@@ -1498,6 +1506,10 @@ export function createMakerV8LifecycleRecoveryAdapterV8({
       return freeze({ status: 'OUTCOME_UNKNOWN', recoveryId: record.recoveryId, digest: record.digest });
     }
     if (BigInt(query.absence.watermarkEpoch) > BigInt(proof.expirationEpoch)) {
+      if (!makerV8AbsenceCoversEpochWindow(query.absence, epochWindow.start)) {
+        record = await advance(record, MAKER_V8_LIFECYCLE_RECOVERY_STATUS.OUTCOME_PENDING, query);
+        return freeze({ status: 'OUTCOME_UNKNOWN', recoveryId: record.recoveryId, digest: record.digest });
+      }
       await advance(record, MAKER_V8_LIFECYCLE_RECOVERY_STATUS.EXPIRED_NOT_FOUND, query);
       fail('MAKER_V8_LIFECYCLE_TRANSACTION_EXPIRED', 'Authoritative Mainnet NOT_FOUND is beyond the signed epoch expiration.');
     }

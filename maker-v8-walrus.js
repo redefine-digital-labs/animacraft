@@ -1,13 +1,17 @@
-import { AuthenticationError, WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt } from '@mysten/walrus';
+import { AuthenticationError, WalrusClient, MAINNET_WALRUS_PACKAGE_CONFIG, blobIdFromInt, blobIdToInt } from '@mysten/walrus';
 import { bcs } from '@mysten/sui/bcs';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase58, fromBase64, toBase64, normalizeStructTag } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
+import { makerV8AbsenceCoversEpochWindow, makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 import { MakerV8DAppKitWalletError } from './maker-v8-dapp-kit-wallet.js';
 import { MakerV8BrowserError } from './maker-v8-browser.js';
-import { readMakerV8WalrusBatchObjectsV1, assertMakerV8WalrusBatchObjectsV1 } from './maker-v8-walrus-execution.js';
+import {
+  readMakerV8ArchivedWalrusObjectsV1,
+  readMakerV8WalrusBatchObjectsV1,
+  assertMakerV8WalrusBatchObjectsV1,
+} from './maker-v8-walrus-execution.js';
 
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
@@ -36,6 +40,8 @@ const SUI_ID = /^0x[0-9a-f]{64}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const BLOB_ID = /^[A-Za-z0-9_-]{20,512}$/;
 const UINT = /^(?:0|[1-9][0-9]*)$/;
+const PUBLIC_IMAGE_TYPES = new Set(['image/png', 'image/webp']);
+const PUBLIC_REUSE_SCHEMA = 'animacraft.maker-v8-walrus-public-reuse.v1';
 const encoder = new TextEncoder();
 
 export class MakerV8WalrusError extends Error {
@@ -197,9 +203,10 @@ function recordView(record) {
     epochs: record.epochs,
     deletable: record.deletable,
     blobId: record.encoded.blobId,
-    blobObjectId: record.upload?.blobObjectId ?? null,
+    blobObjectId: record.upload?.blobObjectId ?? record.readback?.blobObjectId ?? null,
     transactionDigest: record.transaction?.digest ?? null,
     ...(record.status.endsWith('_SIGNING') ? { reason: 'SIGNATURE_OUTCOME_UNKNOWN' } : {}),
+    ...(record.readback?.schemaVersion === PUBLIC_REUSE_SCHEMA ? { reusedCertification: true } : {}),
     mediaType: record.mediaType,
     byteLength: record.byteLength,
     byteSha256: record.byteSha256,
@@ -262,6 +269,20 @@ function assertRecord(value) {
       || proof.digest !== transaction.digest || proof.kindSha256 !== transaction.kindSha256
       || proof.validity?.chain !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST) {
       fail('MAKER_V8_WALRUS_RECORD_INVALID', 'Walrus signing intent differs from its exact unsigned Mainnet transaction.', 'PERSISTENCE');
+    }
+  }
+  if (value.readback?.schemaVersion === PUBLIC_REUSE_SCHEMA) {
+    const proof = exact(value.readback, ['schemaVersion', 'blobId', 'blobObjectId', 'byteLength', 'sha256',
+      'walrusEpoch', 'endEpoch'], 'Walrus public reuse proof');
+    if (value.status !== 'COMPLETE' || value.transaction !== null || value.upload !== null
+      || Object.hasOwn(value, 'batchKey') || !PUBLIC_IMAGE_TYPES.has(value.mediaType)
+      || proof.blobId !== value.encoded.blobId || !SUI_ID.test(proof.blobObjectId)
+      || proof.byteLength !== value.byteLength
+      || proof.sha256 !== value.byteSha256
+      || typeof proof.walrusEpoch !== 'string' || !UINT.test(proof.walrusEpoch)
+      || typeof proof.endEpoch !== 'string' || !UINT.test(proof.endEpoch)
+      || BigInt(proof.endEpoch) - BigInt(proof.walrusEpoch) < BigInt(value.epochs)) {
+      fail('MAKER_V8_WALRUS_RECORD_INVALID', 'Reusable public asset proof differs from its durable upload.', 'PERSISTENCE');
     }
   }
   canonical(value);
@@ -587,7 +608,9 @@ function transactionProof(bytesBase64, expected) {
   if (expected.kindSha256 && kindSha256 !== expected.kindSha256) {
     fail('MAKER_V8_WALRUS_TRANSACTION_DRIFT', 'Walrus TransactionKind differs from its durable compiler proof.', 'TRANSACTION');
   }
-  return freeze({ bytes, digest, kindSha256, validity: parsed.V1.expiration.ValidDuring ?? null });
+  const { ValidDuring, Epoch } = parsed.V1.expiration;
+  return freeze({ bytes, digest, kindSha256, validity: ValidDuring ?? null,
+    maxEpoch: ValidDuring?.maxEpoch ?? Epoch ?? null });
 }
 
 const FRAMEWORK = `0x${'0'.repeat(63)}2`;
@@ -774,7 +797,7 @@ function unsignedStatus(stage) {
   return stage === 'REGISTER' ? 'ENCODED' : 'UPLOADED';
 }
 
-function expiredSigningIntent(record, absence) {
+function assertWalrusAbsence(record, absence) {
   let checkpointDigestValid = false;
   try { checkpointDigestValid = fromBase58(absence?.watermarkCheckpointDigest).length === 32; }
   catch { /* Absence must include a real checkpoint digest. */ }
@@ -786,10 +809,8 @@ function expiredSigningIntent(record, absence) {
     || typeof absence.watermarkEpoch !== 'string' || typeof absence.watermarkCheckpointSequence !== 'string'
     || !UINT.test(absence.watermarkEpoch) || !UINT.test(absence.watermarkCheckpointSequence)
     || !checkpointDigestValid) {
-    fail('MAKER_V8_WALRUS_ABSENCE_INVALID', 'An uncertain signature requires typed absence for its exact Mainnet digest.', 'RECOVERY');
+    fail('MAKER_V8_WALRUS_ABSENCE_INVALID', 'Walrus recovery requires typed absence for its exact Mainnet digest.', 'RECOVERY');
   }
-  const { ValidDuring: validity } = bcs.TransactionData.parse(fromBase64(record.transaction.bytes)).V1.expiration;
-  return BigInt(absence.watermarkEpoch) > BigInt(validity.maxEpoch);
 }
 
 /**
@@ -809,6 +830,8 @@ export function createMakerV8WalrusPublisherV8({
   aggregator = MAKER_V8_WALRUS_MAINNET_AGGREGATOR,
   now = () => Date.now(),
   quoteAuthority = null,
+  simulateReviewedRegistration = null,
+  readOwnedPublicBlobs = null,
   locks = globalThis.navigator?.locks,
 } = {}) {
   for (const method of [
@@ -867,6 +890,55 @@ export function createMakerV8WalrusPublisherV8({
     if (!validity) return false;
     const epoch = BigInt(integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch'));
     return epoch >= BigInt(validity.minEpoch) && epoch <= BigInt(validity.maxEpoch);
+  };
+
+  const verifyRegistrationSimulation = async (build, owner, quote) => {
+    const unverified = () => fail('MAKER_V8_WALRUS_REGISTRATION_SIMULATION_UNVERIFIED',
+      'Could not simulate this Walrus registration. Refresh the review before signing.', 'CONTEXT', { digest: build.digest });
+    let result;
+    try { result = await simulateReviewedRegistration(fromBase64(build.bytes)); }
+    catch { unverified(); }
+    const success = result?.$kind === 'Transaction';
+    const simulated = success ? result.Transaction : result?.FailedTransaction;
+    if ((!success && result?.$kind !== 'FailedTransaction') || simulated?.digest !== build.digest
+      || !(simulated.bcs instanceof Uint8Array) || toBase64(simulated.bcs) !== build.bytes
+      || simulated.status?.success !== success || simulated.effects?.status?.success !== success) unverified();
+    if (!success) {
+      walrusClient.reset?.();
+      fail('MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FAILED',
+        'This Walrus registration failed simulation. Refresh and review a new quote before signing.', 'CONTEXT', { digest: build.digest });
+    }
+    if (!quoteAuthority) return;
+    if (quote?.verified !== true || !UINT.test(quote.walrusTotalCostFrost ?? '')
+      || !UINT.test(quote.relayTipMist ?? '') || !Array.isArray(simulated.balanceChanges)) unverified();
+    let walType;
+    const debits = new Map();
+    try {
+      walType = normalizeStructTag((await quoteAuthority('REGISTER')).walCoinType);
+      for (const change of simulated.balanceChanges) {
+        if (change.address !== owner) continue;
+        const coin = normalizeStructTag(change.coinType);
+        if (typeof change.amount !== 'string' || !/^-?(0|[1-9][0-9]*)$/.test(change.amount)
+          || debits.has(coin)) unverified();
+        debits.set(coin, -BigInt(change.amount));
+      }
+    } catch { unverified(); }
+    const { computationCost, storageCost, storageRebate } = simulated.effects.gasUsed ?? {};
+    if (walType === SUI_TYPE || ![computationCost, storageCost, storageRebate].every(
+      value => typeof value === 'string' && UINT.test(value),
+    )) unverified();
+    const netGas = BigInt(computationCost) + BigInt(storageCost) - BigInt(storageRebate);
+    const gasBudget = BigInt(bcs.TransactionData.parse(fromBase64(build.bytes)).V1.gasData.budget);
+    const suiDebit = debits.get(SUI_TYPE) ?? 0n;
+    // A relay payment to the sender itself may net out of the wallet balance.
+    if ((debits.get(walType) ?? 0n) !== BigInt(quote.walrusTotalCostFrost)
+      || netGas > gasBudget || suiDebit < netGas || suiDebit > netGas + BigInt(quote.relayTipMist)
+      || [...debits].some(([coin, amount]) => coin !== walType && coin !== SUI_TYPE && amount !== 0n)) {
+      walrusClient.reset?.();
+      fail('MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FEE_MISMATCH',
+        'The simulated wallet charges differ from this Walrus review. Refresh and review a new quote before signing.',
+        'CONTEXT', { digest: build.digest });
+    }
   };
 
   const buildRegister = async (record) => {
@@ -944,10 +1016,10 @@ export function createMakerV8WalrusPublisherV8({
     return proof;
   };
 
-  const recoverFinalizedSignature = async (record) => {
-    const transport = await rpc.getSuiClient();
+  const recoverFinalizedSignature = async (record, archived) => {
     const transaction = record.transaction;
-    const evidence = await transport.getFinalizedTransactionEvidence({ digest: transaction.digest });
+    const evidence = archived?.finalized
+      ?? await (await rpc.getSuiClient()).getFinalizedTransactionEvidence({ digest: transaction.digest });
     if (evidence?.digest !== transaction.digest || !UINT.test(String(evidence.checkpoint ?? ''))
       || evidence.transactionBcsBase64 !== transaction.bytes || evidence.effectsStatus?.success !== true
       || !Array.isArray(evidence.signatures)) {
@@ -960,6 +1032,37 @@ export function createMakerV8WalrusPublisherV8({
       } catch { /* Try only the signatures in this exact finalized transaction. */ }
     }
     fail('MAKER_V8_WALRUS_SIGNATURE_INVALID', 'Finalized Walrus transaction lacks this owner signature.', 'RECOVERY');
+  };
+
+  const queryFinality = async record => {
+    const { bytes, digest, kindSha256 } = record.transaction;
+    const { validity, maxEpoch } = transactionProof(bytes, { owner: record.owner, digest, kindSha256 });
+    const epochWindow = validity?.chain === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+      ? { start: validity.minEpoch, end: validity.maxEpoch } : null;
+    const query = await rpc.queryTransaction({ digest, ...(epochWindow ? { epochWindow } : {}) });
+    if (!plain(query) || query.digest !== digest) {
+      fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Walrus exact-digest query returned invalid evidence.', 'RECOVERY');
+    }
+    if (query.status !== 'NOT_FOUND') return { query };
+    assertWalrusAbsence(record, query.absence);
+    const expired = maxEpoch !== null && BigInt(query.absence.watermarkEpoch) > BigInt(maxEpoch);
+    const retained = expired && epochWindow !== null && makerV8AbsenceCoversEpochWindow(query.absence, epochWindow.start);
+    if (!expired || retained) return { query, expired, retained };
+    // The archive can prove a finalized result. It cannot prove that an
+    // expired transaction was never submitted or authorize its replay.
+    const transport = await rpc.getSuiClient();
+    if (typeof transport.getArchivedPlayerTransactionEvidence !== 'function') return { query, expired, retained };
+    const finalized = await transport.getArchivedPlayerTransactionEvidence({ digest });
+    if (finalized === null) return { query, expired, retained };
+    if (finalized?.digest !== digest || finalized.transactionBcsBase64 !== bytes || finalized.sender !== record.owner
+      || !UINT.test(String(finalized.checkpoint ?? '')) || !UINT.test(String(finalized.epoch ?? ''))
+      || typeof finalized.effectsStatus?.success !== 'boolean'
+      || BigInt(finalized.epoch) > BigInt(maxEpoch)
+      || (epochWindow && BigInt(finalized.epoch) < BigInt(epochWindow.start))) {
+      fail('MAKER_V8_WALRUS_TRANSACTION_DRIFT', 'Archived Walrus receipt differs from the original transaction.', 'RECOVERY');
+    }
+    return { query: { digest, status: finalized.effectsStatus.success ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE',
+      error: finalized.effectsStatus.error }, archived: { transport, finalized } };
   };
 
   const broadcast = async (record) => {
@@ -986,7 +1089,7 @@ export function createMakerV8WalrusPublisherV8({
     return transaction;
   };
 
-  const upload = async (record, blobObjectId = null) => {
+  const upload = async (record, blobObjectId = null, archived = false) => {
     const { bytes } = await reconstructMetadata(record);
     const transaction = record.transaction;
     const resume = {
@@ -1001,15 +1104,24 @@ export function createMakerV8WalrusPublisherV8({
       await flow.encode();
       return flow.upload({ digest: transaction.digest, deletable: false, signal });
     };
+    const uploadDirect = () => uploadWith(directUploadClient, AbortSignal.timeout(60_000));
     let result;
-    try {
-      result = await uploadWith(walrusClient);
-    } catch (error) {
-      // The paid relay reads only PTB input zero. A later member of an
-      // already-finalized batch can use its verified Blob object directly.
-      if (!blobObjectId || !directUploadClient || !(error instanceof AuthenticationError)
-        || error.message !== '401 the provided nonce hash in the ptb is invalid') throw error;
-      result = await uploadWith(directUploadClient, AbortSignal.timeout(60_000));
+    if (archived) {
+      if (!blobObjectId || !directUploadClient) {
+        fail('MAKER_V8_WALRUS_DIRECT_UPLOAD_REQUIRED', 'Archived registration requires direct upload to its verified Blob.', 'UPLOAD');
+      }
+      // The paid relay may no longer be able to resolve the original digest.
+      // Direct upload uses only the Blob proved by the original effects.
+      result = await uploadDirect();
+    } else {
+      try {
+        result = await uploadWith(walrusClient);
+      } catch (error) {
+        // The paid relay reads only PTB input zero for a batch.
+        if (!blobObjectId || !directUploadClient || !(error instanceof AuthenticationError)
+          || error.message !== '401 the provided nonce hash in the ptb is invalid') throw error;
+        result = await uploadDirect();
+      }
     }
     if (result.blobId !== record.encoded.blobId || typeof result.blobObjectId !== 'string'
       || blobObjectId && result.blobObjectId !== blobObjectId
@@ -1023,6 +1135,15 @@ export function createMakerV8WalrusPublisherV8({
     });
   };
 
+  const verifyReadbackBytes = async (record, response) => {
+    if (!response?.ok) fail('MAKER_V8_WALRUS_READBACK_UNAVAILABLE', 'Certified Walrus bytes are not available from Mainnet.', 'READBACK');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length !== record.byteLength || hashBytes(bytes) !== record.byteSha256) {
+      fail('MAKER_V8_WALRUS_READBACK_DRIFT', 'Certified Walrus bytes differ from the durable upload.', 'READBACK');
+    }
+    return bytes;
+  };
+
   const readback = async (record) => {
     const [blob, status, response] = await Promise.all([
       walrusClient.getBlobObject(record.upload.blobObjectId),
@@ -1031,11 +1152,7 @@ export function createMakerV8WalrusPublisherV8({
         method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error',
       }),
     ]);
-    if (!response?.ok) fail('MAKER_V8_WALRUS_READBACK_UNAVAILABLE', 'Certified Walrus bytes are not available from Mainnet.', 'READBACK');
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length !== record.byteLength || hashBytes(bytes) !== record.byteSha256) {
-      fail('MAKER_V8_WALRUS_READBACK_DRIFT', 'Certified Walrus bytes differ from the durable upload.', 'READBACK');
-    }
+    const bytes = await verifyReadbackBytes(record, response);
     const certified = (status?.type === 'permanent' && status.isCertified === true)
       || (status?.type === 'deletable'
         && Number(status.deletableCounts?.count_deletable_certified ?? 0) > 0);
@@ -1072,13 +1189,16 @@ export function createMakerV8WalrusPublisherV8({
     return persistence.compareAndSwap(record, nextRecord(record, at, patch));
   };
 
+  const finishRegistration = async (record, archived) => {
+    const blobObjectId = archived ? (await mapRegistration(record, [record], archived)).mapping[0].blobObjectId : null;
+    const uploaded = await upload(record, blobObjectId, Boolean(archived));
+    return save(record, { status: 'UPLOADED', upload: uploaded, transaction: null, error: null });
+  };
+
   const settle = async (record) => {
     const signing = record.status.endsWith('_SIGNING');
     if (signing) await assertPinned();
-    const query = await rpc.queryTransaction({ digest: record.transaction.digest });
-    if (!plain(query) || query.digest !== record.transaction.digest) {
-      fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Walrus exact-digest query returned invalid evidence.', 'RECOVERY');
-    }
+    const { query, expired, retained, archived } = await queryFinality(record);
     if (query.status === 'FINALIZED_FAILURE') {
       return save(record, {
         status: 'FAILED',
@@ -1087,7 +1207,7 @@ export function createMakerV8WalrusPublisherV8({
     }
     if (query.status === 'NOT_FOUND') {
       if (signing) {
-        if (!expiredSigningIntent(record, query.absence)) return record;
+        if (!retained) return record;
         return save(record, {
           status: unsignedStatus(record.transaction.stage), transaction: null,
           error: { code: 'MAKER_V8_WALRUS_SIGNING_INTENT_EXPIRED',
@@ -1095,9 +1215,7 @@ export function createMakerV8WalrusPublisherV8({
             digest: record.transaction.digest, absence: query.absence },
         });
       }
-      if (query.absence?.chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER) {
-        fail('MAKER_V8_WALRUS_ABSENCE_INVALID', 'Walrus replay requires typed Mainnet absence evidence.', 'RECOVERY');
-      }
+      if (expired) return record;
       await broadcast(record);
       if (record.transaction.broadcastAt === null) {
         const at = clock(record.updatedAt);
@@ -1112,15 +1230,12 @@ export function createMakerV8WalrusPublisherV8({
       fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Walrus query returned an unsupported state.', 'RECOVERY');
     }
     if (signing) {
-      const signature = await recoverFinalizedSignature(record);
+      const signature = await recoverFinalizedSignature(record, archived);
       record = await save(record, { status: `${record.transaction.stage}_SIGNED`,
         transaction: { ...record.transaction, signature, signedAt: clock(record.updatedAt) } });
     }
     if (record.status === 'REGISTER_SIGNED') {
-      let finalized = await save(record, { status: 'REGISTER_FINALIZED', error: null });
-      const uploaded = await upload(finalized);
-      finalized = await save(finalized, { status: 'UPLOADED', upload: uploaded, transaction: null, error: null });
-      return finalized;
+      return finishRegistration(await save(record, { status: 'REGISTER_FINALIZED', error: null }), archived);
     }
     if (record.status === 'CERTIFY_SIGNED') {
       // The SDK can retain the Blob version observed during upload.
@@ -1158,19 +1273,25 @@ export function createMakerV8WalrusPublisherV8({
     });
     return records;
   };
+  const mapRegistration = async (record, records, archived) => {
+    const input = { transactionDigest: record.transaction.digest, transactionBytesBase64: record.transaction.bytes,
+      owner: record.owner, members: records.map(member => ({ uploadId: member.uploadId, blobId: member.encoded.blobId,
+        byteLength: member.byteLength, epochs: member.epochs })) };
+    return archived ? readMakerV8ArchivedWalrusObjectsV1({ ...input, ...archived })
+      : readMakerV8WalrusBatchObjectsV1({ ...input, transport: await rpc.getSuiClient() });
+  };
+
   const settleBatch = async input => {
     let batch = input;
     const records = await loadBatchRecords(batch);
     if (batch.status.endsWith('_SIGNING') || batch.status.endsWith('_SIGNED')) {
       if (batch.status.endsWith('_SIGNED')) await verifySigned(batch);
       await assertPinned();
-      const query = await rpc.queryTransaction({ digest: batch.transaction.digest });
-      if (!plain(query) || query.digest !== batch.transaction.digest) fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Batch query returned another digest.', 'RECOVERY');
+      const { query, expired, archived } = await queryFinality(batch);
       if (query.status === 'FINALIZED_FAILURE') return saveBatch(batch, { status: 'FAILED',
         error: { code: 'MAKER_V8_WALRUS_TRANSACTION_FAILED', message: query.error?.message ?? 'Batch transaction failed.' } });
       if (query.status === 'NOT_FOUND') {
-        if (query.absence?.chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER) fail('MAKER_V8_WALRUS_ABSENCE_INVALID', 'Batch replay requires exact Mainnet absence.', 'RECOVERY');
-        if (batch.status.endsWith('_SIGNING')) return batch; // Unknown signature: never request a replacement.
+        if (expired || batch.status.endsWith('_SIGNING')) return batch;
         await broadcast(batch);
         if (batch.transaction.broadcastAt === null) batch = await saveBatch(batch, { transaction: {
           ...clone(batch.transaction), broadcastAt: clock(),
@@ -1179,19 +1300,16 @@ export function createMakerV8WalrusPublisherV8({
       }
       if (query.status !== 'FINALIZED_SUCCESS') fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Unsupported batch finality.', 'RECOVERY');
       if (batch.status.endsWith('_SIGNING')) {
-        const signature = await recoverFinalizedSignature(batch);
+        const signature = await recoverFinalizedSignature(batch, archived);
         batch = await saveBatch(batch, { status: `${batch.transaction.stage}_SIGNED`,
           transaction: { ...clone(batch.transaction), signature, signedAt: clock() } });
         await verifySigned(batch);
       }
       if (batch.status === 'REGISTER_SIGNED') {
-        const transport = await rpc.getSuiClient();
-        const mapped = await readMakerV8WalrusBatchObjectsV1({ transport, transactionDigest: batch.transaction.digest,
-          transactionBytesBase64: batch.transaction.bytes, owner: batch.owner,
-          members: records.map(record => ({ uploadId: record.uploadId, blobId: record.encoded.blobId,
-            byteLength: record.byteLength, epochs: record.epochs })) });
+        const mapped = await mapRegistration(batch, records, archived);
         batch = await saveBatch(batch, { status: 'REGISTER_FINALIZED',
-          registration: { transaction: clone(batch.transaction), ...clone(mapped) }, error: null });
+          registration: { transaction: clone(batch.transaction), ...clone(mapped),
+            ...(archived ? { archived: true } : {}) }, error: null });
       } else if (batch.status === 'CERTIFY_SIGNED') {
         await validateBatchUploads(batch, records, { complete: true });
         // Refresh the SDK's upload-time object cache before reading the certified batch.
@@ -1206,7 +1324,8 @@ export function createMakerV8WalrusPublisherV8({
       for (const record of records) {
         if (batch.uploads[record.uploadId]) continue;
         const objectId = mapping.find(member => member.uploadId === record.uploadId).blobObjectId;
-        const uploaded = await upload({ ...record, transaction: batch.registration.transaction }, objectId);
+        const uploaded = await upload({ ...record, transaction: batch.registration.transaction }, objectId,
+          batch.registration.archived === true);
         batch = await saveBatch(batch, { uploads: { ...clone(batch.uploads), [record.uploadId]: uploaded } });
       }
       batch = await saveBatch(batch, { status: 'UPLOADED', transaction: null, review: null, error: null });
@@ -1356,6 +1475,18 @@ export function createMakerV8WalrusPublisherV8({
         const data = bcs.TransactionData.parse(fromBase64(batch.transaction.bytes)).V1;
         const epoch = integer((await buildClient.core.getCurrentSystemState())?.systemState?.epoch, 'current epoch');
         if (BigInt(epoch) > BigInt(data.expiration.ValidDuring?.maxEpoch ?? '-1')) fail('MAKER_V8_WALRUS_REVIEW_EXPIRED', 'This unsigned batch review expired; prepare a new review before signing.', 'CONTEXT');
+        if (batch.transaction.stage === 'REGISTER' && simulateReviewedRegistration) {
+          try {
+            await verifyRegistrationSimulation(batch.transaction, batch.owner, batch.review.quote);
+          } catch (error) {
+            if (['MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FAILED',
+              'MAKER_V8_WALRUS_REGISTRATION_SIMULATION_FEE_MISMATCH'].includes(error.code)) {
+              // The wallet has not opened. Requote the same members on the next review.
+              await saveBatch(batch, { status: 'ENCODED', transaction: null, review: null });
+            }
+            throw error;
+          }
+        }
         await assertCurrent();
         batch = await saveBatch(batch, { status: `${batch.transaction.stage}_SIGNING` });
         let signed;
@@ -1486,6 +1617,53 @@ export function createMakerV8WalrusPublisherV8({
       return recordView(await persistence.create(record));
     },
 
+    async reuseCertifiedPublicAsset(uploadId) {
+      if (typeof readOwnedPublicBlobs !== 'function') return null;
+      const record = await persistence.load(id(uploadId));
+      if (!record || record.status !== 'ENCODED' || record.transaction !== null || record.upload !== null
+        || record.batchKey || !PUBLIC_IMAGE_TYPES.has(record.mediaType)) return null;
+      await assertPinned();
+      const { blobId } = record.encoded;
+      const { epoch, blobs } = await readOwnedPublicBlobs({ owner: record.owner, blobId, signal: AbortSignal.timeout(15_000) });
+      const walrusEpoch = integer(epoch, 'Walrus storage epoch');
+      const blobNumber = blobIdToInt(blobId).toString();
+      let proof = null;
+      let awaitingCertification = false;
+      for (const blob of blobs) {
+        const blobObjectId = suiId(blob.id, 'existing Blob object');
+        if (String(blob.blob_id) !== blobNumber
+          || integer(blob.size, 'existing Blob size') !== String(record.byteLength)) {
+          fail('MAKER_V8_WALRUS_READBACK_DRIFT', 'The owned Walrus object differs from the exact public asset.', 'READBACK');
+        }
+        const endEpoch = integer(blob.storage?.end_epoch, 'existing Blob end epoch');
+        if (blob.deletable !== false || BigInt(endEpoch) - BigInt(walrusEpoch) < BigInt(record.epochs)) continue;
+        if (blob.certified_epoch == null) {
+          awaitingCertification = true;
+          continue;
+        }
+        if (BigInt(integer(blob.certified_epoch, 'existing Blob certified epoch')) > BigInt(walrusEpoch)) {
+          fail('MAKER_V8_WALRUS_CERTIFICATION_INVALID', 'The owned Walrus certificate is ahead of the observed storage epoch.', 'READBACK');
+        }
+        proof = freeze({ schemaVersion: PUBLIC_REUSE_SCHEMA, blobId, blobObjectId,
+          byteLength: record.byteLength, sha256: record.byteSha256, walrusEpoch, endEpoch });
+        break;
+      }
+      if (proof === null) {
+        if (awaitingCertification) {
+          fail('MAKER_V8_WALRUS_PUBLIC_CERTIFICATION_PENDING', 'This wallet already registered the same Pack asset. Finish its original certification before reviewing again.', 'READBACK');
+        }
+        return null;
+      }
+      const response = await fetcher(`${aggregator}/v1/blobs/by-object-id/${proof.blobObjectId}?strict_consistency_check=true`, {
+        method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+      });
+      await verifyReadbackBytes(record, response);
+      const completed = await save(record, { status: 'COMPLETE', readback: proof, error: null });
+      reviews.delete(uploadId);
+      return recordView(completed);
+    },
+
     async requestSignature(uploadId, expected, reviewed = null) {
       await persistence.requirePersistentStorage();
       let record = await persistence.load(id(uploadId));
@@ -1503,6 +1681,9 @@ export function createMakerV8WalrusPublisherV8({
       const account = await wallet.getCurrentAccount();
       if (account?.address !== record.owner || account?.network !== 'mainnet') {
         fail('MAKER_V8_WALRUS_ACCOUNT_DRIFT', 'Current wallet differs from the Walrus owner.', 'CONTEXT');
+      }
+      if (reviewed && build.stage === 'REGISTER' && simulateReviewedRegistration) {
+        await verifyRegistrationSimulation(build, record.owner, expected?.quote);
       }
       if (expected) assertExpectedUpload(await persistence.load(record.uploadId), expected);
       record = await save(record, {
@@ -1553,8 +1734,11 @@ export function createMakerV8WalrusPublisherV8({
       if (record.batchKey) fail('MAKER_V8_WALRUS_BATCH_REQUIRED', 'Recover the fixed batch instead of one member.', 'CONTEXT');
       assertExpectedUpload(record, expected);
       if (record.status === 'REGISTER_FINALIZED') {
-        const uploaded = await upload(record);
-        record = await save(record, { status: 'UPLOADED', upload: uploaded, transaction: null, error: null });
+        const { query, archived } = await queryFinality(record);
+        if (query.status === 'FINALIZED_SUCCESS') record = await finishRegistration(record, archived);
+        else if (query.status !== 'NOT_FOUND') {
+          fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Original registration finality differs from its saved checkpoint.', 'RECOVERY');
+        }
       } else if (record.status.endsWith('_SIGNED') || record.status.endsWith('_SIGNING')) {
         record = await settle(record);
       }
@@ -1609,6 +1793,42 @@ export function createProductionMakerV8WalrusPublisherV8({
     walrusClient,
     directUploadClient: new WalrusClient({ network: 'mainnet', suiClient: buildClient }),
     buildClient, rpc, wallet, persistence, execution, fetcher, aggregator,
+    async simulateReviewedRegistration(transaction) {
+      const client = await rpc.getSuiClient();
+      return client.core.simulateTransaction({ transaction, include: { bcs: true, effects: true, balanceChanges: true } });
+    },
+    async readOwnedPublicBlobs({ owner, blobId, signal }) {
+      const reader = new WalrusClient({ network: 'mainnet', suiClient: buildClient });
+      const [type, { epoch }] = await Promise.all([reader.getBlobType(), reader.stakingState()]);
+      const blobNumber = blobIdToInt(blobId).toString();
+      const objectIds = new Set();
+      const seen = new Set();
+      let cursor = null;
+      do {
+        const page = await buildClient.core.listOwnedObjects({ owner, type, cursor, limit: 100, include: { json: true }, signal });
+        for (const object of page.objects) {
+          if (object.owner?.$kind !== 'AddressOwner' || object.owner.AddressOwner !== owner
+            || normalizeStructTag(object.type) !== normalizeStructTag(type)
+            || typeof object.json?.blob_id !== 'string' || !UINT.test(object.json.blob_id)) {
+            fail('MAKER_V8_WALRUS_READBACK_DRIFT', 'Owned Walrus inventory omitted the exact asset owner, type, or Blob ID.', 'READBACK');
+          }
+          if (object.json.blob_id === blobNumber) objectIds.add(suiId(object.objectId, 'owned Blob object'));
+        }
+        cursor = page.hasNextPage ? page.cursor : null;
+        if (page.hasNextPage && (!cursor || seen.has(cursor))) {
+          fail('MAKER_V8_WALRUS_READBACK_DRIFT', 'Owned Walrus inventory did not advance.', 'READBACK');
+        }
+        seen.add(cursor);
+      } while (cursor);
+      const blobs = await Promise.all([...objectIds].map(async objectId => {
+        const blob = await reader.getBlobObject(objectId);
+        if (blob.id !== objectId) {
+          fail('MAKER_V8_WALRUS_READBACK_DRIFT', 'Owned Walrus inventory resolved another Blob object.', 'READBACK');
+        }
+        return blob;
+      }));
+      return { epoch, blobs };
+    },
     async quoteAuthority(stage) {
       const system = await walrusClient.systemObject();
       if (stage === 'CERTIFY') return { system };

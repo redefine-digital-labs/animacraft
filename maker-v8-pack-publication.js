@@ -5,6 +5,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 
 import { MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA } from './maker-v8-pack-controller.js';
 import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from './maker-v8-sui-grpc.js';
+import { makerV8AbsenceCoversEpochWindow } from './maker-v8-publication-expiration.js';
 
 export const MAKER_V8_PACK_PUBLICATION_SCHEMA =
   'animacraft.maker-v8-pack-publication.v1';
@@ -162,6 +163,7 @@ function assertGrpcAbsence(value, expectedDigest, expectedChain) {
     'schemaVersion', 'kind', 'grpcCode', 'grpcService', 'grpcMethod',
     'requestedDigest', 'chainIdentifier', 'watermarkEpoch',
     'watermarkCheckpointSequence', 'watermarkCheckpointDigest',
+    ...(Object.hasOwn(absence, 'retention') ? ['retention'] : []),
   ], 'typed gRPC transaction absence');
   if (absence.schemaVersion !== 'animacraft.sui-transaction-absence.v8'
     || absence.kind !== 'SUI_GRPC_TRANSACTION_NOT_FOUND'
@@ -175,6 +177,10 @@ function assertGrpcAbsence(value, expectedDigest, expectedChain) {
   decimal(absence.watermarkEpoch, 'absence.watermarkEpoch');
   decimal(absence.watermarkCheckpointSequence, 'absence.watermarkCheckpointSequence');
   suiDigest(absence.watermarkCheckpointDigest, 'absence.watermarkCheckpointDigest');
+  if (Object.hasOwn(absence, 'retention')
+    && !makerV8AbsenceCoversEpochWindow(absence, absence.retention?.startEpoch)) {
+    fail('MAKER_V8_PACK_PUBLICATION_ABSENCE_INVALID', 'Typed gRPC absence includes invalid retention evidence.');
+  }
   return freeze(absence);
 }
 
@@ -238,12 +244,18 @@ function transactionDataProof(value, expected) {
     validity: parsed.V1.expiration.ValidDuring ?? null });
 }
 
-function signingIntentExpired(plan, absence) {
+function transactionEpochWindow(plan, digest) {
   const { validity } = transactionDataProof(plan.current.fullTransaction, {
-    signer: plan.immutable.signer, kindBytes: plan.current.descriptor.kindBytes, digest: absence.requestedDigest,
+    signer: plan.immutable.signer, kindBytes: plan.current.descriptor.kindBytes, digest,
   });
   return validity?.chain === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
-    && BigInt(absence.watermarkEpoch) > BigInt(validity.maxEpoch);
+    ? { start: validity.minEpoch, end: validity.maxEpoch } : null;
+}
+
+function expiredTransactionCoveredByLedger(plan, absence) {
+  const window = transactionEpochWindow(plan, absence.requestedDigest);
+  return window !== null && BigInt(absence.watermarkEpoch) > BigInt(window.end)
+    && makerV8AbsenceCoversEpochWindow(absence, window.start);
 }
 
 function assertDescriptor(value) {
@@ -278,7 +290,7 @@ function assertOutcome(value, descriptor) {
   }
   if (value.status === 'READY') {
     exact(value, Object.hasOwn(value, 'retiredDigest') ? ['status', 'retiredDigest'] : ['status'], 'READY outcome');
-    if (Object.hasOwn(value, 'retiredDigest')) suiDigest(value.retiredDigest, 'retired signing intent digest');
+    if (Object.hasOwn(value, 'retiredDigest')) suiDigest(value.retiredDigest, 'retired Pack transaction digest');
     return freeze(clone(value));
   }
   if (value.status === 'SIGNING') {
@@ -432,9 +444,8 @@ function assertEvent(value, current, successor) {
   }
   const prior = cursor.outcome;
   const next = successor.current?.outcome;
-  if (event.status === 'SIGNING' && (prior.status !== 'READY' || next?.status !== 'SIGNING' || event.digest !== next.digest)
-    || event.status === 'READY' && (prior.status !== 'SIGNING' || next?.status !== 'READY'
-      || !['WALLET_REJECTED', 'BEFORE_WALLET_ABORTED', 'SIGNING_INTENT_EXPIRED'].includes(event.code))
+  if (event.status === 'SIGNING' && (prior.status !== 'READY' || next?.status !== 'SIGNING'
+    || event.digest !== next.digest || event.digest === prior.retiredDigest)
     || prior.status === 'SIGNING' && (event.digest !== prior.digest
       || !['READY', 'SIGNED', 'FINALIZED_FAILURE'].includes(event.status)
       || event.status === 'SIGNED' && (next?.status !== 'SIGNED' || next.digest !== prior.digest
@@ -450,11 +461,17 @@ function assertEvent(value, current, successor) {
     );
   }
   if (event.status === 'READY') {
-    const expired = event.code === 'SIGNING_INTENT_EXPIRED';
+    const expiredSigned = event.code === 'SIGNED_TRANSACTION_EXPIRED';
+    const expired = expiredSigned || event.code === 'SIGNING_INTENT_EXPIRED';
+    if (prior.status !== (expiredSigned ? 'OUTCOME_PENDING' : 'SIGNING') || next?.status !== 'READY'
+      || event.digest !== prior.digest
+      || (!expired && !['WALLET_REJECTED', 'BEFORE_WALLET_ABORTED'].includes(event.code))) {
+      fail('MAKER_V8_PACK_PUBLICATION_EVENT_INVALID', 'Pack review reset differs from its original transaction state.');
+    }
     if (expired ? event.absence === null || next.retiredDigest !== prior.digest
-        || !signingIntentExpired(current, event.absence)
+        || !expiredTransactionCoveredByLedger(current, event.absence)
       : event.absence !== null || next.retiredDigest !== undefined) {
-      fail('MAKER_V8_PACK_PUBLICATION_EVENT_INVALID', 'Only expired exact Ledger absence can retire a Pack signing intent.');
+      fail('MAKER_V8_PACK_PUBLICATION_EVENT_INVALID', 'Pack transaction retirement requires exact Ledger absence after expiry.');
     }
   }
   return freeze(event);
@@ -773,11 +790,15 @@ export function createMakerV8PackPublicationControllerV8({
       descriptor: authorized.descriptor,
       sender: plan.immutable.signer,
     });
-    return transactionDataProof(built.bytes ?? built.transactionBytes, {
+    const proof = transactionDataProof(built.bytes ?? built.transactionBytes, {
       signer: plan.immutable.signer,
       kindBytes: authorized.descriptor.kindBytes,
       digest: built.digest ?? built.transactionDigest,
     });
+    if (proof.digest === plan.current.outcome.retiredDigest) {
+      fail('MAKER_V8_PACK_PUBLICATION_RETIRED_DIGEST', 'The replacement Pack review requires new transaction bytes.');
+    }
+    return proof;
   };
   const simulateSignatureProof = async (proof, authorized) => {
     const simulated = await boundary.dryRunExactTransaction({
@@ -876,10 +897,13 @@ export function createMakerV8PackPublicationControllerV8({
     const signing = plan.current.outcome.status === 'SIGNING';
     if (!signing && plan.current.outcome.status !== 'OUTCOME_PENDING') return plan;
     let query;
+    let archived = null;
+    const { digest } = plan.current.outcome;
+    const epochWindow = transactionEpochWindow(plan, digest);
     try {
-      query = await rpc.queryTransaction({ digest: plan.current.outcome.digest });
+      query = await rpc.queryTransaction({ digest, ...(epochWindow === null ? {} : { epochWindow }) });
     } catch (error) {
-      if (signing) throw error; // Keep the original unsigned intent recoverable.
+      if (signing || plan.current.outcome.code === 'PACK_TRANSACTION_EXPIRED') throw error;
       const at = clock(plan.updatedAt);
       const event = makeEvent(plan, 'OUTCOME_UNKNOWN', at, {
         digest: plan.current.outcome.digest,
@@ -895,34 +919,53 @@ export function createMakerV8PackPublicationControllerV8({
       return cas(plan, assertMakerV8PackPublicationPlanV8(applyEvent(plan, event, outcome, at)), event);
     }
     query = assertQuery(query, plan);
-    if (signing) {
-      if (query.status === 'NOT_FOUND') {
-        if (signingIntentExpired(plan, query.absence)) {
-          return restoreReady(plan, 'SIGNING_INTENT_EXPIRED', query.absence);
+    const pastWindow = query.status === 'NOT_FOUND' && epochWindow !== null
+      && BigInt(query.absence.watermarkEpoch) > BigInt(epochWindow.end);
+    const covered = pastWindow && makerV8AbsenceCoversEpochWindow(query.absence, epochWindow.start);
+    if (covered && (signing || !oneShot)) {
+      return restoreReady(plan, signing ? 'SIGNING_INTENT_EXPIRED' : 'SIGNED_TRANSACTION_EXPIRED', query.absence);
+    }
+    const expired = query.status === 'NOT_FOUND' && epochWindow !== null
+      && (pastWindow || plan.current.outcome.code === 'PACK_TRANSACTION_EXPIRED');
+    if (!oneShot && expired && !covered
+      && typeof boundary.recoverArchivedFinality === 'function') {
+      const recovered = await boundary.recoverArchivedFinality({
+        bytes: plan.current.fullTransaction, digest, signer: plan.immutable.signer,
+        kindBytes: plan.current.descriptor.kindBytes,
+      });
+      if (recovered !== null) {
+        const finalized = assertQuery(recovered.query, plan);
+        if (finalized.status === 'NOT_FOUND' || !recovered.evidence) {
+          fail('MAKER_V8_PACK_PUBLICATION_QUERY_INVALID', 'Archive recovery requires positive finalized evidence.');
         }
-        return plan;
+        query = finalized;
+        archived = recovered.evidence;
       }
+    }
+    if (signing) {
+      if (query.status === 'NOT_FOUND') return plan;
       if (query.status === 'FINALIZED_FAILURE') return recordFailure(plan, query);
       requireMethod(boundary, 'recoverFinalizedSignature', 'Pack boundary');
       const signature = await boundary.recoverFinalizedSignature({
         bytes: plan.current.fullTransaction, digest: query.digest, signer: plan.immutable.signer,
-        kindBytes: plan.current.descriptor.kindBytes, query,
+        kindBytes: plan.current.descriptor.kindBytes, query, ...(archived === null ? {} : { archived }),
       });
       await verifyArtifact(plan, signature);
       plan = await recordSigned(plan, signature);
     }
     if (query.status === 'NOT_FOUND') {
+      if (expired && plan.current.outcome.code === 'PACK_TRANSACTION_EXPIRED') return plan;
       const at = clock(plan.updatedAt);
       const event = makeEvent(plan, 'OUTCOME_PENDING', at, {
         digest: query.digest,
-        code: 'TYPED_GRPC_NOT_FOUND',
-        absence: query.absence,
+        code: expired ? 'PACK_TRANSACTION_EXPIRED' : 'TYPED_GRPC_NOT_FOUND',
+        absence: expired ? null : query.absence,
       });
       const outcome = {
         ...plan.current.outcome,
         observedAt: at,
         code: event.code,
-        absence: query.absence,
+        absence: event.absence,
       };
       return cas(plan, assertMakerV8PackPublicationPlanV8(applyEvent(plan, event, outcome, at)), event);
     }
@@ -934,7 +977,7 @@ export function createMakerV8PackPublicationControllerV8({
     const at = clock(plan.updatedAt);
     const certified = await compiler.certifyFinalized({
       plan: clone(plan), query: deterministic(query, 'success query'),
-      attested: authorized, artifact: clone(artifact),
+      attested: authorized, artifact: clone(artifact), ...(archived === null ? {} : { archived }),
     });
     exact(certified, ['authority', 'checkpoint', 'complete', 'chain'], 'Pack finalized certification');
     if (certified.authority !== compiler.authority || typeof certified.complete !== 'boolean'
@@ -1091,6 +1134,9 @@ export function createMakerV8PackPublicationControllerV8({
       }
       let plan = await loadReady(id);
       const prepared = preparedReview;
+      if (!oneShot && plan.current.outcome.retiredDigest && review === null) {
+        fail('MAKER_V8_PACK_PUBLICATION_REVIEW_REQUIRED', 'Review the replacement Pack transaction before signing.');
+      }
       if (review && (!prepared || !same(prepared.review, review)
         || review.id !== plan.attemptId || review.revision !== plan.revision)) {
         fail('MAKER_V8_PACK_PUBLICATION_REVIEW_STALE', 'Review the current Pack publication transaction again.');
@@ -1144,6 +1190,7 @@ export function createMakerV8PackPublicationControllerV8({
       }
       let plan = await recover(id);
       if (plan.status !== 'ACTIVE' || plan.current?.outcome.status !== 'OUTCOME_PENDING') return plan;
+      if (plan.current.outcome.code === 'PACK_TRANSACTION_EXPIRED') return plan;
       assertGrpcAbsence(
         plan.current.outcome.absence,
         plan.current.outcome.digest,
@@ -1151,6 +1198,7 @@ export function createMakerV8PackPublicationControllerV8({
       );
       const authorized = await authorize(plan, 'EXACT_REPLAY', true);
       const artifact = await verifyArtifact(plan);
+      await reread(plan);
       await boundary.broadcastExactTransaction({
         bytes: artifact.base64, signature: artifact.signature,
         digest: artifact.digest, signer: plan.immutable.signer,

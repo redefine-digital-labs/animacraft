@@ -41,6 +41,7 @@ import {
   createMakerV8PackReadbackV8,
 } from '../maker-v8-pack-publication-adapters.js';
 import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from '../maker-v8-sui-grpc.js';
+import { makerV8PublicationExpiration } from '../maker-v8-publication-expiration.js';
 import { attestFixtureRuntime } from './fixtures/maker-v8-runtime-attestation.js';
 import { createCreatorCharacterStarter } from '../maker-v8-creator-structure.js';
 import { packPublicationAuthoringContent } from '../maker-v8-pack-authoring.js';
@@ -176,6 +177,41 @@ function documentFixture(styles = 2, owner = id(90)) {
     },
   };
 }
+
+test('Pack INIT and APPEND use the Runtime single SHA-256 commitment bytes', () => {
+  const document = documentFixture(2);
+  const releaseContent = hex('c');
+  const commitments = deriveMakerV8PackCommitmentsV8(document, releaseContent);
+  const u64 = value => bcs.u64().serialize(value).toBytes();
+  const u8 = value => bcs.u8().serialize(value).toBytes();
+  const string = value => bcs.string().serialize(value).toBytes();
+  const optional = value => bcs.option(bcs.string()).serialize(value).toBytes();
+  const vector = value => bcs.byteVector().serialize(value).toBytes();
+  const prefix = domain => [
+    string(domain), u64(8),
+    vector(Buffer.from(document.bindings.root.contentCommitment, 'hex')),
+    vector(Buffer.from(releaseContent, 'hex')),
+  ];
+  let observed = sha256(Buffer.concat(prefix('animacraft-v8/runtime/pack-styles-empty')));
+  const expected = [Buffer.from(observed).toString('hex')];
+  for (const [sequence, style] of commitments.styles.entries()) {
+    const sources = style.definition_sources;
+    observed = sha256(Buffer.concat([
+      ...prefix('animacraft-v8/runtime/pack-style'), u64(sequence), vector(observed),
+      u64(style.index), u8(sources.part), u8(sources.track),
+      bcs.option(bcs.u8()).serialize(sources.color).toBytes(),
+      string(style.part_key), string(style.item_key), string(style.style_key), string(style.layer_track_key),
+      optional(style.color_channel_key), optional(style.default_swatch_key), string(style.asset_blob_id),
+      vector(style.asset_sha256), vector(style.asset_content_commitment),
+      bcs.bool().serialize(style.protected).toBytes(), vector(style.seal_binding_commitment),
+      vector(style.style_commitment),
+    ]));
+    expected.push(Buffer.from(observed).toString('hex'));
+  }
+  assert.equal(commitments.emptyStyleCommitment, expected[0]);
+  assert.deepEqual(commitments.rollingCommitments, expected);
+  assert.equal(commitments.expectedStyleCommitment, expected[2]);
+});
 
 async function preparedTransport(document) {
   const uploads = new Map();
@@ -822,6 +858,20 @@ test('cold durable Pack signature reauthorization is required before exact gRPC 
     query: { ...finalized, effectsFingerprint: `0x${'0'.repeat(64)}` } }),
   { code: 'MAKER_V8_PACK_ADAPTER_FINALIZED_SIGNATURE_DRIFT' });
   assert.equal(await boundary.recoverFinalizedSignature(recovery), signed.signature);
+  const archive = { ...ledger, sender: owner, effectsStatus: { success: true, error: null } };
+  client.getArchivedPlayerTransactionEvidence = async input => {
+    assert.deepEqual(input, { digest: built.digest, decodeEvents: true });
+    return archive;
+  };
+  const archiveInput = { bytes: built.bytes, digest: built.digest, signer: owner, kindBytes: initial.descriptor.kindBytes };
+  const archived = await boundary.recoverArchivedFinality(archiveInput);
+  assert.equal(archived.query.effectsFingerprint, fingerprint);
+  assert.equal(archived.query.status, 'FINALIZED_SUCCESS');
+  assert.equal(await boundary.recoverFinalizedSignature({ ...recovery, archived: archived.evidence }), signed.signature);
+  await assert.rejects(boundary.recoverFinalizedSignature({ ...recovery, archived: { ...archived.evidence } }),
+    { code: 'MAKER_V8_PACK_ADAPTER_ARCHIVE_DRIFT' });
+  client.getArchivedPlayerTransactionEvidence = async () => ({ ...archive, epoch: '9' });
+  await assert.rejects(boundary.recoverArchivedFinality(archiveInput), { code: 'MAKER_V8_PACK_ADAPTER_ARCHIVE_DRIFT' });
   assert.equal(executeCalls, 0);
   await assert.rejects(boundary.broadcastExactTransaction({
     bytes: built.bytes, signature: signed.signature, digest: built.digest, signer: owner,
@@ -855,35 +905,58 @@ test('cold durable Pack signature reauthorization is required before exact gRPC 
   );
 });
 
-test('actual compiler, WAL and paired history adapter recover signed authored batches without accepting partial evidence', async () => {
+test('Pack compiler and WAL recover every signed stage from certified archive fixtures', async () => {
   const keypair = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(42));
   const { runtime, prepared, document, documentSha256 } = await authoredTransportFixture(keypair.toSuiAddress(), true);
   const persistence = createMakerV8PackPublicationMemoryPersistenceV8({ durable: true });
   const types = makerV8ChainTypes(runtime), ids = { release: id(201), admin: id(202), treasury: id(203) };
   const history = new Map();
-  let response, plan, txDigest, time = 100, queryOffline = false;
-  const client = { async getHistoricalObject({ objectId, version }) {
-    const object = history.get(objectId);
-    assert.equal(object.version, String(version)); return object;
-  } };
+  let response, plan, txDigest, archived, time = 100, queryOffline = false;
+  const client = {
+    async getChainIdentifier() { return MAKER_V8_SUI_MAINNET_GENESIS_DIGEST; },
+    async getHistoricalObject({ objectId, version }) {
+      const object = history.get(objectId);
+      assert.equal(object.version, String(version)); return object;
+    },
+    async getArchivedPlayerReceiptObject(input) { return this.getHistoricalObject(input); },
+    async getArchivedPlayerTransactionEvidence({ digest: requested, decodeEvents }) {
+      assert.equal(requested, txDigest);
+      assert.equal(decodeEvents, true);
+      return archived;
+    },
+  };
   const reboot = () => {
     const readback = createMakerV8PackReadbackV8({ runtime, client, assertTransport() {},
       async readFinalized(actualClient, requested, expected) {
+        assert.equal(archived, null, 'pruned Ledger must not be read again');
         assert.equal(actualClient, client); assert.equal(requested, txDigest);
         assert.deepEqual(await expected.build({ onlyTransactionKind: true }), fromBase64(plan.current.descriptor.kindBytes));
         return response;
       } });
     const compiler = createMakerV8PackCompilerV8({ runtime, loadAuthority: async () => authority(document), readback,
       loadParent: async () => structuredClone(packPublicationAuthoringContent(document).content.parent) });
+    const packBoundary = createMakerV8PackPublicationBoundaryV8({ client, compilerAuthority: compiler.authority,
+      assertTransport() {} });
     const forbidden = async () => { throw new Error('test must not request a signature or broadcast'); };
     const controller = createMakerV8PackPublicationControllerV8({ persistence, compiler,
-      boundary: { buildExactTransaction: forbidden, dryRunExactTransaction: forbidden, broadcastExactTransaction: forbidden },
+      boundary: { ...packBoundary, buildExactTransaction: forbidden, dryRunExactTransaction: forbidden,
+        broadcastExactTransaction: forbidden },
       wallet: { signExactTransaction: forbidden, async verifyExactSignature(input) {
         assert.equal(input.signer, keypair.toSuiAddress());
         return { verified: await keypair.getPublicKey().verifyTransaction(fromBase64(input.bytes), input.signature) };
-      } }, rpc: { async queryTransaction({ digest: requested }) {
+      } }, rpc: { async queryTransaction({ digest: requested, epochWindow }) {
         if (queryOffline) throw new Error('offline fixture');
         assert.equal(requested, txDigest);
+        assert.deepEqual(epochWindow, { start: '1', end: '2' });
+        if (archived !== null) {
+          return { status: 'NOT_FOUND', digest: requested, epoch: null, effectsFingerprint: null,
+            eventsDigest: null, error: null, absence: {
+              schemaVersion: 'animacraft.sui-transaction-absence.v8', kind: 'SUI_GRPC_TRANSACTION_NOT_FOUND',
+              grpcCode: 'NOT_FOUND', grpcService: 'sui.rpc.v2.LedgerService', grpcMethod: 'GetTransaction',
+              requestedDigest: requested, chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+              watermarkEpoch: '3', watermarkCheckpointSequence: '12', watermarkCheckpointDigest: digest(7),
+            } };
+        }
         return { status: 'FINALIZED_SUCCESS', digest: requested, epoch: '1', effectsFingerprint: `0x${'ab'.repeat(32)}`,
           eventsDigest: digest(9), error: null, absence: null };
       } }, execution: { allowWalletSignature: false, allowBroadcast: false }, now: () => time++ });
@@ -905,6 +978,7 @@ test('actual compiler, WAL and paired history adapter recover signed authored ba
     baseRegistryRef: compiled.inputs.baseRegistry, releaseContentCommitment: compiled.contentCommitment });
   assert.ok(definitionPlan.steps.some(step => step.stage === 'COLOR_APPEND'));
   for (const stage of ['INIT', ...definitionPlan.steps.map(step => `DEFINITIONS_${step.stage}`), 'APPEND', 'FINALIZE']) {
+    archived = null;
     plan = await reboot().controller.resume(plan.attemptId);
     assert.equal(plan.current.descriptor.stage, stage);
     if (stage === 'FINALIZE') await assert.rejects(reboot().controller.requestSignature(plan.attemptId),
@@ -913,6 +987,7 @@ test('actual compiler, WAL and paired history adapter recover signed authored ba
     // Seed a previously signed fixture, not a production signature authorization.
     const tx = Transaction.fromKind(descriptor.kindBytes); tx.setSender(compiled.signer);
     tx.setGasPrice(1); tx.setGasBudget(1000000); tx.setGasPayment([ref(990)]);
+    tx.setExpiration(makerV8PublicationExpiration('1'));
     const full = await tx.build(), signed = await keypair.signTransaction(full);
     txDigest = TransactionDataBuilder.getDigestFromBytes(full);
     const seeded = structuredClone(plan); seeded.revision++; seeded.updatedAt = time++;
@@ -1015,6 +1090,26 @@ test('actual compiler, WAL and paired history adapter recover signed authored ba
       assert.deepEqual((await persistence.load(plan.attemptId)).head, priorHead);
       release.parsed.observed_style_count = '0';
     }
+    const effectsWrites = (type) => response.objectChanges.filter(change => change.type === type).map(change => {
+      const { objectId, version, digest: objectDigest } = change;
+      const { owner } = history.get(objectId);
+      const shared = owner.Shared?.initial_shared_version;
+      return [{ objectId, version, digest: objectDigest }, shared === undefined ? owner : {
+        Shared: { initialSharedVersion: shared },
+      }];
+    });
+    const eventsDigest = response.events.length ? digest(9) : null;
+    const effectsBcs = bcs.TransactionEffects.serialize({ V1: {
+      status: { Success: true }, executedEpoch: '1',
+      gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
+      modifiedAtVersions: [], sharedObjects: [], transactionDigest: txDigest,
+      created: effectsWrites('created'), mutated: effectsWrites('mutated'), unwrapped: [],
+      deleted: [], unwrappedThenDeleted: [], wrapped: [],
+      gasObject: [ref(990), { AddressOwner: compiled.signer }], eventsDigest, dependencies: [],
+    } }).toBytes();
+    archived = { digest: txDigest, checkpoint: '10', epoch: '1', sender: compiled.signer,
+      transactionBcsBase64: toBase64(full), effectsBcs, effectsStatus: { success: true, error: null },
+      eventsDigest, events: response.events, signatures: [signed.signature] };
     plan = await reboot().controller.resume(plan.attemptId);
     assert.equal(plan.head.stage, stage); assert.equal(plan.head.digest, txDigest);
     assert.equal(plan.current, null); assert.equal(plan.status, stage === 'FINALIZE' ? 'COMPLETE' : 'ACTIVE');

@@ -1220,7 +1220,7 @@ export function createFreshV8Controller({
       }
       return adapters.transactions.broadcastExactTransaction(request);
     },
-    query: (request) => adapters.rpc.queryTransaction(request),
+    query: (request) => adapters.rpc.queryTransaction({ ...request, epochWindow: request.plan.epochWindow }),
     readback: async (request) => assertFinalizedMarketReadbackV8(
       await adapters.rpc.readbackMarketAction(request),
       request,

@@ -129,7 +129,11 @@ test('Animacraft CI validates exact peer before checkout and replaces independen
   before('Require exact paired source revision', 'Checkout paired Soulidity source');
   before('Checkout paired Soulidity source', 'Verify paired source checkout');
   before('Verify paired source checkout', 'Install pinned Sui CLI');
+  before('Accept: application/octet-stream', 'sha256sum --check --strict');
   before('sha256sum --check --strict', 'tar -xOzf');
+  assert.ok(workflow.includes("SUI_ARCHIVE_ASSET_ID: '584195611'"));
+  assert.ok(workflow.includes('https://api.github.com/repos/MystenLabs/sui/releases/assets/${SUI_ARCHIVE_ASSET_ID}'));
+  assert.ok(workflow.includes('--retry 2 --retry-delay 2 --retry-max-time 480'));
   before('Verify test-only seal-cap reproducibility', 'Run paired eight-package Move and joint gates');
   assert.match(workflow, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(workflow, /ref: \$\{\{ env.SOULIDITY_COMMIT_SHA \}\}/);

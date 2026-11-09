@@ -50,6 +50,7 @@ function absentTransactionResult(transactionDigest, {
   watermarkEpoch = '0',
   watermarkCheckpointSequence = '1',
   watermarkCheckpointDigest = digest,
+  retention,
 } = {}) {
   return {
     status: 'NOT_FOUND',
@@ -65,6 +66,7 @@ function absentTransactionResult(transactionDigest, {
       watermarkEpoch,
       watermarkCheckpointSequence,
       watermarkCheckpointDigest,
+      ...(retention === undefined ? {} : { retention }),
     },
   };
 }
@@ -1370,18 +1372,28 @@ test('untyped or unbound query absence never retires durable signed bytes', asyn
 test('authoritative NOT_FOUND past expiration is archived and releases the Root for fresh bytes', async () => {
   const persist = createMakerV8RecoveryMemoryAdapter();
   let currentEpoch = primary.plan.expiration.epoch;
+  let retention;
   const setup = harness({
     persist,
     currentEpoch: () => currentEpoch,
     query: async (request) => absentTransactionResult(request.digest, {
       watermarkEpoch: currentEpoch,
       watermarkCheckpointSequence: '777',
+      retention,
     }),
   });
   await prepareAndSign(setup);
   const stillPending = await setup.controller.recover(primary.identity, { replayIfNotFound: false });
   assert.equal(stillPending.state, MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING);
   currentEpoch = String(BigInt(primary.plan.expiration.epoch) + 1n);
+  const uncovered = await setup.controller.recover(primary.identity, { replayIfNotFound: true });
+  assert.equal(uncovered.state, MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING);
+  assert.equal(uncovered.signed.digest, primary.transactionDigest);
+  assert.deepEqual(await setup.controller.listExpiredNotFound(primary.identity), []);
+  retention = {
+    startEpoch: primary.plan.epochWindow.start, firstCheckpoint: '500',
+    lowestAvailableCheckpoint: '499', observedCheckpoint: '778',
+  };
   const expired = await setup.controller.recover(primary.identity, { replayIfNotFound: false });
   assert.equal(expired.state, MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND);
   assert.equal(expired.plan, null);

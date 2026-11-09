@@ -2,6 +2,7 @@ import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { MARKET_V8_ACTION_ABI, consumeMarketV8RecoveryEvidenceV8 } from './maker-v8-market.js';
+import { makerV8AbsenceCoversEpochWindow } from './maker-v8-publication-expiration.js';
 import {
   MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
   makerV8ActionV8,
@@ -2226,6 +2227,7 @@ function canonicalTransactionAbsence(value, digest, chainIdentifier) {
       'watermarkEpoch',
       'watermarkCheckpointSequence',
       'watermarkCheckpointDigest',
+      ...(Object.hasOwn(absence, 'retention') ? ['retention'] : []),
     ], 'Transaction absence evidence', MAKER_V8_RECOVERY_ERROR.QUERY_INVALID);
   } catch (cause) {
     if (cause instanceof MakerV8RecoveryError) throw cause;
@@ -2248,7 +2250,9 @@ function canonicalTransactionAbsence(value, digest, chainIdentifier) {
       'Absent transaction digest',
       MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
     ) !== digest
-    || absence.chainIdentifier !== chainIdentifier) fail(
+    || absence.chainIdentifier !== chainIdentifier
+    || (Object.hasOwn(absence, 'retention')
+      && !makerV8AbsenceCoversEpochWindow(absence, absence.retention?.startEpoch))) fail(
     MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
     MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
     'Transaction absence evidence does not bind the exact digest and chain.',
@@ -2485,7 +2489,8 @@ function expirationFromNotFound(record, now) {
   );
   const observedEpoch = absence.watermarkEpoch;
   if (record.queryOutcome?.status !== 'NOT_FOUND'
-    || BigInt(observedEpoch) <= BigInt(record.plan.expiration.epoch)) fail(
+    || BigInt(observedEpoch) <= BigInt(record.plan.expiration.epoch)
+    || !makerV8AbsenceCoversEpochWindow(absence, record.plan.epochWindow.start)) fail(
     MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID,
     MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
     'Only an authoritative NOT_FOUND observed after Transaction expiration can retire signed bytes.',
@@ -3632,6 +3637,7 @@ export function createMakerV8RecoveryController(options = {}) {
         lastError: null,
       });
       if (BigInt(queried.absence.watermarkEpoch) > BigInt(record.plan.expiration.epoch)) {
+        if (!makerV8AbsenceCoversEpochWindow(queried.absence, record.plan.epochWindow.start)) return record;
         const expiration = expirationFromNotFound(record, safeClock(clock));
         const expired = await cas(record, MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND, {
           plan: null,

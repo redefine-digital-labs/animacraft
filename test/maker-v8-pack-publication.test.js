@@ -25,7 +25,7 @@ const SIGNER = id(9);
 const PACKAGE = id(77);
 const CHAIN = '35834a8a';
 
-function notFound(transactionDigest, checkpoint = 1, watermarkEpoch = '1') {
+function notFound(transactionDigest, checkpoint = 1, watermarkEpoch = '1', retention) {
   return {
     status: 'NOT_FOUND', digest: transactionDigest,
     epoch: null, effectsFingerprint: null, eventsDigest: null, error: null,
@@ -40,6 +40,7 @@ function notFound(transactionDigest, checkpoint = 1, watermarkEpoch = '1') {
       watermarkEpoch,
       watermarkCheckpointSequence: String(checkpoint),
       watermarkCheckpointDigest: digest(checkpoint + 20),
+      ...(retention === undefined ? {} : { retention }),
     },
   };
 }
@@ -331,12 +332,121 @@ test('Pack Sui retires an unsigned intent only after typed exact absence beyond 
   h.wallet.signExactTransaction = async () => { throw new Error('Wallet response lost'); };
   await assert.rejects(h.controller.requestSignature(ready.attemptId, { review }), /Wallet response lost/);
   const cold = h.reboot();
-  h.responses.push(notFound(review.digest, 3, '2'), notFound(review.digest, 4, '3'));
+  h.responses.push(notFound(review.digest, 3, '2'), notFound(review.digest, 4, '3'),
+    notFound(review.digest, 5, '3', {
+      startEpoch: '1', firstCheckpoint: '2', lowestAvailableCheckpoint: '1', observedCheckpoint: '6',
+    }));
   assert.equal((await cold.recoverOutcome(ready.attemptId)).current.outcome.digest, review.digest);
+  assert.equal((await cold.recoverOutcome(ready.attemptId)).current.outcome.digest, review.digest);
+  await assert.rejects(cold.prepareReview(ready.attemptId), { code: 'MAKER_V8_PACK_PUBLICATION_NOT_READY' });
   const retired = await cold.replayExact(ready.attemptId);
   assert.deepEqual(retired.current.outcome, { status: 'READY', retiredDigest: review.digest });
   assert.notEqual((await cold.prepareReview(ready.attemptId)).digest, review.digest);
   assert.equal(h.order.some(step => /^(sign|broadcast):/.test(step)), false);
+});
+
+test('Pack Sui recovers an archived original signature and receipt after a wallet callback is lost', async () => {
+  const h = await harness({ finite: true });
+  const ready = await h.controller.prepare(request);
+  const review = await h.controller.prepareReview(ready.attemptId);
+  h.wallet.signExactTransaction = async () => { throw new Error('Wallet response lost'); };
+  await assert.rejects(h.controller.requestSignature(ready.attemptId, { review }), /Wallet response lost/);
+  const saved = await h.persistence.load(ready.attemptId);
+  const evidence = {};
+  const query = { status: 'FINALIZED_SUCCESS', digest: review.digest, epoch: '2',
+    effectsFingerprint: `0x${'6'.repeat(64)}`, eventsDigest: null, error: null, absence: null };
+  h.boundary.recoverArchivedFinality = async input => {
+    assert.deepEqual(input, { bytes: saved.current.fullTransaction, digest: review.digest,
+      signer: SIGNER, kindBytes: saved.current.descriptor.kindBytes });
+    return { query, evidence };
+  };
+  h.boundary.recoverFinalizedSignature = async input => {
+    assert.equal(input.archived, evidence);
+    return toBase64(Uint8Array.of(1, 2, 3));
+  };
+  h.responses.push(notFound(review.digest, 4, '3'));
+  const recovered = await h.reboot().replayExact(ready.attemptId);
+  assert.equal(recovered.head.digest, review.digest);
+  assert.equal(recovered.nextPreparation.ordinal, 1);
+  assert.equal(h.order.some(step => /^(sign|broadcast):/.test(step)), false);
+});
+
+test('Pack Sui keeps an expired signed digest pending while archive finality is missing', async () => {
+  const h = await harness({ finite: true });
+  const ready = await h.controller.prepare(request);
+  const review = await h.controller.prepareReview(ready.attemptId);
+  await h.controller.requestSignature(ready.attemptId, { review });
+  const broadcasts = h.order.filter(step => step.startsWith('broadcast:'));
+  let archiveQueries = 0;
+  h.boundary.recoverArchivedFinality = async () => { archiveQueries++; return null; };
+  h.responses.push(notFound(review.digest, 5, '3'), new Error('Ledger unavailable'), notFound(review.digest, 4, '2'));
+  const cold = h.reboot();
+  const pending = await cold.replayExact(ready.attemptId);
+  assert.equal(pending.current.outcome.status, 'OUTCOME_PENDING');
+  assert.equal(pending.current.outcome.code, 'PACK_TRANSACTION_EXPIRED');
+  assert.equal(pending.current.outcome.digest, review.digest);
+  assert.equal(pending.current.outcome.absence, null);
+  await assert.rejects(cold.replayExact(ready.attemptId), /Ledger unavailable/);
+  assert.deepEqual(await h.persistence.load(ready.attemptId), pending);
+  assert.deepEqual(await cold.replayExact(ready.attemptId), pending);
+  assert.equal(archiveQueries, 2);
+  assert.deepEqual(h.order.filter(step => step.startsWith('broadcast:')), broadcasts);
+  await assert.rejects(cold.prepareReview(ready.attemptId), { code: 'MAKER_V8_PACK_PUBLICATION_NOT_READY' });
+});
+
+test('Pack retires a broadcast APPEND only with full Ledger coverage and reviews its replacement separately', async () => {
+  const persistence = createMakerV8PackPublicationPersistenceV8(new IDBFactory(), { storageManager: {
+    persisted: async () => true, persist: async () => true,
+  } });
+  const first = await harness({ persistence, finite: true });
+  const ready = await first.controller.prepare(request);
+  const init = await first.controller.requestSignature(ready.attemptId);
+  first.responses.push({ status: 'FINALIZED_SUCCESS', digest: init.current.outcome.digest,
+    epoch: '1', effectsFingerprint: `0x${'1'.repeat(64)}`, eventsDigest: null, error: null, absence: null });
+  const { head } = await first.controller.recoverOutcome(ready.attemptId);
+  await first.controller.resume(ready.attemptId);
+  const review = await first.controller.prepareReview(ready.attemptId);
+  const signed = await first.controller.requestSignature(ready.attemptId, { review });
+  first.responses.push(notFound(review.digest, 4, '2'), new Error('Broadcast reply unavailable'));
+  const unknown = await first.controller.replayExact(ready.attemptId);
+  assert.equal(unknown.current.outcome.status, 'OUTCOME_UNKNOWN');
+  assert.deepEqual(first.order.filter(step => step.startsWith('broadcast:')), [`broadcast:${review.digest}`]);
+
+  const cold = await harness({ persistence, finite: true, startTime: 200 });
+  cold.boundary.recoverArchivedFinality = async () => null;
+  const retention = { startEpoch: '1', firstCheckpoint: '2', lowestAvailableCheckpoint: '1', observedCheckpoint: '10' };
+  cold.responses.push(notFound(review.digest, 6, '3'), notFound(review.digest, 5, '2', retention));
+  const pending = await cold.controller.replayExact(ready.attemptId);
+  assert.equal(pending.current.outcome.code, 'PACK_TRANSACTION_EXPIRED');
+  assert.deepEqual(await cold.controller.replayExact(ready.attemptId), pending);
+  await assert.rejects(cold.controller.prepareReview(ready.attemptId), { code: 'MAKER_V8_PACK_PUBLICATION_NOT_READY' });
+
+  const ledger = notFound(review.digest, 9, '3', retention);
+  cold.responses.push(ledger);
+  const retired = await cold.controller.replayExact(ready.attemptId);
+  assert.deepEqual(retired.current.outcome, { status: 'READY', retiredDigest: review.digest });
+  assert.equal(retired.current.fullTransaction, null);
+  assert.equal(retired.current.signature, null);
+  assert.deepEqual(retired.head, head);
+  assert.equal(retired.current.descriptor.stage, 'APPEND');
+  const event = (await persistence.listEvents(ready.attemptId)).at(-1);
+  assert.equal(event.code, 'SIGNED_TRANSACTION_EXPIRED');
+  assert.equal(event.digest, review.digest);
+  assert.deepEqual(event.absence, ledger.absence);
+  await assert.rejects(cold.controller.requestSignature(ready.attemptId),
+    { code: 'MAKER_V8_PACK_PUBLICATION_REVIEW_REQUIRED' });
+  await assert.rejects(cold.controller.requestSignature(ready.attemptId, { review }),
+    { code: 'MAKER_V8_PACK_PUBLICATION_REVIEW_STALE' });
+
+  const build = cold.boundary.buildExactTransaction;
+  cold.boundary.buildExactTransaction = async () => ({ digest: review.digest, bytes: signed.current.fullTransaction });
+  await assert.rejects(cold.controller.prepareReview(ready.attemptId),
+    { code: 'MAKER_V8_PACK_PUBLICATION_RETIRED_DIGEST' });
+  cold.boundary.buildExactTransaction = build;
+  const replacement = await cold.controller.prepareReview(ready.attemptId);
+  assert.notEqual(replacement.digest, review.digest);
+  assert.equal(replacement.stage, 'APPEND');
+  assert.equal(cold.order.some(step => /^(sign|broadcast):/.test(step)), false);
 });
 
 test('a lost Pack Sui callback can recover a finalized failure without replaying the transaction', async () => {
@@ -351,6 +461,22 @@ test('a lost Pack Sui callback can recover a finalized failure without replaying
   assert.equal(failed.status, 'FAILED');
   assert.equal(failed.terminal.digest, review.digest);
   assert.equal(failed.terminal.query.status, 'FINALIZED_FAILURE');
+  assert.equal(h.order.some(step => /^(sign|broadcast):/.test(step)), false);
+});
+
+test('an archived Pack failure stops the original attempt without requesting another signature', async () => {
+  const h = await harness({ finite: true });
+  const ready = await h.controller.prepare(request);
+  const review = await h.controller.prepareReview(ready.attemptId);
+  h.wallet.signExactTransaction = async () => { throw new Error('Wallet response lost'); };
+  await assert.rejects(h.controller.requestSignature(ready.attemptId, { review }), /Wallet response lost/);
+  const query = { status: 'FINALIZED_FAILURE', digest: review.digest, epoch: '1',
+    effectsFingerprint: `0x${'6'.repeat(64)}`, eventsDigest: null, error: { message: 'MoveAbort' }, absence: null };
+  h.boundary.recoverArchivedFinality = async () => ({ query, evidence: {} });
+  h.responses.push(notFound(review.digest, 4, '3'));
+  const failed = await h.reboot().replayExact(ready.attemptId);
+  assert.equal(failed.status, 'FAILED');
+  assert.deepEqual(failed.terminal.query, query);
   assert.equal(h.order.some(step => /^(sign|broadcast):/.test(step)), false);
 });
 

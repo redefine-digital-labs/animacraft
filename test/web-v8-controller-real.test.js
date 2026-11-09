@@ -2105,8 +2105,8 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   assert.notEqual(rebuilt.plan.transactionDigest, oldDigest,
     'fresh object refs produce new canonical bytes after the discarded plan drifted');
 
-  // An authoritative NOT_FOUND only retires signed bytes after the on-chain
-  // epoch has passed their Transaction expiration. The archive and tombstone
+  // Retirement requires the epoch to pass and the node to retain the signed
+  // validity window. The archive and tombstone
   // are atomic, the old digest stays blocked, and a reload can prepare fresh
   // bytes under the same logical identity.
   finalized = null;
@@ -2116,13 +2116,19 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   const expirationPersistence = createIndexedDbRecoveryAdapter(expirationMemory.factory, {
     databaseName: expirationDatabaseName,
   });
+  let retainedWindow = false;
   const expirationAdapters = {
     ...adapters,
     persistence: expirationPersistence,
     rpc: {
       ...adapters.rpc,
       async queryTransaction(request) {
-        return absentTransactionResult(request.digest, currentEpoch);
+        assert.deepEqual(request.epochWindow, { start: '100', end: '101' });
+        const result = absentTransactionResult(request.digest, currentEpoch);
+        if (retainedWindow) result.absence.retention = {
+          startEpoch: '100', firstCheckpoint: '700', lowestAvailableCheckpoint: '699', observedCheckpoint: '778',
+        };
+        return result;
       },
       async readbackMarketAction() { throw new Error('NOT_FOUND must not read finalized state'); },
     },
@@ -2142,6 +2148,10 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   assert.equal(expiringSigned.state, 'SIGNED_DURABLE');
   assert.equal(expiringSigned.plan.expiration.epoch, '101');
   currentEpoch = '102';
+  const uncertainExpiration = await expirationPage.recoverOutcome();
+  assert.equal(uncertainExpiration.state, 'OUTCOME_PENDING');
+  assert.equal(uncertainExpiration.signed.digest, expiringSigned.signed.digest);
+  retainedWindow = true;
   const expired = await expirationPage.recoverOutcome();
   assert.equal(expired.state, 'EXPIRED_NOT_FOUND');
   assert.equal(expired.plan, null);

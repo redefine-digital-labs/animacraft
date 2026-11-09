@@ -14,8 +14,10 @@ import {
   parseStructTag,
   toBase58,
   toBase64,
+  toHex,
 } from '@mysten/sui/utils';
 import { blake2b } from '@noble/hashes/blake2.js';
+import { bls12_381 } from '@noble/curves/bls12-381.js';
 import { RpcError } from '@protobuf-ts/runtime-rpc';
 import { GrpcWebFetchTransport } from '@protobuf-ts/grpcweb-transport';
 import { makerV8RpcDeadline } from './maker-v8-rpc-deadline.js';
@@ -86,6 +88,70 @@ const SUI_EVENT_BCS = bcs.struct('SuiEventV8GrpcPinned', {
 const SUI_TRANSACTION_EVENTS_BCS = bcs.struct('SuiTransactionEventsV8GrpcPinned', {
   data: bcs.vector(SUI_EVENT_BCS),
 });
+const CHECKPOINT_DIGESTS = bcs.struct('ExecutionDigests', {
+  transaction: bcs.ObjectDigest,
+  effects: bcs.ObjectDigest,
+});
+const CHECKPOINT_USER_SIGNATURE = bcs.vector(bcs.u8());
+const CHECKPOINT_CONTENTS = bcs.enum('CheckpointContents', {
+  V1: bcs.struct('CheckpointContentsV1', {
+    transactions: bcs.vector(CHECKPOINT_DIGESTS),
+    userSignatures: bcs.vector(bcs.vector(CHECKPOINT_USER_SIGNATURE)),
+  }),
+  V2: bcs.vector(bcs.struct('CheckpointTransactionContents', {
+    digest: CHECKPOINT_DIGESTS,
+    userSignatures: bcs.vector(bcs.tuple([CHECKPOINT_USER_SIGNATURE, bcs.option(bcs.u64())])),
+  })),
+});
+// The Rust CheckpointSummary commits the contents digest in its fixed prefix.
+// The hash covers the entire summary, including protocol-specific suffixes.
+const CHECKPOINT_SUMMARY_PREFIX = bcs.struct('CheckpointSummaryPrefix', {
+  epoch: bcs.u64(), sequenceNumber: bcs.u64(), networkTotalTransactions: bcs.u64(),
+  contentDigest: bcs.ObjectDigest,
+});
+const ARCHIVE_EVENTS = `
+  events(first: 50, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { sequenceNumber eventBcs contents { json } }
+  }
+`;
+const ARCHIVE_TRANSACTION_QUERY = `
+  query ArchivedPlayerReceipt($digest: String!, $after: String) {
+    chainIdentifier
+    transaction(digest: $digest) {
+      digest transactionBcs sender { address } signatures { signatureBytes }
+      effects {
+        status effectsBcs effectsDigest epoch { epochId } checkpoint { sequenceNumber }
+        executionError { message }
+        ${ARCHIVE_EVENTS}
+      }
+    }
+  }
+`;
+const ARCHIVE_EVENT_PAGE_QUERY = `
+  query ArchivedPlayerReceiptEvents($digest: String!, $after: String) {
+    chainIdentifier
+    transaction(digest: $digest) { digest effects { ${ARCHIVE_EVENTS} } }
+  }
+`;
+const ARCHIVE_CHECKPOINT_QUERY = `
+  query ArchivedPlayerReceiptCheckpoint($sequence: UInt53!) {
+    chainIdentifier
+    checkpoint(sequenceNumber: $sequence) {
+      sequenceNumber digest contentDigest summaryBcs contentBcs
+      validatorSignatures { epoch { epochId } signature signersMap }
+    }
+  }
+`;
+const ARCHIVE_OBJECT_QUERY = `
+  query ArchivedPlayerReceiptObject($id: SuiAddress!, $version: UInt53!, $decode: Boolean!) {
+    chainIdentifier
+    object(address: $id, version: $version) {
+      address version digest objectBcs previousTransaction { digest }
+      asMoveObject { contents { bcs type { repr } json @include(if: $decode) } }
+    }
+  }
+`;
 
 export class MakerV8SuiGrpcTransportError extends Error {
   constructor(code, message, details = {}) {
@@ -225,6 +291,69 @@ function canonicalBcs(container, expectedName, schema, label) {
     fail('MAKER_V8_SUI_GRPC_BCS_NONCANONICAL', `${label}.value is not canonical ${expectedName} BCS.`);
   }
   return Object.freeze({ bytes: encoded, parsed });
+}
+
+function archiveBcs(value, name) {
+  return GrpcTypes.Bcs.create({ name, value: fromBase64(canonicalBase64(value, name)) });
+}
+
+function archiveInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    fail('MAKER_V8_SUI_ARCHIVE_SHAPE_INVALID', `${label} must be one exact UInt53.`);
+  }
+  return BigInt(value);
+}
+
+function verifyArchiveCheckpointQuorum(summary, epoch, committee, certificate) {
+  const members = committee?.members;
+  const signerIndexes = certificate?.signersMap;
+  if (committee?.epoch !== epoch || archiveInteger(certificate?.epoch?.epochId, 'checkpoint certificate epoch') !== epoch
+    || !Array.isArray(members) || members.length === 0 || members.length > 512
+    || !Array.isArray(signerIndexes) || signerIndexes.length === 0 || signerIndexes.length > members.length) {
+    fail('MAKER_V8_SUI_ARCHIVE_QUORUM_INVALID', 'Archived checkpoint lacks the exact validator committee or signer set.');
+  }
+  let previousKey = '';
+  let totalStake = 0n;
+  for (const member of members) {
+    const publicKey = bytes(member.publicKey, 'committee public key', { maximum: 96 });
+    const encoded = toHex(publicKey);
+    if (publicKey.length !== 96 || encoded <= previousKey) {
+      fail('MAKER_V8_SUI_ARCHIVE_QUORUM_INVALID', 'Mainnet committee public keys are not in canonical index order.');
+    }
+    previousKey = encoded;
+    totalStake += uint64(member.weight, 'committee member voting weight');
+  }
+  let last = -1;
+  let signedStake = 0n;
+  const keys = signerIndexes.map(index => {
+    if (!Number.isSafeInteger(index) || index <= last || index >= members.length) {
+      fail('MAKER_V8_SUI_ARCHIVE_QUORUM_INVALID', 'Archived checkpoint contains an invalid validator index.');
+    }
+    last = index;
+    signedStake += members[index].weight;
+    return members[index].publicKey;
+  });
+  if (totalStake !== 10_000n || signedStake < 6_667n) {
+    fail('MAKER_V8_SUI_ARCHIVE_QUORUM_INVALID', 'Archived checkpoint signature does not represent a quorum of the full committee.');
+  }
+  // Sui's authority signature signs the CheckpointSummary intent and the
+  // serialized summary, followed by the little-endian authority epoch.
+  const epochBytes = bcs.u64().serialize(epoch).toBytes();
+  const message = new Uint8Array(3 + summary.length + epochBytes.length);
+  message.set([2, 0, 0]); // CheckpointSummary, IntentVersion.V0, AppId.Sui
+  message.set(summary, 3);
+  message.set(epochBytes, 3 + summary.length);
+  const signature = fromBase64(canonicalBase64(certificate.signature, 'checkpoint aggregate signature'));
+  let verified = false;
+  try {
+    const bls = bls12_381.shortSignatures;
+    verified = signature.length === 48 && bls.verify(signature,
+      bls.hash(message, 'BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_'),
+      bls.aggregatePublicKeys(keys));
+  } catch { /* Malformed BLS keys or signature fail the same certificate boundary. */ }
+  if (!verified) {
+    fail('MAKER_V8_SUI_ARCHIVE_QUORUM_INVALID', 'Archived checkpoint signature does not authenticate its summary.');
+  }
 }
 
 function signatureEnumKind(value) {
@@ -663,6 +792,11 @@ export function isMakerV8SuiGrpcNotFoundError(error, expectedDigest) {
     && error.serviceName === LEDGER_SERVICE
     && error.methodName === GET_TRANSACTION
     && TRANSACTION_NOT_FOUND_CONTEXT.get(error) === expectedDigest;
+}
+
+export function isMakerV8SuiGrpcHistoricalObjectNotFoundError(error) {
+  return error instanceof RpcError && error.name === 'RpcError' && error.code === 'NOT_FOUND'
+    && error.serviceName === LEDGER_SERVICE && error.methodName === 'GetObject';
 }
 
 async function unary(call, label, responseType) {
@@ -1720,6 +1854,42 @@ export function createMakerV8SuiGrpcTransport({
     return normalizeMakerV8TransactionFinality(transaction, expectedDigest);
   };
 
+  const getTransactionAbsenceRetention = async ({
+    error, digest: expectedDigest, startEpoch, watermarkCheckpointSequence,
+  }) => {
+    if (!isMakerV8SuiGrpcNotFoundError(error, expectedDigest)) return null;
+    // Use the response that actually reported absence. A separate ServiceInfo
+    // request can be served by a node with different retention or sync state.
+    const metadata = error.meta;
+    const lowestAvailableCheckpoint = metadata?.['x-sui-lowest-available-checkpoint'];
+    const observedCheckpoint = metadata?.['x-sui-checkpoint-height'];
+    if (metadata?.['x-sui-chain-id'] !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+      || typeof lowestAvailableCheckpoint !== 'string' || !UINT.test(lowestAvailableCheckpoint)
+      || typeof observedCheckpoint !== 'string' || !UINT.test(observedCheckpoint)
+      || BigInt(lowestAvailableCheckpoint) > BigInt(observedCheckpoint)
+      || BigInt(observedCheckpoint) < BigInt(watermarkCheckpointSequence)) return null;
+    const epoch = BigInt(decimal(startEpoch, 'transaction validity start epoch'));
+    let response;
+    try {
+      response = await unary(grpc.ledgerService.getEpoch({
+        epoch, readMask: { paths: ['epoch', 'first_checkpoint'] },
+      }), 'ledgerService.getEpoch(absence)', GrpcTypes.GetEpochResponse);
+    } catch (cause) {
+      if (cause instanceof RpcError && cause.code === 'NOT_FOUND'
+        && cause.serviceName === LEDGER_SERVICE && cause.methodName === 'GetEpoch') return null;
+      throw cause;
+    }
+    if (response.epoch?.epoch !== epoch) {
+      fail('MAKER_V8_SUI_GRPC_EPOCH_DRIFT', 'Ledger returned another transaction validity epoch.');
+    }
+    const firstCheckpoint = uint64(response.epoch.firstCheckpoint, 'epoch.firstCheckpoint');
+    if (BigInt(lowestAvailableCheckpoint) > firstCheckpoint
+      || firstCheckpoint > BigInt(watermarkCheckpointSequence)) return null;
+    return Object.freeze({
+      startEpoch, firstCheckpoint: firstCheckpoint.toString(), lowestAvailableCheckpoint, observedCheckpoint,
+    });
+  };
+
   const assertCoreTransactionResult = (
     result,
     expectedDigest,
@@ -1819,6 +1989,163 @@ export function createMakerV8SuiGrpcTransport({
       'effects.transaction_digest', 'effects.events_digest', 'events.bcs', 'events.digest',
     ], 'ledgerService.getTransaction(evidence)');
     return await normalizeMakerV8FinalizedTransactionEvidence(transaction, expectedDigest);
+  };
+
+  // Archive data supplies positive finalized Player evidence. Execution,
+  // simulation and absence still use the Ledger transport.
+  const queryReceiptArchive = async (query, variables) => {
+    await ensurePinnedMainnet();
+    if (discoveryEndpoint !== MAKER_V8_SUI_GRAPHQL_MAINNET_ENDPOINT) {
+      fail('MAKER_V8_SUI_ARCHIVE_ENDPOINT_INVALID', 'Receipt archival reads require the pinned Mainnet GraphQL service.');
+    }
+    const result = await graphql.query({ query, variables, signal: AbortSignal.timeout(15_000) });
+    if (result?.errors?.length || !plain(result?.data)) {
+      fail('MAKER_V8_SUI_ARCHIVE_UNAVAILABLE', 'Mainnet archive did not return exact receipt data.');
+    }
+    if (result.data.chainIdentifier !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST) {
+      fail('MAKER_V8_SUI_ARCHIVE_CHAIN_MISMATCH', 'Receipt archive is not pinned Sui Mainnet.');
+    }
+    return result.data;
+  };
+
+  const assertArchiveCheckpoint = async (evidence) => {
+    const { checkpoint } = await queryReceiptArchive(ARCHIVE_CHECKPOINT_QUERY, { sequence: Number(evidence.checkpoint) });
+    const label = 'receipt checkpoint';
+    const contents = canonicalBcs(archiveBcs(checkpoint?.contentBcs, 'CheckpointContents'),
+      'CheckpointContents', CHECKPOINT_CONTENTS, label);
+    const summary = bytes(archiveBcs(checkpoint?.summaryBcs, 'CheckpointSummary').value, label);
+    const prefix = CHECKPOINT_SUMMARY_PREFIX.parse(summary);
+    const prefixBytes = CHECKPOINT_SUMMARY_PREFIX.serialize(prefix).toBytes();
+    const entries = contents.parsed.V1?.transactions ?? contents.parsed.V2.map(row => row.digest);
+    const matches = entries.filter(row => row.transaction === evidence.digest);
+    if (archiveInteger(checkpoint.sequenceNumber, 'checkpoint.sequenceNumber').toString() !== evidence.checkpoint
+      || prefix.sequenceNumber !== evidence.checkpoint || prefix.epoch !== evidence.epoch
+      || !sameBytes(prefixBytes, summary.subarray(0, prefixBytes.length))
+      || typedDigest('CheckpointSummary', summary) !== digest(checkpoint.digest, 'checkpoint.digest')
+      || typedDigest('CheckpointContents', contents.bytes) !== prefix.contentDigest
+      || prefix.contentDigest !== digest(checkpoint.contentDigest, 'checkpoint.contentDigest')
+      || matches.length !== 1 || matches[0].effects !== evidence.effectsDigest) {
+      fail('MAKER_V8_SUI_ARCHIVE_CHECKPOINT_DRIFT', 'Archived checkpoint does not bind the exact transaction and effects.');
+    }
+    const epoch = BigInt(evidence.epoch);
+    const committee = await unary(grpc.ledgerService.getEpoch({
+      epoch, readMask: { paths: ['epoch', 'committee'] },
+    }), 'ledgerService.getEpoch(archive committee)', GrpcTypes.GetEpochResponse);
+    if (committee.epoch?.epoch !== epoch) {
+      fail('MAKER_V8_SUI_ARCHIVE_QUORUM_INVALID', 'Ledger returned another archive committee epoch.');
+    }
+    verifyArchiveCheckpointQuorum(summary, epoch, committee.epoch.committee, checkpoint.validatorSignatures);
+  };
+
+  const getArchivedPlayerTransactionEvidence = async ({ digest: transactionDigest, decodeEvents = false }) => {
+    const expectedDigest = digest(transactionDigest, 'receipt digest');
+    const { transaction } = await queryReceiptArchive(ARCHIVE_TRANSACTION_QUERY, { digest: expectedDigest, after: null });
+    if (transaction === null) return null;
+    if (transaction?.digest !== expectedDigest || !['SUCCESS', 'FAILURE'].includes(transaction.effects?.status)
+      || !Array.isArray(transaction.signatures) || transaction.signatures.length === 0
+      || transaction.signatures.length > 2) {
+      fail('MAKER_V8_SUI_ARCHIVE_TRANSACTION_INVALID', 'Archive did not return one exact finalized Player transaction.');
+    }
+    const effects = transaction.effects;
+    const success = effects.status === 'SUCCESS';
+    const checkpoint = archiveInteger(effects.checkpoint?.sequenceNumber, 'effects.checkpoint');
+    const epoch = archiveInteger(effects.epoch?.epochId, 'effects.epoch');
+    const effectsBcs = archiveBcs(effects.effectsBcs, 'TransactionEffects');
+    const parsed = canonicalBcs(effectsBcs, 'TransactionEffects', bcs.TransactionEffects, 'archive effects').parsed;
+    const effectsData = parsed.V2 ?? parsed.V1;
+    const events = [];
+    const rawEvents = [];
+    const cursors = new Set();
+    let page = effects.events;
+    for (;;) {
+      if (!Array.isArray(page?.nodes) || page.nodes.length > 50
+        || events.length + page.nodes.length > 1024 || typeof page.pageInfo?.hasNextPage !== 'boolean') {
+        fail('MAKER_V8_SUI_ARCHIVE_EVENTS_INVALID', 'Archived event pages have an invalid shape or exceed the receipt limit.');
+      }
+      for (const row of page.nodes) {
+        if (row?.sequenceNumber !== events.length) {
+          fail('MAKER_V8_SUI_ARCHIVE_EVENTS_INVALID', 'Archived receipt events are out of order.');
+        }
+        const raw = canonicalBcs(archiveBcs(row.eventBcs, 'Event'), 'Event', SUI_EVENT_BCS, 'archive event').parsed;
+        rawEvents.push(raw);
+        events.push(Object.freeze({
+          id: Object.freeze({ txDigest: expectedDigest, eventSeq: String(row.sequenceNumber) }),
+          packageId: raw.package_id, transactionModule: raw.transaction_module, sender: raw.sender,
+          type: typeName(TypeTagSerializer.tagToString({ struct: raw.event_type }), 'archive event type'),
+          parsedJson: immutableCanonicalJson(row.contents?.json, 'archive event JSON'),
+          bcs: toBase64(Uint8Array.from(raw.contents)),
+        }));
+      }
+      if (!page.pageInfo.hasNextPage) break;
+      const cursor = boundedText(page.pageInfo.endCursor, 'archive event cursor');
+      if (page.nodes.length === 0 || cursors.has(cursor)) {
+        fail('MAKER_V8_SUI_ARCHIVE_EVENTS_INVALID', 'Archived event page did not advance.');
+      }
+      cursors.add(cursor);
+      const next = await queryReceiptArchive(ARCHIVE_EVENT_PAGE_QUERY, { digest: expectedDigest, after: cursor });
+      if (next.transaction?.digest !== expectedDigest) {
+        fail('MAKER_V8_SUI_ARCHIVE_TRANSACTION_INVALID', 'Archived event continuation returned another digest.');
+      }
+      page = next.transaction.effects?.events;
+    }
+    const evidence = await normalizeMakerV8FinalizedTransactionEvidence(GrpcTypes.ExecutedTransaction.create({
+      digest: expectedDigest, checkpoint,
+      transaction: { digest: expectedDigest, bcs: archiveBcs(transaction.transactionBcs, 'TransactionData') },
+      signatures: transaction.signatures.map(signature => ({
+        bcs: archiveBcs(signature.signatureBytes, 'UserSignatureBytes'),
+      })),
+      effects: {
+        bcs: effectsBcs, digest: effects.effectsDigest, epoch,
+        version: parsed.$kind === 'V2' ? 2 : 1, status: success ? { success }
+          : { success, error: { description: effects.executionError?.message ?? 'Move execution failed.' } },
+        transactionDigest: effectsData.transactionDigest, eventsDigest: effectsData.eventsDigest ?? undefined,
+      },
+      ...(events.length === 0 ? {} : {
+        events: {
+          digest: effectsData.eventsDigest,
+          bcs: { name: 'TransactionEvents', value: SUI_TRANSACTION_EVENTS_BCS.serialize({ data: rawEvents }).toBytes() },
+        },
+      }),
+    }), expectedDigest);
+    if (evidence.sender !== transaction.sender?.address) {
+      fail('MAKER_V8_SUI_ARCHIVE_TRANSACTION_DRIFT', 'Archived sender differs from signed TransactionData.');
+    }
+    await assertArchiveCheckpoint(evidence);
+    if (decodeEvents) {
+      for (const event of events) {
+        await decodeHistoricalMove(event.type, fromBase64(event.bcs), event.parsedJson);
+      }
+    }
+    return Object.freeze({ ...evidence, events: Object.freeze(events) });
+  };
+
+  const getArchivedPlayerReceiptObject = async ({ objectId, version, decode = true }) => {
+    const requestedId = address(objectId, 'archive object ID');
+    const requestedVersion = uint64(version, 'archive object version', { positive: true });
+    const graphVersion = Number(requestedVersion);
+    if (!Number.isSafeInteger(graphVersion)) {
+      fail('MAKER_V8_SUI_ARCHIVE_SHAPE_INVALID', 'Archived object version is outside the UInt53 range.');
+    }
+    const { object } = await queryReceiptArchive(ARCHIVE_OBJECT_QUERY, { id: requestedId, version: graphVersion, decode });
+    const data = canonicalBcs(archiveBcs(object?.objectBcs, 'Object'), 'Object', bcs.Object, 'archive object');
+    const move = data.parsed.data.Move;
+    const contents = object.asMoveObject?.contents;
+    const type = typeName(contents?.type?.repr, 'archive object type');
+    const objectDigest = digest(object.digest, 'archive object digest');
+    if (object.address !== requestedId || archiveInteger(object.version, 'archive object version') !== requestedVersion
+      || typedDigest('Object', data.bytes) !== objectDigest || data.parsed.previousTransaction !== object.previousTransaction?.digest
+      || !move || BigInt(move.version) !== requestedVersion
+      || bcsMoveObjectType(move.type, 'archive MoveObjectType') !== type
+      || !sameBytes(move.contents.subarray(0, 32), fromHex(requestedId.slice(2)))
+      || toBase64(move.contents) !== contents.bcs) {
+      fail('MAKER_V8_SUI_ARCHIVE_OBJECT_DRIFT', 'Archived object BCS differs from its exact ID, version, type or digest.');
+    }
+    return Object.freeze({
+      objectId: requestedId, version: requestedVersion.toString(), digest: objectDigest, type,
+      owner: bcsOwner(data.parsed.owner, 'archive owner'), previousTransaction: data.parsed.previousTransaction,
+      objectBcs: data.bytes, contentBcs: move.contents,
+      parsed: decode ? await decodeHistoricalMove(type, move.contents, contents.json) : Object.freeze({}),
+    });
   };
 
   const discoverEvents = async ({ type, cursor = null, limit = 50, order = 'descending', signal } = {}) => {
@@ -1999,7 +2326,10 @@ export function createMakerV8SuiGrpcTransport({
     getHistoricalObject,
     getTransaction,
     getTransactionFinality,
+    getTransactionAbsenceRetention,
     getFinalizedTransactionEvidence,
+    getArchivedPlayerTransactionEvidence,
+    getArchivedPlayerReceiptObject,
     simulateTransaction,
     executeTransaction,
     getServiceInfo,

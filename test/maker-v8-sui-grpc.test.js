@@ -16,6 +16,7 @@ import {
   toBase64,
 } from '@mysten/sui/utils';
 import { blake2b } from '@noble/hashes/blake2.js';
+import { bls12_381 } from '@noble/curves/bls12-381.js';
 import {
   MAKER_V8_SUI_EVENT_DISCOVERY_QUERY,
   MAKER_V8_SUI_EVENT_DISCOVERY_SOURCE,
@@ -1190,6 +1191,166 @@ test('only exact GetTransaction RpcError NOT_FOUND is digest-bound by the reques
     error.methodName = methodName;
     assert.equal(isMakerV8SuiGrpcNotFoundError(error, TX), false);
   }
+});
+
+test('absence retention proves the exact validity start using the NOT_FOUND response metadata', async () => {
+  const fixture = fixtures();
+  const notFound = new RpcError('Transaction not found', 'NOT_FOUND');
+  notFound.serviceName = 'sui.rpc.v2.LedgerService';
+  notFound.methodName = 'GetTransaction';
+  notFound.meta = {
+    'x-sui-chain-id': MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
+    'x-sui-lowest-available-checkpoint': '75',
+    'x-sui-checkpoint-height': '101',
+  };
+  fixture.grpcClient.ledgerService.getTransaction = async () => { throw notFound; };
+  let epochCalls = 0;
+  let firstCheckpoint = 80n;
+  fixture.grpcClient.ledgerService.getEpoch = async request => {
+    epochCalls += 1;
+    assert.deepEqual(request, { epoch: 90n, readMask: { paths: ['epoch', 'first_checkpoint'] } });
+    return { response: GrpcTypes.GetEpochResponse.create({ epoch: { epoch: 90n, firstCheckpoint } }) };
+  };
+  const request = { error: notFound, digest: TX, startEpoch: '90', watermarkCheckpointSequence: '100' };
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention(request), null);
+  await assert.rejects(fixture.transport.getTransactionFinality({ digest: TX }), error => error === notFound);
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention({ ...request, digest: OTHER_DIGEST }), null);
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention({ ...request, watermarkCheckpointSequence: '102' }), null);
+  assert.equal(epochCalls, 0);
+  assert.deepEqual(await fixture.transport.getTransactionAbsenceRetention(request), {
+    startEpoch: '90', firstCheckpoint: '80', lowestAvailableCheckpoint: '75', observedCheckpoint: '101',
+  });
+  firstCheckpoint = 74n;
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention(request), null);
+  const epochMissing = new RpcError('Epoch not found', 'NOT_FOUND');
+  epochMissing.serviceName = 'sui.rpc.v2.LedgerService';
+  epochMissing.methodName = 'GetEpoch';
+  fixture.grpcClient.ledgerService.getEpoch = async () => { throw epochMissing; };
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention(request), null);
+  const unavailable = new RpcError('Ledger unavailable', 'UNAVAILABLE');
+  unavailable.serviceName = epochMissing.serviceName;
+  unavailable.methodName = epochMissing.methodName;
+  fixture.grpcClient.ledgerService.getEpoch = async () => { throw unavailable; };
+  await assert.rejects(fixture.transport.getTransactionAbsenceRetention(request), error => error === unavailable);
+  delete notFound.meta['x-sui-lowest-available-checkpoint'];
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention(request), null);
+  assert.equal(epochCalls, 2);
+});
+
+test('receipt archive validates the signed transaction, event bytes, checkpoint inclusion and validator quorum', async () => {
+  const fixture = fixtures();
+  const bls = bls12_381.shortSignatures;
+  const validators = [1, 2, 3].map(value => {
+    const secret = new Uint8Array(32).fill(value);
+    return { secret, publicKey: bls.getPublicKey(secret).toBytes(true) };
+  }).sort((left, right) => Buffer.compare(left.publicKey, right.publicKey));
+  fixture.grpcClient.ledgerService.getEpoch = async request => {
+    assert.deepEqual(request, { epoch: 91n, readMask: { paths: ['epoch', 'committee'] } });
+    const members = validators.map(({ publicKey }, index) => ({ publicKey, weight: index === 0 ? 4000n : 3000n }));
+    return { response: GrpcTypes.GetEpochResponse.create({ epoch: { epoch: 91n, committee: { epoch: 91n, members } } }) };
+  };
+  const contentsLayout = bcs.struct('CheckpointV1', {
+    transactions: bcs.vector(bcs.struct('ExecutionDigests', { transaction: bcs.ObjectDigest, effects: bcs.ObjectDigest })),
+    signatures: bcs.vector(bcs.vector(bcs.vector(bcs.u8()))),
+  });
+  const summaryLayout = bcs.struct('CheckpointPrefix', {
+    epoch: bcs.u64(), sequence: bcs.u64(), total: bcs.u64(), contents: bcs.ObjectDigest,
+  });
+  const archivedTransaction = {
+    digest: TX, transactionBcs: toBase64(TRANSACTION_BCS), sender: { address: OWNER },
+    signatures: [{ signatureBytes: toBase64(USER_SIGNATURE_BCS) }],
+    effects: {
+      status: 'SUCCESS', effectsBcs: toBase64(TRANSACTION_EFFECTS_BCS), effectsDigest: EFFECTS_DIGEST,
+      checkpoint: { sequenceNumber: 77 }, epoch: { epochId: 91 },
+      events: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{
+          sequenceNumber: 0, eventBcs: toBase64(SUI_EVENT_BCS.serialize(TRANSACTION_EVENTS.data[0]).toBytes()),
+          contents: { json: { root_id: OBJECT } },
+        }],
+      },
+    },
+  };
+  let memberEffects = EFFECTS_DIGEST;
+  let signersMap = [0, 1];
+  let signWrongSummary = false;
+  let archived = true;
+  const chainIdentifier = MAKER_V8_SUI_MAINNET_GENESIS_DIGEST;
+  fixture.graphqlClient.query = async ({ query, variables }) => {
+    if (query.includes('query ArchivedPlayerReceipt(')) {
+      assert.deepEqual(variables, { digest: TX, after: null });
+      return { data: { chainIdentifier, transaction: archived ? structuredClone(archivedTransaction) : null } };
+    }
+    assert.match(query, /query ArchivedPlayerReceiptCheckpoint/);
+    assert.deepEqual(variables, { sequence: 77 });
+    const contentBcs = concatBytes(Uint8Array.of(0), contentsLayout.serialize({
+      transactions: [{ transaction: TX, effects: memberEffects }], signatures: [[USER_SIGNATURE_BCS]],
+    }).toBytes());
+    const contentDigest = typedDigest('CheckpointContents', contentBcs);
+    const summaryBcs = summaryLayout.serialize({ epoch: '91', sequence: '77', total: '500', contents: contentDigest }).toBytes();
+    const message = concatBytes(Uint8Array.of(2, 0, 0), summaryBcs, bcs.u64().serialize(signWrongSummary ? 92 : 91).toBytes());
+    const hashed = bls.hash(message, 'BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_');
+    const signature = bls.Signature.toBytes(bls.aggregateSignatures(signersMap.map(index => bls.sign(hashed, validators[index].secret))));
+    return { data: { chainIdentifier, checkpoint: {
+      sequenceNumber: 77, digest: typedDigest('CheckpointSummary', summaryBcs),
+      contentDigest, contentBcs: toBase64(contentBcs), summaryBcs: toBase64(summaryBcs),
+      validatorSignatures: { epoch: { epochId: 91 }, signature: toBase64(signature), signersMap },
+    } } };
+  };
+  const read = () => fixture.transport.getArchivedPlayerTransactionEvidence({ digest: TX });
+  const evidence = await read();
+  assert.equal(evidence.checkpoint, '77');
+  assert.equal(evidence.sender, OWNER);
+  assert.equal(evidence.effectsDigest, EFFECTS_DIGEST);
+  assert.equal(evidence.eventsDigest, EVENTS_DIGEST);
+  assert.equal(evidence.events[0].bcs, toBase64(TRANSACTION_EVENTS.data[0].contents));
+  memberEffects = OTHER_DIGEST;
+  await assert.rejects(read(), code('MAKER_V8_SUI_ARCHIVE_CHECKPOINT_DRIFT'));
+  memberEffects = EFFECTS_DIGEST;
+  signersMap = [0];
+  await assert.rejects(read(), code('MAKER_V8_SUI_ARCHIVE_QUORUM_INVALID'));
+  signersMap = [0, 1];
+  signWrongSummary = true;
+  await assert.rejects(read(), code('MAKER_V8_SUI_ARCHIVE_QUORUM_INVALID'));
+  signWrongSummary = false;
+  archivedTransaction.effects.events.nodes[0].sequenceNumber = 1;
+  await assert.rejects(read(), code('MAKER_V8_SUI_ARCHIVE_EVENTS_INVALID'));
+  archivedTransaction.effects.events.nodes[0].sequenceNumber = 0;
+  const failure = structuredClone(TRANSACTION_EFFECTS);
+  failure.V1.status = { Failure: { error: { InsufficientGas: true }, command: null } };
+  const failureBcs = bcs.TransactionEffects.serialize(failure).toBytes();
+  memberEffects = typedDigest('TransactionEffects', failureBcs);
+  Object.assign(archivedTransaction.effects, {
+    status: 'FAILURE', executionError: { message: 'Insufficient gas' },
+    effectsBcs: toBase64(failureBcs), effectsDigest: memberEffects,
+  });
+  assert.deepEqual((await read()).effectsStatus, { success: false, error: { message: 'Insufficient gas' } });
+  archived = false;
+  assert.equal(await read(), null);
+});
+
+test('archived historical object uses exact BCS digest, type, version, previous transaction and fields', async () => {
+  const fixture = fixtures();
+  const object = {
+    address: OBJECT, version: 11, digest: OBJECT_DIGEST, objectBcs: toBase64(HISTORICAL_OBJECT_BCS),
+    previousTransaction: { digest: PREVIOUS_TX },
+    asMoveObject: { contents: { bcs: toBase64(HISTORICAL_CONTENT_BCS), type: { repr: TYPE },
+      json: { id: OBJECT, version: '8', commitment: toBase64(HISTORICAL_COMMITMENT), treasury_id: null } } },
+  };
+  fixture.graphqlClient.query = async ({ query, variables }) => {
+    assert.match(query, /query ArchivedPlayerReceiptObject/);
+    assert.deepEqual(variables, { id: OBJECT, version: 11, decode: true });
+    return { data: { chainIdentifier: MAKER_V8_SUI_MAINNET_GENESIS_DIGEST, object: structuredClone(object) } };
+  };
+  const read = () => fixture.transport.getArchivedPlayerReceiptObject({ objectId: OBJECT, version: 11n });
+  const verified = await read();
+  assert.equal(verified.digest, OBJECT_DIGEST);
+  assert.deepEqual(verified.owner, { ObjectOwner: PARENT });
+  assert.equal(verified.parsed.id, OBJECT);
+  object.asMoveObject.contents.json.version = '9';
+  await assert.rejects(read(), code('MAKER_V8_SUI_GRPC_HISTORY_JSON_DRIFT'));
+  object.previousTransaction.digest = OTHER_DIGEST;
+  await assert.rejects(read(), code('MAKER_V8_SUI_ARCHIVE_OBJECT_DRIFT'));
 });
 
 test('Ledger finality and Core transaction reads correlate digest, epoch, status, and effects', async () => {
