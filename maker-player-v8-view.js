@@ -10,7 +10,7 @@ import {
   makerV8PlayerRecipeCommitmentV8,
 } from './maker-v8-player-controller.js';
 import { assertMakerV8LocalPlayerSnapshot } from './maker-v8-local-player.js';
-import { assertMakerV8EnabledPackReleaseIds } from './maker-v8-player-pack-preferences.js';
+import { assertMakerV8EnabledPackReleaseIds, hasOnlyUnavailablePackDiagnostics } from './maker-v8-player-pack-preferences.js';
 import { makerV8PlayerRecipeLayout } from './maker-v8-player-slot-layout.js';
 import { makerV8PlayerTrack, makerV8PlayerPart, makerV8PlayerPartUiKey, makerV8PlayerColor } from './maker-v8-player-definition-resolution.js';
 import { makerV8PlayerColorFields, makerV8PlayerColorMap, makerV8PlayerSwatchKey, makerV8PlayerColorEntry, makerV8PlayerColorControlKey } from './maker-v8-player-colors.js';
@@ -431,8 +431,7 @@ function exactSession(session) {
       || !Array.isArray(choices.packStyles)
       || !Array.isArray(choices.externalStyles)
       || !Array.isArray(choices.certifiedAssets)
-      || !Array.isArray(choices.diagnostics)
-      || choices.diagnostics.length !== 0) {
+      || !hasOnlyUnavailablePackDiagnostics(choices)) {
       throw new TypeError('Fresh-v8 Player contextual choices lack exact wallet and Root authority.');
     }
   }
@@ -817,6 +816,7 @@ function projectPlayerPresentation(exact, state, capabilities, assetRecords) {
     pickerPanel: PICKER_PANELS.has(state.pickerPanel) ? state.pickerPanel : 'parts',
     contextualChoices,
     enabledPackReleaseIds,
+    packCatalogNotice: String(state.packCatalogNotice || ''),
     packAcquisition: plain(state.packAcquisition) ? structuredClone(state.packAcquisition) : null,
     completionConfirmation: plain(state.completionConfirmation) ? clone(state.completionConfirmation) : null,
     completedSoul: plain(state.completedSoul) ? clone(state.completedSoul) : null,
@@ -959,13 +959,42 @@ function renderPalette(view, part) {
     </section>`;
 }
 
+export function renderPlayerPackReceipt(record, { releaseId, rootId, wallet, locale }) {
+  if (!record?.transactionDigest) return '';
+  const certificate = record.certificate;
+  const outputs = certificate?.evidence?.objects;
+  const output = Array.isArray(outputs) && outputs.length === 1 ? outputs[0] : null;
+  const passId = record.status === 'FINALIZED_SUCCESS' && record.action === 'acquirePackAccess'
+    && certificate?.status === 'CERTIFIED' && certificate.action === record.action
+    && certificate.actionId === record.actionId && certificate.rootId === rootId
+    && certificate.transactionDigest === record.transactionDigest
+    && typeof output?.type === 'string' && output.type.endsWith('::runtime_v8::PackPassV8') && output.change === 'created'
+    && EXACT_ROOT_ID.test(output.objectId) && output.fields?.rootId === rootId
+    && output.fields.releaseId === releaseId && output.fields.holder === wallet
+    ? output.objectId : null;
+  return `<dl data-player-pack-receipt style="overflow-wrap:anywhere">
+    <dt>${escapeHtml(makerWorkspaceText(locale, 'playerReceiptDigest'))}</dt><dd>${escapeHtml(record.transactionDigest)}</dd>
+    ${passId ? `<dt>Pack Pass ID</dt><dd>${escapeHtml(passId)}</dd>` : ''}
+  </dl>`;
+}
+
 function renderExpansionPacks(view) {
+  const catalogNotice = view.packCatalogNotice ? `<p class="v4-player-commerce-error" role="status">${escapeHtml(view.packCatalogNotice)}</p>` : '';
   const releases = new Map();
   view.contextualChoices.filter((choice) => choice.source === 'PACK').forEach((choice) => {
     const key = String(choice.releaseId || choice.semanticPackId || choice.id);
     if (!releases.has(key)) releases.set(key, []);
     releases.get(key).push(choice);
   });
+  const bindings = view.execution.packDetachEnabled === true
+    ? view.player.definitionContext?.currentLoadout?.layout?.bindings ?? [] : [];
+  const attached = new Set(bindings.map(binding => binding.releaseId));
+  for (const releaseId of attached) {
+    if (!releases.has(releaseId)) {
+      releases.set(releaseId, [{ label: `${tr(view, 'playerPackAttached')} · ${releaseId}`,
+        access: { accessible: false, availableForAcquire: false, canRetryRuntime: false } }]);
+    }
+  }
   const pendingRelease = view.packAcquisition?.releaseId;
   if (pendingRelease && !releases.has(pendingRelease)) {
     // A suspended/revoked Pack is not a catalog choice. Keep only its durable
@@ -973,7 +1002,7 @@ function renderExpansionPacks(view) {
     releases.set(pendingRelease, [{ label: `${tr(view, 'playerPackRecover')} · ${pendingRelease}`,
       access: { accessible: false, availableForAcquire: false, canRetryRuntime: false } }]);
   }
-  if (!releases.size) return '';
+  if (!releases.size) return catalogNotice;
   const cards = [...releases.entries()].map(([releaseId, choices]) => {
     const { access, entry, completion } = choices[0];
     const entryTerms = entry?.kind === 1 ? formatMakerWorkspaceUsdc(entry.priceAtomic)
@@ -991,7 +1020,9 @@ function renderExpansionPacks(view) {
       reason: view.boundaryReason,
     } : access;
     const enabled = view.enabledPackReleaseIds.includes(releaseId);
-    const status = exactAccess.accessible
+    const status = attached.has(releaseId) && !exactAccess.accessible
+      ? tr(view, 'playerPackAttached')
+      : exactAccess.accessible
       ? tr(view, 'playerPackOwned')
       : exactAccess.canRetryRuntime
         ? tr(view, 'playerPackArtworkNeedsRetry')
@@ -1008,7 +1039,9 @@ function renderExpansionPacks(view) {
     const acquisition = view.packAcquisition?.releaseId === releaseId ? view.packAcquisition : null;
     if (acquisition) {
       const record = acquisition.record;
+      const detach = acquisition.detach === true || record?.action === 'detachPack';
       const quote = record?.packEntryQuote;
+      const canRefreshReceipt = acquisition.error || !detach && exactAccess.availableForAcquire;
       const attributes = `data-release-id="${escapeHtml(releaseId)}" data-action-id="${escapeHtml(record?.actionId || '')}"`;
       const button = (action, label) => `<button type="button" data-action="${action}" ${attributes}${controlAttributes(view, action)}>${escapeHtml(tr(view, label))}</button>`;
       const price = quote?.kind === 1
@@ -1016,17 +1049,25 @@ function renderExpansionPacks(view) {
         : quote?.kind === 2 ? tr(view, 'playerPackIncluded') : tr(view, 'playerPackFree');
       control = `<div class="v4-player-commerce-error" role="status">
         ${acquisition.pending ? escapeHtml(tr(view, 'playerPurchasePending'))
-          : `${quote ? `<p>${escapeHtml(price)}</p><small>${escapeHtml(tr(view, 'playerPackEntryOnly'))}</small>` : ''}
+          : `${detach ? `<p>${escapeHtml(tr(view, 'playerPackDetachCopy'))}</p>${record?.gasBudgetMist
+            ? `<small>${escapeHtml(tr(view, 'publicationGas'))} ${escapeHtml(record.gasBudgetMist)}</small>` : ''}`
+            : quote ? `<p>${escapeHtml(price)}</p><small>${escapeHtml(tr(view, 'playerPackEntryOnly'))}</small>` : ''}
+            ${renderPlayerPackReceipt(record, { releaseId, rootId: view.rootId,
+              wallet: view.player.contextualChoices?.address, locale: view.locale })}
             ${acquisition.error ? `<p>${escapeHtml(acquisition.error)}</p>` : ''}
             ${record && record.status !== 'PREPARED' && record.status !== 'FINALIZED_SUCCESS'
               ? `<p>${escapeHtml(record.status)}</p>` : ''}
-            ${record?.status === 'FINALIZED_SUCCESS' ? escapeHtml(tr(view, 'playerPackTransactionFinalized'))
-              : record?.status === 'PREPARED' && !acquisition.error && quote
-                ? button('player-confirm-pack-v8', 'playerPackConfirm')
-                : record && !['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status)
+            ${record?.status === 'FINALIZED_SUCCESS' ? `${escapeHtml(tr(view, 'playerPackTransactionFinalized'))}
+              ${canRefreshReceipt ? button('player-recover-pack-v8', 'playerPackRecover') : ''}`
+              : record?.status === 'PREPARED' && !acquisition.error && (quote || detach)
+                ? button('player-confirm-pack-v8', detach ? 'playerPackDetachConfirm' : 'playerPackConfirm')
+                : record && !['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'CANCELLED_UNSIGNED'].includes(record.status)
                   ? button('player-recover-pack-v8', 'playerPackRecover') : ''}
             ${button('player-cancel-pack-v8', 'playerPackDismiss')}`}
       </div>`;
+    } else if (attached.has(releaseId)) {
+      const detach = 'player-detach-pack-v8';
+      control += `<button type="button" data-action="${detach}" data-release-id="${escapeHtml(releaseId)}"${controlAttributes(view, detach)}>${escapeHtml(tr(view, 'playerPackDetach'))}</button>`;
     }
     return `
       <article class="v4-player-expansion-card independent-v8 ${exactAccess.accessible ? 'accessible' : 'locked'} ${enabled ? 'enabled' : ''}" data-release-id="${escapeHtml(releaseId)}">
@@ -1040,7 +1081,7 @@ function renderExpansionPacks(view) {
   const notice = view.packBoundaryReason
     ? `<div class="v4-player-commerce-error" role="status">${escapeHtml(view.packBoundaryReason)}</div>`
     : '';
-  return `<details class="v4-player-expansions"><summary>${escapeHtml(tr(view, 'expansionPacks'))}</summary><p>${escapeHtml(tr(view, 'expansionSelectionSaved'))}</p>${notice}<div class="v4-player-expansion-grid">${cards}</div></details>`;
+  return `${catalogNotice}<details class="v4-player-expansions"><summary>${escapeHtml(tr(view, 'expansionPacks'))}</summary><p>${escapeHtml(tr(view, 'expansionSelectionSaved'))}</p>${notice}<div class="v4-player-expansion-grid">${cards}</div></details>`;
 }
 
 function renderPartPicker(view, part) {
@@ -1193,29 +1234,29 @@ function renderExportModal(view) {
         ${view.completedSoul && !view.completionConfirmation ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.completedSoul.matchesProject ? tr(view, 'playerCompletionConfirmed') : tr(view, 'playerStepRecoveredOtherDraft'))}</p>${receiptDetails}<button type="button" data-action="player-open-completed-soul" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-open-completed-soul', '', view.completedSoul.handoffUrl ? '' : view.boundaryReason)}>${escapeHtml(tr(view, 'playerStepOpenSoul'))}</button><button type="button" data-action="player-start-new-completion" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-start-new-completion')}>${escapeHtml(tr(view, 'playerStepStartAnother'))}</button></section>` : ''}
         ${view.pendingHandoffReceipt && !view.completedSoul && !view.completionConfirmation
           ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.pendingHandoffReceipt.message)}</p>${receiptDetails}</section>` : ''}
-        ${renderReceiptLookup(view)}
+        ${!view.completionConfirmation && !view.completedSoul ? renderMakerV8ReceiptLookup(view.receiptLookup, view.locale) : ''}
         ${renderEnvelopeRecovery(view)}
         <footer><p id="makerPlayerExportCompletionIssue" class="v4-player-export-completion-issue" ${completionIssue ? '' : 'hidden'}>${escapeHtml(completionIssue)}</p><button type="button" data-action="close-player-export"${controlAttributes(view, 'close-player-export')}>${escapeHtml(tr(view, 'continueEditing'))}</button><button type="button" data-action="player-export-recipe"${controlAttributes(view, 'player-export-recipe')}>${escapeHtml(tr(view, 'downloadRecipePackage'))}</button><button type="button" data-action="player-download-png"${controlAttributes(view, 'player-download-png', '', canDownload ? '' : tr(view, 'playerDownloadAfterComplete'))}>${escapeHtml(canDownload ? tr(view, 'downloadPng') : tr(view, 'playerDownloadAfterComplete'))}</button><button type="button" class="primary" data-action="player-confirm-complete" aria-describedby="makerPlayerExportCompletionIssue"${controlAttributes(view, 'player-confirm-complete', '', canComplete ? '' : completionIssue || view.boundaryReason)}>${escapeHtml(tr(view, 'completeOc'))}</button></footer>
       </section>
     </div>`;
 }
 
-function renderReceiptLookup(view) {
-  const lookup = view.receiptLookup;
-  if (!lookup || view.completionConfirmation || view.completedSoul) return '';
+export function renderMakerV8ReceiptLookup(lookup, locale) {
+  if (!lookup) return '';
+  const text = key => makerWorkspaceText(locale, key);
   const loading = lookup.status === 'loading';
   const receipt = lookup.receipt;
   return `<form class="v4-player-export-status" data-player-receipt-lookup>
-    <label>${escapeHtml(tr(view, 'playerReceiptDigest'))}
+    <label>${escapeHtml(text('playerReceiptDigest'))}
       <input name="transactionDigest" data-player-receipt-digest type="text" spellcheck="false"
         autocomplete="off" maxlength="44" pattern="[1-9A-HJ-NP-Za-km-z]{32,44}" required
         value="${escapeHtml(lookup.digest)}"${loading ? ' disabled' : ''}>
     </label>
-    <button type="submit"${loading ? ' disabled' : ''}>${escapeHtml(tr(view, loading ? 'playerReceiptChecking' : 'playerReceiptLookup'))}</button>
-    ${lookup.status === 'error' ? `<p role="alert">${escapeHtml(tr(view, 'playerReceiptLookupError'))}</p>` : ''}
+    <button type="submit"${loading ? ' disabled' : ''}>${escapeHtml(text(loading ? 'playerReceiptChecking' : 'playerReceiptLookup'))}</button>
+    ${lookup.status === 'error' ? `<p role="alert">${escapeHtml(text('playerReceiptLookupError'))}</p>` : ''}
     ${receipt ? `<section role="status" data-player-verified-receipt>
       <dl style="overflow-wrap: anywhere"><dt>Soul ID</dt><dd>${escapeHtml(receipt.soulId)}</dd>
-        <dt>${escapeHtml(tr(view, 'playerReceiptDigest'))}</dt><dd>${escapeHtml(receipt.transactionDigest)}</dd></dl>
+        <dt>${escapeHtml(text('playerReceiptDigest'))}</dt><dd>${escapeHtml(receipt.transactionDigest)}</dd></dl>
     </section>` : ''}
   </form>`;
 }

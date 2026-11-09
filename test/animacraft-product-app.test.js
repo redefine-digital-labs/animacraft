@@ -54,6 +54,7 @@ test('Player production authority is resolved only when a Player journey request
   const controller = Object.fromEntries([
     'getSnapshot', 'loadPlayer', 'setRecipe', 'updateRecipe', 'resetRecipe', 'preparePlayerAction',
     'executePlayerAction', 'recoverPlayerAction', 'recoverActivePlayerAction', 'getPlayerAction', 'quotePlayerCompletion', 'reuseCommittedPlayerLoadout',
+    'getPendingPlayerAction', 'getFinalizedPlayerPackDetaches',
   ].map((name) => [name, async (...args) => { calls.push([name, args]); return { name, args }; }]));
   const player = createLazyMakerV8PlayerFacade(async () => {
     resolutions += 1;
@@ -67,7 +68,10 @@ test('Player production authority is resolved only when a Player journey request
   assert.deepEqual((await player.recoverActivePlayerAction(scope)).args, [scope]);
   assert.deepEqual((await player.quotePlayerCompletion()).args, []);
   assert.deepEqual((await player.reuseCommittedPlayerLoadout()).args, []);
-  assert.deepEqual(calls.map(([name]) => name), ['loadPlayer', 'updateRecipe', 'recoverActivePlayerAction', 'quotePlayerCompletion', 'reuseCommittedPlayerLoadout']);
+  assert.deepEqual((await player.getPendingPlayerAction({ rootId: '0xroot' })).args, [{ rootId: '0xroot' }]);
+  assert.deepEqual((await player.getFinalizedPlayerPackDetaches({ rootId: '0xroot', since: 123 })).args, [{ rootId: '0xroot', since: 123 }]);
+  assert.deepEqual(calls.map(([name]) => name), ['loadPlayer', 'updateRecipe', 'recoverActivePlayerAction', 'quotePlayerCompletion', 'reuseCommittedPlayerLoadout',
+    'getPendingPlayerAction', 'getFinalizedPlayerPackDetaches']);
   assert.equal(resolutions, 1);
 });
 
@@ -197,6 +201,78 @@ test('Walrus reader rejects credentialed endpoints, traversal ids, and unavailab
     reader({ blobId: 'valid-blob' }),
     (error) => error.code === 'ANIMACRAFT_WALRUS_READ_FAILED' && error.details.status === 503,
   );
+});
+
+test('Walrus read retries availability failures through one independent Mainnet aggregator', async (t) => {
+  const backup = 'https://walrus-mainnet-aggregator.imperator.co';
+  for (const status of [null, 403, 404, 429, 503]) {
+    await t.test(status === null ? 'network failure' : String(status), async () => {
+      const calls = [];
+      const reader = createMainnetWalrusManifestFetcher({
+        async fetcher(url, options) {
+          calls.push({ url, options });
+          if (calls.length === 1) {
+            if (status === null) throw new TypeError('network unavailable');
+            return new Response(null, { status });
+          }
+          return new Response('same certified bytes');
+        },
+      });
+
+      const response = await reader({ blobId: 'certified_blob-1' });
+      assert.equal(await response.text(), 'same certified bytes');
+      assert.deepEqual(calls.map(({ url }) => url), [
+        `${ANIMACRAFT_WALRUS_MAINNET_AGGREGATOR}/v1/blobs/certified_blob-1`,
+        `${backup}/v1/blobs/certified_blob-1`,
+      ]);
+      for (const { options } of calls) {
+        assert.equal(options.method, 'GET');
+        assert.equal(options.credentials, 'omit');
+        assert.equal(options.redirect, 'error');
+        assert.equal(options.referrerPolicy, 'no-referrer');
+      }
+    });
+  }
+});
+
+test('Walrus read stops on cancellation or a terminal HTTP response', async () => {
+  const caller = new AbortController();
+  const cancelled = new DOMException('Route closed', 'AbortError');
+  let calls = 0;
+  const cancelledRead = createMainnetWalrusManifestFetcher({
+    async fetcher(_url, { signal }) {
+      calls += 1;
+      caller.abort(cancelled);
+      signal.throwIfAborted();
+    },
+  });
+  await assert.rejects(cancelledRead({ blobId: 'valid-blob', signal: caller.signal }), cancelled);
+  await assert.rejects(cancelledRead({ blobId: 'valid-blob', signal: caller.signal }), cancelled);
+  assert.equal(calls, 1);
+
+  const rejectedRead = createMainnetWalrusManifestFetcher({
+    async fetcher() {
+      calls += 1;
+      return new Response(null, { status: 400 });
+    },
+  });
+  await assert.rejects(rejectedRead({ blobId: 'valid-blob' }),
+    { code: 'ANIMACRAFT_WALRUS_READ_FAILED', details: { status: 400 } });
+  assert.equal(calls, 2);
+});
+
+test('an explicitly configured Walrus endpoint stays isolated', async () => {
+  const calls = [];
+  const reader = createMainnetWalrusManifestFetcher({
+    aggregator: 'https://example.com/reads/',
+    async fetcher(url) {
+      calls.push(url);
+      return new Response(null, { status: 503 });
+    },
+  });
+  await assert.rejects(reader({ blobId: 'valid-blob' }),
+    { code: 'ANIMACRAFT_WALRUS_READ_FAILED', details: { status: 503 } });
+  assert.deepEqual(calls, ['https://example.com/reads/v1/blobs/valid-blob']);
 });
 
 test('a Walrus 404 remains identifiable through the production manifest adapter', async () => {

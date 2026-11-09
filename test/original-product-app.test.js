@@ -4935,6 +4935,61 @@ test('Pack availability toggles persist independently of selection and reject in
   await app.destroy();
 });
 
+test('an unavailable Pack never replaces the saved Player selection with the default recipe', async () => {
+  const available = playerSessionWithPackChoice(ROOT_ONE);
+  const choice = available.player.contextualChoices.packStyles[0];
+  const unavailable = structuredClone(available);
+  unavailable.player.contextualChoices.packStyles = [];
+  unavailable.player.contextualChoices.diagnostics = [{
+    schemaVersion: 'animacraft.maker-v8-catalog-diagnostic.v1', severity: 'WARNING', layer: 'MANIFEST',
+    code: 'MAKER_V8_PRODUCT_PACK_MANIFEST_UNAVAILABLE', rootId: ROOT_ONE, details: { releaseId: choice.releaseId },
+  }];
+  const storageMap = new Map();
+  const setup = async session => {
+    const harness = browserHarness({
+      connection: { account: { address: `0x${'63'.repeat(32)}`, chains: ['sui:mainnet'] } },
+      templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+      playerSessionResult: session, renderPlayerPreviewResult: canonicalPreview(), storageMap,
+    });
+    const app = createOriginalProductApp(harness);
+    await app.ready;
+    return { app, harness, mount: harness.doc.getElementById('makerV4PlayerMount') };
+  };
+  const withoutSavedPack = await setup(unavailable);
+  await withoutSavedPack.app.openPlayer(ROOT_ONE);
+  assert.match(withoutSavedPack.mount.innerHTML, /Some expansion packs could not be verified/);
+  assert.doesNotMatch(withoutSavedPack.mount.innerHTML, /data-action="player-acquire-expansion-v8"/);
+  await withoutSavedPack.app.destroy();
+
+  const availableHost = await setup(available);
+  await availableHost.app.openPlayer(ROOT_ONE);
+  const toggle = new FakeTarget(availableHost.harness.doc, { dataset: { action: 'player-expansion-v8' } });
+  toggle.parent = availableHost.mount;
+  toggle.value = choice.releaseId;
+  toggle.checked = true;
+  await waitForEvent(availableHost.mount.fire('change', { target: toggle }));
+  const item = new FakeTarget(availableHost.harness.doc, { dataset: { action: 'player-item', choiceId: choice.id } });
+  item.parent = availableHost.mount;
+  await waitForEvent(availableHost.mount.fire('click', { target: item }));
+  const key = [...storageMap.keys()].find(key => key.includes(ROOT_ONE) && !key.includes(':wal:'));
+  const saved = storageMap.get(key);
+  assert.ok(JSON.parse(saved).session.recipe.selections.some(row => row.releaseId === choice.releaseId));
+  await availableHost.app.destroy();
+
+  const blocked = await setup(unavailable);
+  await assert.rejects(blocked.app.openPlayer(ROOT_ONE), { code: 'ANIMACRAFT_PLAYER_PROJECT_PACK_UNAVAILABLE' });
+  assert.equal(blocked.app.getState().playerStatus, 'error');
+  assert.doesNotMatch(blocked.mount.innerHTML, /data-action="player-complete"/);
+  assert.equal(storageMap.get(key), saved);
+  await blocked.app.destroy();
+
+  const restored = await setup(available);
+  await restored.app.openPlayer(ROOT_ONE);
+  assert.ok((await restored.harness.bridge.getPlayerSnapshot()).recipe.selections.some(row => row.releaseId === choice.releaseId));
+  assert.equal(storageMap.get(key), saved);
+  await restored.app.destroy();
+});
+
 test('owned-Part picker events isolate same-name Root and two Pack slots for add, replace and remove', async () => {
   const session = playerSessionWithPackChoice(ROOT_ONE);
   session.player.document.parts[0].capacity = 1;
@@ -5139,6 +5194,68 @@ test('saved Pack availability cannot authorize a Style after current access is l
   await app.destroy();
 });
 
+test('Player keeps a finalized Pack Pass and digest visible while the owned inventory catches up', async () => {
+  const session = playerSessionWithPackChoice(ROOT_ONE);
+  const choice = session.player.contextualChoices.packStyles[0];
+  choice.access = { accessible: false, canEquip: false, availableForAcquire: true };
+  const holder = `0x${'63'.repeat(32)}`;
+  const passId = `0x${'65'.repeat(32)}`;
+  session.player.contextualChoices.address = holder;
+  const digest = '7'.repeat(44);
+  const record = { action: 'acquirePackAccess', actionId: 'ab'.repeat(32), rootId: ROOT_ONE,
+    status: 'FINALIZED_SUCCESS', transactionDigest: digest,
+    packEntryQuote: { ...choice.entry, releaseId: choice.releaseId, requiresMakerAccess: false },
+    certificate: { status: 'CERTIFIED', action: 'acquirePackAccess', actionId: 'ab'.repeat(32),
+      rootId: ROOT_ONE, transactionDigest: digest, evidence: { objects: [{
+        type: `${ROOT_ONE}::runtime_v8::PackPassV8`, change: 'created', objectId: passId,
+        fields: { releaseId: choice.releaseId, rootId: ROOT_ONE, holder },
+      }] } } };
+  const h = browserHarness({
+    connection: { account: { address: holder, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult: session, renderPlayerPreviewResult: canonicalPreview(),
+  });
+  const calls = [];
+  h.bridge.preparePlayerAction = async () => { calls.push('open-receipt'); return structuredClone(record); };
+  h.bridge.executePlayerAction = async () => assert.fail('An acquired Pack must not prompt for a new signature');
+  const readSnapshot = h.bridge.getPlayerSnapshot.bind(h.bridge);
+  h.bridge.getPlayerSnapshot = async () => {
+    const snapshot = await readSnapshot();
+    snapshot.player.contextualChoices.packStyles[0].access = structuredClone(choice.access);
+    return snapshot;
+  };
+  h.bridge.recoverPlayerAction = async (actionId, options) => {
+    calls.push('refresh');
+    assert.equal(actionId, record.actionId);
+    assert.deepEqual(options, { replayIfNotFound: false });
+    choice.access = { accessible: true, canEquip: true, availableForAcquire: false };
+    return structuredClone(record);
+  };
+  const app = createOriginalProductApp(h);
+  try {
+    await app.ready;
+    await app.openPlayer(ROOT_ONE);
+    const mount = h.doc.getElementById('makerV4PlayerMount');
+    const click = async action => {
+      const control = new FakeTarget(h.doc, { dataset: {
+        action, releaseId: choice.releaseId, actionId: record.actionId,
+      } });
+      control.parent = mount;
+      await waitForEvent(mount.fire('click', { target: control }));
+    };
+    await click('player-acquire-expansion-v8');
+    assert.match(mount.innerHTML, new RegExp(digest));
+    assert.match(mount.innerHTML, new RegExp(passId));
+    assert.match(mount.innerHTML, /data-action="player-recover-pack-v8"/);
+    assert.doesNotMatch(mount.innerHTML, /data-action="player-confirm-pack-v8"/);
+    await click('player-recover-pack-v8');
+    assert.deepEqual(calls, ['open-receipt', 'refresh']);
+    assert.match(mount.innerHTML, new RegExp(passId));
+    assert.doesNotMatch(mount.innerHTML, /data-action="player-recover-pack-v8"/);
+    assert.match(mount.innerHTML, /independent-v8 accessible enabled/);
+  } finally { await app.destroy(); }
+});
+
 test('Pack entry shows exact transaction quote before signature and queries uncertain results without a replacement purchase', async () => {
   const session = playerSessionWithPackChoice(ROOT_ONE);
   const choice = session.player.contextualChoices.packStyles[0];
@@ -5289,6 +5406,134 @@ test('Player restores pending Pack recovery even when its Release is absent from
   assert.deepEqual(calls, ['pending', 'recover']);
   assert.doesNotMatch(mount.innerHTML, /data-action="player-recover-pack-v8"/);
   app.destroy();
+});
+
+test('Player reviews a paused attached Pack without its catalog row and reloads the same loadout after removal', async () => {
+  const initial = playerSession(ROOT_ONE);
+  const releaseId = `0x${'55'.repeat(32)}`;
+  const loadoutId = `0x${'56'.repeat(32)}`;
+  initial.execution.packDetachEnabled = true;
+  initial.player.definitionContext = {
+    packs: [],
+    currentLoadout: { objectId: loadoutId, revision: '4',
+      layout: { bindings: [{ releaseId, definitionCommitment: '57'.repeat(32) }], profiles: [] } },
+  };
+  const record = { action: 'detachPack', actionId: 'ab'.repeat(32), rootId: ROOT_ONE, releaseId,
+    status: 'PREPARED', transactionDigest: 'original-detach-digest', gasBudgetMist: '10000000' };
+  let removed = false;
+  const storageMap = new Map();
+  const harness = browserHarness({
+    connection: { account: { address: `0x${'63'.repeat(32)}`, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult() {
+      const session = structuredClone(initial);
+      if (removed) Object.assign(session.player.definitionContext.currentLoadout, {
+        revision: '5', layout: { bindings: [], profiles: [] },
+      });
+      return session;
+    },
+    renderPlayerPreviewResult: canonicalPreview(), storageMap,
+  });
+  const calls = [];
+  harness.bridge.preparePlayerAction = async input => {
+    calls.push('prepare');
+    assert.deepEqual(input, { action: 'detachPack', input: { releaseId } });
+    return structuredClone(record);
+  };
+  harness.bridge.executePlayerAction = async actionId => {
+    calls.push('execute');
+    assert.equal(actionId, record.actionId);
+    throw new Error('Broadcast response lost');
+  };
+  harness.bridge.recoverPlayerAction = async (actionId, options) => {
+    calls.push('recover');
+    assert.equal(actionId, record.actionId);
+    assert.deepEqual(options, { replayIfNotFound: false });
+    removed = true;
+    return { ...record, status: 'FINALIZED_SUCCESS', certificate: {
+      evidence: { objects: [{ objectId: loadoutId, fields: { revision: '5' } }] },
+    } };
+  };
+  const app = createOriginalProductApp(harness);
+  await app.ready;
+  await app.openPlayer(ROOT_ONE);
+  const mount = harness.doc.getElementById('makerV4PlayerMount');
+  const click = async action => {
+    const target = new FakeTarget(harness.doc, { dataset: { action, releaseId, actionId: record.actionId } });
+    target.parent = mount;
+    await waitForEvent(mount.fire('click', { target }));
+  };
+  assert.match(mount.innerHTML, /data-action="player-detach-pack-v8"/);
+  await click('player-detach-pack-v8');
+  assert.deepEqual(calls, ['prepare']);
+  assert.match(mount.innerHTML, /original-detach-digest/);
+  assert.match(mount.innerHTML, /10000000/);
+  await click('player-confirm-pack-v8');
+  assert.match(mount.innerHTML, /data-action="player-recover-pack-v8"/);
+  await click('player-recover-pack-v8');
+  assert.deepEqual(calls, ['prepare', 'execute', 'recover']);
+  assert.deepEqual(harness.calls.openPlayer, [{ rootId: ROOT_ONE }, { rootId: ROOT_ONE }]);
+  assert.doesNotMatch(mount.innerHTML, /data-action="player-detach-pack-v8"/);
+  assert.deepEqual(harness.calls.updatePlayerRecipe.at(-1).selections, initial.recipe.selections);
+  await app.destroy();
+});
+
+test('cold Player applies a finalized Pack removal before restoring an older saved recipe', async () => {
+  const initial = playerSessionWithPackChoice(ROOT_ONE);
+  const choice = initial.player.contextualChoices.packStyles[0];
+  const loadoutId = `0x${'56'.repeat(32)}`;
+  initial.execution.packDetachEnabled = true;
+  initial.player.definitionContext = { packs: [], currentLoadout: { objectId: loadoutId, revision: '4',
+    layout: { bindings: [{ releaseId: choice.releaseId, definitionCommitment: '57'.repeat(32) }], profiles: [] } } };
+  const storageMap = new Map();
+  let removed = false;
+  const harness = browserHarness({
+    connection: { account: { address: `0x${'63'.repeat(32)}`, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult() {
+      const session = structuredClone(initial);
+      if (removed) Object.assign(session.player.definitionContext.currentLoadout, {
+        revision: '5', layout: { bindings: [], profiles: [] },
+      });
+      return session;
+    },
+    renderPlayerPreviewResult: canonicalPreview(), storageMap,
+  });
+  let receiptReads = 0;
+  harness.bridge.getFinalizedPlayerPackDetaches = async input => {
+    receiptReads++;
+    assert.equal(input.rootId, ROOT_ONE);
+    assert.ok(Number.isSafeInteger(input.since));
+    return [{ releaseId: choice.releaseId, loadoutId, revision: '5', transactionDigest: 'original-detach' }];
+  };
+  const stored = () => [...storageMap.entries()]
+    .filter(([key]) => key.startsWith('animacraft:maker-v8-player-project:v1:') && !key.includes(':wal:'))
+    .map(([, value]) => JSON.parse(value))[0];
+  let app = createOriginalProductApp(harness);
+  await app.ready;
+  await app.openPlayer(ROOT_ONE);
+  const mount = harness.doc.getElementById('makerV4PlayerMount');
+  const toggle = new FakeTarget(harness.doc, { dataset: { action: 'player-expansion-v8' } });
+  toggle.parent = mount;
+  toggle.value = choice.releaseId;
+  toggle.checked = true;
+  await waitForEvent(mount.fire('change', { target: toggle }));
+  const select = new FakeTarget(harness.doc, { dataset: { action: 'player-item', choiceId: choice.id } });
+  select.parent = mount;
+  await waitForEvent(mount.fire('click', { target: select }));
+  assert.ok(stored().session.recipe.selections.some(row => row.releaseId === choice.releaseId));
+  const savedBefore = stored();
+  await app.destroy();
+  removed = true;
+  app = createOriginalProductApp(harness);
+  await app.ready;
+  await app.openPlayer(ROOT_ONE);
+  assert.equal(receiptReads, 1);
+  const restored = stored();
+  assert.equal(restored.revision, savedBefore.revision + 1);
+  assert.deepEqual(restored.session.enabledPackReleaseIds, []);
+  assert.deepEqual(restored.session.recipe.selections, initial.recipe.selections);
+  await app.destroy();
 });
 
 test('Pack recovery remains queryable when exact inventory prevents the Player from opening', async () => {
@@ -7490,6 +7735,139 @@ test('cold Player preview displays the saved mint receipt without running Comple
   } finally {
     await app.destroy();
   }
+});
+
+test('an unavailable Maker deep link keeps original Complete receipt lookup independent of Player', async t => {
+  const digest = '7'.repeat(44);
+  const wallet = { account: { address: ROOT_TWO, chains: ['sui:mainnet'] } };
+  for (const scenario of ['manifest unavailable', 'Player unavailable', 'runtime unavailable', 'wallet changed', 'Maker changed']) {
+    await t.test(scenario, async () => {
+      const calls = [];
+      const response = deferred();
+      const h = browserHarness({
+        connection: wallet,
+        initialUrl: `https://animacraft.soulidity.ai/maker/${ROOT_ONE}#template`,
+        templatesResult: scenario === 'Player unavailable'
+          ? { status: 'READY', makers: [certifiedMaker()], diagnostics: [] }
+          : { status: 'ERROR', makers: [], diagnostics: [{ message: 'Maker manifest unavailable' }] },
+        playerSessionResult: () => { throw new TypeError('Certified Player unavailable'); },
+        bridgeReadyError: scenario === 'runtime unavailable' ? Error('Mainnet readiness unavailable') : null,
+        completePlayerJourneyResult: () => assert.fail('A receipt lookup must not run Complete'),
+      });
+      h.bridge.lookupPlayerCompletionReceipt = async input => {
+        calls.push(input);
+        return input.transactionDigest === digest
+          ? response.promise : { soulId: ROOT_TWO, transactionDigest: digest };
+      };
+      const app = createOriginalProductApp(h);
+      try {
+        await app.ready;
+        if (scenario === 'Player unavailable') await assert.rejects(app.openPlayer(ROOT_ONE), /Certified Player unavailable/);
+        const mount = h.doc.getElementById('templateDetail');
+        assert.match(mount.innerHTML, /Maker unavailable/);
+        assert.match(mount.innerHTML, /Look up original receipt/);
+        assert.doesNotMatch(mount.innerHTML, /data-detail-start|data-player-verified-receipt/);
+        const submit = transactionDigest => {
+          const form = {
+            closest: selector => selector === '[data-player-receipt-lookup]' ? form : null,
+            elements: { namedItem: name => name === 'transactionDigest' ? { value: transactionDigest } : null },
+          };
+          return waitForCompletionEvent(mount.fire('submit', { target: form }));
+        };
+
+        const lookup = submit(digest);
+        await settle();
+        assert.deepEqual(calls, [{ rootId: ROOT_ONE, transactionDigest: digest }]);
+        assert.match(mount.innerHTML, /Checking receipt/);
+        await submit(digest);
+        assert.equal(calls.length, 1, 'a duplicate submit cannot launch another lookup');
+        if (scenario === 'wallet changed') {
+          app.refreshConnection(null);
+          assert.doesNotMatch(mount.innerHTML, /data-player-receipt-lookup/);
+          app.refreshConnection(wallet);
+        }
+        if (scenario === 'Maker changed') {
+          h.win.setLocation(`/maker/${ROOT_TWO}#template`);
+          h.win.fire('popstate');
+        }
+        response.resolve({ soulId: ROOT_TWO, transactionDigest: digest });
+        await lookup;
+
+        if (scenario.endsWith('changed')) {
+          assert.doesNotMatch(mount.innerHTML, /data-player-verified-receipt/);
+        } else {
+          assert.match(mount.innerHTML, new RegExp(`<dt>Soul ID</dt><dd>${ROOT_TWO}</dd>`));
+          await submit('8'.repeat(44));
+          assert.doesNotMatch(mount.innerHTML, /data-player-verified-receipt/);
+          assert.match(mount.innerHTML, /Could not verify a finalized Complete receipt/);
+        }
+        assert.equal(h.calls.openPlayer.length, scenario === 'Player unavailable' ? 1 : 0);
+        assert.equal(h.calls.completePlayerJourney.length, 0);
+      } finally { response.resolve(); await app.destroy(); }
+    });
+  }
+});
+
+test('Maker detail verifies Pack receipts without a Player journal and preserves exact wallet and Maker scope', async t => {
+  const digest = '7'.repeat(44);
+  const wallet = { account: { address: ROOT_TWO, chains: ['sui:mainnet'] } };
+  for (const status of ['ready', 'error']) await t.test(status, async () => {
+    const confirmed = deferred();
+    const requests = [];
+    const h = browserHarness({
+      connection: wallet,
+      initialUrl: `https://animacraft.soulidity.ai/maker/${ROOT_ONE}#template`,
+      templatesResult: status === 'ready'
+        ? { status: 'READY', makers: [certifiedMaker()], diagnostics: [] }
+        : { status: 'ERROR', makers: [], diagnostics: [{ message: 'Maker manifest unavailable' }] },
+      completePlayerJourneyResult: () => assert.fail('Receipt lookup must not run Complete'),
+    });
+    const receipt = { rootId: ROOT_ONE, releaseId: ROOT_TWO, transactionDigest: digest,
+      checkpoint: '100', paymentCoinType: '0x2::coin::TEST',
+      status: 'FINALIZED_SUCCESS', packPassId: `0x${'77'.repeat(32)}`, paidAtomic: '1000' };
+    h.bridge.lookupPlayerPackReceipt = async request => {
+      requests.push(request);
+      if (request.transactionDigest === digest) return receipt;
+      if (request.transactionDigest === '8'.repeat(44)) return { ...receipt,
+        transactionDigest: request.transactionDigest, status: 'FINALIZED_FAILURE', packPassId: null, paidAtomic: null };
+      if (request.transactionDigest === '9'.repeat(44)) throw Error('Not found');
+      return confirmed.promise;
+    };
+    const app = createOriginalProductApp(h);
+    try {
+      await app.ready;
+      const mount = h.doc.getElementById('templateDetail');
+      assert.match(mount.innerHTML, /Look up original Pack receipt/);
+      const submit = transactionDigest => {
+        const form = { closest: selector => selector === '[data-pack-receipt-lookup]' ? form : null,
+          elements: { namedItem: () => ({ value: transactionDigest }) } };
+        return waitForCompletionEvent(mount.fire('submit', { target: form }));
+      };
+      await submit(digest);
+      assert.deepEqual(requests, [{ rootId: ROOT_ONE, transactionDigest: digest }]);
+      assert.match(mount.innerHTML, new RegExp(receipt.packPassId));
+      assert.match(mount.innerHTML, /1000 atomic units/);
+      await submit('8'.repeat(44));
+      assert.match(mount.innerHTML, /Pack transaction finalized with a failure/);
+      assert.doesNotMatch(mount.innerHTML, /Pack Pass ID/);
+      await submit('9'.repeat(44));
+      assert.match(mount.innerHTML, /Could not verify a finalized Pack receipt/);
+      assert.doesNotMatch(mount.innerHTML, /data-verified-pack-receipt/);
+
+      const request = submit('6'.repeat(44));
+      await settle();
+      await submit('6'.repeat(44));
+      assert.equal(requests.length, 4);
+      app.refreshConnection(null);
+      assert.doesNotMatch(mount.innerHTML, /data-pack-receipt-lookup/);
+      app.refreshConnection(wallet);
+      confirmed.resolve({ ...receipt, transactionDigest: '6'.repeat(44) });
+      await request;
+      assert.doesNotMatch(mount.innerHTML, /data-verified-pack-receipt/);
+      assert.equal(h.calls.openPlayer.length, 0);
+      assert.equal(h.calls.completePlayerJourney.length, 0);
+    } finally { confirmed.resolve(); await app.destroy(); }
+  });
 });
 
 test('cold Player can verify a supplied original digest without a saved action or starting Complete', async () => {

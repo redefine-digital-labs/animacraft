@@ -126,6 +126,16 @@ test('canonical patch URLs interoperate with SDK and AC reader; invalid identity
   } });
   await fetcher({ blobId: patch });
   assert.ok(fetched[0].endsWith(`/v1/blobs/by-quilt-patch-id/${patch}`));
+  const retried = [];
+  const backupFetcher = createMainnetWalrusManifestFetcher({ fetcher: async (url) => {
+    retried.push(url);
+    return retried.length === 1 ? new Response(null, { status: 503 }) : new Response(new Uint8Array([1]));
+  } });
+  const response = await backupFetcher({ blobId: patch });
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([1]));
+  assert.deepEqual(retried.map(url => new URL(url).pathname),
+    [`/v1/blobs/by-quilt-patch-id/${patch}`, `/v1/blobs/by-quilt-patch-id/${patch}`]);
+  assert.notEqual(new URL(retried[0]).origin, new URL(retried[1]).origin);
   const bad = Buffer.from(patch, 'base64url'); bad[32] = 2;
   await assert.rejects(fetcher({ blobId: bad.toString('base64url') }));
   assert.throws(() => makerV8WalrusAssetPathV8(patch.slice(0, -1) + 'B'));

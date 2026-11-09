@@ -2940,6 +2940,12 @@ test('live contextual choices replace atomically and late or revoked authority n
         delete invalid.address;
         return invalid;
       }
+      if (observed === 'outage') return {
+        ...bundle('a'), diagnostics: [{
+          schemaVersion: 'animacraft.maker-v8-catalog-diagnostic.v1', severity: 'WARNING', layer: 'MANIFEST',
+          code: 'MAKER_V8_PRODUCT_PACK_MANIFEST_UNAVAILABLE', rootId, details: { releaseId: `0x${'ae'.repeat(32)}` },
+        }],
+      };
       return structuredClone(bundle(observed === 'empty' ? '' : observed));
     },
   };
@@ -2959,6 +2965,10 @@ test('live contextual choices replace atomically and late or revoked authority n
   const opened = await bridge.openPlayerSession({ rootId });
   assert.deepEqual(opened.player.contextualChoices.packStyles.map((row) => row.id), ['pack-a']);
 
+  mode = 'outage';
+  const partial = await bridge.getPlayerSnapshot();
+  assert.deepEqual(partial.player.contextualChoices.packStyles.map(row => row.id), ['pack-a']);
+  assert.equal(partial.player.contextualChoices.diagnostics.length, 1);
   mode = 'empty';
   const revoked = await bridge.getPlayerSnapshot();
   assert.deepEqual(revoked.player.contextualChoices.packStyles, []);

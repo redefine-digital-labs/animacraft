@@ -1,4 +1,4 @@
-import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
+import { makerV8AbsenceCoversEpochWindow, makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 import { bcs } from '@mysten/sui/bcs';
 import { ObjectError } from '@mysten/sui/client';
 import { readMakerV8PackDefinitions, findMakerV8PackDefinitions } from './maker-v8-pack-definition-reader.js';
@@ -84,7 +84,8 @@ const ACTION_STORE = 'actions';
 const ACTIVE_STORE = 'activeScopes';
 const ROOT_ACTIVE_STORE = 'activeRoots';
 const BUILD_STORE = 'transactionBuilds';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
+const TERMINAL_ACTION_STATUSES = new Set(['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'CANCELLED_UNSIGNED']);
 const MAX_TRANSACTION_BYTES = 128 * 1024;
 const MAX_RECORD_BYTES = 1024 * 1024;
 const MAX_GAS_BUDGET = 500_000_000n;
@@ -152,6 +153,12 @@ const EXTERNAL_ADMISSION_RECORD_BCS = bcs.struct('ExternalAdmissionRecordV8', {
 const PACK_QUOTE_ADMISSION_BCS = bcs.struct('PackAdmissionRecordV8', {
   release_id: bcs.Address, semantic_pack_id: bcs.string(),
   release_content_commitment: bcs.vector(bcs.u8()), admitted_revision: bcs.u64(), admission_state: bcs.u8(),
+});
+const PACK_PASS_COMMITMENT_BCS = bcs.struct('PackPassCommitmentInputV8', {
+  domain: bcs.string(), version: bcs.u64(), releaseId: bcs.Address, rootId: bcs.Address,
+  rootVersion: bcs.u64(), rootContentCommitment: bcs.vector(bcs.u8()),
+  releaseContentCommitment: bcs.vector(bcs.u8()), holder: bcs.Address,
+  paidAtomic: bcs.u64(), issuedAtMs: bcs.u64(),
 });
 const PACK_STYLE_KEY_BCS = bcs.struct('PackStyleKeyV8', {
   part_key: bcs.string(),
@@ -452,18 +459,24 @@ function openDatabase(indexedDB, databaseName) {
     const request = indexedDB.open(databaseName, DATABASE_VERSION);
     request.onupgradeneeded = (event) => {
       const database = request.result;
-      if (event.oldVersion !== 0) {
-        request.transaction.abort();
-        return;
+      let actions;
+      if (event.oldVersion === 0) {
+        actions = database.createObjectStore(ACTION_STORE, { keyPath: 'actionId' });
+        actions.createIndex('byDigest', 'transaction.digest', { unique: true });
+        database.createObjectStore(ACTIVE_STORE, { keyPath: 'scopeKey' });
+        database.createObjectStore(ROOT_ACTIVE_STORE, { keyPath: 'rootScopeKey' });
+        const builds = database.createObjectStore(BUILD_STORE, { keyPath: 'descriptorSha256' });
+        builds.createIndex('byDigest', 'digest', { unique: true });
+      } else {
+        actions = request.transaction.objectStore(ACTION_STORE);
       }
-      const actions = database.createObjectStore(ACTION_STORE, { keyPath: 'actionId' });
-      actions.createIndex('byDigest', 'transaction.digest', { unique: true });
-      database.createObjectStore(ACTIVE_STORE, { keyPath: 'scopeKey' });
-      database.createObjectStore(ROOT_ACTIVE_STORE, { keyPath: 'rootScopeKey' });
-      const builds = database.createObjectStore(BUILD_STORE, { keyPath: 'descriptorSha256' });
-      builds.createIndex('byDigest', 'digest', { unique: true });
+      actions.createIndex('byRootActionStatus', ['playerIdentity.rootId', 'plan.signer', 'action', 'status']);
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const database = request.result;
+      database.onversionchange = () => database.close();
+      resolve(database);
+    };
     request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
     request.onblocked = () => reject(new Error('IndexedDB upgrade is blocked'));
   });
@@ -563,6 +576,34 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     await transactionDone(transaction);
     return raw === undefined ? null : clone(raw, 'stored Player action by digest');
   }
+  async function finalizedPackPurchase(actions, { rootId, signer, releaseId }) {
+    const key = [address(rootId, 'Pack purchase Root'), address(signer, 'Pack purchase signer'),
+      MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS, 'FINALIZED_SUCCESS'];
+    const release = address(releaseId, 'Pack purchase Release');
+    const records = await requestResult(actions.index('byRootActionStatus').getAll(key));
+    const matches = records.filter(record => record.input?.releaseId === release);
+    if (matches.length > 1) {
+      fail('MAKER_V8_PLAYER_PACK_RECEIPT_CONFLICT', 'More than one finalized purchase is stored for this exact Pack Release.');
+    }
+    return matches[0] ?? null;
+  }
+  async function findFinalizedPackPurchaseId(input) {
+    exact(input, ['rootId', 'signer', 'releaseId'], 'finalized Pack purchase lookup');
+    const db = await database;
+    const transaction = db.transaction(ACTION_STORE, 'readonly');
+    const record = await finalizedPackPurchase(transaction.objectStore(ACTION_STORE), input);
+    await transactionDone(transaction);
+    return record?.actionId ?? null;
+  }
+  async function listFinalizedPackDetachIds({ rootId, signer, since }) {
+    const key = [address(rootId, 'Pack removal Root'), address(signer, 'Pack removal signer'),
+      MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, 'FINALIZED_SUCCESS'];
+    const db = await database;
+    const transaction = db.transaction(ACTION_STORE, 'readonly');
+    const records = await requestResult(transaction.objectStore(ACTION_STORE).index('byRootActionStatus').getAll(key));
+    await transactionDone(transaction);
+    return records.filter(record => record.updatedAt >= since).map(record => record.actionId);
+  }
   async function create(recordInput) {
     await requirePersistentStorage();
     const record = clone(recordInput, 'new Player action');
@@ -572,11 +613,19 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     const scopes = transaction.objectStore(ACTIVE_STORE);
     const roots = transaction.objectStore(ROOT_ACTIVE_STORE);
     const rootKey = rootScopeKey(record.playerIdentity?.rootId, record.plan?.signer);
-    const [existingRaw, activeRaw, rootActiveRaw] = await Promise.all([
+    const [existingRaw, activeRaw, rootActiveRaw, priorPurchase] = await Promise.all([
       requestResult(actions.get(record.actionId)),
       requestResult(scopes.get(record.scopeKey)),
       requestResult(roots.get(rootKey)),
+      record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS && record.input?.releaseId
+        ? finalizedPackPurchase(actions, { rootId: record.playerIdentity.rootId,
+          signer: record.plan.signer, releaseId: record.input.releaseId }) : null,
     ]);
+    if (priorPurchase && priorPurchase.actionId !== record.actionId) {
+      await transactionDone(transaction);
+      fail('MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED', 'The original Pack purchase is already finalized.',
+        { actionId: priorPurchase.actionId });
+    }
     if (existingRaw !== undefined) {
       if (!same(existingRaw, record)
         || !same(activeRaw, { scopeKey: record.scopeKey, actionId: record.actionId })
@@ -608,7 +657,7 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     const scopes = transaction.objectStore(ACTIVE_STORE);
     const roots = transaction.objectStore(ROOT_ACTIVE_STORE);
     const raw = await requestResult(actions.get(actionId));
-    if (raw === undefined || raw.revision !== revision
+    if (raw === undefined || raw.revision !== revision || TERMINAL_ACTION_STATUSES.has(raw.status)
       || next.actionId !== actionId || next.revision !== revision + 1
       || next.scopeKey !== raw.scopeKey || next.createdAt !== raw.createdAt
       || next.updatedAt < raw.updatedAt
@@ -622,14 +671,20 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
       transaction.abort();
       fail('MAKER_V8_PLAYER_CAS_CONFLICT', 'Player action CAS or immutable authority changed.');
     }
-    await requestResult(actions.put(next));
     const rootKey = rootScopeKey(raw.playerIdentity?.rootId, raw.plan?.signer);
-    if (['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'CANCELLED_UNSIGNED'].includes(next.status)) {
+    const [active, rootActive] = await Promise.all([
+      requestResult(scopes.get(raw.scopeKey)),
+      requestResult(roots.get(rootKey)),
+    ]);
+    if (!same(active ?? null, { scopeKey: raw.scopeKey, actionId })
+      || !same(rootActive ?? null, { rootScopeKey: rootKey, actionId })) {
+      transaction.abort();
+      fail('MAKER_V8_PLAYER_CAS_CONFLICT', 'The active Player scope no longer belongs to this action.');
+    }
+    await requestResult(actions.put(next));
+    if (TERMINAL_ACTION_STATUSES.has(next.status)) {
       await requestResult(scopes.delete(next.scopeKey));
       await requestResult(roots.delete(rootKey));
-    } else {
-      await requestResult(scopes.put({ scopeKey: next.scopeKey, actionId }));
-      await requestResult(roots.put({ rootScopeKey: rootKey, actionId }));
     }
     await transactionDone(transaction);
     const reread = await load(actionId);
@@ -721,6 +776,8 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     create,
     load,
     loadByDigest,
+    findFinalizedPackPurchaseId,
+    listFinalizedPackDetachIds,
     compareAndSwap,
     resolveActive,
     resolveRootActive,
@@ -941,7 +998,7 @@ export function makerV8PlayerRequiresMakerAccessV8(action, packAccessKind = null
   if (!Object.values(MAKER_V8_PLAYER_ACTIONS).includes(action)) {
     fail('MAKER_V8_PLAYER_ACTION_INVALID', 'Unknown Player action.');
   }
-  if (action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS) return false;
+  if ([MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS, MAKER_V8_PLAYER_ACTIONS.DETACH_PACK].includes(action)) return false;
   if (action !== MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS) return true;
   if (![0, 1, 2].includes(packAccessKind)) {
     fail('MAKER_V8_PLAYER_PACK_ACCESS_POLICY_INVALID', 'Pack access policy is not callable.');
@@ -1150,6 +1207,185 @@ export function assertMakerV8PlayerLoadoutLayoutV8(fields, expectedLayout) {
   return loadoutSelections({ fields: { ...fields, root_id: fields.rootId,
     attached_pack_definitions: fields.attachedPackDefinitions, definition_slots: fields.definitionSlots } },
   new Map(), 0, expectedLayout);
+}
+
+function detachLoadoutFields(raw) {
+  const field = (camel, snake) => raw[camel] ?? raw[snake];
+  return {
+    version: decimal(raw.version, 'Loadout.version'),
+    rootId: moveId(field('rootId', 'root_id'), 'Loadout.rootId'),
+    rootVersion: decimal(field('rootVersion', 'root_version'), 'Loadout.rootVersion'),
+    rootContentCommitment: hex(field('rootContentCommitment', 'root_content_commitment'), 'Loadout.rootContentCommitment'),
+    definitionRegistryId: moveId(field('definitionRegistryId', 'definition_registry_id'), 'Loadout.definitionRegistryId'),
+    packRegistryId: moveId(field('packRegistryId', 'pack_registry_id'), 'Loadout.packRegistryId'),
+    makerAccessPassId: moveId(field('makerAccessPassId', 'maker_access_pass_id'), 'Loadout.makerAccessPassId'),
+    makerAccessCommitment: hex(field('makerAccessCommitment', 'maker_access_commitment'), 'Loadout.makerAccessCommitment'),
+    holder: address(raw.holder, 'Loadout.holder'),
+    revision: decimal(raw.revision, 'Loadout.revision'),
+    attachedPackDefinitions: field('attachedPackDefinitions', 'attached_pack_definitions'),
+    definitionSlots: field('definitionSlots', 'definition_slots'),
+    selections: raw.selections,
+    selectionCount: decimal(field('selectionCount', 'selection_count'), 'Loadout.selectionCount'),
+    commitment: hex(raw.commitment, 'Loadout.commitment'),
+  };
+}
+
+function detachLoadoutState(fields, layout) {
+  const { attachedPackDefinitions, definitionSlots, selections: rawSelections, selectionCount, ...identity } = fields;
+  const selections = assertMakerV8PlayerLoadoutLayoutV8(fields, layout);
+  if (String(selections.filter(Boolean).length) !== selectionCount) {
+    fail('MAKER_V8_PLAYER_LOADOUT_LAYOUT_INVALID', 'Loadout selection count differs from its occupied slots.');
+  }
+  const rows = Array.isArray(rawSelections) ? rawSelections : rawSelections?.fields?.contents ?? rawSelections?.contents;
+  const slots = definitionSlots.map(raw => {
+    const slot = moveFields(raw, 'DefinitionSlot');
+    return {
+      sourceId: moveId(slot.source_definition_id, 'DefinitionSlot.source'),
+      partKey: moveText(slot.part_key, 'DefinitionSlot.partKey'),
+      profileCommitment: hex(slot.profile_commitment, 'DefinitionSlot.profileCommitment'),
+      start: Number(decimal(slot.start, 'DefinitionSlot.start')),
+      capacity: Number(decimal(slot.capacity, 'DefinitionSlot.capacity')),
+    };
+  });
+  return {
+    identity, slots,
+    selections: selections.map((selection, index) => {
+      if (selection === null) return null;
+      const raw = moveFields(moveOption(rows[index], 'Loadout selection'), 'Loadout selection');
+      const channel = moveOption(raw.color_channel_key, 'Selection color channel');
+      return {
+        ...selection,
+        trackKey: moveText(raw.layer_track_key, 'Selection track'),
+        colorChannelKey: channel === null ? null : moveText(channel, 'Selection color channel'),
+        assetBlobId: moveText(raw.asset_blob_id, 'Selection asset Blob ID'),
+        assetSha256: hex(raw.asset_sha256, 'Selection asset SHA-256'),
+        pricingCommitment: hex(raw.pricing_commitment, 'Selection pricing commitment'),
+      };
+    }),
+  };
+}
+
+export function assertMakerV8PlayerPackDetachReadbackV8(record, object) {
+  const { objectId, releaseId, transition } = record.plan.descriptor.expected.packDetach;
+  const observed = detachLoadoutState(detachLoadoutFields(object.fields), transition.layout);
+  const { commitment, ...identity } = observed.identity;
+  const { commitment: priorCommitment, ...priorIdentity } = transition.identity;
+  if (object.change !== 'mutated' || object.objectId !== objectId || releaseId !== record.input.releaseId
+    || object.owner?.kind !== 'AddressOwner' || object.owner.value !== record.plan.signer
+    || commitment === priorCommitment || !same(identity, { ...priorIdentity, revision: transition.revision })
+    || !same(observed.slots, transition.slots) || !same(observed.selections, transition.selections)) {
+    fail('MAKER_V8_PLAYER_PACK_DETACH_READBACK_DRIFT', 'Finalized Pack removal differs from the reviewed loadout transition.');
+  }
+  return true;
+}
+
+export function projectMakerV8PlayerPackDetachV8(raw, layout, releaseId) {
+  address(releaseId, 'Detached Release ID');
+  const { identity, slots, selections } = detachLoadoutState(detachLoadoutFields(raw), layout);
+  if (!layout.bindings.some(binding => binding.releaseId === releaseId)) {
+    fail('MAKER_V8_PLAYER_PACK_NOT_ATTACHED', 'This exact Pack is no longer attached to the Player loadout.');
+  }
+  const retainedSlots = [];
+  const retainedSelections = [];
+  for (const slot of slots) {
+    const keep = slot.sourceId !== releaseId;
+    if (keep) retainedSlots.push({ ...slot, start: retainedSelections.length });
+    for (let index = slot.start; index < slot.start + slot.capacity; index++) {
+      const selected = selections[index];
+      const remaining = selected?.sourceClass === 1 && selected.sourceDefinitionId === releaseId ? null : selected;
+      if (remaining && (!keep || (index !== retainedSelections.length && remaining.sourceClass !== 1))) {
+        fail('MAKER_V8_PLAYER_PACK_DETACH_LOCK_CONFLICT', 'Removing this Pack would shift an owned Item lock.');
+      }
+      if (keep) retainedSelections.push(remaining ? { ...remaining, selectionIndex: retainedSelections.length } : null);
+    }
+  }
+  return freeze({
+    identity,
+    revision: (BigInt(identity.revision) + 1n).toString(),
+    layout: {
+      bindings: layout.bindings.filter(binding => binding.releaseId !== releaseId),
+      profiles: layout.profiles.filter(profile => profile.releaseId !== releaseId),
+    },
+    slots: retainedSlots,
+    selections: retainedSelections,
+  });
+}
+
+async function attestPackDetachUpgrade(client, runtime, pkg) {
+  const pin = runtime.playerPackDetach;
+  const digest = pin.upgradeTransactionDigest;
+  let evidence;
+  try {
+    evidence = await client.getFinalizedTransactionEvidence({ digest });
+  } catch (error) {
+    if (!isMakerV8SuiGrpcNotFoundError(error, digest)) throw error;
+    evidence = await client.getArchivedPlayerTransactionEvidence({ digest });
+  }
+  const invalid = () => fail('MAKER_V8_PLAYER_PACK_DETACH_PACKAGE_DRIFT',
+    'Pack removal requires the finalized additive Runtime upgrade and its exact package output.');
+  if (evidence?.digest !== digest || evidence.effectsStatus?.success !== true
+    || !(evidence.transactionBcs instanceof Uint8Array)
+    || TransactionDataBuilder.getDigestFromBytes(evidence.transactionBcs) !== digest
+    || !/^(?:0|[1-9][0-9]*)$/.test(evidence.checkpoint ?? '')) invalid();
+  let transaction;
+  let effects;
+  try {
+    transaction = bcs.TransactionData.parse(evidence.transactionBcs).V1.kind.ProgrammableTransaction;
+    effects = bcs.TransactionEffects.parse(evidence.effectsBcs).V2;
+  } catch { invalid(); }
+  const [authorization, upgrade, commit] = transaction?.commands ?? [];
+  const authorize = authorization?.MoveCall;
+  const finish = commit?.MoveCall;
+  const cap = authorize?.arguments[0]?.Input;
+  const policy = transaction?.inputs[authorize?.arguments[1]?.Input]?.Pure?.bytes;
+  const framework = `0x${'2'.padStart(64, '0')}`;
+  if (transaction?.commands.length !== 3 || authorize?.package !== framework
+    || authorize.module !== 'package' || authorize.function !== 'authorize_upgrade'
+    || cap === undefined || policy !== toBase64(Uint8Array.of(128))
+    || upgrade?.Upgrade?.package !== runtime.roles.runtime.callablePackageId
+    || upgrade.Upgrade.ticket?.Result !== 0 || finish?.package !== framework
+    || finish.module !== 'package' || finish.function !== 'commit_upgrade'
+    || finish.arguments[0]?.Input !== cap || finish.arguments[1]?.Result !== 1
+    || effects?.status?.$kind !== 'Success' || effects.transactionDigest !== digest) invalid();
+  const writes = effects.changedObjects.filter(([objectId, change]) =>
+    objectId === pkg.objectId && change.idOperation?.$kind === 'Created');
+  const output = writes[0]?.[1].outputState?.PackageWrite;
+  if (writes.length !== 1 || output?.[0] !== String(pkg.version) || output[1] !== pkg.digest) invalid();
+}
+
+async function loadPackDetachState(client, runtime, request) {
+  const pin = runtime.playerPackDetach;
+  const current = request.player.definitionContext?.currentLoadout;
+  if (!pin || !current?.layout) {
+    fail('MAKER_V8_PLAYER_PACK_DETACH_UNAVAILABLE', 'Pack removal requires a finalized Runtime upgrade and an owned Player loadout.');
+  }
+  const [packageResult, makerLoadout] = await Promise.all([
+    client.getObject({ id: pin.packageId, options: { showBcs: true, showOwner: true } }),
+    readObject(client, current.objectId, playerTypes(runtime).makerLoadout, 'Player Pack removal loadout'),
+  ]);
+  const pkg = packageResult?.data;
+  const origin = runtime.roles.runtime.typeOriginPackageId;
+  if (pkg?.objectId !== pin.packageId || pkg.digest !== pin.packageDigest
+    || pkg.previousTransaction !== pin.upgradeTransactionDigest
+    || !Object.hasOwn(pkg.owner ?? {}, 'Immutable') || pkg.bcs?.dataType !== 'package'
+    || pkg.bcs.originalId !== null && pkg.bcs.originalId !== origin
+    || BigInt(decimal(pkg.version, 'Pack removal package version')) < 2n
+    || !pkg.bcs.typeOriginTable?.some(row => row.moduleName === 'runtime_v8'
+      && row.datatypeName === 'MakerLoadoutV8' && row.packageId === origin)) {
+    fail('MAKER_V8_PLAYER_PACK_DETACH_PACKAGE_DRIFT', 'Pack removal package does not match the finalized Runtime lineage.');
+  }
+  await attestPackDetachUpgrade(client, runtime, pkg);
+  const transition = projectMakerV8PlayerPackDetachV8(makerLoadout.fields, current.layout, request.input.releaseId);
+  const { identity } = transition;
+  if (makerLoadout.owner.kind !== 'ADDRESS' || makerLoadout.owner.address !== request.account.address
+    || identity.holder !== request.account.address || identity.version !== '8'
+    || identity.rootId !== request.player.rootId || identity.rootVersion !== request.player.makerVersion
+    || identity.rootContentCommitment !== request.player.evidence.contentCommitment
+    || identity.revision !== current.revision) {
+    fail('MAKER_V8_PLAYER_PACK_DETACH_LOADOUT_DRIFT', 'Pack removal requires the exact current loadout owned by the signing wallet.');
+  }
+  return { schemaVersion: MAKER_V8_PLAYER_ADAPTERS_SCHEMA, objects: { makerLoadout },
+    packDetach: { releaseId: request.input.releaseId, transition } };
 }
 
 function completePrice(mode, price, quota, ordinal, label) {
@@ -2197,6 +2433,7 @@ export function makerV8PlayerSelectionDependenciesV8(action, loadout, input = {}
     MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS,
     MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM,
     MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    MAKER_V8_PLAYER_ACTIONS.DETACH_PACK,
   ].includes(action);
   const selections = executesSelections ? loadout.selections : [];
   const usedPacks = executesSelections ? loadout.usedPacks : [];
@@ -2684,7 +2921,9 @@ export function createMakerV8PlayerCustodyAdapterV8({
   async function load(input, { newTransaction = true } = {}) {
     await pinnedMainnet(client);
     const attestedRuntime = await loadFreshRuntime();
-    const loadedState = await loadPlayerState({
+    const loadedState = input.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK
+      ? await loadPackDetachState(client, attestedRuntime, input)
+      : await loadPlayerState({
       client,
       runtime: attestedRuntime,
       ...input,
@@ -4072,6 +4311,14 @@ function expectedOwnedItemTransitions(state, intendedLoadout) {
 
 function expectedForAction(runtime, action, state, request) {
   const types = playerTypes(runtime);
+  if (action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) {
+    return freeze({
+      ownedOutputTypes: [types.makerLoadout],
+      expectedEventType: null,
+      ownedItemTransitions: { items: [] },
+      packDetach: { objectId: state.objects.makerLoadout.objectId, ...state.packDetach },
+    });
+  }
   const byAction = {
     [MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS]: [types.makerAccess],
     [MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM]: [types.ownedBaseItem],
@@ -4208,6 +4455,15 @@ async function compilePlayerTransaction(runtime, client, request) {
     acquirePackAccess(transaction, targets, runtime, state, request.input);
   } else if (request.action === MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT) {
     commitLoadout(transaction, targets, runtime, state, request.loadout);
+  } else if (request.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) {
+    const { releaseId, transition } = state.packDetach;
+    const target = `${runtime.playerPackDetach.packageId}::runtime_v8::detach_pack_definitions_v8`;
+    transaction.moveCall({ target, arguments: [
+      transactionObject(transaction, state.objects.makerLoadout, true),
+      transaction.pure.id(releaseId),
+      transaction.pure.u64(transition.identity.revision),
+    ] });
+    targets.push(target);
   } else if (request.action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT) {
     completeOutput(
       transaction,
@@ -4590,6 +4846,49 @@ export function createMakerV8PlayerBoundaryAdapterV8({
       }
       return freeze({ status: success ? 'SUCCESS' : 'FAILURE' });
     },
+    async recoverFinalizedSignature(input) {
+      exact(input, ['bytes', 'digest', 'signer', 'query'], 'Player finalized signature request');
+      const proof = transactionDataProof(input.bytes, { sender: input.signer, digest: input.digest });
+      const record = await persistence.loadByDigest(proof.digest);
+      const query = input.query;
+      if (!record || !['SIGNING', 'SIGNING_UNKNOWN'].includes(record.status)
+        || record.signature !== null || !plain(record.signatureIntent)
+        || record.plan?.signer !== proof.sender || record.transaction?.bytes !== proof.base64
+        || query?.digest !== proof.digest || !['FINALIZED_SUCCESS', 'FINALIZED_FAILURE'].includes(query.status)) {
+        fail('MAKER_V8_PLAYER_SIGNATURE_INTENT_REQUIRED', 'Ledger recovery requires the original Player signature intent.');
+      }
+      const requireSigner = async () => {
+        const account = await wallet.getCurrentAccount();
+        if (account?.address !== proof.sender || account.network !== MAKER_V8_CHAIN_NETWORK) {
+          fail('MAKER_V8_PLAYER_WALLET_DRIFT', 'Current wallet differs from the durable Player signer.');
+        }
+      };
+      await requireSigner();
+      await pinnedMainnet(client);
+      const { evidence } = await readPlayerActionEvidence(client, record.transaction.digest, {
+        recoverArchivedPack: record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+      });
+      await pinnedMainnet(client);
+      if (evidence?.digest !== proof.digest || evidence.transactionBcsBase64 !== proof.base64
+        || evidence.effectsStatus?.success !== (query.status === 'FINALIZED_SUCCESS')
+        || evidence.epoch !== query.epoch || evidence.eventsDigest !== query.eventsDigest
+        || !/^(?:0|[1-9][0-9]*)$/.test(evidence.checkpoint ?? '')
+        || !(evidence.effectsBcs instanceof Uint8Array)
+        || `0x${hashBytes(evidence.effectsBcs)}` !== query.effectsFingerprint || !Array.isArray(evidence.signatures)) {
+        fail('MAKER_V8_PLAYER_FINALITY_DRIFT', 'Ledger does not bind the original Player bytes and outcome.');
+      }
+      for (const signature of evidence.signatures) {
+        let verified;
+        try {
+          verified = await isValidTransactionSignature(proof.raw, signature, { client, address: proof.sender });
+        } catch { continue; }
+        if (verified) {
+          await requireSigner();
+          return freeze({ bytes: proof.base64, digest: proof.digest, signer: proof.sender, signature });
+        }
+      }
+      fail('MAKER_V8_PLAYER_SIGNATURE_INVALID', 'Finalized Player transaction lacks the original signer signature.');
+    },
     async broadcastExactTransaction(input) {
       exact(input, ['bytes', 'signature', 'digest', 'signer'], 'Player broadcast request');
       if (!gates.allowBroadcast || !gates.allowWalletSignature) {
@@ -4731,7 +5030,18 @@ export function createMakerV8PlayerWalletAdapterV8({
   });
 }
 
-/** Same-client typed gRPC finality adapter; NOT_FOUND remains double-query evidence. */
+async function readPlayerActionEvidence(client, digest, { recoverArchivedPack = false } = {}) {
+  try {
+    return { evidence: await client.getFinalizedTransactionEvidence({ digest }), archived: false };
+  } catch (error) {
+    if (!recoverArchivedPack || !isMakerV8SuiGrpcNotFoundError(error, digest)) throw error;
+    const evidence = await client.getArchivedPlayerTransactionEvidence({ digest });
+    if (evidence === null) throw error;
+    return { evidence, archived: true };
+  }
+}
+
+/** Same-client gRPC finality and positive archive evidence for Pack recovery. */
 export function createMakerV8PlayerRpcAdapterV8({
   client,
   rpc,
@@ -4751,11 +5061,39 @@ export function createMakerV8PlayerRpcAdapterV8({
     schemaVersion: MAKER_V8_PLAYER_ADAPTERS_SCHEMA,
     getChainIdentifier,
     async queryTransaction(input) {
-      exact(input, Object.hasOwn(input ?? {}, 'epochWindow') ? ['digest', 'epochWindow'] : ['digest'], 'Player transaction query');
-      suiDigest(input.digest, 'transaction digest');
+      const hasArchive = Object.hasOwn(input ?? {}, 'recoverArchivedPack');
+      exact(input, ['digest',
+        ...(Object.hasOwn(input ?? {}, 'epochWindow') ? ['epochWindow'] : []),
+        ...(hasArchive ? ['recoverArchivedPack'] : []),
+      ], 'Player transaction query');
+      const { recoverArchivedPack, ...ledgerInput } = input;
+      const digest = suiDigest(input.digest, 'transaction digest');
+      const window = ledgerInput.epochWindow;
+      if (hasArchive && (recoverArchivedPack !== true || !plain(window))) {
+        fail('MAKER_V8_PLAYER_RPC_ARCHIVE_SCOPE_INVALID', 'Archived Pack recovery requires the original epoch window.');
+      }
       await getChainIdentifier();
-      const result = await rpc.queryTransaction(input);
+      const result = await rpc.queryTransaction(ledgerInput);
       await pinnedMainnet(client);
+      if (recoverArchivedPack && result.status === 'NOT_FOUND' && result.digest === digest
+        && result.absence?.requestedDigest === digest
+        && result.absence.chainIdentifier === MAKER_V8_MAINNET_CHAIN_IDENTIFIER
+        && BigInt(result.absence.watermarkEpoch) > BigInt(window.end)
+        && !makerV8AbsenceCoversEpochWindow(result.absence, window.start)) {
+        const evidence = await client.getArchivedPlayerTransactionEvidence({ digest });
+        await pinnedMainnet(client);
+        if (evidence !== null) {
+          if (evidence.digest !== digest || !(evidence.effectsBcs instanceof Uint8Array)
+            || BigInt(evidence.epoch) < BigInt(window.start) || BigInt(evidence.epoch) > BigInt(window.end)) {
+            fail('MAKER_V8_PLAYER_FINALITY_DRIFT', 'Archived Pack evidence differs from the original transaction or epoch window.');
+          }
+          return freeze({
+            status: evidence.effectsStatus.success ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE',
+            digest, epoch: evidence.epoch, effectsFingerprint: `0x${hashBytes(evidence.effectsBcs)}`,
+            eventsDigest: evidence.eventsDigest, error: evidence.effectsStatus.error, absence: null,
+          });
+        }
+      }
       return freeze(clone(result, 'Player transaction query result'));
     },
   });
@@ -4866,7 +5204,58 @@ function readbackFieldList(type, types) {
   fail('MAKER_V8_PLAYER_READBACK_TYPE_INVALID', 'Player readback requested an unknown exact v8 object type.');
 }
 
+function assertPackPassIdentity(object, scope) {
+  const fields = object.fields;
+  const releaseId = moveId(fields.releaseId, 'PackPass.releaseId');
+  const rootId = moveId(fields.rootId, 'PackPass.rootId');
+  const holder = address(fields.holder, 'PackPass.holder');
+  const rootVersion = decimal(fields.rootVersion, 'PackPass.rootVersion');
+  const paidAtomic = decimal(fields.paidAtomic, 'PackPass.paidAtomic');
+  const version = decimal(fields.version, 'PackPass.version');
+  const releaseContentCommitment = hex(fields.releaseContentCommitment, 'PackPass.releaseContentCommitment');
+  const rootContentCommitment = hex(fields.rootContentCommitment, 'PackPass.rootContentCommitment');
+  if (object.change !== 'created' || object.owner?.kind !== 'AddressOwner' || object.owner.value !== holder
+    || holder !== scope.holder || rootId !== scope.rootId || version !== '8'
+    || rootVersion !== scope.rootVersion || rootContentCommitment !== scope.rootContentCommitment
+    || releaseId !== scope.releaseId || paidAtomic !== scope.paidAtomic
+    || scope.releaseContentCommitment !== undefined && scope.releaseContentCommitment !== releaseContentCommitment) {
+    fail('MAKER_V8_PLAYER_READBACK_PACK_DRIFT', 'Finalized Pack Pass differs from the wallet, Maker, Release or payment.');
+  }
+  const preimage = PACK_PASS_COMMITMENT_BCS.serialize({
+    domain: 'animacraft-v8/runtime/pack-pass', version, releaseId, rootId, rootVersion,
+    rootContentCommitment: bytesFromHex(rootContentCommitment, 'PackPass.rootContentCommitment'),
+    releaseContentCommitment: bytesFromHex(releaseContentCommitment, 'PackPass.releaseContentCommitment'),
+    holder, paidAtomic, issuedAtMs: decimal(fields.issuedAtMs, 'PackPass.issuedAtMs'),
+  }).toBytes();
+  if (hex(fields.commitment, 'PackPass.commitment') !== hashBytes(preimage)) {
+    fail('MAKER_V8_PLAYER_READBACK_PACK_DRIFT', 'Finalized Pack Pass commitment does not authenticate its exact fields.');
+  }
+  return true;
+}
+
+export function assertMakerV8PlayerPackPassReadbackV8(record, object) {
+  const { releaseId } = record.input;
+  const quote = record.plan.descriptor.expected.packEntryQuote;
+  const custody = record.transaction.build?.custodyContext;
+  const release = custody?.builderInput?.objects?.releases?.find(row => row.objectId === releaseId);
+  if (quote?.releaseId !== releaseId || custody && !release) {
+    fail('MAKER_V8_PLAYER_READBACK_PACK_DRIFT', 'Finalized Pack Pass differs from the reviewed Release.');
+  }
+  // Older records can lack the original custody snapshot. Their signed quote
+  // and the Pass commitment still bind the exact holder, Root and Release.
+  return assertPackPassIdentity(object, {
+    releaseId, holder: record.plan.signer, paidAtomic: quote.priceAtomic,
+    rootId: record.playerIdentity.rootId, rootVersion: record.playerIdentity.makerVersion,
+    rootContentCommitment: record.playerIdentity.rootContentCommitment,
+    releaseContentCommitment: release ? hex(release.fields.content_commitment, 'reviewed Pack content') : undefined,
+  });
+}
+
 function assertReadbackObject(record, type, object, all, types) {
+  if (type === types.packPass) {
+    assertMakerV8PlayerPackPassReadbackV8(record, object);
+    return;
+  }
   if (type === MAKER_V8_NATIVE_KIOSK_ITEM_TYPE) {
     assertMakerV8NativeCompleteObjectsV8({ record, outputs: all, types });
     return;
@@ -4902,11 +5291,7 @@ function assertReadbackObject(record, type, object, all, types) {
   if (fields.rootContentCommitment !== record.playerIdentity.rootContentCommitment) {
     fail('MAKER_V8_PLAYER_READBACK_CONTENT_DRIFT', 'Finalized Player output binds another Root content commitment.', { type });
   }
-  if (type === types.packPass) {
-    if (moveId(fields.releaseId, 'PackPass.releaseId') !== record.input.releaseId) {
-      fail('MAKER_V8_PLAYER_READBACK_PACK_DRIFT', 'Finalized PackPass belongs to another Release.');
-    }
-  } else if (type === types.ownedBaseItem) {
+  if (type === types.ownedBaseItem) {
     if (fields.partKey !== record.input.partKey || fields.itemKey !== record.input.itemKey
       || moveId(fields.definitionRegistryId, 'OwnedBaseItem.definitionRegistryId')
         !== record.plan.descriptor.expected.runtimeDefinitionsId
@@ -4918,6 +5303,10 @@ function assertReadbackObject(record, type, object, all, types) {
       fail('MAKER_V8_PLAYER_BASE_ITEM_READBACK_DRIFT', 'Finalized owned Base Item differs from the exact Maker/Item authority.');
     }
   } else if (type === types.makerLoadout) {
+    if (record.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) {
+      assertMakerV8PlayerPackDetachReadbackV8(record, object);
+      return;
+    }
     const selections = assertMakerV8PlayerLoadoutLayoutV8(fields, record.plan.descriptor.expected.packDefinitionLayout);
     const observed = selections.filter(Boolean);
     if (String(fields.revision)
@@ -5308,6 +5697,17 @@ export function certifyMakerV8PlayerFinalizedEventV8({ runtime: runtimeInput, re
   return certifyPlayerEvent(runtime, record, response, outputs, playerTypes(runtime));
 }
 
+async function readPlayerHistoricalObject(client, input, { archived, decode }) {
+  const archive = () => client.getArchivedPlayerReceiptObject({ ...input, decode });
+  if (archived) return archive();
+  try {
+    return await client.getHistoricalObject(input);
+  } catch (error) {
+    if (!isMakerV8SuiGrpcHistoricalObjectNotFoundError(error)) throw error;
+    return archive();
+  }
+}
+
 /** Read a historical receipt using the finalized transaction as authority. The
  * result is display-only and carries no local project or completion authority. */
 export async function readMakerV8PlayerReceiptByDigestV8({
@@ -5368,16 +5768,7 @@ export async function readMakerV8PlayerReceiptByDigestV8({
     return ref;
   };
   const readObject = (type, objectId, label, fields) => readMakerV8CompilerHistoricalObjectV8({
-    async getHistoricalObject(input) {
-      const archive = () => client.getArchivedPlayerReceiptObject({ ...input, decode: fields.length > 0 });
-      if (archived) return archive();
-      try {
-        return await client.getHistoricalObject(input);
-      } catch (error) {
-        if (!isMakerV8SuiGrpcHistoricalObjectNotFoundError(error)) throw error;
-        return archive();
-      }
-    },
+    getHistoricalObject: input => readPlayerHistoricalObject(client, input, { archived, decode: fields.length > 0 }),
   }, created(type, objectId), type, label, fields, digest);
   const otherObjects = [
     [types.nativeSoul, bound.soul_id, 'Soul'],
@@ -5404,7 +5795,122 @@ export async function readMakerV8PlayerReceiptByDigestV8({
   return freeze({ soulId: bound.soul_id, transactionDigest: digest, checkpoint: response.checkpoint });
 }
 
-/** Raw Ledger/Core finality plus exact historical output certification. */
+async function readArchivedPackPassEffects(client, evidence, signer, packPassType) {
+  const refs = makerV8FinalizedEffectsOutputRefs(evidence.effectsBcs, evidence.digest, { createdOnly: true })
+    .filter(ref => ref.owner.kind === 'AddressOwner' && ref.owner.value === signer);
+  const objects = await Promise.all(refs.map(async (ref) => {
+    const object = await client.getArchivedPlayerReceiptObject({
+      objectId: ref.objectId, version: BigInt(ref.version), decode: false,
+    });
+    if (object.digest !== ref.digest || object.previousTransaction !== evidence.digest) {
+      fail('MAKER_V8_PLAYER_EFFECTS_REF_DRIFT', 'Archived Player output differs from its finalized effects reference.');
+    }
+    return { type: 'created', objectId: ref.objectId, objectType: object.type, version: ref.version, digest: ref.digest };
+  }));
+  return {
+    events: evidence.events,
+    objectChanges: objects.filter(object => object.objectType === packPassType),
+    compilerEffectsOutputRefs: refs,
+  };
+}
+
+const PACK_RECEIPT_ENTRYPOINTS = Object.freeze({
+  issue_free_pack_pass_v8: { kind: 0, arity: 3, makerInput: null },
+  purchase_pack_pass_v8: { kind: 1, arity: 8, makerInput: 3 },
+  issue_included_pack_pass_v8: { kind: 2, arity: 5, makerInput: 2 },
+});
+
+function packReceiptIntent(transaction, runtime, rootId) {
+  const { commands, inputs } = transaction.getData();
+  const calls = commands.flatMap(({ MoveCall }, index) => MoveCall ? [{ call: MoveCall, index }] : []);
+  const entries = calls.filter(({ call }) => Object.hasOwn(PACK_RECEIPT_ENTRYPOINTS, call.function));
+  const transfers = calls.filter(({ call }) => call.function === 'transfer_pack_pass_to_holder_v8');
+  const failScope = () => fail('MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID',
+    'Transaction must contain one exact Animacraft Pack entry and transfer for this Maker.');
+  if (entries.length !== 1 || transfers.length !== 1) failScope();
+  const [{ call: entry, index }] = entries;
+  const [{ call: transfer, index: transferIndex }] = transfers;
+  const { kind, arity, makerInput } = PACK_RECEIPT_ENTRYPOINTS[entry.function];
+  const runtimeCall = call => call.package === runtime.roles.runtime.callablePackageId && call.module === 'runtime_v8';
+  const transferArg = transfer.arguments[0];
+  const returnedPass = transferArg?.Result === index
+    || same(transferArg?.NestedResult ?? null, [index, 0]);
+  let paymentCoinType;
+  try { paymentCoinType = normalizeStructTag(entry.typeArguments[0]); } catch { failScope(); }
+  if (!runtimeCall(entry) || !runtimeCall(transfer) || transferIndex <= index
+    || entry.arguments.length !== arity || entry.typeArguments.length !== 1
+    || paymentCoinType !== normalizeStructTag(runtime.paymentCoinType)
+    || transfer.arguments.length !== 1 || transfer.typeArguments.length !== 0 || !returnedPass) failScope();
+  const shared = position => inputs[entry.arguments[position]?.Input]?.Object?.SharedObject?.objectId;
+  const releaseId = shared(0);
+  const registryId = shared(1);
+  if (!EXACT_ID.test(releaseId) || !EXACT_ID.test(registryId)
+    || makerInput !== null && shared(makerInput) !== rootId) failScope();
+  return { releaseId, registryId, kind };
+}
+
+/** Read a Pack entry receipt without consulting or creating a local Player action. */
+export async function readMakerV8PackReceiptByDigestV8({
+  client, runtime: runtimeInput, rootId, signer, transactionDigest,
+}, { assertTransport = assertMakerV8SuiGrpcTransport } = {}) {
+  assertTransport(client);
+  const runtime = assertMakerV8Runtime(runtimeInput, { requireEnabled: true });
+  const types = playerTypes(runtime);
+  const root = address(rootId, 'Pack receipt Maker Root');
+  const holder = address(signer, 'Pack receipt wallet');
+  const digest = suiDigest(transactionDigest, 'Pack receipt transaction digest');
+  const { evidence, archived } = await readPlayerActionEvidence(client, digest, { recoverArchivedPack: true });
+  if (evidence.digest !== digest || evidence.sender !== holder
+    || !(evidence.transactionBcs instanceof Uint8Array) || evidence.transactionBcs.length > MAX_TRANSACTION_BYTES
+    || typeof evidence.effectsStatus?.success !== 'boolean') {
+    fail('MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID', 'Finalized Pack transaction differs from the original wallet or digest.');
+  }
+  const transaction = Transaction.from(evidence.transactionBcs);
+  if (transaction.getData().sender !== holder) {
+    fail('MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID', 'Original Pack transaction sender differs from the current wallet.');
+  }
+  const { releaseId, registryId, kind } = packReceiptIntent(transaction, runtime, root);
+  const [release, registry] = await Promise.all([
+    readObject(client, releaseId, types.packRelease, 'Pack receipt Release'),
+    readObject(client, registryId, types.packRegistry, 'Pack receipt Registry'),
+  ]);
+  const rootVersion = decimal(release.fields.root_version, 'PackRelease.rootVersion');
+  const rootContentCommitment = hex(release.fields.root_content_commitment, 'PackRelease.rootContentCommitment');
+  const quote = packEntryQuote(runtime, release);
+  if (release.owner.kind !== 'SHARED' || registry.owner.kind !== 'SHARED'
+    || decimal(release.fields.version, 'PackRelease.version') !== '8'
+    || decimal(registry.fields.version, 'PackRegistry.version') !== '8'
+    || quote.kind !== kind || moveId(release.fields.root_id, 'PackRelease.rootId') !== root
+    || moveId(registry.fields.root_id, 'PackRegistry.rootId') !== root
+    || decimal(registry.fields.root_version, 'PackRegistry.rootVersion') !== rootVersion
+    || hex(registry.fields.root_content_commitment, 'PackRegistry.rootContentCommitment') !== rootContentCommitment) {
+    fail('MAKER_V8_PLAYER_PACK_RECEIPT_SCOPE_INVALID', 'Original Pack transaction does not belong to this Maker and Release.');
+  }
+  const receipt = { rootId: root, releaseId, transactionDigest: digest,
+    checkpoint: decimal(evidence.checkpoint, 'Pack receipt checkpoint'), paymentCoinType: quote.paymentCoinType };
+  if (!evidence.effectsStatus.success) {
+    return freeze({ ...receipt, status: 'FINALIZED_FAILURE', packPassId: null, paidAtomic: null });
+  }
+
+  const response = archived
+    ? await readArchivedPackPassEffects(client, evidence, holder, types.packPass)
+    : await assertFinalizedMakerV8CompilerTransactionV8(client, digest, transaction);
+  const { change, ref } = finalizedChange(response, types.packPass, 'Pack receipt Pass');
+  const created = makerV8FinalizedEffectsOutputRefs(evidence.effectsBcs, digest, { createdOnly: true });
+  if (!created.some(candidate => same(candidate, ref))) {
+    fail('MAKER_V8_PLAYER_EFFECTS_REF_DRIFT', 'Original Pack transaction does not create the returned Pass.');
+  }
+  const object = await readMakerV8CompilerHistoricalObjectV8({
+    getHistoricalObject: input => readPlayerHistoricalObject(client, input, { archived, decode: true }),
+  }, ref, types.packPass, 'Pack receipt Pass', readbackFieldList(types.packPass, types), digest);
+  assertPackPassIdentity({ ...object, change: change.type }, {
+    rootId: root, rootVersion, rootContentCommitment, releaseId, holder, paidAtomic: quote.priceAtomic,
+    releaseContentCommitment: hex(release.fields.content_commitment, 'PackRelease.contentCommitment'),
+  });
+  return freeze({ ...receipt, status: 'FINALIZED_SUCCESS', packPassId: change.objectId, paidAtomic: quote.priceAtomic });
+}
+
+/** Exact finalized Player effects and historical output certification. */
 export function createMakerV8PlayerReadbackAdapterV8({
   client,
   runtime: runtimeInput,
@@ -5433,10 +5939,17 @@ export function createMakerV8PlayerReadbackAdapterV8({
       const expectedTransaction = Transaction.fromKind(kind.raw);
       expectedTransaction.setSender(record.plan.signer);
       await pinnedMainnet(client);
-      const [response, evidence] = await Promise.all([
-        assertFinalizedMakerV8CompilerTransactionV8(client, record.transaction.digest, expectedTransaction),
-        client.getFinalizedTransactionEvidence({ digest: record.transaction.digest }),
-      ]);
+      const packRecovery = record.action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS;
+      const readLiveEffects = () => assertFinalizedMakerV8CompilerTransactionV8(client, record.transaction.digest, expectedTransaction);
+      let response;
+      let evidence;
+      let archived = false;
+      if (packRecovery) {
+        ({ evidence, archived } = await readPlayerActionEvidence(client, record.transaction.digest, { recoverArchivedPack: true }));
+        if (!archived) response = await readLiveEffects();
+      } else {
+        [response, evidence] = await Promise.all([readLiveEffects(), client.getFinalizedTransactionEvidence({ digest: record.transaction.digest })]);
+      }
       await pinnedMainnet(client);
       if (evidence?.digest !== record.transaction.digest
         || evidence.transactionBcsBase64 !== record.transaction.bytes
@@ -5452,6 +5965,17 @@ export function createMakerV8PlayerReadbackAdapterV8({
         )) {
         fail('MAKER_V8_PLAYER_FINALITY_DRIFT', 'Finalized Ledger evidence does not bind exact Player bytes, signature, epoch, and success.');
       }
+      if (archived) {
+        const data = bcs.TransactionData.parse(evidence.transactionBcs).V1;
+        if (data.sender !== record.plan.signer
+          || toBase64(bcs.TransactionKind.serialize(data.kind).toBytes()) !== descriptor.kindBytes) {
+          fail('MAKER_V8_PLAYER_FINALITY_DRIFT', 'Archived Pack transaction differs from the original Player plan.');
+        }
+        response = await readArchivedPackPassEffects(client, evidence, record.plan.signer, types.packPass);
+      }
+      const history = packRecovery ? {
+        getHistoricalObject: request => readPlayerHistoricalObject(client, request, { archived, decode: true }),
+      } : client;
       const outputs = [];
       for (const expectedType of descriptor.expected.ownedOutputTypes) {
         // Custody is selected by the derived UID after Soul/State are decoded,
@@ -5460,7 +5984,7 @@ export function createMakerV8PlayerReadbackAdapterV8({
         const { change, ref } = finalizedChange(response, expectedType, expectedType);
         await pinnedMainnet(client);
         const object = await readMakerV8CompilerHistoricalObjectV8(
-          client,
+          history,
           ref,
           expectedType,
           `Player ${expectedType}`,
@@ -5474,7 +5998,8 @@ export function createMakerV8PlayerReadbackAdapterV8({
           objectId: change.objectId,
           version: String(change.version),
           digest: change.digest,
-          ...(record.action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT ? { owner: freeze(clone(object.owner, 'Native historical owner')) } : {}),
+          ...(packRecovery || [MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT, MAKER_V8_PLAYER_ACTIONS.DETACH_PACK].includes(record.action)
+            ? { owner: freeze(clone(object.owner, 'Player historical owner')) } : {}),
           fields: freeze(clone(object.fields, 'Player historical fields')),
         }));
       }

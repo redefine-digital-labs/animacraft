@@ -221,6 +221,8 @@ function targetFor(action, sourceRuntime = runtime()) {
       `${packageId('runtime')}::runtime_v8::issue_free_pack_pass_v8`,
     [MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT]:
       `${packageId('runtime')}::runtime_v8::create_maker_loadout_v8`,
+    [MAKER_V8_PLAYER_ACTIONS.DETACH_PACK]:
+      `${sourceRuntime.playerPackDetach?.packageId}::runtime_v8::detach_pack_definitions_v8`,
     [MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT]:
       `${packageId('release')}::release_v8::finish_unprotected_complete_v8`,
     [MAKER_V8_PLAYER_ACTIONS.MATERIALIZE_PHYSICAL]:
@@ -424,7 +426,7 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
         action: record.action,
         rootId: record.playerIdentity.rootId,
         transactionDigest: record.transaction.digest,
-        evidence: { createdObjects: [] },
+        evidence: controls.readbackEvidence ?? { createdObjects: [] },
       };
     },
   };
@@ -641,6 +643,27 @@ test('controller loads signer-bound definitions and retained attachment layout w
     assert.equal(failed.status, 'ERROR');
     assert.equal(failed.player, null, 'Invalid contexts must not retain previously ready authority');
   }
+});
+
+test('Player can read other choices during a Pack outage but cannot prepare that Pack entry', async () => {
+  const h = harness();
+  const rootId = h.player.rootId, releaseId = id(700);
+  const warning = { schemaVersion: 'animacraft.maker-v8-catalog-diagnostic.v1', severity: 'WARNING',
+    layer: 'MANIFEST', code: 'MAKER_V8_PRODUCT_PACK_MANIFEST_UNAVAILABLE', rootId,
+    details: { releaseId } };
+  const context = {
+    choices: { schemaVersion: 'animacraft.maker-v8-contextual-choices.v1', address: HOLDER, rootId,
+      baseEntitlements: [], packStyles: [], externalStyles: [], certifiedAssets: [], diagnostics: [warning] },
+    definitions: { schemaVersion: 'animacraft.maker-v8-player-definitions.v1', address: HOLDER, rootId,
+      packs: [], currentLoadout: null },
+  };
+  h.productRuntime.playerContext = { load: async () => context };
+  assert.equal((await h.controller.loadPlayer(rootId)).status, 'READY');
+  await assert.rejects(h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    input: { releaseId, semanticPackId: 'moon-pack' } }), { code: 'MAKER_V8_PLAYER_PACK_MANIFEST_UNAVAILABLE' });
+  assert.equal(h.calls.compile + h.calls.custody + h.calls.sign + h.calls.broadcast, 0);
+  context.choices.packStyles = [{ releaseId }];
+  assert.equal((await h.controller.loadPlayer(rootId)).status, 'ERROR');
 });
 
 test('own-Part recipes allocate canonical new Packs and preserve unselected committed attachment slots', async () => {
@@ -1391,6 +1414,147 @@ test('entry recovery after recipe changes queries the original signed Pack purch
   assert.deepEqual(current.persistence.inspect(prepared.actionId).transaction, original.transaction);
 });
 
+test('a paid Pack purchase with a lost wallet response recovers exact finalized success or failure', async t => {
+  for (const succeeds of [true, false]) await t.test(succeeds ? 'Pass issued' : 'Move failure', async () => {
+    const indexedDB = new IDBFactory();
+    const options = { databaseName: 'paid-pack-ledger', storageManager: {
+      async persist() { return true; }, async persisted() { return true; },
+      async estimate() { return { quota: 100_000_000, usage: 0 }; },
+    } };
+    const persistence = createMakerV8PlayerPersistenceV8(indexedDB, options);
+    const h = harness({ persistenceOverride: persistence });
+    const input = { action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+      input: { releaseId: id(700), semanticPackId: 'moon-pack' } };
+    h.controls.expected = { packEntryQuote: { releaseId: input.input.releaseId,
+      kind: 1, priceAtomic: '1000', paymentCoinType: MAKER_V8_PAYMENT_COIN_TYPE } };
+    await h.controller.loadPlayer(ROOT_ID);
+    const prepared = await h.controller.preparePlayerAction(input);
+    h.controls.signError = new Error('Wallet callback lost');
+    await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+    const original = await persistence.load(prepared.actionId);
+    assert.equal(original.status, 'SIGNING_UNKNOWN');
+    const { digest, bytes } = original.transaction;
+    const queryTransaction = h.rpc.queryTransaction;
+    h.rpc.queryTransaction = async request => {
+      assert.deepEqual(request, { digest, epochWindow: original.transaction.build.epochWindow, recoverArchivedPack: true });
+      return queryTransaction(request);
+    };
+    let ledgerReads = 0;
+    h.boundary.recoverFinalizedSignature = async request => {
+      ledgerReads++;
+      assert.equal(request.digest, digest);
+      assert.equal(request.bytes, bytes);
+      assert.equal(request.signer, HOLDER);
+      assert.equal(request.query.status, succeeds ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE');
+      return { bytes, digest, signer: HOLDER, signature: SIGNATURE };
+    };
+    const coldPersistence = createMakerV8PlayerPersistenceV8(indexedDB, options);
+    const cold = createMakerV8PlayerControllerV8({
+      productRuntime: h.productRuntime, compiler: h.compiler, custody: h.custody,
+      boundary: h.boundary, wallet: h.wallet, rpc: h.rpc, persistence: coldPersistence,
+      execution: { allowWalletSignature: true, allowBroadcast: true }, now: () => 1000,
+    });
+    await cold.loadPlayer(ROOT_ID);
+    cold.updateRecipe({ colors: [{ channelKey: 'primary', swatchKey: 'blue' }] });
+    const pending = await cold.getPendingPlayerAction({ rootId: ROOT_ID });
+    assert.equal(pending.actionId, original.actionId);
+    h.controls.custodyError = new Error('Recovery must precede new purchase preflight');
+    // An absent digest can be pruned or simply pending. Preserve the original
+    // intent even when the current checkpoint is beyond the transaction epoch.
+    h.controls.queryResults.push(notFound(digest, '105'));
+    assert.equal((await cold.preparePlayerAction(input)).status, 'SIGNING_UNKNOWN');
+    assert.equal(ledgerReads, 0);
+    assert.deepEqual(await coldPersistence.load(prepared.actionId), original);
+    h.controls.queryResults.push(succeeds ? finalizedSuccess(digest) : finalizedFailure(digest, 'Move abort'));
+    const finalized = await cold.preparePlayerAction(input);
+    assert.equal(finalized.status, succeeds ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE');
+    assert.equal(finalized.transactionDigest, digest);
+    assert.equal(finalized.packEntryQuote.priceAtomic, '1000');
+    assert.equal(finalized.actionId, prepared.actionId);
+    assert.equal(h.calls.sign, 1);
+    assert.equal(h.calls.broadcast, 0);
+    assert.equal(h.calls.compile, 1);
+    assert.equal(h.calls.readback, succeeds ? 1 : 0);
+    assert.equal(ledgerReads, 1);
+    assert.deepEqual((await coldPersistence.load(prepared.actionId)).transaction, original.transaction);
+    if (succeeds) {
+      const reopened = createMakerV8PlayerControllerV8({
+        productRuntime: h.productRuntime, compiler: h.compiler, custody: h.custody,
+        boundary: h.boundary, wallet: h.wallet, rpc: h.rpc,
+        persistence: createMakerV8PlayerPersistenceV8(indexedDB, options),
+        execution: { allowWalletSignature: true, allowBroadcast: true }, now: () => 1000,
+      });
+      await reopened.loadPlayer(ROOT_ID);
+      assert.equal(await reopened.getPendingPlayerAction({ rootId: ROOT_ID }), null);
+      assert.deepEqual(await reopened.preparePlayerAction(input), finalized);
+      const replacement = { ...original, actionId: 'ef'.repeat(32), status: 'PREPARED', signatureIntent: null };
+      await assert.rejects(coldPersistence.create(replacement), error =>
+        error.code === 'MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED'
+        && error.details.actionId === original.actionId);
+      assert.equal(await coldPersistence.load(replacement.actionId), null);
+      assert.equal(await coldPersistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), null);
+      assert.equal(h.calls.compile, 1);
+      assert.equal(h.calls.sign, 1);
+      assert.equal(h.calls.broadcast, 0);
+    }
+  });
+});
+
+test('an unsigned duplicate from an older client is retired before opening the wallet', async () => {
+  const h = harness();
+  const input = { action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    input: { releaseId: id(700), semanticPackId: 'moon-pack' } };
+  await h.controller.loadPlayer(ROOT_ID);
+  const first = await h.controller.preparePlayerAction(input);
+  const finalized = await h.controller.executePlayerAction(first.actionId);
+  assert.equal(finalized.status, 'FINALIZED_SUCCESS');
+
+  h.controller.updateRecipe({ colors: [{ channelKey: 'primary', swatchKey: 'blue' }] });
+  const duplicate = await h.controller.preparePlayerAction(input);
+  assert.notEqual(duplicate.actionId, first.actionId);
+  h.persistence.findFinalizedPackPurchaseId = async request => {
+    assert.deepEqual(request, { rootId: ROOT_ID, signer: HOLDER, releaseId: input.input.releaseId });
+    return first.actionId;
+  };
+  h.controls.custodyError = new Error('Must check the durable purchase before trying custody again');
+  await assert.rejects(h.controller.executePlayerAction(duplicate.actionId),
+    { code: 'MAKER_V8_PLAYER_PACK_PURCHASE_ALREADY_FINALIZED' });
+  assert.equal(h.persistence.inspect(duplicate.actionId).status, 'CANCELLED_UNSIGNED');
+  assert.equal(h.persistence.inspect(first.actionId).status, 'FINALIZED_SUCCESS');
+  assert.deepEqual(await h.controller.preparePlayerAction(input), finalized);
+  assert.equal(h.calls.compile, 2);
+  assert.equal(h.calls.sign, 1);
+  assert.equal(h.calls.broadcast, 1);
+});
+
+test('looking up an old terminal Player receipt leaves the next active action indexed', async () => {
+  const persistence = createMakerV8PlayerPersistenceV8(new IDBFactory(), {
+    databaseName: 'player-terminal-root-isolation', storageManager: {
+      async persist() { return true; }, async persisted() { return true; },
+      async estimate() { return { quota: 100_000_000, usage: 0 }; },
+    },
+  });
+  const h = harness({ persistenceOverride: persistence });
+  await h.controller.loadPlayer(ROOT_ID);
+  const first = await h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS });
+  await h.controller.executePlayerAction(first.actionId);
+  const previous = await persistence.load(first.actionId);
+  const next = await h.controller.preparePlayerAction({
+    action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    input: { releaseId: id(700), semanticPackId: 'moon-pack' },
+  });
+  const queryCount = h.calls.query;
+  assert.equal((await h.controller.recoverPlayerAction(first.actionId)).status, 'FINALIZED_SUCCESS');
+  assert.equal((await h.controller.getPlayerAction(first.actionId)).transactionDigest, first.transactionDigest);
+  assert.equal(h.calls.query, queryCount);
+  assert.equal(await persistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), next.actionId);
+  await assert.rejects(persistence.compareAndSwap(previous.actionId, previous.revision, {
+    ...previous, revision: previous.revision + 1,
+  }), { code: 'MAKER_V8_PLAYER_CAS_CONFLICT' });
+  assert.equal(await persistence.resolveRootActive({ rootId: ROOT_ID, signer: HOLDER }), next.actionId);
+  assert.deepEqual(await persistence.load(first.actionId), previous);
+});
+
 test('pending Root discovery survives unavailable Pack custody without signing, querying, or rebuilding', async () => {
   const current = harness();
   await current.controller.loadPlayer(ROOT_ID);
@@ -1708,6 +1872,117 @@ test('cold journey reuses a live committed selection after finalized action indi
     assert.equal(h.calls[key], before[key], key);
   }
   assert.deepEqual(h.persistence.inspect(prepared.actionId), original);
+});
+
+test('Pack removal only uses its pinned callable package and recovers the original receipt after rejection and lost broadcast', async () => {
+  const indexedDB = new IDBFactory();
+  const options = { databaseName: 'pack-removal', storageManager: {
+    async persist() { return true; }, async persisted() { return true; },
+    async estimate() { return { quota: 100_000_000, usage: 0 }; },
+  } };
+  const persistence = createMakerV8PlayerPersistenceV8(indexedDB, options);
+  const runtimeOverride = { ...runtime(), playerPackDetach: {
+    packageId: id(904), packageDigest: GAS_DIGEST, upgradeTransactionDigest: GAS_DIGEST,
+  } };
+  const h = harness({ persistenceOverride: persistence, runtimeOverride });
+  await h.controller.loadPlayer(ROOT_ID);
+  const action = { action: MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, input: { releaseId: id(811) } };
+  const loadoutId = id(912);
+  h.controls.expected = { packDetach: { objectId: loadoutId, transition: { revision: '5' } } };
+  h.controls.readbackEvidence = { objects: [{ objectId: loadoutId, fields: { revision: '5' } }] };
+  h.controls.protectedContentRequired = true;
+  const prepared = await h.controller.preparePlayerAction(action);
+  assert.equal(prepared.releaseId, action.input.releaseId);
+  const original = await persistence.load(prepared.actionId);
+  h.controls.signError = Object.assign(new Error('Wallet rejected'), {
+    definitiveRejection: true, signedArtifactCreated: false,
+  });
+  await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+  const rejected = await persistence.load(prepared.actionId);
+  assert.equal(rejected.status, 'PREPARED');
+  assert.deepEqual(rejected.transaction, original.transaction);
+  h.controls.signError = null;
+  h.controls.broadcastError = new Error('Broadcast response lost');
+  await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+  const cold = createMakerV8PlayerControllerV8({
+    productRuntime: h.productRuntime, compiler: h.compiler, custody: h.custody,
+    boundary: h.boundary, wallet: h.wallet, rpc: h.rpc,
+    persistence: createMakerV8PlayerPersistenceV8(indexedDB, options),
+    execution: { allowWalletSignature: true, allowBroadcast: true }, now: () => 1000,
+  });
+  const pending = await cold.getPendingPlayerAction({ rootId: ROOT_ID });
+  assert.equal(pending.actionId, prepared.actionId);
+  assert.equal(pending.releaseId, action.input.releaseId);
+  const ready = await cold.loadPlayer(ROOT_ID);
+  cold.setRecipe({ ...ready.recipe, colors: [{ channelKey: 'primary', swatchKey: 'blue' }] });
+  h.controls.custodyError = new Error('Removed Pack no longer appears in loadout');
+  h.controls.queryResults.push(finalizedSuccess(original.transaction.digest));
+  const recovered = await cold.preparePlayerAction(action);
+  assert.equal(recovered.status, 'FINALIZED_SUCCESS');
+  assert.equal(recovered.transactionDigest, prepared.transactionDigest);
+  assert.equal(recovered.actionId, prepared.actionId);
+  assert.equal(h.calls.compile, 1);
+  assert.equal(h.calls.broadcast, 1);
+  assert.equal(h.calls.sign, 2);
+  assert.equal(h.calls.readback, 1);
+  assert.deepEqual((await persistence.load(prepared.actionId)).transaction, original.transaction);
+  assert.deepEqual(await cold.getFinalizedPlayerPackDetaches({ rootId: ROOT_ID, since: 0 }), [{
+    releaseId: action.input.releaseId, transactionDigest: prepared.transactionDigest,
+    loadoutId, revision: '5',
+  }]);
+  assert.deepEqual(await cold.getFinalizedPlayerPackDetaches({ rootId: ROOT_ID, since: 9999 }), []);
+});
+
+test('Pack removal refuses the unupgraded runtime and extra PTB calls before a wallet prompt', async () => {
+  const action = { action: MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, input: { releaseId: id(811) } };
+  const unconfigured = harness();
+  await unconfigured.controller.loadPlayer(ROOT_ID);
+  await assert.rejects(unconfigured.controller.preparePlayerAction(action),
+    { code: 'MAKER_V8_PLAYER_PACK_DETACH_UNAVAILABLE' });
+  const configured = harness({ runtimeOverride: { ...runtime(), playerPackDetach: {
+    packageId: id(904), packageDigest: GAS_DIGEST, upgradeTransactionDigest: GAS_DIGEST,
+  } } });
+  await configured.controller.loadPlayer(ROOT_ID);
+  configured.controls.buildTargets = [
+    `${id(904)}::runtime_v8::detach_pack_definitions_v8`,
+    `${id(2)}::coin::zero`,
+  ];
+  await assert.rejects(configured.controller.preparePlayerAction(action),
+    { code: 'MAKER_V8_PLAYER_TRANSACTION_TARGET_DRIFT' });
+  assert.equal(unconfigured.calls.sign + configured.calls.sign, 0);
+  assert.equal(configured.calls.create, 0);
+});
+
+test('Pack removal can recover a lost wallet callback only from the original finalized Ledger bytes', async () => {
+  const h = harness({ runtimeOverride: { ...runtime(), playerPackDetach: {
+    packageId: id(904), packageDigest: GAS_DIGEST, upgradeTransactionDigest: GAS_DIGEST,
+  } } });
+  await h.controller.loadPlayer(ROOT_ID);
+  const prepared = await h.controller.preparePlayerAction({
+    action: MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, input: { releaseId: id(811) },
+  });
+  const original = h.persistence.inspect(prepared.actionId).transaction;
+  h.controls.signError = new Error('Wallet callback lost');
+  await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+  let ledgerReads = 0;
+  h.boundary.recoverFinalizedSignature = async ({ bytes, digest, signer, query }) => {
+    ledgerReads++;
+    assert.equal(bytes, original.bytes);
+    assert.equal(digest, original.digest);
+    assert.equal(signer, HOLDER);
+    assert.equal(query.status, 'FINALIZED_SUCCESS');
+    return { bytes, digest, signer, signature: SIGNATURE };
+  };
+  h.controls.queryResults.push(notFound(original.digest));
+  assert.equal((await h.controller.recoverPlayerAction(prepared.actionId)).status, 'SIGNING_UNKNOWN');
+  assert.equal(ledgerReads, 0);
+  h.controls.queryResults.push(finalizedSuccess(original.digest));
+  const finalized = await h.controller.recoverPlayerAction(prepared.actionId);
+  assert.equal(finalized.status, 'FINALIZED_SUCCESS');
+  assert.equal(finalized.transactionDigest, original.digest);
+  assert.equal(ledgerReads, 1);
+  assert.equal(h.calls.sign, 1);
+  assert.equal(h.calls.broadcast, 0);
 });
 
 test('live mismatch still prepares the changed selection and never reuses a nonboolean proof', async () => {
