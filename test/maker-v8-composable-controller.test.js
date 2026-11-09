@@ -858,7 +858,9 @@ test('external product creation certifies shared custody, and combined creation 
     { code: 'MAKER_V8_COMPOSABLE_CUSTODY_DRIFT' },
   );
 
-  const combined = request('CREATE_ADMIT_MINT');
+  const combined = structuredClone(request('CREATE_ADMIT_MINT'));
+  const projectedBytes = toBase64(new Uint8Array(32));
+  combined.inputs.definitionRegistry.fields.root_content_commitment = projectedBytes;
   const itemRef = ref(132);
   const registryRef = { ...combined.inputs.packRegistry.objectRef, version: '130', digest: suiDigest(36) };
   const revision = { root_id: combined.product.rootId, previous_revision: '9', revision: '10',
@@ -874,13 +876,14 @@ test('external product creation certifies shared custody, and combined creation 
     sender: signer, bcs: toBase64(eventBytes), parsedJson: revision }]);
   const combinedHistory = {
     [productRef.objectId]: finalizedObject(productRef, types.externalItemProduct,
-      { ...productFields, supply: '1' }, { Shared: { initial_shared_version: productRef.version } }, transactionDigest),
+      { ...productFields, supply: '1', root_content_commitment: projectedBytes,
+        asset_sha256: projectedBytes, asset_content_commitment: projectedBytes, content_commitment: projectedBytes },
+      { Shared: { initial_shared_version: productRef.version } }, transactionDigest),
     [capRef.objectId]: finalizedObject(capRef, types.externalItemAdminCap, capFields,
       { AddressOwner: signer }, transactionDigest),
     [itemRef.objectId]: finalizedObject(itemRef, types.ownedExternalItem,
       { product_id: productRef.objectId, holder: signer, ownership_epoch: '0', transferable: true,
-        product_content_commitment: productFields.content_commitment,
-        asset_content_commitment: productFields.asset_content_commitment },
+        product_content_commitment: projectedBytes, asset_content_commitment: projectedBytes },
       { AddressOwner: signer }, transactionDigest),
     [registryRef.objectId]: finalizedObject(registryRef, types.packRegistry,
       { ...combined.inputs.packRegistry.fields, revision: '10', external_admission_count: '1' },
@@ -891,6 +894,9 @@ test('external product creation certifies shared custody, and combined creation 
   assert.equal(receipt.productId, productRef.objectId);
   assert.deepEqual(receipt.itemRef, itemRef);
   assert.equal(receipt.packRegistryRevision, '10');
+  combinedHistory[itemRef.objectId].parsed.asset_content_commitment = `${projectedBytes.slice(0, -2)}B=`;
+  await assert.rejects(verifyCombined(), { code: 'MAKER_V8_COMPOSABLE_HASH_INVALID' });
+  combinedHistory[itemRef.objectId].parsed.asset_content_commitment = projectedBytes;
   combinedHistory[itemRef.objectId].owner = { AddressOwner: recipient };
   await assert.rejects(verifyCombined(), { code: 'MAKER_V8_COMPOSABLE_CUSTODY_DRIFT' });
   combinedHistory[itemRef.objectId].owner = { AddressOwner: signer };
