@@ -36,6 +36,7 @@ import {
 import {
   assertFinalizedMakerV8CompilerTransactionV8,
   createProductionMakerV8BrowserAdapters,
+  makerV8FinalizedEffectsOutputRefs,
   readMakerV8CompilerHistoricalObjectV8,
 } from './maker-v8-browser.js';
 import {
@@ -66,6 +67,8 @@ import {
 import {
   assertMakerV8SuiGrpcTransport,
   createProductionMakerV8SuiGrpcTransport,
+  isMakerV8SuiGrpcHistoricalObjectNotFoundError,
+  isMakerV8SuiGrpcNotFoundError,
 } from './maker-v8-sui-grpc.js';
 
 export const MAKER_V8_PLAYER_ADAPTERS_SCHEMA =
@@ -5316,18 +5319,32 @@ export async function readMakerV8PlayerReceiptByDigestV8({
   const root = address(rootId, 'Maker Root');
   const holder = address(signer, 'original holder');
   const digest = suiDigest(transactionDigest, 'Complete transaction digest');
-  const evidence = await client.getFinalizedTransactionEvidence({ digest });
-  if (evidence.digest !== digest || evidence.sender !== holder || evidence.effectsStatus?.success !== true) {
-    fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Transaction must be a successful finalized Complete from this wallet.');
-  }
-  const transaction = Transaction.from(evidence.transactionBcs);
   const callable = runtime.nativeSoulIntegration?.soulidityCallablePackageId;
-  const mints = transaction.getData().commands.filter(({ MoveCall: call }) =>
-    call?.package === callable && call.module === 'market' && call.function === 'mint_animacraft_v8_in_personal_kiosk');
-  if (mints.length !== 1) {
-    fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Transaction does not contain one exact Animacraft native mint.');
+  const validateReceiptTransaction = evidence => {
+    if (evidence.digest !== digest || evidence.sender !== holder || evidence.effectsStatus?.success !== true
+      || evidence.transactionBcs?.length > MAX_TRANSACTION_BYTES) {
+      fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Transaction must be a successful finalized Complete from this wallet.');
+    }
+    const transaction = Transaction.from(evidence.transactionBcs);
+    const mints = transaction.getData().commands.filter(({ MoveCall: call }) =>
+      call?.package === callable && call.module === 'market' && call.function === 'mint_animacraft_v8_in_personal_kiosk');
+    if (mints.length !== 1) {
+      fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Transaction does not contain one exact Animacraft native mint.');
+    }
+    return transaction;
+  };
+  let response;
+  let archived = false;
+  try {
+    const evidence = await client.getFinalizedTransactionEvidence({ digest });
+    response = await assertFinalizedMakerV8CompilerTransactionV8(client, digest, validateReceiptTransaction(evidence));
+  } catch (error) {
+    if (!isMakerV8SuiGrpcNotFoundError(error, digest)) throw error;
+    response = await client.getArchivedPlayerTransactionEvidence({ digest });
+    if (response === null) throw error;
+    validateReceiptTransaction(response);
+    archived = true;
   }
-  const response = await assertFinalizedMakerV8CompilerTransactionV8(client, digest, transaction);
   const expectedType = stableType(runtime, 'output', 'output_v8', 'NativeSoulBoundV8');
   const event = selectPlayerEvent(response, expectedType, holder);
   const bound = nativeSoulBoundFields(event);
@@ -5335,22 +5352,44 @@ export async function readMakerV8PlayerReceiptByDigestV8({
     || bound.root_id !== root || bound.original_holder !== holder) {
     fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Original Complete does not belong to this Maker and wallet.');
   }
+  const archivedRefs = archived ? makerV8FinalizedEffectsOutputRefs(response.effectsBcs, digest, { createdOnly: true }) : null;
   const created = (type, objectId) => {
+    if (archivedRefs) {
+      const matches = archivedRefs.filter(ref => ref.objectId === objectId);
+      if (matches.length !== 1) {
+        fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Complete event does not bind one archived object creation.');
+      }
+      return matches[0];
+    }
     const { change, ref } = finalizedChange(response, type, type);
     if (change.type !== 'created' || change.objectId !== objectId) {
       fail('MAKER_V8_PLAYER_RECEIPT_SCOPE_INVALID', 'Complete event differs from the exact finalized objects.');
     }
     return ref;
   };
-  created(types.nativeSoul, bound.soul_id);
-  created(types.nativeSoulState, bound.soul_state_id);
-  created(types.completeOutput, bound.output_id);
+  const readObject = (type, objectId, label, fields) => readMakerV8CompilerHistoricalObjectV8({
+    async getHistoricalObject(input) {
+      const archive = () => client.getArchivedPlayerReceiptObject({ ...input, decode: fields.length > 0 });
+      if (archived) return archive();
+      try {
+        return await client.getHistoricalObject(input);
+      } catch (error) {
+        if (!isMakerV8SuiGrpcHistoricalObjectNotFoundError(error)) throw error;
+        return archive();
+      }
+    },
+  }, created(type, objectId), type, label, fields, digest);
+  const otherObjects = [
+    [types.nativeSoul, bound.soul_id, 'Soul'],
+    [types.nativeSoulState, bound.soul_state_id, 'Soul state'],
+    [types.completeOutput, bound.output_id, 'Complete output'],
+  ];
+  if (!archived) otherObjects.forEach(([type, objectId]) => created(type, objectId));
   const [binding, receipt] = await Promise.all([
-    readMakerV8CompilerHistoricalObjectV8(client, created(types.nativeSoulBinding, bound.binding_id),
-      types.nativeSoulBinding, 'Complete binding', ['protocolConfigId', 'rootId', 'soulId', 'soulStateId',
-        'outputId', 'receiptId', 'originalHolder', 'authorizationCommitment', 'receiptCommitment'], digest),
-    readMakerV8CompilerHistoricalObjectV8(client, created(types.completeReceipt, bound.receipt_id),
-      types.completeReceipt, 'Complete receipt', ['rootId', 'outputId', 'originalHolder', 'receiptCommitment'], digest),
+    readObject(types.nativeSoulBinding, bound.binding_id, 'Complete binding', ['protocolConfigId', 'rootId', 'soulId', 'soulStateId',
+      'outputId', 'receiptId', 'originalHolder', 'authorizationCommitment', 'receiptCommitment']),
+    readObject(types.completeReceipt, bound.receipt_id, 'Complete receipt', ['rootId', 'outputId', 'originalHolder', 'receiptCommitment']),
+    ...(archived ? otherObjects.map(([type, objectId, label]) => readObject(type, objectId, label, [])) : []),
   ]);
   if (binding.owner?.kind !== 'Immutable' || receipt.owner?.kind !== 'Immutable'
     || binding.fields.protocolConfigId !== runtime.protocolConfigId
