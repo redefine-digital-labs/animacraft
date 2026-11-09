@@ -42,6 +42,7 @@ const BLOB_ID = /^[A-Za-z0-9_-]{20,512}$/;
 const UINT = /^(?:0|[1-9][0-9]*)$/;
 const PUBLIC_IMAGE_TYPES = new Set(['image/png', 'image/webp']);
 const PUBLIC_REUSE_SCHEMA = 'animacraft.maker-v8-walrus-public-reuse.v1';
+const PUBLIC_REUSE_INVENTORY_TIMEOUT_MS = 15_000;
 const encoder = new TextEncoder();
 
 export class MakerV8WalrusError extends Error {
@@ -1624,7 +1625,15 @@ export function createMakerV8WalrusPublisherV8({
         || record.batchKey || !PUBLIC_IMAGE_TYPES.has(record.mediaType)) return null;
       await assertPinned();
       const { blobId } = record.encoded;
-      const { epoch, blobs } = await readOwnedPublicBlobs({ owner: record.owner, blobId, signal: AbortSignal.timeout(15_000) });
+      const readInventory = async signal => readOwnedPublicBlobs({ owner: record.owner, blobId, signal });
+      const firstSignal = AbortSignal.timeout(PUBLIC_REUSE_INVENTORY_TIMEOUT_MS);
+      const { epoch, blobs } = await readInventory(firstSignal).catch(error => {
+        // gRPC-Web can surface our elapsed read deadline as INTERNAL.
+        const timedOut = firstSignal.aborted
+          && (error?.code === 'INTERNAL' || error === firstSignal.reason);
+        if (!timedOut && error?.code !== 'DEADLINE_EXCEEDED' && error?.code !== 'UNAVAILABLE') throw error;
+        return readInventory(AbortSignal.timeout(PUBLIC_REUSE_INVENTORY_TIMEOUT_MS));
+      });
       const walrusEpoch = integer(epoch, 'Walrus storage epoch');
       const blobNumber = blobIdToInt(blobId).toString();
       let proof = null;
