@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { GrpcTypes, SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { createMakerV8SuiGrpcTransport } from '../maker-v8-sui-grpc.js';
-import { TestTransport } from '@protobuf-ts/runtime-rpc';
+import { RpcError, TestTransport } from '@protobuf-ts/runtime-rpc';
 import { MAKER_V8_PACK_DEFINITIONS_BCS, packDefinitionCommitmentV8 } from '../maker-v8-pack-definition-wire.js';
 import { deriveMakerV8PackProfiles } from '../maker-v8-profile-wire.js';
 
@@ -39,6 +39,7 @@ import {
   makerV8PlayerSelectionDependenciesV8,
   makerV8PlayerRequiresMakerAccessV8,
   assertMakerV8PlayerCompleteReadbackV8,
+  assertMakerV8PlayerPackPassReadbackV8,
   certifyMakerV8PlayerFinalizedEventV8,
   assertMakerV8PlayerOwnedItemReadbackV8,
   assertMakerV8PlayerLoadoutLayoutV8,
@@ -48,6 +49,8 @@ import {
   createMakerV8PlayerCustodyAdapterV8,
   createMakerV8PlayerPersistenceV8,
   createMakerV8PlayerProtectedContentAdapterV8,
+  createMakerV8PlayerReadbackAdapterV8,
+  createMakerV8PlayerRpcAdapterV8,
   readMakerV8CompleteCountersV8,
   readMakerV8ExternalAdmissionsV8,
   readMakerV8PackStylesV8,
@@ -1232,6 +1235,233 @@ test('Maker entry quote uses the same free or exact paid policy as its transacti
       const split = data.commands[payment[0]].SplitCoins;
       assert.equal(bcs.u64().parse(fromBase64(data.inputs[split.amounts[payment[1]].Input].Pure.bytes)), '17');
     }
+  }
+});
+
+test('paid Pack recovery authenticates the original exact transaction and Ledger signer', async () => {
+  const client = clientFixture();
+  client.core.getBalance = async () => ({ balance: { balance: '2500', coinBalance: '2500', addressBalance: '0' } });
+  client.core.listCoins = async () => ({ objects: [{ objectId: id(799), version: '1',
+    digest: digest(9), balance: '2500' }], hasNextPage: false, cursor: null });
+  const authority = { client, runtime, loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {} };
+  const compiler = createMakerV8PlayerCompilerAdapterV8(authority);
+  const request = await certifiedRequest(client, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS, state => {
+    Object.assign(state.objects.releases[0].fields, { access_kind: '1', access_price_atomic: '1000' });
+  });
+  const { plan } = await compiler.preparePlayerAction(request);
+  assert.equal(plan.descriptor.expected.packEntryQuote.priceAtomic, '1000');
+  const paymentCall = Transaction.fromKind(fromBase64(plan.descriptor.kindBytes)).getData();
+  const call = paymentCall.commands.map(row => row.MoveCall).find(row => row?.function === 'purchase_pack_pass_v8');
+  const [splitIndex, resultIndex] = call.arguments[6].NestedResult;
+  const amountIndex = paymentCall.commands[splitIndex].SplitCoins.amounts[resultIndex].Input;
+  assert.equal(bcs.u64().parse(fromBase64(paymentCall.inputs[amountIndex].Pure.bytes)), '1000');
+  const persistence = createMakerV8PlayerPersistenceV8(new IDBFactory(), {
+    databaseName: 'paid-pack-ledger-signature', storageManager: storageManager(),
+  });
+  let currentSigner = signer;
+  const boundary = createMakerV8PlayerBoundaryAdapterV8({
+    ...authority, compiler, persistence, execution: { allowWalletSignature: true, allowBroadcast: true },
+    wallet: {
+      async getCurrentAccount() { return { address: currentSigner, network: 'mainnet' }; },
+      async verifyExactSignature() { assert.fail('Ledger signature recovery must not request a wallet operation'); },
+    },
+  });
+  const build = await boundary.buildExactTransaction({ descriptor: plan.descriptor });
+  const bytes = build.transactionBytes;
+  const transactionDigest = build.transactionDigest;
+  await persistence.create({ actionId: commitment('a'), scopeKey: commitment('b'),
+    action: request.action, status: 'SIGNING_UNKNOWN', signature: null,
+    signatureIntent: { sessionId: 'c'.repeat(32), leaseExpiresAt: 100 },
+    plan, playerIdentity: { rootId }, transaction: { digest: transactionDigest, bytes } });
+  const { signature } = await keypair.signTransaction(fromBase64(bytes));
+  const wrong = await new Ed25519Keypair().signTransaction(fromBase64(bytes));
+  const effectsBcs = Uint8Array.of(1, 2, 3);
+  const effectsFingerprint = '0x' + Buffer.from(sha256(effectsBcs)).toString('hex');
+  const query = { status: 'FINALIZED_SUCCESS', digest: transactionDigest, epoch: '41', effectsFingerprint, eventsDigest: null };
+  const original = { digest: transactionDigest, checkpoint: '30', epoch: '41',
+    transactionBcsBase64: bytes, effectsStatus: { success: true }, effectsBcs, eventsDigest: null, signatures: [signature] };
+  let evidence = original;
+  client.getFinalizedTransactionEvidence = async input => {
+    assert.deepEqual(input, { digest: transactionDigest });
+    return evidence;
+  };
+  const recovery = { bytes, digest: transactionDigest, signer, query };
+  assert.deepEqual(await boundary.recoverFinalizedSignature(recovery), { bytes, digest: transactionDigest, signer, signature });
+  for (const drift of [
+    { transactionBcsBase64: toBase64(Uint8Array.of(9)) },
+    { effectsBcs: Uint8Array.of(9) },
+    { effectsStatus: { success: false } },
+  ]) {
+    evidence = { ...original, ...drift };
+    await assert.rejects(boundary.recoverFinalizedSignature(recovery), { code: 'MAKER_V8_PLAYER_FINALITY_DRIFT' });
+  }
+  evidence = { ...original, signatures: [wrong.signature] };
+  await assert.rejects(boundary.recoverFinalizedSignature(recovery), { code: 'MAKER_V8_PLAYER_SIGNATURE_INVALID' });
+  evidence = { ...original, effectsStatus: { success: false } };
+  assert.equal((await boundary.recoverFinalizedSignature({ ...recovery, query: { ...query, status: 'FINALIZED_FAILURE' } })).signature, signature);
+  currentSigner = id(999);
+  await assert.rejects(boundary.recoverFinalizedSignature(recovery), { code: 'MAKER_V8_PLAYER_WALLET_DRIFT' });
+});
+
+test('archived paid Pack recovery certifies the original signed Pass and never broadcasts', async () => {
+  const client = clientFixture();
+  client.core.getBalance = async () => ({ balance: { balance: '2500', coinBalance: '2500', addressBalance: '0' } });
+  client.core.listCoins = async () => ({ objects: [{ objectId: id(799), version: '1',
+    digest: digest(9), balance: '2500' }], hasNextPage: false, cursor: null });
+  const authority = { client, runtime, loadRuntimeAttestation: async () => ({ runtime }), assertTransport() {} };
+  const compiler = createMakerV8PlayerCompilerAdapterV8(authority);
+  const request = await certifiedRequest(client, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS, state => {
+    Object.assign(state.objects.releases[0].fields, { access_kind: '1', access_price_atomic: '1000' });
+  });
+  const { plan } = await compiler.preparePlayerAction(request);
+  const persistence = createMakerV8PlayerPersistenceV8(new IDBFactory(), {
+    databaseName: 'archive-paid-pack-pass', storageManager: storageManager(),
+  });
+  const boundary = createMakerV8PlayerBoundaryAdapterV8({
+    ...authority, compiler, persistence, execution: { allowWalletSignature: true, allowBroadcast: true },
+    wallet: {
+      async getCurrentAccount() { return { address: signer, network: 'mainnet' }; },
+      async verifyExactSignature() { assert.fail('Archived recovery must not request a wallet operation'); },
+    },
+  });
+  const build = await boundary.buildExactTransaction({ descriptor: plan.descriptor });
+  const { transactionBytes: bytes, transactionDigest } = build;
+  const { signature } = await keypair.signTransaction(fromBase64(bytes));
+  const pending = { actionId: commitment('a'), scopeKey: commitment('b'), revision: 1, input: request.input,
+    recipe: request.recipe, loadout: request.loadout, createdAt: 1, updatedAt: 1,
+    action: request.action, status: 'SIGNING_UNKNOWN', signature: null,
+    signatureIntent: { sessionId: 'c'.repeat(32), leaseExpiresAt: 100 }, plan,
+    playerIdentity: { rootId, makerVersion: '1', rootContentCommitment: commitment('2') },
+    transaction: { digest: transactionDigest, bytes, build } };
+  await persistence.create(pending);
+
+  const passId = id(895);
+  const passDigest = digest(57);
+  const releaseId = request.input.releaseId;
+  const releaseContentCommitment = commitment('6');
+  const rawHex = value => Array.from(Buffer.from(value, 'hex'));
+  const fields = {
+    version: '8', release_id: releaseId, root_id: rootId, root_version: '1',
+    root_content_commitment: commitment('2'), release_content_commitment: releaseContentCommitment,
+    holder: signer, paid_atomic: '1000', issued_at_ms: '2000',
+    commitment: Buffer.from(sha256(bcs.tuple([bcs.string(), bcs.u64(), bcs.Address, bcs.Address, bcs.u64(),
+      bcs.vector(bcs.u8()), bcs.vector(bcs.u8()), bcs.Address, bcs.u64(), bcs.u64()]).serialize([
+      'animacraft-v8/runtime/pack-pass', 8, releaseId, rootId, 1, rawHex(commitment('2')),
+      rawHex(releaseContentCommitment), signer, 1000, 2000,
+    ]).toBytes())).toString('hex'),
+  };
+  const passType = plan.descriptor.expected.ownedOutputTypes[0];
+  const effectsBcs = bcs.TransactionEffects.serialize({ V2: {
+    status: { Success: true }, executedEpoch: '41',
+    gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
+    transactionDigest, gasObjectIndex: null, eventsDigest: null, dependencies: [], lamportVersion: '51',
+    changedObjects: [[passId, {
+      inputState: { NotExist: true }, outputState: { ObjectWrite: [passDigest, { AddressOwner: signer }] },
+      idOperation: { Created: true },
+    }]], unchangedConsensusObjects: [], auxDataDigest: null,
+  } }).toBytes();
+  const evidence = { digest: transactionDigest, checkpoint: '50', epoch: '41', transactionBcs: fromBase64(bytes),
+    transactionBcsBase64: bytes, effectsStatus: { success: true, error: null }, effectsBcs, eventsDigest: null,
+    events: [], signatures: [signature] };
+  const absent = { status: 'NOT_FOUND', digest: transactionDigest, epoch: null, effectsFingerprint: null,
+    eventsDigest: null, error: null, absence: {
+      chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, requestedDigest: transactionDigest,
+      watermarkEpoch: '100', watermarkCheckpointSequence: '500',
+    } };
+  const official = new SuiGrpcClient({ network: 'mainnet', transport: new TestTransport() });
+  official.ledgerService.getServiceInfo = async () => ({ response: GrpcTypes.GetServiceInfoResponse.create({
+    chainId: MAKER_V8_MAINNET_GENESIS_DIGEST, chain: 'mainnet', epoch: 100n, checkpointHeight: 500n,
+    lowestAvailableCheckpoint: 400n, lowestAvailableCheckpointObjects: 400n,
+  }) });
+  official.ledgerService.getTransaction = async () => {
+    const error = new RpcError('Pruned fixture', 'NOT_FOUND');
+    error.serviceName = 'sui.rpc.v2.LedgerService'; error.methodName = 'GetTransaction';
+    throw error;
+  };
+  const transport = createMakerV8SuiGrpcTransport({ grpcClient: official,
+    graphqlClient: new SuiGraphQLClient({ network: 'mainnet', url: 'https://graphql.mainnet.sui.io/graphql' }) });
+  client.getFinalizedTransactionEvidence = transport.getFinalizedTransactionEvidence;
+  client.core.getTransaction = async () => assert.fail('Missing Ledger evidence must use the archive');
+  let archiveReads = 0;
+  let archived = null;
+  client.getArchivedPlayerTransactionEvidence = async ({ digest: exactDigest }) => {
+    assert.equal(exactDigest, transactionDigest);
+    archiveReads += 1;
+    return archived;
+  };
+  let objectDrift = false;
+  client.getArchivedPlayerReceiptObject = async ({ objectId, version, decode }) => {
+    assert.equal(objectId, passId); assert.equal(version, 51n);
+    return { objectId, version: '51', digest: objectDrift ? digest(58) : passDigest, type: passType,
+      owner: { AddressOwner: signer }, previousTransaction: transactionDigest,
+      objectBcs: Uint8Array.of(1), contentBcs: Uint8Array.of(2), parsed: decode ? fields : {} };
+  };
+  client.core.executeTransaction = async () => assert.fail('Archived recovery must never broadcast');
+  let ledgerResult = absent;
+  const rpc = createMakerV8PlayerRpcAdapterV8({ client, assertTransport() {}, rpc: {
+    async getSuiClient() { return client; }, async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async queryTransaction(input) { assert.equal(Object.hasOwn(input, 'recoverArchivedPack'), false); return ledgerResult; },
+  } });
+  const queryInput = { digest: transactionDigest, epochWindow: build.epochWindow };
+  assert.deepEqual(await rpc.queryTransaction(queryInput), absent);
+  assert.equal(archiveReads, 0);
+  ledgerResult = { ...absent, absence: { ...absent.absence, retention: {
+    startEpoch: build.epochWindow.start, firstCheckpoint: '430', lowestAvailableCheckpoint: '420', observedCheckpoint: '501',
+  } } };
+  assert.deepEqual(await rpc.queryTransaction({ ...queryInput, recoverArchivedPack: true }), ledgerResult);
+  assert.equal(archiveReads, 0);
+  ledgerResult = absent;
+  assert.deepEqual(await rpc.queryTransaction({ ...queryInput, recoverArchivedPack: true }), absent);
+  archived = evidence;
+  const query = await rpc.queryTransaction({ ...queryInput, recoverArchivedPack: true });
+  assert.equal(query.status, 'FINALIZED_SUCCESS');
+  const artifact = await boundary.recoverFinalizedSignature({ bytes, digest: transactionDigest, signer, query });
+  assert.equal(artifact.signature, signature);
+  const record = { ...pending, revision: 2, updatedAt: 2, status: 'SIGNED', signature: artifact, signatureIntent: null };
+  await persistence.compareAndSwap(pending.actionId, 1, record);
+  const readback = createMakerV8PlayerReadbackAdapterV8({ ...authority, persistence });
+  const certificate = await readback.readbackPlayerAction({ record, query });
+  assert.equal(certificate.transactionDigest, transactionDigest);
+  assert.deepEqual(certificate.evidence.objects.map(row => [row.objectId, row.fields.paidAtomic]), [[passId, '1000']]);
+  objectDrift = true;
+  await assert.rejects(readback.readbackPlayerAction({ record, query }), { code: 'MAKER_V8_PLAYER_EFFECTS_REF_DRIFT' });
+});
+
+test('Pack Pass readback authenticates wallet custody, signed price, and the Move commitment', () => {
+  const releaseId = id(370);
+  const pass = { change: 'created', owner: { kind: 'AddressOwner', value: signer }, fields: {
+    version: '8', releaseId, rootId, rootVersion: '1', holder: signer,
+    rootContentCommitment: commitment('2'), releaseContentCommitment: commitment('6'),
+    paidAtomic: '1000', issuedAtMs: '2000', commitment: '',
+  } };
+  const bytes = hex => Array.from(Buffer.from(hex, 'hex'));
+  const fields = pass.fields;
+  const layout = bcs.tuple([bcs.string(), bcs.u64(), bcs.Address, bcs.Address, bcs.u64(),
+    bcs.vector(bcs.u8()), bcs.vector(bcs.u8()), bcs.Address, bcs.u64(), bcs.u64()]);
+  fields.commitment = Buffer.from(sha256(layout.serialize([
+    'animacraft-v8/runtime/pack-pass', 8, releaseId, rootId, 1,
+    bytes(fields.rootContentCommitment), bytes(fields.releaseContentCommitment), signer, 1000, 2000,
+  ]).toBytes())).toString('hex');
+  const record = { input: { releaseId }, playerIdentity: { rootId, makerVersion: '1',
+    rootContentCommitment: fields.rootContentCommitment }, plan: { signer, descriptor: {
+    expected: { packEntryQuote: { releaseId, kind: 1, priceAtomic: '1000' } },
+  } }, transaction: { build: { custodyContext: { builderInput: { objects: { releases: [
+    { objectId: releaseId, fields: { content_commitment: fields.releaseContentCommitment } },
+  ] } } } } } };
+  assert.equal(assertMakerV8PlayerPackPassReadbackV8(record, pass), true);
+  assert.equal(assertMakerV8PlayerPackPassReadbackV8({ ...record, transaction: {} }, pass), true,
+    'older records still bind the reviewed price and Move commitment');
+  for (const mutate of [
+    row => { row.owner.value = id(998); },
+    row => { row.fields.paidAtomic = '1001'; },
+    row => { row.fields.releaseContentCommitment = commitment('7'); },
+    row => { row.fields.issuedAtMs = '2001'; },
+    row => { row.change = 'mutated'; },
+  ]) {
+    const drift = structuredClone(pass);
+    mutate(drift);
+    assert.throws(() => assertMakerV8PlayerPackPassReadbackV8(record, drift),
+      { code: 'MAKER_V8_PLAYER_READBACK_PACK_DRIFT' });
   }
 });
 
