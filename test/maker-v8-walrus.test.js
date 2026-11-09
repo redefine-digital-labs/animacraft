@@ -105,6 +105,7 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
     },
   };
   const transport = {
+    async getArchivedPlayerTransactionEvidence() { return null; },
     core: {
       async executeTransaction({ transaction }) {
         const digest = TransactionDataBuilder.getDigestFromBytes(transaction);
@@ -125,7 +126,7 @@ function harness(persistence = memoryPersistence(), clockStart = 100) {
       if (status instanceof Error) throw status;
       if (typeof status === 'object') return status;
       return status === 'NOT_FOUND'
-        ? { status, digest, absence: { chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER } }
+        ? typedAbsence(digest, '10')
         : { status, digest, absence: null, error: null };
     },
   };

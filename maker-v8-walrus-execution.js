@@ -28,11 +28,16 @@ export const MakerV8WalrusBlobBcs = bcs.struct('Blob', {
 });
 
 export function assertMakerV8WalrusBatchObjectsV1(evidence, { transactionDigest, owner, members }) {
+  check(Array.isArray(members) && members.length >= 2, 'at least two batch members');
+  return assertRegisteredBlobs(evidence, { transactionDigest, owner, members });
+}
+
+function assertRegisteredBlobs(evidence, { transactionDigest, owner, members }) {
   try {
     id(owner);
-    check(Array.isArray(members) && members.length >= 2 && members.length <= 4
+    check(Array.isArray(members) && members.length >= 1 && members.length <= 4
       && new Set(members.map(member => member.uploadId)).size === members.length
-      && new Set(members.map(member => member.blobId)).size === members.length, 'two to four distinct batch members');
+      && new Set(members.map(member => member.blobId)).size === members.length, 'distinct registration members');
     const { parsed } = decode(bcs.TransactionEffects, evidence.effectsBcsBase64, 16 * 1024 * 1024);
     const effects = parsed.V2;
     check(effects?.transactionDigest === transactionDigest && effects.status.$kind === 'Success', 'batch finalized effects');
@@ -69,9 +74,22 @@ export function assertMakerV8WalrusBatchObjectsV1(evidence, { transactionDigest,
 }
 
 export async function readMakerV8WalrusBatchObjectsV1({ transport, transactionDigest, transactionBytesBase64, owner, members }) {
+  check(Array.isArray(members) && members.length >= 2, 'at least two batch members');
   check(typeof transport?.getFinalizedTransactionEvidence === 'function'
     && typeof transport?.getHistoricalObject === 'function', 'batch historical transport');
   const finalized = await transport.getFinalizedTransactionEvidence({ digest: transactionDigest });
+  return readRegisteredBlobs({ finalized, readObject: input => transport.getHistoricalObject(input),
+    transactionDigest, transactionBytesBase64, owner, members });
+}
+
+export function readMakerV8ArchivedWalrusObjectsV1({ transport, finalized, transactionDigest,
+  transactionBytesBase64, owner, members }) {
+  return readRegisteredBlobs({ finalized,
+    readObject: input => transport.getArchivedPlayerReceiptObject({ ...input, decode: false }),
+    transactionDigest, transactionBytesBase64, owner, members });
+}
+
+async function readRegisteredBlobs({ finalized, readObject, transactionDigest, transactionBytesBase64, owner, members }) {
   check(finalized.digest === transactionDigest && finalized.effectsStatus?.success === true
     && finalized.checkpoint != null && finalized.transactionBcsBase64 === transactionBytesBase64, 'exact finalized batch transaction');
   const { parsed } = decode(bcs.TransactionEffects, finalized.effectsBcsBase64, 16 * 1024 * 1024);
@@ -82,7 +100,7 @@ export async function readMakerV8WalrusBatchObjectsV1({ transport, transactionDi
   check(created.length >= members.length && created.length <= 32, 'bounded created owner objects');
   const objects = [];
   for (const [objectId, change] of created) {
-    const historical = await transport.getHistoricalObject({ objectId, version: BigInt(effects.lamportVersion) });
+    const historical = await readObject({ objectId, version: BigInt(effects.lamportVersion) });
     check(historical.objectId === objectId && historical.version === effects.lamportVersion
       && historical.digest === change.outputState.ObjectWrite[0], 'historical created reference');
     const entry = { reference: { objectId, version: historical.version, digest: historical.digest },
@@ -92,7 +110,7 @@ export async function readMakerV8WalrusBatchObjectsV1({ transport, transactionDi
       === `${MAKER_V8_WALRUS_ORIGINAL_PACKAGE_ID}::blob::Blob`) objects.push(entry);
   }
   const evidence = { effectsBcsBase64: finalized.effectsBcsBase64, objects };
-  return freeze({ mapping: assertMakerV8WalrusBatchObjectsV1(evidence, { transactionDigest, owner, members }), evidence });
+  return freeze({ mapping: assertRegisteredBlobs(evidence, { transactionDigest, owner, members }), evidence });
 }
 function check(ok, label) {
   if (!ok) throw Object.assign(new Error(`Invalid Walrus execution evidence: ${label}`), { code: 'MAKER_V8_WALRUS_EXECUTION_INVALID' });
