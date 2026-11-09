@@ -6311,21 +6311,26 @@ export function createOriginalProductApp({
       : review?.releaseId ? 'Pack release confirmed on Sui.'
         : review?.needsVerifiedQuote ? 'A verified storage quote is required. Refresh to read a new quote.'
           : review?.executionEnabled === false ? 'Pack signing and broadcast are disabled.'
-            : review?.nextAction === 'SIGN' ? 'Review this transaction before opening your wallet.'
+            : review?.nextAction === 'SIGN' ? (review.retiredDigest
+              ? 'The original transaction expired before execution. Review the replacement before opening your wallet.'
+              : 'Review this transaction before opening your wallet.')
               : review?.signatureOutcomeUnknown ? 'The wallet response is unknown. Check the original transaction before any new signature.'
-                : review?.nextAction === 'RECOVER' ? 'Continue the saved step. This can upload or send the previously signed transaction.'
-                : review?.status === 'FAILED' ? 'The saved Pack publication failed. Check the recorded transaction.'
-                  : editor.transportPinned ? 'A saved storage attempt is available. Open its current step.'
-                    : 'Prepare the next Pack publication step.';
+                : review?.expiredTransactionPending ? 'The transaction expired. Check its original digest for a finalized receipt.'
+                  : review?.nextAction === 'RECOVER' ? 'Continue the saved step. This can upload or send the previously signed transaction.'
+                    : review?.status === 'FAILED' ? 'The saved Pack publication failed. Check the recorded transaction.'
+                      : editor.transportPinned ? 'A saved storage attempt is available. Open its current step.'
+                        : 'Prepare the next Pack publication step.';
     const ready = review?.nextAction && !editor.publicationError;
-    const next = review?.nextAction === 'SIGN' ? 'Review in wallet' : 'Continue saved step';
+    const next = review?.nextAction === 'SIGN' ? 'Review in wallet'
+      : review?.expiredTransactionPending ? 'Check original receipt' : 'Continue saved step';
     return `<section class="v4-pack-boundary-note" data-pack-publication>
       <h3>Publish Pack to Mainnet</h3><p role="status">${escapeHtml(status)}</p>
       ${editor.publicationError ? `<p role="alert">${escapeHtml(editor.publicationError)}</p>` : ''}
       ${line('Stage', review?.stage)}${line('Resource', review?.resource)}
       ${line('Walrus relay tip (MIST)', quote?.relayTipMist)}${line('Walrus total (FROST)', quote?.walrusTotalCostFrost)}
       ${line('Storage epochs', step?.storageEpochs)}${line('Gas budget (MIST)', step?.gasBudgetMist)}
-      ${line('Transaction digest', review?.digest)}${line('Pack Release ID', review?.releaseId)}
+      ${line('Transaction digest', review?.digest)}${line('Expired transaction digest', review?.retiredDigest)}
+      ${line('Pack Release ID', review?.releaseId)}
       <button type="button" data-action="review-pack-publication"${disabled}>${review ? 'Refresh publication status' : 'Prepare publication review'}</button>
       ${ready ? `<button type="button" data-action="advance-pack-publication" data-pack-review-id="${escapeHtml(review.id)}"${disabled}>${escapeHtml(next)}</button>` : ''}
     </section>`;

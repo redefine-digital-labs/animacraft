@@ -13,6 +13,7 @@ import {
 } from './maker-v8-chain.js';
 import {
   assertFinalizedMakerV8CompilerTransactionV8,
+  makerV8FinalizedEffectsOutputRefs,
 } from './maker-v8-browser.js';
 import {
   MAKER_V8_PACK_CHAIN_READBACK_SCHEMA,
@@ -38,6 +39,7 @@ export const MAKER_V8_PACK_PUBLICATION_ADAPTERS_SCHEMA =
 const EXACT_ID = /^0x[0-9a-f]{64}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const UINT = /^(?:0|[1-9][0-9]*)$/;
+const certifiedArchiveClients = new WeakMap();
 
 export class MakerV8PackPublicationAdaptersError extends Error {
   constructor(code, message, details = undefined) {
@@ -153,7 +155,7 @@ function transactionData(value, expected) {
     || kind !== expected.kindBytes || expected.digest !== undefined && digest !== expected.digest) {
     fail('MAKER_V8_PACK_ADAPTER_TRANSACTION_DRIFT', 'Pack TransactionData differs from its exact signer, kind, or digest.');
   }
-  return freeze({ raw, base64: value, digest });
+  return freeze({ raw, base64: value, digest, validity: parsed.V1.expiration.ValidDuring ?? null });
 }
 
 function executionConfig(value) {
@@ -177,6 +179,21 @@ async function assertPinnedMainnet(client) {
   const observed = typeof result === 'string' ? result : result?.chainIdentifier;
   if (observed !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST) {
     fail('MAKER_V8_PACK_ADAPTER_NETWORK_DRIFT', 'Pack publication transport is not pinned to Sui Mainnet.');
+  }
+}
+
+function finalizedQuery(evidence) {
+  return freeze({
+    status: evidence.effectsStatus.success ? 'FINALIZED_SUCCESS' : 'FINALIZED_FAILURE',
+    digest: evidence.digest, epoch: evidence.epoch,
+    effectsFingerprint: `0x${hashBytes(evidence.effectsBcs)}`,
+    eventsDigest: evidence.eventsDigest, error: evidence.effectsStatus.error, absence: null,
+  });
+}
+
+function assertCertifiedArchive(client, evidence) {
+  if (certifiedArchiveClients.get(evidence) !== client) {
+    fail('MAKER_V8_PACK_ADAPTER_ARCHIVE_DRIFT', 'Pack readback requires archive evidence certified by its Mainnet transport.');
   }
 }
 
@@ -278,13 +295,37 @@ export function createMakerV8PackPublicationBoundaryV8({
       return freeze({ status: success ? 'SUCCESS' : 'FAILURE' });
     },
 
+    async recoverArchivedFinality(input) {
+      exact(input, ['bytes', 'digest', 'signer', 'kindBytes'], 'Pack archive request');
+      const signer = address(input.signer, 'Pack signer');
+      const proof = transactionData(input.bytes, { signer, kindBytes: input.kindBytes, digest: input.digest });
+      if (proof.validity?.chain !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST) {
+        fail('MAKER_V8_PACK_ADAPTER_ARCHIVE_DRIFT', 'Pack archive requires the original Mainnet epoch window.');
+      }
+      await assertPinnedMainnet(client);
+      const evidence = await client.getArchivedPlayerTransactionEvidence({ digest: proof.digest, decodeEvents: true });
+      await assertPinnedMainnet(client);
+      if (evidence === null) return null;
+      const epoch = BigInt(decimal(evidence.epoch, 'Pack archived epoch'));
+      if (evidence.digest !== proof.digest || evidence.transactionBcsBase64 !== proof.base64
+        || evidence.sender !== signer || epoch < BigInt(proof.validity.minEpoch) || epoch > BigInt(proof.validity.maxEpoch)) {
+        fail('MAKER_V8_PACK_ADAPTER_ARCHIVE_DRIFT', 'Certified archive differs from the exact Pack transaction or its validity window.');
+      }
+      const query = finalizedQuery(evidence);
+      certifiedArchiveClients.set(evidence, client);
+      return freeze({ query, evidence });
+    },
+
     async recoverFinalizedSignature(input) {
-      exact(input, ['bytes', 'digest', 'signer', 'kindBytes', 'query'], 'Pack finalized signature request');
+      exact(input, ['bytes', 'digest', 'signer', 'kindBytes', 'query',
+        ...(Object.hasOwn(input, 'archived') ? ['archived'] : []),
+      ], 'Pack finalized signature request');
       const signer = address(input.signer, 'Pack signer');
       const kind = transactionKind(input.kindBytes, 'Pack descriptor kind');
       const proof = transactionData(input.bytes, { signer, kindBytes: kind.base64, digest: input.digest });
+      if (input.archived != null) assertCertifiedArchive(client, input.archived);
       await assertPinnedMainnet(client);
-      const evidence = await client.getFinalizedTransactionEvidence({ digest: proof.digest });
+      const evidence = input.archived ?? await client.getFinalizedTransactionEvidence({ digest: proof.digest });
       await assertPinnedMainnet(client);
       const query = input.query;
       if (query?.status !== 'FINALIZED_SUCCESS' || query.digest !== proof.digest
@@ -495,6 +536,43 @@ function eventFields(event, expectedType, sender, label) {
   return event.parsedJson;
 }
 
+async function readArchivedPackStage(client, evidence, query, artifact, descriptor) {
+  assertCertifiedArchive(client, evidence);
+  const proof = transactionData(artifact.base64, {
+    signer: descriptor.signer, kindBytes: descriptor.kindBytes, digest: query.digest,
+  });
+  const observed = finalizedQuery(evidence);
+  if (evidence.transactionBcsBase64 !== proof.base64 || evidence.sender !== descriptor.signer
+    || observed.status !== query.status || observed.digest !== query.digest || observed.epoch !== query.epoch
+    || observed.effectsFingerprint !== query.effectsFingerprint || observed.eventsDigest !== query.eventsDigest) {
+    fail('MAKER_V8_PACK_ADAPTER_ARCHIVE_DRIFT', 'Certified archive differs from the exact successful Pack receipt.');
+  }
+  const refs = makerV8FinalizedEffectsOutputRefs(evidence.effectsBcs, query.digest);
+  const created = new Set(makerV8FinalizedEffectsOutputRefs(evidence.effectsBcs, query.digest, {
+    createdOnly: true,
+  }).map(ref => ref.objectId));
+  const objectChanges = await Promise.all(refs.map(async (ref) => {
+    const object = await client.getArchivedPlayerReceiptObject({
+      objectId: ref.objectId, version: BigInt(ref.version), decode: false,
+    });
+    if (object.objectId !== ref.objectId || object.version !== ref.version || object.digest !== ref.digest
+      || object.previousTransaction !== query.digest) {
+      fail('MAKER_V8_PACK_READBACK_HISTORY_DRIFT', 'Archived Pack output differs from the certified effects reference.');
+    }
+    return {
+      type: created.has(ref.objectId) ? 'created' : 'mutated', objectType: object.type,
+      objectId: ref.objectId, version: ref.version, digest: ref.digest,
+    };
+  }));
+  return {
+    response: {
+      events: evidence.events, objectChanges, compilerEffectsOutputRefs: refs,
+      compilerTransactionKindProof: { transactionKindSha256: transactionKind(descriptor.kindBytes).sha256 },
+    },
+    history: { getHistoricalObject: input => client.getArchivedPlayerReceiptObject(input) },
+  };
+}
+
 /** Raw effects + historical BCS/JSON readback for all three Pack publication stages. */
 export function createMakerV8PackReadbackV8({
   client,
@@ -510,86 +588,90 @@ export function createMakerV8PackReadbackV8({
   const types = makerV8ChainTypes(runtime);
   const runtimeOriginal = runtime.roles.runtime.typeOriginPackageId;
   const sealOriginal = runtime.roles.seal.typeOriginPackageId;
+  // Definition-field evidence only. The publication cursor must also certify
+  // Release lifecycle/style state before committing its durable checkpoint.
+  async function certifyDefinitionStep({ value, plan, ordinal, options, query }, archivedReadback = null) {
+    options = structuredClone(options);
+    if (query?.status !== 'FINALIZED_SUCCESS') {
+      fail('MAKER_V8_PACK_READBACK_FINALITY_INVALID', 'Definition readback requires a finalized successful digest.');
+    }
+    const digest = suiDigest(query.digest, 'Definition finalized digest');
+    if (options?.runtimePackageId !== runtime.roles.runtime.callablePackageId
+      || options?.corePackageId !== runtime.roles.core.callablePackageId
+      || options?.coreOriginalPackageId !== runtime.roles.core.typeOriginPackageId
+      || options?.paymentCoinType !== runtime.paymentCoinType) {
+      fail('MAKER_V8_PACK_READBACK_DEFINITION_DRIFT', 'Definition compiler tuple differs from the readback runtime.');
+    }
+    // Rebuild from the private compiler plan proof; serialized ranges alone
+    // cannot choose which historical prefix counts as publication progress.
+    const built = await buildMakerV8PackDefinitionStepV8(value, plan, ordinal, options);
+    const expected = Transaction.fromKind(built.kindBytesBase64);
+    expected.setSender(options.signer);
+    const response = archivedReadback?.response ?? await readFinalized(client, digest, expected);
+    const history = archivedReadback?.history ?? client;
+    const kindSha256 = hashBytes(fromBase64(built.kindBytesBase64));
+    if (response.compilerTransactionKindProof.transactionKindSha256 !== kindSha256) {
+      fail('MAKER_V8_PACK_READBACK_KIND_DRIFT', 'Finalized definition TransactionKind differs from its compiled step.');
+    }
+    const finalized = built.step.stage === 'FINALIZE';
+    const keyType = `${runtimeOriginal}::runtime_v8::PackDefinitions${finalized ? '' : 'Draft'}KeyV8`;
+    const valueType = `${runtimeOriginal}::runtime_v8::PackDefinitions${finalized ? '' : 'Draft'}V8`;
+    const fieldType = `0x2::dynamic_field::Field<${keyType},${valueType}>`;
+    const fieldId = deriveDynamicFieldID(options.releaseRef.objectId, keyType, Uint8Array.of(0));
+    const ref = outputChange(response, fieldType, 'Pack definition field', fieldId);
+    const object = await historical(history, ref, fieldType, digest, 'Pack definition field');
+    const kinds = ['tracks', 'colors', 'parts', 'rules', 'visibility'];
+    const prefix = kinds.flatMap(kind => value.rows[kind].map(row => ({ kind, row }))).slice(0, built.step.end);
+    const rows = { semantic_pack_id: value.rows.semantic_pack_id,
+      ...Object.fromEntries(kinds.map(kind => [kind, prefix.filter(entry => entry.kind === kind).map(entry => entry.row)])) };
+    const commitment = Array.from(plan.definitionCommitment.match(/../g), byte => parseInt(byte, 16));
+    const stored = finalized ? { version: '8', release_id: options.releaseRef.objectId,
+      release_content_commitment: Array.from(options.releaseContentCommitment.match(/../g), byte => parseInt(byte, 16)),
+      rows, commitment } : { next_chunk: String(built.step.stage === 'BEGIN' ? 0 : built.step.chunkIndex + 1),
+      expected_commitment: commitment, rows };
+    const schema = bcs.struct('Field', { id: bcs.Address,
+      name: bcs.struct('Key', { dummy_field: bcs.bool() }),
+      value: finalized ? MAKER_V8_PACK_DEFINITIONS_BCS : MAKER_V8_PACK_DEFINITIONS_DRAFT_BCS });
+    const expectedBytes = schema.serialize({ id: fieldId, name: { dummy_field: false }, value: stored }).toBytes();
+    if (object.owner?.ObjectOwner !== options.releaseRef.objectId
+      || !sameBytes(object.contentBcs, expectedBytes) || response.events.length !== 0) {
+      fail('MAKER_V8_PACK_READBACK_DEFINITION_DRIFT', 'Historical definition owner, prefix, ordinal or commitment differs from the exact compiled step.');
+    }
+    if (built.step.stage === 'COLOR_BEGIN' || built.step.stage === 'COLOR_APPEND') {
+      const colorKey = `${runtimeOriginal}::runtime_v8::PackColorDraftKeyV8`;
+      const colorType = `0x2::dynamic_field::Field<${colorKey},${options.coreOriginalPackageId}::base_registry_v8::ColorChannelDraftV2>`;
+      const colorId = deriveDynamicFieldID(options.releaseRef.objectId, colorKey, Uint8Array.of(0));
+      const colorRef = outputChange(response, colorType, 'Pack pending Color', colorId);
+      const color = await historical(history, colorRef, colorType, digest, 'Pack pending Color');
+      const row = value.rows.colors[built.step.start - value.rows.tracks.length];
+      const fieldSchema = bcs.struct('Field', { id: bcs.Address,
+        name: bcs.struct('Key', { dummy_field: bcs.bool() }), value: MAKER_V8_COLOR_CHANNEL_DRAFT_BCS_V2 });
+      const expectedColor = fieldSchema.serialize({ id: colorId, name: { dummy_field: false }, value: {
+        ...row, expected_swatches: row.swatches.length, swatches: row.swatches.slice(0, built.step.swatchEnd),
+      } }).toBytes();
+      if (color.owner?.ObjectOwner !== options.releaseRef.objectId || !sameBytes(color.contentBcs, expectedColor)) {
+        fail('MAKER_V8_PACK_READBACK_DEFINITION_DRIFT', 'Historical pending Color differs from the exact swatch prefix.');
+      }
+    }
+    return freeze({ ordinal, stage: built.step.stage, digest, kindSha256,
+      field: objectRef(object), definitionCommitment: plan.definitionCommitment,
+      observedRows: built.step.end, nextChunk: finalized ? built.step.chunkIndex : Number(stored.next_chunk) });
+  }
   return freeze({
     schemaVersion: MAKER_V8_PACK_PUBLICATION_ADAPTERS_SCHEMA,
-    // Definition-field evidence only. The publication cursor must also certify
-    // Release lifecycle/style state before committing its durable checkpoint.
-    async certifyDefinitionStep({ value, plan, ordinal, options, query }) {
-      options = structuredClone(options);
-      if (query?.status !== 'FINALIZED_SUCCESS') {
-        fail('MAKER_V8_PACK_READBACK_FINALITY_INVALID', 'Definition readback requires a finalized successful digest.');
-      }
-      const digest = suiDigest(query.digest, 'Definition finalized digest');
-      if (options?.runtimePackageId !== runtime.roles.runtime.callablePackageId
-        || options?.corePackageId !== runtime.roles.core.callablePackageId
-        || options?.coreOriginalPackageId !== runtime.roles.core.typeOriginPackageId
-        || options?.paymentCoinType !== runtime.paymentCoinType) {
-        fail('MAKER_V8_PACK_READBACK_DEFINITION_DRIFT', 'Definition compiler tuple differs from the readback runtime.');
-      }
-      // Rebuild from the private compiler plan proof; serialized ranges alone
-      // cannot choose which historical prefix counts as publication progress.
-      const built = await buildMakerV8PackDefinitionStepV8(value, plan, ordinal, options);
-      const expected = Transaction.fromKind(built.kindBytesBase64);
-      expected.setSender(options.signer);
-      const response = await readFinalized(client, digest, expected);
-      const kindSha256 = hashBytes(fromBase64(built.kindBytesBase64));
-      if (response.compilerTransactionKindProof.transactionKindSha256 !== kindSha256) {
-        fail('MAKER_V8_PACK_READBACK_KIND_DRIFT', 'Finalized definition TransactionKind differs from its compiled step.');
-      }
-      const finalized = built.step.stage === 'FINALIZE';
-      const keyType = `${runtimeOriginal}::runtime_v8::PackDefinitions${finalized ? '' : 'Draft'}KeyV8`;
-      const valueType = `${runtimeOriginal}::runtime_v8::PackDefinitions${finalized ? '' : 'Draft'}V8`;
-      const fieldType = `0x2::dynamic_field::Field<${keyType},${valueType}>`;
-      const fieldId = deriveDynamicFieldID(options.releaseRef.objectId, keyType, Uint8Array.of(0));
-      const ref = outputChange(response, fieldType, 'Pack definition field', fieldId);
-      const object = await historical(client, ref, fieldType, digest, 'Pack definition field');
-      const kinds = ['tracks', 'colors', 'parts', 'rules', 'visibility'];
-      const prefix = kinds.flatMap(kind => value.rows[kind].map(row => ({ kind, row }))).slice(0, built.step.end);
-      const rows = { semantic_pack_id: value.rows.semantic_pack_id,
-        ...Object.fromEntries(kinds.map(kind => [kind, prefix.filter(entry => entry.kind === kind).map(entry => entry.row)])) };
-      const commitment = Array.from(plan.definitionCommitment.match(/../g), byte => parseInt(byte, 16));
-      const stored = finalized ? { version: '8', release_id: options.releaseRef.objectId,
-        release_content_commitment: Array.from(options.releaseContentCommitment.match(/../g), byte => parseInt(byte, 16)),
-        rows, commitment } : { next_chunk: String(built.step.stage === 'BEGIN' ? 0 : built.step.chunkIndex + 1),
-        expected_commitment: commitment, rows };
-      const schema = bcs.struct('Field', { id: bcs.Address,
-        name: bcs.struct('Key', { dummy_field: bcs.bool() }),
-        value: finalized ? MAKER_V8_PACK_DEFINITIONS_BCS : MAKER_V8_PACK_DEFINITIONS_DRAFT_BCS });
-      const expectedBytes = schema.serialize({ id: fieldId, name: { dummy_field: false }, value: stored }).toBytes();
-      if (object.owner?.ObjectOwner !== options.releaseRef.objectId
-        || !sameBytes(object.contentBcs, expectedBytes) || response.events.length !== 0) {
-        fail('MAKER_V8_PACK_READBACK_DEFINITION_DRIFT', 'Historical definition owner, prefix, ordinal or commitment differs from the exact compiled step.');
-      }
-      if (built.step.stage === 'COLOR_BEGIN' || built.step.stage === 'COLOR_APPEND') {
-        const colorKey = `${runtimeOriginal}::runtime_v8::PackColorDraftKeyV8`;
-        const colorType = `0x2::dynamic_field::Field<${colorKey},${options.coreOriginalPackageId}::base_registry_v8::ColorChannelDraftV2>`;
-        const colorId = deriveDynamicFieldID(options.releaseRef.objectId, colorKey, Uint8Array.of(0));
-        const colorRef = outputChange(response, colorType, 'Pack pending Color', colorId);
-        const color = await historical(client, colorRef, colorType, digest, 'Pack pending Color');
-        const row = value.rows.colors[built.step.start - value.rows.tracks.length];
-        const fieldSchema = bcs.struct('Field', { id: bcs.Address,
-          name: bcs.struct('Key', { dummy_field: bcs.bool() }), value: MAKER_V8_COLOR_CHANNEL_DRAFT_BCS_V2 });
-        const expectedColor = fieldSchema.serialize({ id: colorId, name: { dummy_field: false }, value: {
-          ...row, expected_swatches: row.swatches.length, swatches: row.swatches.slice(0, built.step.swatchEnd),
-        } }).toBytes();
-        if (color.owner?.ObjectOwner !== options.releaseRef.objectId || !sameBytes(color.contentBcs, expectedColor)) {
-          fail('MAKER_V8_PACK_READBACK_DEFINITION_DRIFT', 'Historical pending Color differs from the exact swatch prefix.');
-        }
-      }
-      return freeze({ ordinal, stage: built.step.stage, digest, kindSha256,
-        field: objectRef(object), definitionCommitment: plan.definitionCommitment,
-        observedRows: built.step.end, nextChunk: finalized ? built.step.chunkIndex : Number(stored.next_chunk) });
-    },
-    async certifyStage({ compiled, descriptor, predecessor, query, artifact, definitions = null }) {
+    certifyDefinitionStep: input => certifyDefinitionStep(input),
+    async certifyStage({ compiled, descriptor, predecessor, query, artifact, definitions = null, archived = null }) {
       if (query?.status !== 'FINALIZED_SUCCESS' || query.digest !== artifact.digest
         || descriptor.signer !== compiled.signer || artifact.digest !== descriptorDigest(artifact)) {
         fail('MAKER_V8_PACK_READBACK_FINALITY_INVALID', 'Pack readback requires one exact successful digest.');
       }
       const expected = Transaction.fromKind(descriptor.kindBytes);
       expected.setSender(compiled.signer);
-      const response = await readFinalized(
-        client, artifact.digest, expected,
+      const archivedReadback = archived === null ? null : await readArchivedPackStage(
+        client, archived, query, artifact, descriptor,
       );
+      const response = archivedReadback?.response ?? await readFinalized(client, artifact.digest, expected);
+      const history = archivedReadback?.history ?? client;
       if (response.compilerTransactionKindProof.transactionKindSha256 !== descriptor.kindSha256) {
         fail('MAKER_V8_PACK_READBACK_KIND_DRIFT', 'Finalized Pack TransactionKind differs from the compiler descriptor.');
       }
@@ -597,7 +679,7 @@ export function createMakerV8PackReadbackV8({
         if (!definitions || descriptor.startStyle !== 0 || descriptor.endStyle !== 0) {
           fail('MAKER_V8_PACK_READBACK_DEFINITION_DRIFT', 'Definition stage requires compiler-derived rows with an unchanged Style cursor.');
         }
-        const proof = await this.certifyDefinitionStep({ ...definitions, ordinal: descriptor.ordinal - 1, query });
+        const proof = await certifyDefinitionStep({ ...definitions, ordinal: descriptor.ordinal - 1, query }, archivedReadback);
         if (`DEFINITIONS_${proof.stage}` !== descriptor.stage || proof.kindSha256 !== descriptor.kindSha256) {
           fail('MAKER_V8_PACK_READBACK_DEFINITION_DRIFT', 'Definition history differs from the publication cursor.');
         }
@@ -610,9 +692,9 @@ export function createMakerV8PackReadbackV8({
         const adminRef = outputChange(response, types.packAdminCap, 'PackAdminCap');
         const treasuryRef = outputChange(response, types.packTreasury, 'PackTreasury');
         [release, admin, treasury] = await Promise.all([
-          historical(client, releaseRef, types.packRelease, artifact.digest, 'PackRelease'),
-          historical(client, adminRef, types.packAdminCap, artifact.digest, 'PackAdminCap'),
-          historical(client, treasuryRef, types.packTreasury, artifact.digest, 'PackTreasury'),
+          historical(history, releaseRef, types.packRelease, artifact.digest, 'PackRelease'),
+          historical(history, adminRef, types.packAdminCap, artifact.digest, 'PackAdminCap'),
+          historical(history, treasuryRef, types.packTreasury, artifact.digest, 'PackTreasury'),
         ]);
         const releaseFields = validateRelease(release, compiled, descriptor, 0);
         validateAdmin(admin, release, compiled);
@@ -630,7 +712,7 @@ export function createMakerV8PackReadbackV8({
         const releaseRef = outputChange(
           response, types.packRelease, 'PackRelease', predecessor.release.objectRef.objectId,
         );
-        release = await historical(client, releaseRef, types.packRelease, artifact.digest, 'PackRelease');
+        release = await historical(history, releaseRef, types.packRelease, artifact.digest, 'PackRelease');
         admin = predecessor.adminCap;
         treasury = predecessor.treasury;
         validateRelease(release, compiled, descriptor, descriptor.stage === 'FINALIZE' ? 2 : 0);
@@ -638,7 +720,7 @@ export function createMakerV8PackReadbackV8({
           const registryRef = outputChange(
             response, types.packRegistry, 'PackRegistry', compiled.inputs.packRegistry.objectId,
           );
-          const registry = await historical(client, registryRef, types.packRegistry, artifact.digest, 'PackRegistry');
+          const registry = await historical(history, registryRef, types.packRegistry, artifact.digest, 'PackRegistry');
           packRegistryRevision = decimal(field(registry.parsed, 'revision', 'PackRegistry'), 'PackRegistry.revision');
           const expectedRevision = (BigInt(compiled.document.admission.expectedPackRegistryRevision) + 1n).toString();
           if (packRegistryRevision !== expectedRevision || response.events.length !== 3) {
@@ -686,7 +768,7 @@ export function createMakerV8PackReadbackV8({
               compiled.protection.authority.sealRegistry.objectId,
             );
             const registry = await historical(
-              client,
+              history,
               registryRef,
               types.sealRegistry,
               artifact.digest,

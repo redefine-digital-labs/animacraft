@@ -2251,6 +2251,8 @@ export function createMakerV8ProductBridge({
           releaseDigest: chain?.finalizedDigest ?? null,
           needsVerifiedQuote: Boolean(step && !canSign),
           signatureOutcomeUnknown: transport?.upload?.reason === 'SIGNATURE_OUTCOME_UNKNOWN' || outcome?.status === 'SIGNING',
+          expiredTransactionPending: outcome?.code === 'PACK_TRANSACTION_EXPIRED',
+          retiredDigest: outcome?.retiredDigest ?? null,
         });
         currentReview = { scope, review };
         return freeze({ draft, review });
@@ -2324,7 +2326,7 @@ export function createMakerV8ProductBridge({
         draft = result.draft ?? result;
       }
       if (result?.plan?.status === 'ACTIVE'
-        && result.plan.current?.outcome?.status === 'OUTCOME_PENDING') {
+        && result.plan.current?.outcome?.status === 'OUTCOME_PENDING' && result.plan.current.outcome.absence) {
         result = await replayPackPublication({
           draftId: draft.draftId,
           expectedRevision: draft.revision,

@@ -2037,7 +2037,7 @@ export function createMakerV8SuiGrpcTransport({
     verifyArchiveCheckpointQuorum(summary, epoch, committee.epoch.committee, checkpoint.validatorSignatures);
   };
 
-  const getArchivedPlayerTransactionEvidence = async ({ digest: transactionDigest }) => {
+  const getArchivedPlayerTransactionEvidence = async ({ digest: transactionDigest, decodeEvents = false }) => {
     const expectedDigest = digest(transactionDigest, 'receipt digest');
     const { transaction } = await queryReceiptArchive(ARCHIVE_TRANSACTION_QUERY, { digest: expectedDigest, after: null });
     if (transaction === null) return null;
@@ -2111,6 +2111,11 @@ export function createMakerV8SuiGrpcTransport({
       fail('MAKER_V8_SUI_ARCHIVE_TRANSACTION_DRIFT', 'Archived sender differs from signed TransactionData.');
     }
     await assertArchiveCheckpoint(evidence);
+    if (decodeEvents) {
+      for (const event of events) {
+        await decodeHistoricalMove(event.type, fromBase64(event.bcs), event.parsedJson);
+      }
+    }
     return Object.freeze({ ...evidence, events: Object.freeze(events) });
   };
 
