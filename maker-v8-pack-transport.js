@@ -633,6 +633,7 @@ export function createMakerV8PackTransportV8({
       }
     }
     const uploadedAssets = [];
+    let hasRegisteredAsset = false;
     for (const asset of checked.assets) {
       const style = document.styles.find((entry) => entry.asset.assetId === asset.assetId);
       let content = {
@@ -662,13 +663,21 @@ export function createMakerV8PackTransportV8({
           mediaType: asset.mediaType,
           bytesBase64: asset.bytesBase64,
         });
+        if (upload.status === 'SIGNATURE_REQUIRED' && upload.stage === 'REGISTER'
+          && typeof publisher.reuseCertifiedPublicAsset === 'function') {
+          upload = await publisher.reuseCertifiedPublicAsset(uploadId) ?? upload;
+        }
+        if (operation === 'SIGN_REVIEWED' && review?.id === uploadId && upload.reusedCertification === true) {
+          fail('MAKER_V8_PACK_TRANSPORT_REVIEW_STALE', 'This Pack asset is already certified. Refresh the Pack storage review.', 'CONTEXT');
+        }
       }
       if (upload.status !== 'COMPLETE') {
-        upload = await advanceUpload(upload, operation, review, assertCurrent, uploadedAssets.length === 0);
+        upload = await advanceUpload(upload, operation, review, assertCurrent, !hasRegisteredAsset);
         if (upload.status !== 'COMPLETE') {
           return pendingUpload('ASSET', upload, uploadedAssets.length, asset.assetId, operation);
         }
       }
+      hasRegisteredAsset ||= upload.reusedCertification !== true;
       uploadedAssets.push(freeze({
         assetId: asset.assetId,
         blobId: upload.blobId,
@@ -704,7 +713,7 @@ export function createMakerV8PackTransportV8({
       bytesBase64: manifest.bytesBase64,
     });
     if (upload.status !== 'COMPLETE') {
-      upload = await advanceUpload(upload, operation, review, assertCurrent);
+      upload = await advanceUpload(upload, operation, review, assertCurrent, !hasRegisteredAsset);
       if (upload.status !== 'COMPLETE') {
         return pendingUpload('MANIFEST', upload, uploadedAssets.length, null, operation);
       }

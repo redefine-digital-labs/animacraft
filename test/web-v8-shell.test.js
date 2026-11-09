@@ -308,7 +308,7 @@ test('CI pins the verified Sui CLI and gates all fresh web and Move artifacts', 
     new URL('../.github/workflows/repository-hygiene.yml', import.meta.url),
     'utf8',
   );
-  assert.match(workflow, /SUI_RELEASE:\s*mainnet-v1\.80\.1/);
+  assert.match(workflow, /SUI_ARCHIVE_ASSET_ID:\s*'584195611'/);
   assert.match(workflow, /SUI_ARCHIVE:\s*sui-mainnet-v1\.80\.1-ubuntu-x86_64\.tgz/);
   assert.match(workflow, /SUI_ARCHIVE_SHA256:\s*97f9aed10e0c2fe3204ce4639ac992e1449b17c14f22f30e9f903ead54ac7336/);
   assert.match(workflow, /sha256sum --check --strict/);

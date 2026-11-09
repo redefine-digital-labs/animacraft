@@ -262,6 +262,75 @@ test('Pack storage reviews exact bytes and resumes finalized registration before
   assert.equal(guards, 1);
 });
 
+test('Pack drafts reuse the same certified artwork and keep their manifest reviews separate', async () => {
+  const uploads = new Map();
+  const signed = [];
+  const recovered = [];
+  const manifests = [];
+  const probes = [];
+  let certified = false;
+  const publisher = {
+    async load(uploadId) { return uploads.get(uploadId) ?? null; },
+    async prepare({ uploadId, mediaType, bytesBase64 }) {
+      const asset = mediaType === 'image/png';
+      uploads.set(uploadId, { uploadId, revision: 1, status: 'SIGNATURE_REQUIRED', stage: 'REGISTER',
+        blobId: asset ? 'same_public_art_blob_01' : `manifest_blob_${manifests.length}` });
+      if (!asset) manifests.push(JSON.parse(Buffer.from(bytesBase64, 'base64')));
+    },
+    async prepareReview(uploadId) {
+      return { id: uploadId, revision: 1, stage: 'REGISTER', digest: digest(uploads.size) };
+    },
+    async reuseCertifiedPublicAsset(uploadId) {
+      probes.push(uploadId);
+      if (!certified) return null;
+      const next = { ...uploads.get(uploadId), status: 'COMPLETE', stage: 'COMPLETE', reusedCertification: true };
+      uploads.set(uploadId, next);
+      return next;
+    },
+    async signReviewed(uploadId, review, beforeWallet) {
+      await beforeWallet();
+      signed.push(review.digest);
+      const pending = { ...uploads.get(uploadId), status: 'RECOVERY_REQUIRED', transactionDigest: review.digest };
+      uploads.set(uploadId, pending);
+      return pending;
+    },
+    async requestSignature() { assert.fail('Reviewed publication must use its exact review'); },
+    async resume(uploadId, expected) {
+      recovered.push(expected.transactionDigest);
+      const completed = { ...uploads.get(uploadId), status: 'COMPLETE' };
+      uploads.set(uploadId, completed);
+      return completed;
+    },
+  };
+  const transport = createMakerV8PackTransportV8({ publisher });
+  const original = input();
+  const next = input();
+  next.draft.draftId = next.assets[0].draftId = 'moon-pack-paid';
+  next.draft.document.metadata.semanticPackId = 'moon_pack_paid';
+  next.draft.document.access = { kind: 'PAID', priceAtomic: '1000' };
+  const first = await transport.prepareReview(original);
+  const stale = await transport.prepareReview(next);
+  await transport.signReviewed(original, first.step);
+  certified = true;
+  const probeCount = probes.length;
+  assert.equal((await transport.recover(original)).stage, 'MANIFEST');
+  assert.equal(probes.length, probeCount);
+  assert.deepEqual(recovered, [first.step.digest]);
+  await assert.rejects(transport.signReviewed(next, stale.step), { code: 'MAKER_V8_PACK_TRANSPORT_REVIEW_STALE' });
+  assert.deepEqual(signed, [first.step.digest]);
+  const second = await transport.prepareReview(next);
+  assert.equal(second.stage, 'MANIFEST');
+  assert.equal(second.completedAssets, 1);
+  assert.notEqual(second.step.id, stale.step.id);
+  let guard;
+  await transport.signReviewed(next, second.step, step => { guard = step; });
+  assert.deepEqual(guard, { firstRegistration: true });
+  assert.equal(manifests.length, 2);
+  assert.deepEqual(manifests.map(manifest => manifest.content.styles[0].asset.blobId),
+    ['same_public_art_blob_01', 'same_public_art_blob_01']);
+  assert.deepEqual(manifests.map(manifest => manifest.content.access.priceAtomic), ['0', '1000']);
+});
+
 test('Pack transport rejects substituted bytes, incomplete sets, protected rows and author drift', async () => {
   const { transport, calls } = harness();
   const substituted = input();
