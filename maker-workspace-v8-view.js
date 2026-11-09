@@ -684,6 +684,7 @@ export function projectMakerV8WorkspaceView(documentValue, stateValue = {}, capa
       packId: String(pack?.packId || pack?.key || ''),
       namespace: String(pack?.namespace || ''),
       version: String(pack?.version || pack?.parentVersion || ''),
+      releaseVersion: String(pack?.releaseVersion || ''),
       revision: Number.isSafeInteger(pack?.revision) ? pack.revision : 0,
       chainOnly: pack?.chainOnly === true,
       publishable: pack?.publishable === true,
@@ -1308,7 +1309,7 @@ function expansionPacks(view) {
   const rows = view.expansionPacks.map((pack) => {
     const details = pack.chainOnly
       ? tr(view, 'expansionPackLifecycleChainOnly')
-      : `${pack.namespace} · ${pack.version} · ${tr(view, 'packSavedRevision', { revision: pack.revision })}`;
+      : `${pack.namespace} · ${pack.version} · ${pack.releaseVersion ? `Pack v${pack.releaseVersion} · ` : ''}${tr(view, 'packSavedRevision', { revision: pack.revision })}`;
     return `<article class="v4-pack-project-row" data-pack-project-key="${escapeHtml(pack.key)}" data-pack-chain-only="${pack.chainOnly}"><span class="v4-pack-project-summary"><strong>${escapeHtml(pack.name)}</strong><small>${escapeHtml(details)}</small><em>${escapeHtml(tr(view, pack.publishable ? 'packExactParentStatus' : 'packLocalParentStatus'))}</em></span><span class="v4-pack-project-actions"><span class="maker-lifecycle-badge ${escapeHtml(pack.lifecycle.badgeClass)}" data-pack-lifecycle-badge>${escapeHtml(pack.lifecycle.label)}</span><button type="button" data-action="open-expansion-pack-studio" data-pack-project-key="${escapeHtml(pack.key)}" data-pack-id="${escapeHtml(pack.packId)}" data-parent-binding-identity="${escapeHtml(pack.parentBindingIdentity)}"${forcedControlAttributes(view, 'open-expansion-pack-studio', pack.key, pack.chainOnly)}>${escapeHtml(tr(view, pack.chainOnly ? 'expansionPackLifecycleInspect' : 'expansionPackLifecycleOpen'))}</button><button type="button" data-action="manage-expansion-pack-lifecycle" data-pack-project-key="${escapeHtml(pack.key)}" aria-label="${escapeHtml(tr(view, 'expansionPackLifecycleManageAria', { name: pack.name }))}"${controlAttributes(view, 'manage-expansion-pack-lifecycle', pack.key)}>${escapeHtml(tr(view, 'expansionPackLifecycleManage'))}</button></span></article>`;
   }).join('');
   const status = view.expansionPacksStatus === 'loading'
