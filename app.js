@@ -245,6 +245,16 @@ export function createLazyMakerV8PlayerFacade(resolvePlayer) {
       return player.recoverActivePlayerAction(...args);
     },
     getPlayerAction: async (...args) => (await load()).getPlayerAction(...args),
+    getPendingPlayerAction: async (...args) => {
+      const player = await load();
+      return typeof player.getPendingPlayerAction === 'function'
+        ? player.getPendingPlayerAction(...args) : null;
+    },
+    getFinalizedPlayerPackDetaches: async (...args) => {
+      const player = await load();
+      return typeof player.getFinalizedPlayerPackDetaches === 'function'
+        ? player.getFinalizedPlayerPackDetaches(...args) : [];
+    },
   });
 }
 

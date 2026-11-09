@@ -108,8 +108,10 @@ const TOP_LEVEL_FIELDS = Object.freeze([
   'roleConfigIds',
   'makerBindings',
   'nativeSoulIntegration',
+  'playerPackDetach',
 ]);
-const REQUIRED_TOP_LEVEL_FIELDS = TOP_LEVEL_FIELDS.filter((field) => !['makerBindings', 'nativeSoulIntegration'].includes(field));
+const REQUIRED_TOP_LEVEL_FIELDS = TOP_LEVEL_FIELDS.filter((field) =>
+  !['makerBindings', 'nativeSoulIntegration', 'playerPackDetach'].includes(field));
 const NATIVE_FIELDS = ['soulidityCallablePackageId', 'soulidityOriginalPackageId', 'soulidityCallableDigest', 'kioskPackageId', 'walrusPackageId', 'marketConfigV2Id', 'kindRegistryId', 'kioskRegistryId', 'soulTransferPolicyId', 'expectedNativeBinding'];
 const NATIVE_TYPES = ['soulOriginalType', 'soulDefiningType', 'mintWitnessOriginalType', 'mintWitnessDefiningType', 'ownerWitnessOriginalType', 'ownerWitnessDefiningType'];
 const ROLE_FIELDS = Object.freeze(['typeOriginPackageId', 'callablePackageId']);
@@ -250,6 +252,29 @@ function inspectNativeSoulIntegration(source, issues) {
   const objectIds = ['marketConfigV2Id', 'kindRegistryId', 'kioskRegistryId', 'soulTransferPolicyId'].map(key => result[key]);
   if (new Set(objectIds).size !== objectIds.length) issues.push(issue('identity', 'MAKER_V8_NATIVE_OBJECT_ALIAS', 'nativeSoulIntegration', 'Native config, registries and transfer policy must be distinct objects.'));
   return result;
+}
+
+function inspectPlayerPackDetach(source, roles, issues) {
+  if (!hasOwn(source, 'playerPackDetach')) return undefined;
+  const value = source.playerPackDetach;
+  const fields = ['packageId', 'packageDigest', 'upgradeTransactionDigest'];
+  if (!inspectRecordShape(value, 'playerPackDetach', fields, fields, issues)) return undefined;
+  const packageId = inspectId(value, 'packageId', 'playerPackDetach.packageId', issues);
+  if (Object.values(roles).some(role =>
+    role.callablePackageId === packageId || role.typeOriginPackageId === packageId)) {
+    issues.push(issue('lineage', 'MAKER_V8_PACK_DETACH_PACKAGE_INVALID', 'playerPackDetach.packageId',
+      'Player Pack removal requires its own finalized additive Runtime package.'));
+  }
+  for (const key of ['packageDigest', 'upgradeTransactionDigest']) {
+    try {
+      const bytes = fromBase58(value[key]);
+      if (bytes.length !== 32 || toBase58(bytes) !== value[key]) throw new Error('digest');
+    } catch {
+      issues.push(issue('identity', 'MAKER_V8_PACK_DETACH_DIGEST_INVALID', `playerPackDetach.${key}`,
+        'Player Pack removal requires canonical Sui digests.'));
+    }
+  }
+  return { packageId, packageDigest: value.packageDigest, upgradeTransactionDigest: value.upgradeTransactionDigest };
 }
 
 function inspectOptions(value, issues) {
@@ -594,6 +619,7 @@ export function inspectMakerV8Runtime(config, options) {
   const roleConfigIds = inspectRoleConfigIds(source.roleConfigIds, issues);
   const makerBindings = inspectMakerBindings(source.makerBindings, issues);
   const nativeSoulIntegration = inspectNativeSoulIntegration(source, issues);
+  const playerPackDetach = inspectPlayerPackDetach(source, roles, issues);
 
   const runtime = deepFreeze({
     schemaVersion,
@@ -608,6 +634,7 @@ export function inspectMakerV8Runtime(config, options) {
     roleConfigIds,
     makerBindings,
     ...(nativeSoulIntegration === undefined ? {} : { nativeSoulIntegration }),
+    ...(playerPackDetach === undefined ? {} : { playerPackDetach }),
   });
   inspectObjectIdCollisions(runtime, issues);
 

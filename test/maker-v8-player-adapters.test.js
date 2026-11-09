@@ -43,6 +43,8 @@ import {
   certifyMakerV8PlayerFinalizedEventV8,
   assertMakerV8PlayerOwnedItemReadbackV8,
   assertMakerV8PlayerLoadoutLayoutV8,
+  assertMakerV8PlayerPackDetachReadbackV8,
+  projectMakerV8PlayerPackDetachV8,
   createProductionMakerV8PlayerAdaptersV8,
   createMakerV8PlayerBoundaryAdapterV8,
   createMakerV8PlayerCompilerAdapterV8,
@@ -76,6 +78,197 @@ const runtime = (await attestMakerV8Runtime(nativeFixture.rpc, nativeFixture.con
 const keypair = new Ed25519Keypair();
 const signer = keypair.toSuiAddress();
 const rootId = id(300);
+
+function detachFixture() {
+  const removed = id(370), retained = id(371);
+  const binding = (releaseId, value) => ({ releaseId, definitionCommitment: commitment(value) });
+  const layout = {
+    bindings: [binding(removed, '1'), binding(retained, '2')],
+    profiles: [
+      { releaseId: removed, partKey: 'extra', capacity: '1', profileCommitment: commitment('3') },
+      { releaseId: retained, partKey: 'extra', capacity: '1', profileCommitment: commitment('4') },
+    ],
+  };
+  const slot = (source_definition_id, part_key, start, capacity, profile) => ({
+    source_definition_id, part_key, start, capacity, profile_commitment: commitment(profile),
+  });
+  const selection = (selection_index, part_key, source_class, source_definition_id, access_subject) => ({
+    selection_index, part_key, item_key: 'item', style_key: 'style', swatch_key: [],
+    color_channel_key: [], layer_track_key: 'track', asset_blob_id: 'asset-blob',
+    asset_sha256: commitment('5'), asset_content_commitment: commitment('6'), pricing_commitment: commitment('7'),
+    source_class, source_definition_id, access_subject, source_epoch: '0',
+    source_semantic_id: source_class === 1 ? 'pack' : '', protected: false,
+  });
+  const fields = {
+    version: '8', root_id: rootId, root_version: '1', root_content_commitment: commitment('8'),
+    definition_registry_id: id(303), pack_registry_id: id(304), maker_access_pass_id: id(305),
+    maker_access_commitment: commitment('9'), holder: signer, revision: '4', selection_count: '4', commitment: commitment('a'),
+    attached_pack_definitions: layout.bindings.map(row => ({
+      release_id: row.releaseId, definition_commitment: row.definitionCommitment,
+    })),
+    definition_slots: [slot(rootId, 'base', '0', '2', 'b'), slot(removed, 'extra', '2', '1', '3'),
+      slot(retained, 'extra', '3', '1', '4')],
+    selections: [
+      [selection('0', 'base', 2, id(373), id(374))],
+      [selection('1', 'base', 1, removed, id(375))],
+      [selection('2', 'extra', 1, removed, id(375))],
+      [selection('3', 'extra', 1, retained, id(376))],
+    ],
+  };
+  return { removed, retained, layout, fields };
+}
+
+test('Pack detachment preserves external lock positions and projects the exact retained layout', () => {
+  const { removed, retained, layout, fields } = detachFixture();
+  const output = projectMakerV8PlayerPackDetachV8(fields, layout, removed);
+  assert.equal(output.revision, '5');
+  assert.deepEqual(output.layout.bindings.map(row => row.releaseId), [retained]);
+  assert.deepEqual(output.slots.map(({ sourceId, start }) => [sourceId, start]), [[rootId, 0], [retained, 2]]);
+  assert.deepEqual(output.selections.map(row => row && [row.selectionIndex, row.accessSubject]),
+    [[0, id(374)], null, [2, id(376)]]);
+  assert.equal(output.selections[2].assetSha256, commitment('5'));
+  assert.equal(output.selections[2].pricingCommitment, commitment('7'));
+  assert.throws(() => projectMakerV8PlayerPackDetachV8(fields, layout, id(377)),
+    { code: 'MAKER_V8_PLAYER_PACK_NOT_ATTACHED' });
+  fields.selections[3][0].source_class = 2;
+  assert.throws(() => projectMakerV8PlayerPackDetachV8(fields, layout, removed),
+    { code: 'MAKER_V8_PLAYER_PACK_DETACH_LOCK_CONFLICT' });
+});
+
+test('Pack detachment receipt rejects a changed retained asset, holder, or loadout object', () => {
+  const { removed, layout, fields } = detachFixture();
+  const objectId = id(951);
+  const transition = projectMakerV8PlayerPackDetachV8(fields, layout, removed);
+  const record = { input: { releaseId: removed }, plan: { signer, descriptor: {
+    expected: { packDetach: { objectId, releaseId: removed, transition } },
+  } } };
+  const [rootSlot, , retainedSlot] = fields.definition_slots;
+  const [external, , , [pack]] = fields.selections;
+  const finalized = { change: 'mutated', objectId, owner: { kind: 'AddressOwner', value: signer }, fields: {
+    ...fields, revision: '5', selection_count: '2', commitment: commitment('d'),
+    attached_pack_definitions: [fields.attached_pack_definitions[1]],
+    definition_slots: [rootSlot, { ...retainedSlot, start: '2' }],
+    selections: [external, [], [{ ...pack, selection_index: '2' }]],
+  } };
+  assert.equal(assertMakerV8PlayerPackDetachReadbackV8(record, finalized), true);
+  for (const corrupt of [
+    row => { row.fields.selections[2][0].asset_sha256 = commitment('e'); },
+    row => { row.owner.value = id(952); },
+    row => { row.objectId = id(953); },
+  ]) {
+    const drifted = structuredClone(finalized);
+    corrupt(drifted);
+    assert.throws(() => assertMakerV8PlayerPackDetachReadbackV8(record, drifted),
+      { code: 'MAKER_V8_PLAYER_PACK_DETACH_READBACK_DRIFT' });
+  }
+});
+
+test('Pack detachment compiles only the reviewed Runtime call and owned loadout revision', async () => {
+  const { removed, layout, fields } = detachFixture();
+  const config = rawRuntime();
+  const packageId = id(950);
+  const packageDigest = digest(7);
+  const upgradeReceipt = async (policy = 128, outputDigest = packageDigest) => {
+    const tx = new Transaction();
+    tx.setSender(signer);
+    tx.setGasPrice(1);
+    tx.setGasBudget(1000000);
+    tx.setGasPayment([{ objectId: gasId, version: '1', digest: gasDigest }]);
+    const cap = tx.objectRef({ objectId: id(949), version: '1', digest: digest(9) });
+    const ticket = tx.moveCall({ target: '0x2::package::authorize_upgrade',
+      arguments: [cap, tx.pure.u8(policy), tx.pure.vector('u8', Array(32).fill(1))] });
+    const receipt = tx.upgrade({ package: config.roles.runtime.callablePackageId,
+      modules: [toBase64(Uint8Array.of(7))], dependencies: [id(2)], ticket });
+    tx.moveCall({ target: '0x2::package::commit_upgrade', arguments: [cap, receipt] });
+    const transactionBcs = await tx.build();
+    const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transactionBcs);
+    const effectsBcs = bcs.TransactionEffects.serialize({ V2: {
+      status: { Success: true }, executedEpoch: '41',
+      gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
+      transactionDigest, gasObjectIndex: null, eventsDigest: null, dependencies: [], lamportVersion: '51',
+      changedObjects: [[packageId, { inputState: { NotExist: true },
+        outputState: { PackageWrite: ['2', outputDigest] }, idOperation: { Created: true } }]],
+      unchangedConsensusObjects: [], auxDataDigest: null,
+    } }).toBytes();
+    return { digest: transactionDigest, checkpoint: '50', effectsStatus: { success: true }, transactionBcs, effectsBcs };
+  };
+  let evidence = await upgradeReceipt();
+  const pin = { packageId, packageDigest, upgradeTransactionDigest: evidence.digest };
+  const fixture = nativeIntegrationFixture({ ...config, playerPackDetach: pin });
+  const detachedRuntime = (await attestMakerV8Runtime(fixture.rpc, fixture.config)).runtime;
+  const objectId = id(951);
+  const getObject = [];
+  const receiptReads = [];
+  const client = { ...clientFixture(), async getFinalizedTransactionEvidence({ digest: requested }) {
+    receiptReads.push(requested);
+    return evidence;
+  }, async getObject({ id: requested }) {
+    getObject.push(requested);
+    if (requested === pin.packageId) return { data: {
+      objectId: pin.packageId, digest: pin.packageDigest, previousTransaction: pin.upgradeTransactionDigest,
+      version: '2', owner: { Immutable: true }, bcs: { dataType: 'package',
+        originalId: detachedRuntime.roles.runtime.typeOriginPackageId,
+        typeOriginTable: [{ moduleName: 'runtime_v8', datatypeName: 'MakerLoadoutV8',
+          packageId: detachedRuntime.roles.runtime.typeOriginPackageId }] },
+    } };
+    assert.equal(requested, objectId);
+    return { data: { objectId, version: '24', digest: digest(5), owner: { AddressOwner: signer },
+      type: makerV8StableType(detachedRuntime, 'runtime', 'runtime_v8', 'MakerLoadoutV8'), content: { fields } } };
+  } };
+  const authority = { client, runtime: detachedRuntime,
+    loadRuntimeAttestation: async () => ({ runtime: detachedRuntime }), assertTransport() {} };
+  const custody = createMakerV8PlayerCustodyAdapterV8({ ...authority,
+    async loadPlayerState() { assert.fail('Pack detach must not read the Pack Release, Pass, or admission'); } });
+  const request = { action: MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, input: { releaseId: removed },
+    account: { address: signer, network: 'mainnet' },
+    player: { rootId, makerVersion: '1', evidence: { contentCommitment: commitment('8') },
+      definitionContext: { currentLoadout: { objectId, revision: '4', layout } } },
+    recipe: { selections: [], colors: [] }, loadout: { selections: [], usedPacks: [] } };
+  request.context = await custody.loadPlayerContext(request);
+  await custody.assertPlayerContext(request);
+  const compiler = createMakerV8PlayerCompilerAdapterV8(authority);
+  const { plan } = await compiler.preparePlayerAction(request);
+  assert.deepEqual(plan.targets, [`${pin.packageId}::runtime_v8::detach_pack_definitions_v8`]);
+  const { inputs, commands } = Transaction.fromKind(fromBase64(plan.descriptor.kindBytes)).getData();
+  assert.equal(commands.length, 1);
+  assert.equal(inputs[0].Object.ImmOrOwnedObject.objectId, objectId);
+  assert.equal(bcs.Address.parse(fromBase64(inputs[1].Pure.bytes)), removed);
+  assert.equal(bcs.u64().parse(fromBase64(inputs[2].Pure.bytes)), '4');
+  assert.deepEqual(getObject, [pin.packageId, objectId, pin.packageId, objectId]);
+  assert.deepEqual(receiptReads, [pin.upgradeTransactionDigest, pin.upgradeTransactionDigest]);
+  evidence = await upgradeReceipt(128, digest(12));
+  assert.equal(evidence.digest, pin.upgradeTransactionDigest);
+  await assert.rejects(custody.loadPlayerContext(request), { code: 'MAKER_V8_PLAYER_PACK_DETACH_PACKAGE_DRIFT' });
+  evidence = await upgradeReceipt();
+  fields.revision = '5';
+  await assert.rejects(custody.loadPlayerContext(request), { code: 'MAKER_V8_PLAYER_PACK_DETACH_LOADOUT_DRIFT' });
+});
+
+test('Pack removal receipt index upgrades an existing Player database without changing its stored transaction', async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = 'existing-player-action-v1';
+  const previous = { actionId: commitment('a'), action: MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT,
+    status: 'SIGNED', transaction: { digest: digest(7), bytes: 'original-bytes' },
+    playerIdentity: { rootId }, plan: { signer }, signature: 'original-signature' };
+  await new Promise((resolve, reject) => {
+    const request = indexedDB.open(databaseName, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      const actions = db.createObjectStore('actions', { keyPath: 'actionId' });
+      actions.createIndex('byDigest', 'transaction.digest', { unique: true });
+      actions.add(previous);
+      db.createObjectStore('activeScopes', { keyPath: 'scopeKey' });
+      db.createObjectStore('activeRoots', { keyPath: 'rootScopeKey' });
+      db.createObjectStore('transactionBuilds', { keyPath: 'descriptorSha256' })
+        .createIndex('byDigest', 'digest', { unique: true });
+    };
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => { request.result.close(); resolve(); };
+  });
+  const persistence = createMakerV8PlayerPersistenceV8(indexedDB, { databaseName });
+  assert.deepEqual(await persistence.loadByDigest(previous.transaction.digest), previous);
+  assert.deepEqual(await persistence.listFinalizedPackDetachIds({ rootId, signer, since: 0 }), []);
+});
 const nativeInput = () => nativeInitialInputFixture({ name: 'Native Soul', description: 'Native Complete',
   mintNonce: '12'.repeat(16), expectedContentObjectId: deriveMakerV8NativeContentIdV8(runtime.nativeSoulIntegration, signer, '12'.repeat(16)),
   currentKioskId: null, currentKioskCapOnChainId: null, initialStateConfig: [],
@@ -1098,7 +1291,7 @@ function storageManager() {
   };
 }
 
-test('production compiler emits exact multi-call v8 grammar for all six public Player actions', async () => {
+test('production compiler emits exact v8 grammar for the six baseline Player actions', async () => {
   const client = clientFixture();
   const compiler = createMakerV8PlayerCompilerAdapterV8({
     client,
@@ -1141,7 +1334,7 @@ test('production compiler emits exact multi-call v8 grammar for all six public P
       'physical_v8::transfer_new_physical_asset_to_holder_v8',
     ],
   };
-  for (const action of Object.values(MAKER_V8_PLAYER_ACTIONS)) {
+  for (const action of Object.keys(expected)) {
     const request = await certifiedRequest(client, action);
     const result = await compiler.preparePlayerAction(request);
     assert.equal(result.authority, compiler.authority);

@@ -221,6 +221,8 @@ function targetFor(action, sourceRuntime = runtime()) {
       `${packageId('runtime')}::runtime_v8::issue_free_pack_pass_v8`,
     [MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT]:
       `${packageId('runtime')}::runtime_v8::create_maker_loadout_v8`,
+    [MAKER_V8_PLAYER_ACTIONS.DETACH_PACK]:
+      `${sourceRuntime.playerPackDetach?.packageId}::runtime_v8::detach_pack_definitions_v8`,
     [MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT]:
       `${packageId('release')}::release_v8::finish_unprotected_complete_v8`,
     [MAKER_V8_PLAYER_ACTIONS.MATERIALIZE_PHYSICAL]:
@@ -424,7 +426,7 @@ function harness({ enabled = true, protectedContent = false, player = playerFixt
         action: record.action,
         rootId: record.playerIdentity.rootId,
         transactionDigest: record.transaction.digest,
-        evidence: { createdObjects: [] },
+        evidence: controls.readbackEvidence ?? { createdObjects: [] },
       };
     },
   };
@@ -1802,6 +1804,117 @@ test('cold journey reuses a live committed selection after finalized action indi
     assert.equal(h.calls[key], before[key], key);
   }
   assert.deepEqual(h.persistence.inspect(prepared.actionId), original);
+});
+
+test('Pack removal only uses its pinned callable package and recovers the original receipt after rejection and lost broadcast', async () => {
+  const indexedDB = new IDBFactory();
+  const options = { databaseName: 'pack-removal', storageManager: {
+    async persist() { return true; }, async persisted() { return true; },
+    async estimate() { return { quota: 100_000_000, usage: 0 }; },
+  } };
+  const persistence = createMakerV8PlayerPersistenceV8(indexedDB, options);
+  const runtimeOverride = { ...runtime(), playerPackDetach: {
+    packageId: id(904), packageDigest: GAS_DIGEST, upgradeTransactionDigest: GAS_DIGEST,
+  } };
+  const h = harness({ persistenceOverride: persistence, runtimeOverride });
+  await h.controller.loadPlayer(ROOT_ID);
+  const action = { action: MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, input: { releaseId: id(811) } };
+  const loadoutId = id(912);
+  h.controls.expected = { packDetach: { objectId: loadoutId, transition: { revision: '5' } } };
+  h.controls.readbackEvidence = { objects: [{ objectId: loadoutId, fields: { revision: '5' } }] };
+  h.controls.protectedContentRequired = true;
+  const prepared = await h.controller.preparePlayerAction(action);
+  assert.equal(prepared.releaseId, action.input.releaseId);
+  const original = await persistence.load(prepared.actionId);
+  h.controls.signError = Object.assign(new Error('Wallet rejected'), {
+    definitiveRejection: true, signedArtifactCreated: false,
+  });
+  await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+  const rejected = await persistence.load(prepared.actionId);
+  assert.equal(rejected.status, 'PREPARED');
+  assert.deepEqual(rejected.transaction, original.transaction);
+  h.controls.signError = null;
+  h.controls.broadcastError = new Error('Broadcast response lost');
+  await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+  const cold = createMakerV8PlayerControllerV8({
+    productRuntime: h.productRuntime, compiler: h.compiler, custody: h.custody,
+    boundary: h.boundary, wallet: h.wallet, rpc: h.rpc,
+    persistence: createMakerV8PlayerPersistenceV8(indexedDB, options),
+    execution: { allowWalletSignature: true, allowBroadcast: true }, now: () => 1000,
+  });
+  const pending = await cold.getPendingPlayerAction({ rootId: ROOT_ID });
+  assert.equal(pending.actionId, prepared.actionId);
+  assert.equal(pending.releaseId, action.input.releaseId);
+  const ready = await cold.loadPlayer(ROOT_ID);
+  cold.setRecipe({ ...ready.recipe, colors: [{ channelKey: 'primary', swatchKey: 'blue' }] });
+  h.controls.custodyError = new Error('Removed Pack no longer appears in loadout');
+  h.controls.queryResults.push(finalizedSuccess(original.transaction.digest));
+  const recovered = await cold.preparePlayerAction(action);
+  assert.equal(recovered.status, 'FINALIZED_SUCCESS');
+  assert.equal(recovered.transactionDigest, prepared.transactionDigest);
+  assert.equal(recovered.actionId, prepared.actionId);
+  assert.equal(h.calls.compile, 1);
+  assert.equal(h.calls.broadcast, 1);
+  assert.equal(h.calls.sign, 2);
+  assert.equal(h.calls.readback, 1);
+  assert.deepEqual((await persistence.load(prepared.actionId)).transaction, original.transaction);
+  assert.deepEqual(await cold.getFinalizedPlayerPackDetaches({ rootId: ROOT_ID, since: 0 }), [{
+    releaseId: action.input.releaseId, transactionDigest: prepared.transactionDigest,
+    loadoutId, revision: '5',
+  }]);
+  assert.deepEqual(await cold.getFinalizedPlayerPackDetaches({ rootId: ROOT_ID, since: 9999 }), []);
+});
+
+test('Pack removal refuses the unupgraded runtime and extra PTB calls before a wallet prompt', async () => {
+  const action = { action: MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, input: { releaseId: id(811) } };
+  const unconfigured = harness();
+  await unconfigured.controller.loadPlayer(ROOT_ID);
+  await assert.rejects(unconfigured.controller.preparePlayerAction(action),
+    { code: 'MAKER_V8_PLAYER_PACK_DETACH_UNAVAILABLE' });
+  const configured = harness({ runtimeOverride: { ...runtime(), playerPackDetach: {
+    packageId: id(904), packageDigest: GAS_DIGEST, upgradeTransactionDigest: GAS_DIGEST,
+  } } });
+  await configured.controller.loadPlayer(ROOT_ID);
+  configured.controls.buildTargets = [
+    `${id(904)}::runtime_v8::detach_pack_definitions_v8`,
+    `${id(2)}::coin::zero`,
+  ];
+  await assert.rejects(configured.controller.preparePlayerAction(action),
+    { code: 'MAKER_V8_PLAYER_TRANSACTION_TARGET_DRIFT' });
+  assert.equal(unconfigured.calls.sign + configured.calls.sign, 0);
+  assert.equal(configured.calls.create, 0);
+});
+
+test('Pack removal can recover a lost wallet callback only from the original finalized Ledger bytes', async () => {
+  const h = harness({ runtimeOverride: { ...runtime(), playerPackDetach: {
+    packageId: id(904), packageDigest: GAS_DIGEST, upgradeTransactionDigest: GAS_DIGEST,
+  } } });
+  await h.controller.loadPlayer(ROOT_ID);
+  const prepared = await h.controller.preparePlayerAction({
+    action: MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, input: { releaseId: id(811) },
+  });
+  const original = h.persistence.inspect(prepared.actionId).transaction;
+  h.controls.signError = new Error('Wallet callback lost');
+  await assert.rejects(h.controller.executePlayerAction(prepared.actionId));
+  let ledgerReads = 0;
+  h.boundary.recoverFinalizedSignature = async ({ bytes, digest, signer, query }) => {
+    ledgerReads++;
+    assert.equal(bytes, original.bytes);
+    assert.equal(digest, original.digest);
+    assert.equal(signer, HOLDER);
+    assert.equal(query.status, 'FINALIZED_SUCCESS');
+    return { bytes, digest, signer, signature: SIGNATURE };
+  };
+  h.controls.queryResults.push(notFound(original.digest));
+  assert.equal((await h.controller.recoverPlayerAction(prepared.actionId)).status, 'SIGNING_UNKNOWN');
+  assert.equal(ledgerReads, 0);
+  h.controls.queryResults.push(finalizedSuccess(original.digest));
+  const finalized = await h.controller.recoverPlayerAction(prepared.actionId);
+  assert.equal(finalized.status, 'FINALIZED_SUCCESS');
+  assert.equal(finalized.transactionDigest, original.digest);
+  assert.equal(ledgerReads, 1);
+  assert.equal(h.calls.sign, 1);
+  assert.equal(h.calls.broadcast, 0);
 });
 
 test('live mismatch still prepares the changed selection and never reuses a nonboolean proof', async () => {

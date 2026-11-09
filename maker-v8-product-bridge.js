@@ -2056,6 +2056,9 @@ export function createMakerV8ProductBridge({
     if (typeof player.getPendingPlayerAction === 'function') {
       bridge.getPendingPlayerAction = method(player, 'getPendingPlayerAction', 'player');
     }
+    if (typeof player.getFinalizedPlayerPackDetaches === 'function') {
+      bridge.getFinalizedPlayerPackDetaches = method(player, 'getFinalizedPlayerPackDetaches', 'player');
+    }
   }
 
   if (typeof lookupCompletionReceipt === 'function') bridge.lookupPlayerCompletionReceipt = async ({ rootId, transactionDigest }) => {

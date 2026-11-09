@@ -5186,6 +5186,134 @@ test('Player restores pending Pack recovery even when its Release is absent from
   app.destroy();
 });
 
+test('Player reviews a paused attached Pack without its catalog row and reloads the same loadout after removal', async () => {
+  const initial = playerSession(ROOT_ONE);
+  const releaseId = `0x${'55'.repeat(32)}`;
+  const loadoutId = `0x${'56'.repeat(32)}`;
+  initial.execution.packDetachEnabled = true;
+  initial.player.definitionContext = {
+    packs: [],
+    currentLoadout: { objectId: loadoutId, revision: '4',
+      layout: { bindings: [{ releaseId, definitionCommitment: '57'.repeat(32) }], profiles: [] } },
+  };
+  const record = { action: 'detachPack', actionId: 'ab'.repeat(32), rootId: ROOT_ONE, releaseId,
+    status: 'PREPARED', transactionDigest: 'original-detach-digest', gasBudgetMist: '10000000' };
+  let removed = false;
+  const storageMap = new Map();
+  const harness = browserHarness({
+    connection: { account: { address: `0x${'63'.repeat(32)}`, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult() {
+      const session = structuredClone(initial);
+      if (removed) Object.assign(session.player.definitionContext.currentLoadout, {
+        revision: '5', layout: { bindings: [], profiles: [] },
+      });
+      return session;
+    },
+    renderPlayerPreviewResult: canonicalPreview(), storageMap,
+  });
+  const calls = [];
+  harness.bridge.preparePlayerAction = async input => {
+    calls.push('prepare');
+    assert.deepEqual(input, { action: 'detachPack', input: { releaseId } });
+    return structuredClone(record);
+  };
+  harness.bridge.executePlayerAction = async actionId => {
+    calls.push('execute');
+    assert.equal(actionId, record.actionId);
+    throw new Error('Broadcast response lost');
+  };
+  harness.bridge.recoverPlayerAction = async (actionId, options) => {
+    calls.push('recover');
+    assert.equal(actionId, record.actionId);
+    assert.deepEqual(options, { replayIfNotFound: false });
+    removed = true;
+    return { ...record, status: 'FINALIZED_SUCCESS', certificate: {
+      evidence: { objects: [{ objectId: loadoutId, fields: { revision: '5' } }] },
+    } };
+  };
+  const app = createOriginalProductApp(harness);
+  await app.ready;
+  await app.openPlayer(ROOT_ONE);
+  const mount = harness.doc.getElementById('makerV4PlayerMount');
+  const click = async action => {
+    const target = new FakeTarget(harness.doc, { dataset: { action, releaseId, actionId: record.actionId } });
+    target.parent = mount;
+    await waitForEvent(mount.fire('click', { target }));
+  };
+  assert.match(mount.innerHTML, /data-action="player-detach-pack-v8"/);
+  await click('player-detach-pack-v8');
+  assert.deepEqual(calls, ['prepare']);
+  assert.match(mount.innerHTML, /original-detach-digest/);
+  assert.match(mount.innerHTML, /10000000/);
+  await click('player-confirm-pack-v8');
+  assert.match(mount.innerHTML, /data-action="player-recover-pack-v8"/);
+  await click('player-recover-pack-v8');
+  assert.deepEqual(calls, ['prepare', 'execute', 'recover']);
+  assert.deepEqual(harness.calls.openPlayer, [{ rootId: ROOT_ONE }, { rootId: ROOT_ONE }]);
+  assert.doesNotMatch(mount.innerHTML, /data-action="player-detach-pack-v8"/);
+  assert.deepEqual(harness.calls.updatePlayerRecipe.at(-1).selections, initial.recipe.selections);
+  await app.destroy();
+});
+
+test('cold Player applies a finalized Pack removal before restoring an older saved recipe', async () => {
+  const initial = playerSessionWithPackChoice(ROOT_ONE);
+  const choice = initial.player.contextualChoices.packStyles[0];
+  const loadoutId = `0x${'56'.repeat(32)}`;
+  initial.execution.packDetachEnabled = true;
+  initial.player.definitionContext = { packs: [], currentLoadout: { objectId: loadoutId, revision: '4',
+    layout: { bindings: [{ releaseId: choice.releaseId, definitionCommitment: '57'.repeat(32) }], profiles: [] } } };
+  const storageMap = new Map();
+  let removed = false;
+  const harness = browserHarness({
+    connection: { account: { address: `0x${'63'.repeat(32)}`, chains: ['sui:mainnet'] } },
+    templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+    playerSessionResult() {
+      const session = structuredClone(initial);
+      if (removed) Object.assign(session.player.definitionContext.currentLoadout, {
+        revision: '5', layout: { bindings: [], profiles: [] },
+      });
+      return session;
+    },
+    renderPlayerPreviewResult: canonicalPreview(), storageMap,
+  });
+  let receiptReads = 0;
+  harness.bridge.getFinalizedPlayerPackDetaches = async input => {
+    receiptReads++;
+    assert.equal(input.rootId, ROOT_ONE);
+    assert.ok(Number.isSafeInteger(input.since));
+    return [{ releaseId: choice.releaseId, loadoutId, revision: '5', transactionDigest: 'original-detach' }];
+  };
+  const stored = () => [...storageMap.entries()]
+    .filter(([key]) => key.startsWith('animacraft:maker-v8-player-project:v1:') && !key.includes(':wal:'))
+    .map(([, value]) => JSON.parse(value))[0];
+  let app = createOriginalProductApp(harness);
+  await app.ready;
+  await app.openPlayer(ROOT_ONE);
+  const mount = harness.doc.getElementById('makerV4PlayerMount');
+  const toggle = new FakeTarget(harness.doc, { dataset: { action: 'player-expansion-v8' } });
+  toggle.parent = mount;
+  toggle.value = choice.releaseId;
+  toggle.checked = true;
+  await waitForEvent(mount.fire('change', { target: toggle }));
+  const select = new FakeTarget(harness.doc, { dataset: { action: 'player-item', choiceId: choice.id } });
+  select.parent = mount;
+  await waitForEvent(mount.fire('click', { target: select }));
+  assert.ok(stored().session.recipe.selections.some(row => row.releaseId === choice.releaseId));
+  const savedBefore = stored();
+  await app.destroy();
+  removed = true;
+  app = createOriginalProductApp(harness);
+  await app.ready;
+  await app.openPlayer(ROOT_ONE);
+  assert.equal(receiptReads, 1);
+  const restored = stored();
+  assert.equal(restored.revision, savedBefore.revision + 1);
+  assert.deepEqual(restored.session.enabledPackReleaseIds, []);
+  assert.deepEqual(restored.session.recipe.selections, initial.recipe.selections);
+  await app.destroy();
+});
+
 test('Pack recovery remains queryable when exact inventory prevents the Player from opening', async () => {
   let queryGate = null;
   const record = { action: 'acquirePackAccess', actionId: 'ab'.repeat(32), rootId: ROOT_ONE,
