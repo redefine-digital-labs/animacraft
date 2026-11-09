@@ -536,7 +536,7 @@ function eventFields(event, expectedType, sender, label) {
   return event.parsedJson;
 }
 
-async function readArchivedPackStage(client, evidence, query, artifact, descriptor) {
+export async function readArchivedMakerV8PackTransactionV8(client, evidence, query, artifact, descriptor) {
   assertCertifiedArchive(client, evidence);
   const proof = transactionData(artifact.base64, {
     signer: descriptor.signer, kindBytes: descriptor.kindBytes, digest: query.digest,
@@ -667,7 +667,7 @@ export function createMakerV8PackReadbackV8({
       }
       const expected = Transaction.fromKind(descriptor.kindBytes);
       expected.setSender(compiled.signer);
-      const archivedReadback = archived === null ? null : await readArchivedPackStage(
+      const archivedReadback = archived === null ? null : await readArchivedMakerV8PackTransactionV8(
         client, archived, query, artifact, descriptor,
       );
       const response = archivedReadback?.response ?? await readFinalized(client, artifact.digest, expected);

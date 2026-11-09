@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { bcs } from '@mysten/sui/bcs';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
-import { toBase58, toBase64 } from '@mysten/sui/utils';
+import { fromBase64, toBase58, toBase64 } from '@mysten/sui/utils';
 
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
@@ -19,6 +20,9 @@ import {
   createMakerV8PackLifecycleReadbackV8,
 } from '../maker-v8-pack-lifecycle.js';
 import { createMakerV8PackPublicationMemoryPersistenceV8 } from '../maker-v8-pack-publication.js';
+import { createMakerV8PackPublicationBoundaryV8 } from '../maker-v8-pack-publication-adapters.js';
+import { makerV8PublicationExpiration } from '../maker-v8-publication-expiration.js';
+import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from '../maker-v8-sui-grpc.js';
 import {
   MAKER_V8_CLOCK_OBJECT_ID,
   MAKER_V8_PAYMENT_COIN_TYPE,
@@ -65,7 +69,7 @@ function ref(value) {
   return { objectId: id(value), version: String(value), digest: suiDigest(value) };
 }
 
-function request(action = 'PAUSE') {
+function request(action = 'PAUSE', owner = signer) {
   const releaseId = id(100);
   const adminCapId = id(101);
   const treasuryId = id(102);
@@ -77,7 +81,7 @@ function request(action = 'PAUSE') {
     draftId: 'pack-draft-1',
     draftRevision: 7,
     action,
-    signer,
+    signer: owner,
     pack: {
       rootId,
       packRegistryId: registryId,
@@ -94,15 +98,15 @@ function request(action = 'PAUSE') {
         owner: { kind: 'SHARED', initialSharedVersion: '2' },
         fields: {
           id: releaseId, root_id: rootId, admin_cap_id: adminCapId,
-          treasury_id: treasuryId, semantic_pack_id: 'moon_pack', owner: signer,
+          treasury_id: treasuryId, semantic_pack_id: 'moon_pack', owner,
           control_epoch: '0', lifecycle: sourceLifecycle === 'ACTIVE' ? '2'
             : sourceLifecycle === 'PAUSED' ? '3' : '4',
         },
       },
       adminCap: {
         objectRef: ref(101), type: types.packAdminCap,
-        owner: { kind: 'ADDRESS', address: signer },
-        fields: { id: adminCapId, release_id: releaseId, owner: signer, control_epoch: '0' },
+        owner: { kind: 'ADDRESS', address: owner },
+        fields: { id: adminCapId, release_id: releaseId, owner, control_epoch: '0' },
       },
       treasury: {
         objectRef: ref(102), type: types.packTreasury,
@@ -187,11 +191,13 @@ function absence(transactionDigest, checkpoint = '9') {
 
 function harness({
   action = 'PAUSE', unknown = false, finalizedFailure = false, requestOverride = null,
+  persistence = createMakerV8PackPublicationMemoryPersistenceV8(), walletError = null,
+  finite = false, query = null,
+  now = (() => { let value = 100; return () => value += 1; })(),
 } = {}) {
   const order = [];
   const targets = [];
   const durableRequest = requestOverride ?? request(action);
-  const persistence = createMakerV8PackPublicationMemoryPersistenceV8();
   let queryCount = 0;
   const lifecycle = createMakerV8PackLifecycleControllerV8({
     runtime,
@@ -201,7 +207,7 @@ function harness({
       async buildExactTransaction({ transaction, descriptor }) {
         order.push('build');
         targets.push(...descriptor.targets);
-        transaction.setExpiration({ Epoch: '2' });
+        transaction.setExpiration(finite ? makerV8PublicationExpiration('1') : { Epoch: '2' });
         transaction.setGasPrice(1n);
         transaction.setGasBudget(1_000_000n);
         transaction.setGasPayment([{ objectId: gas, version: '1', digest: suiDigest(7) }]);
@@ -218,8 +224,10 @@ function harness({
       },
     },
     wallet: {
+      async getCurrentAccount() { return { address: signer }; },
       async signExactTransaction({ bytes, digest: transactionDigest, signer: address }) {
         order.push('sign');
+        if (walletError) throw walletError;
         return { bytes, digest: transactionDigest, signer: address, signature: toBase64(Uint8Array.of(1, 2, 3)) };
       },
       async verifyExactSignature() {
@@ -228,9 +236,10 @@ function harness({
       },
     },
     rpc: {
-      async queryTransaction({ digest: transactionDigest }) {
+      async queryTransaction({ digest: transactionDigest, epochWindow }) {
         order.push('query');
         queryCount += 1;
+        if (query) return query(transactionDigest, epochWindow);
         if (unknown) throw Object.assign(new Error('transport unavailable'), { code: 'UNAVAILABLE' });
         if (finalizedFailure) {
           return {
@@ -276,7 +285,7 @@ function harness({
       finalizedDigest: artifact.digest,
     }),
     execution: { allowWalletSignature: true, allowBroadcast: true },
-    now: (() => { let value = 100; return () => value += 1; })(),
+    now,
   });
   return { lifecycle, durableRequest, order, targets, get queryCount() { return queryCount; } };
 }
@@ -295,6 +304,31 @@ test('independent Pack lifecycle compiles exact Runtime target and performs dura
   ]);
 });
 
+test('review simulates without opening a wallet and cold recovery uses the displayed digest', async () => {
+  const persistence = createMakerV8PackPublicationMemoryPersistenceV8();
+  const first = harness({ persistence, walletError: new Error('wallet response disappeared') });
+  const checked = first.durableRequest;
+  const scope = { draftId: checked.draftId, draftRevision: checked.draftRevision, releaseId: checked.pack.releaseId };
+  const step = await first.lifecycle.review(checked);
+  assert.deepEqual(first.order, ['build', 'dry-run']);
+  assert.equal(step.gasBudgetMist, '1000000');
+  await assert.rejects(first.lifecycle.signReviewed({ ...scope, releaseId: id(666), action: checked.action, step }),
+    { code: 'MAKER_V8_PACK_LIFECYCLE_REVIEW_SCOPE' });
+  await assert.rejects(first.lifecycle.signReviewed({ ...scope, action: checked.action, step }), /wallet response disappeared/);
+  const restarted = harness({ persistence, unknown: true, now: () => 200 });
+  const pending = await restarted.lifecycle.inspect(scope);
+  assert.equal(pending.action, checked.action);
+  assert.equal(pending.status, 'SIGNING');
+  assert.equal(pending.ticket.digest, step.digest);
+  await assert.rejects(restarted.lifecycle.review(checked), { code: 'MAKER_V8_PACK_LIFECYCLE_RECOVERY_REQUIRED' });
+  await assert.rejects(restarted.lifecycle.recover({ ...pending.ticket, digest: suiDigest(40) }),
+    { code: 'MAKER_V8_PACK_LIFECYCLE_TICKET_DRIFT' });
+  assert.deepEqual(restarted.order, []);
+  await assert.rejects(restarted.lifecycle.recover(pending.ticket), /transport unavailable/);
+  assert.deepEqual(restarted.order, ['query']);
+  assert.equal((await restarted.lifecycle.inspect(scope)).ticket.digest, step.digest);
+});
+
 test('Pack lifecycle unknown outcome never fabricates finalized readback or rebroadcasts', async () => {
   const fixture = harness({ unknown: true });
   const ticket = await fixture.lifecycle.prepare(fixture.lifecycle.build({}));
@@ -303,6 +337,37 @@ test('Pack lifecycle unknown outcome never fabricates finalized readback or rebr
   assert.equal(result.readback, null);
   assert.equal(fixture.order.includes('broadcast'), false);
   assert.equal(fixture.queryCount, 1);
+});
+
+test('Pack lifecycle exposes unexecuted expiry and requires a new review for the same action', async () => {
+  const persistence = createMakerV8PackPublicationMemoryPersistenceV8();
+  const first = harness({ persistence, finite: true, action: 'WITHDRAW_PACK_REVENUE' });
+  const checked = first.durableRequest;
+  const ticket = await first.lifecycle.prepare(checked);
+  const cold = harness({ persistence, finite: true, requestOverride: checked, now: (() => {
+    let value = 200;
+    return () => ++value;
+  })(), query(digest, epochWindow) {
+    assert.equal(digest, ticket.digest);
+    assert.deepEqual(epochWindow, { start: '1', end: '2' });
+    return { status: 'NOT_FOUND', digest, epoch: null, effectsFingerprint: null, eventsDigest: null,
+      error: null, absence: { ...absence(digest, '12'), watermarkEpoch: '3', retention: {
+        startEpoch: '1', firstCheckpoint: '2', lowestAvailableCheckpoint: '1', observedCheckpoint: '13',
+      } } };
+  } });
+  const scope = { draftId: checked.draftId, draftRevision: checked.draftRevision, releaseId: checked.pack.releaseId };
+  assert.equal((await cold.lifecycle.inspect(scope)).ticket.digest, ticket.digest);
+  const retired = await cold.lifecycle.recover(ticket);
+  assert.equal(retired.status, 'EXPIRED_UNEXECUTED');
+  assert.equal(retired.readback, null);
+  assert.equal(retired.digest, ticket.digest);
+  assert.deepEqual(await cold.lifecycle.recover(ticket), retired);
+  assert.equal(await cold.lifecycle.inspect(scope), null);
+  await assert.rejects(cold.lifecycle.prepare(checked), { code: 'MAKER_V8_PACK_PUBLICATION_REVIEW_REQUIRED' });
+  const review = await cold.lifecycle.review(checked);
+  assert.notEqual(review.digest, ticket.digest);
+  assert.equal(review.retiredDigest, ticket.digest);
+  assert.deepEqual(cold.order, ['query', 'build', 'dry-run']);
 });
 
 test('Pack lifecycle finalized failure is terminal and never fabricates readback or rebroadcasts', async () => {
@@ -442,6 +507,54 @@ test('production Pack lifecycle authority cold-reads exact refs and rejects curr
   );
 });
 
+test('new Pack lifecycle reviews use later sales and registry state while durable requests stay pinned', async () => {
+  const published = request('WITHDRAW_PACK_REVENUE');
+  const names = ['release', 'adminCap', 'treasury', 'packRegistry'];
+  const inputs = Object.fromEntries(names.map(name => [
+    published.inputs[name].objectRef.objectId, structuredClone(published.inputs[name]),
+  ]));
+  const release = inputs[published.pack.releaseId];
+  const treasury = inputs[published.pack.treasuryId];
+  const registry = inputs[published.pack.packRegistryId];
+  release.objectRef = { ...release.objectRef, version: '120', digest: suiDigest(24) };
+  treasury.objectRef = { ...treasury.objectRef, version: '121', digest: suiDigest(25) };
+  treasury.fields.revenue.fields.value = '1500';
+  treasury.fields.total_collected = '1500';
+  registry.fields.revision = '13';
+  registry.objectRef = { ...registry.objectRef, version: '122', digest: suiDigest(26) };
+  const client = {
+    async getObject({ id: objectId }) { return currentResponse(inputs[objectId]); },
+    async getHistoricalObject({ objectId }) { return historicalValue(inputs[objectId]); },
+  };
+  const load = createMakerV8PackLifecycleAuthorityLoaderV8({
+    client, runtime,
+    wallet: { async getCurrentAccount() { return { address: signer }; } },
+    assertTransport: () => {},
+  });
+  const input = { ...authorityBuildInput(published), amountAtomic: '750' };
+  const state = await load.readState(input.pack);
+  assert.equal(state.lifecycle, 'ARCHIVED');
+  assert.equal(state.balanceAtomic, '1500');
+  assert.equal(state.totalCollectedAtomic, '1500');
+  assert.equal(state.totalWithdrawnAtomic, '0');
+  assert.equal(state.canManage, true);
+  const updated = await load(input);
+  assert.deepEqual(updated.inputs.release.objectRef, release.objectRef);
+  assert.deepEqual(updated.inputs.treasury.objectRef, treasury.objectRef);
+  assert.equal(updated.pack.packRegistryRevision, '13');
+  assert.equal(updated.inputs.amountAtomic, '750');
+  assert.deepEqual(await load(updated), updated);
+  await assert.rejects(load(published), { code: 'MAKER_V8_PACK_LIFECYCLE_OBJECT_REF_DRIFT' });
+  await assert.rejects(load({ ...input, amountAtomic: '1501' }), {
+    code: 'MAKER_V8_PACK_LIFECYCLE_BALANCE_INVALID',
+  });
+  registry.fields.revision = '11';
+  await assert.rejects(load(input), { code: 'MAKER_V8_PACK_LIFECYCLE_AUTHORITY_DRIFT' });
+  registry.fields.revision = '13';
+  treasury.objectRef = { ...published.inputs.treasury.objectRef, digest: suiDigest(25) };
+  await assert.rejects(load(input), { code: 'MAKER_V8_PACK_LIFECYCLE_OBJECT_REF_DRIFT' });
+});
+
 test('Pack admission revocation cold-loads the exact Maker governance tuple', async () => {
   const checked = revokeRequest();
   const names = [
@@ -543,6 +656,130 @@ test('Pack lifecycle transition readback binds raw event BCS, Core effects and h
     }),
     { code: 'MAKER_V8_PACK_LIFECYCLE_EVENT_DRIFT' },
   );
+});
+
+test('cold Pack lifecycle resumes archive-certified state transitions and exact withdrawals', async (context) => {
+  const keypair = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(19));
+  const owner = keypair.toSuiAddress();
+  for (const [action, state, code] of [
+    ['PAUSE', 'PAUSED', 3], ['RESUME', 'ACTIVE', 2], ['ARCHIVE', 'ARCHIVED', 4],
+    ['WITHDRAW_PACK_REVENUE', 'ARCHIVED', null],
+  ]) {
+    await context.test(action, async () => {
+      const checked = request(action, owner);
+      const persistence = createMakerV8PackPublicationMemoryPersistenceV8({ durable: true });
+      const outputs = new Map();
+      let archived, walletCalls = 0, now = 200;
+      const client = {
+        async getChainIdentifier() { return MAKER_V8_SUI_MAINNET_GENESIS_DIGEST; },
+        async getArchivedPlayerTransactionEvidence(input) {
+          assert.deepEqual(input, { digest: archived.digest, decodeEvents: true });
+          return archived;
+        },
+        async getArchivedPlayerReceiptObject({ objectId, version }) {
+          assert.equal(version, 200n);
+          return outputs.get(objectId);
+        },
+      };
+      const archiveBoundary = createMakerV8PackPublicationBoundaryV8({
+        client, compilerAuthority: {}, assertTransport() {},
+      });
+      const forbidden = () => assert.fail('cold lifecycle must recover the original archive receipt');
+      const certifyFinalized = createMakerV8PackLifecycleReadbackV8({
+        client, runtime, assertTransport() {}, readFinalized: forbidden,
+      });
+      const reboot = () => createMakerV8PackLifecycleControllerV8({
+        runtime, persistence, certifyFinalized, loadRequest: async () => checked, now: () => now++,
+        execution: { allowWalletSignature: true, allowBroadcast: true },
+        boundary: {
+          ...archiveBoundary,
+          async buildExactTransaction({ transaction }) {
+            transaction.setExpiration(makerV8PublicationExpiration('1'));
+            transaction.setGasPrice(1);
+            transaction.setGasBudget(1_000_000);
+            transaction.setGasPayment([{ objectId: gas, version: '1', digest: suiDigest(7) }]);
+            const bytes = await transaction.build();
+            return { bytes: toBase64(bytes), digest: TransactionDataBuilder.getDigestFromBytes(bytes) };
+          },
+          async dryRunExactTransaction() { return { status: 'SUCCESS' }; },
+          broadcastExactTransaction: forbidden,
+        },
+        wallet: {
+          async getCurrentAccount() { return { address: owner }; },
+          async signExactTransaction({ bytes, digest }) {
+            walletCalls++;
+            const signed = await keypair.signTransaction(fromBase64(bytes));
+            const changedObjects = [];
+            const add = ({ objectId, version, digest: priorDigest }, type, parsed, rawOwner, objectDigest) => {
+              const inputState = priorDigest ? { Exist: [[version, priorDigest], rawOwner] } : { NotExist: true };
+              changedObjects.push([objectId, { inputState, outputState: { ObjectWrite: [objectDigest, rawOwner] },
+                idOperation: priorDigest ? { None: true } : { Created: true } }]);
+              outputs.set(objectId, { objectId, version: '200', digest: objectDigest, type,
+                previousTransaction: digest, parsed, contentBcs: Uint8Array.of(1), objectBcs: Uint8Array.of(2) });
+            };
+            const events = [];
+            if (code === null) {
+              const treasury = checked.inputs.treasury;
+              add(treasury.objectRef, types.packTreasury, { ...treasury.fields,
+                revenue: { fields: { value: '375' } }, total_withdrawn: '125' },
+              { Shared: { initialSharedVersion: '4' } }, suiDigest(23));
+              add({ objectId: id(106) }, `0x2::coin::Coin<${runtime.paymentCoinType}>`,
+                { id: id(106), balance: { fields: { value: '125' } } },
+                { AddressOwner: checked.inputs.recipient }, suiDigest(24));
+            } else {
+              const release = checked.inputs.release;
+              const fields = { release_id: checked.pack.releaseId,
+                previous_lifecycle: Number(release.fields.lifecycle), lifecycle: code };
+              const event = bcs.struct('PackLifecycleChangedV8', {
+                release_id: bcs.Address, previous_lifecycle: bcs.u8(), lifecycle: bcs.u8(),
+              });
+              events.push({ type: `${runtime.roles.runtime.typeOriginPackageId}::runtime_v8::PackLifecycleChangedV8`,
+                sender: owner, parsedJson: fields, bcs: toBase64(event.serialize(fields).toBytes()) });
+              add(release.objectRef, types.packRelease, { ...release.fields, lifecycle: String(code) },
+                { Shared: { initialSharedVersion: '2' } }, suiDigest(25));
+            }
+            const eventsDigest = events.length ? suiDigest(9) : null;
+            const effectsBcs = bcs.TransactionEffects.serialize({ V2: {
+              status: { Success: true }, executedEpoch: '1',
+              gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
+              transactionDigest: digest, gasObjectIndex: null, eventsDigest, dependencies: [],
+              lamportVersion: '200', changedObjects, unchangedConsensusObjects: [], auxDataDigest: null,
+            } }).toBytes();
+            archived = { digest, checkpoint: '10', epoch: '1', sender: owner, transactionBcsBase64: bytes,
+              effectsBcs, effectsStatus: { success: true, error: null }, eventsDigest, events, signatures: [signed.signature] };
+            throw new Error('Wallet callback lost');
+          },
+          async verifyExactSignature({ bytes, signature }) {
+            return keypair.getPublicKey().verifyTransaction(fromBase64(bytes), signature);
+          },
+        },
+        rpc: { async queryTransaction({ digest, epochWindow }) {
+          assert.deepEqual(epochWindow, { start: '1', end: '2' });
+          assert.equal(digest, archived.digest);
+          return { status: 'NOT_FOUND', digest, epoch: null, effectsFingerprint: null,
+            eventsDigest: null, error: null, absence: { ...absence(digest, '12'), watermarkEpoch: '3' } };
+        } },
+      });
+      const first = reboot();
+      await assert.rejects(first.prepare(first.build({})), /Wallet callback lost/);
+      const cold = reboot();
+      const found = await cold.inspect({ draftId: checked.draftId,
+        draftRevision: checked.draftRevision, releaseId: checked.pack.releaseId });
+      assert.equal(found.ticket.digest, archived.digest);
+      if (code === null) {
+        outputs.get(id(106)).parsed.balance.fields.value = '124';
+        await assert.rejects(cold.recover(found.ticket), { code: 'MAKER_V8_PACK_LIFECYCLE_RECIPIENT_DRIFT' });
+        outputs.get(id(106)).parsed.balance.fields.value = '125';
+      }
+      const result = await reboot().recover(found.ticket);
+      assert.equal(result.status, 'FINALIZED_SUCCESS');
+      assert.equal(result.digest, archived.digest);
+      assert.equal(result.readback.lifecycle, state);
+      assert.equal((code === null ? result.readback.treasury : result.readback.release).objectRef.version, '200');
+      assert.equal(walletCalls, 1);
+      assert.deepEqual(await reboot().recover(found.ticket), result);
+    });
+  }
 });
 
 test('Pack revenue withdrawal readback proves exact treasury arithmetic and recipient Coin', async () => {
