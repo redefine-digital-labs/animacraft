@@ -495,6 +495,24 @@ function creatorCapabilities({ publication = false, versionHistory = false, loca
   };
 }
 
+function playerPackActionRelease(record) {
+  if (record?.action === 'detachPack') return record.releaseId;
+  if (record?.action === 'acquirePackAccess') return record.packEntryQuote?.releaseId;
+  return null;
+}
+
+function recipeAfterPackRemoval(prior, fresh, detachedReleaseIds) {
+  const selections = prior.selections.filter(row => !detachedReleaseIds.has(row.releaseId));
+  for (const part of fresh.player.document.parts) {
+    if ((part.required || part.kind === 'LAST_BASTION')
+      && !selections.some(row => makerV8PlayerPartUiKey(fresh.player, row) === part.key)) {
+      selections.push(...fresh.recipe.selections.filter(row => row.source === 'BASE' && row.partKey === part.key));
+    }
+  }
+  return { selections, colors: prior.colors.filter(row => !detachedReleaseIds.has(row.releaseId)),
+    outputKey: prior.outputKey };
+}
+
 function playerCapabilities({
   recipe = false,
   reset = false,
@@ -527,6 +545,7 @@ function playerCapabilities({
   if (recovery) enabled.push('player-select-recovery', 'player-export-recovery');
   if (packAcquire) enabled.push('player-acquire-expansion-v8', 'player-confirm-pack-v8',
     'player-cancel-pack-v8', 'player-recover-pack-v8');
+  if (packAcquire && recipe && session?.execution?.packDetachEnabled === true) enabled.push('player-detach-pack-v8');
   const controls = Object.fromEntries(enabled.map((action) => [action, true]));
   if (recipe && session?.player?.document) {
     for (const output of session.player.document.outputs || []) {
@@ -970,6 +989,7 @@ export function createOriginalProductApp({
   const executePlayerAction = optionalMethod(bridge, 'executePlayerAction');
   const recoverPlayerAction = optionalMethod(bridge, 'recoverPlayerAction');
   const getPendingPlayerAction = optionalMethod(bridge, 'getPendingPlayerAction');
+  const getFinalizedPlayerPackDetaches = optionalMethod(bridge, 'getFinalizedPlayerPackDetaches');
   const openPlayerReception = optionalMethod(bridge, 'openPlayerReception');
   const exportPlayerEnvelopeRecovery = optionalMethod(bridge, 'exportPlayerEnvelopeRecovery');
   const readPlayerCompletionReceipt = optionalMethod(bridge, 'readPlayerCompletionReceipt');
@@ -2690,12 +2710,12 @@ export function createOriginalProductApp({
     renderPlayer();
     renderConnection();
     try {
-      if (getPendingPlayerAction) {
+      if (getPendingPlayerAction && state.connection.connected && EXACT_OBJECT_ID.test(expectedWalletAddress || '')) {
         const pending = await getPendingPlayerAction({ rootId: selectedRootId });
         if (state.destroyed || request !== state.playerRequest
           || state.connection.address !== expectedWalletAddress) return null;
-        if (pending?.action === 'acquirePackAccess') {
-          if (pending.rootId !== selectedRootId || !EXACT_OBJECT_ID.test(pending.packEntryQuote?.releaseId || '')) {
+        if (['acquirePackAccess', 'detachPack'].includes(pending?.action)) {
+          if (pending.rootId !== selectedRootId || !EXACT_OBJECT_ID.test(playerPackActionRelease(pending) || '')) {
             throw new TypeError('Pending Pack recovery does not match this Player.');
           }
           state.playerRecovery = { record: pending, walletAddress: expectedWalletAddress, request };
@@ -2719,14 +2739,22 @@ export function createOriginalProductApp({
         || state.playerSession?.rootId !== selectedRootId) return null;
       if (state.playerRecovery) {
         const pending = state.playerRecovery.record;
-        state.playerUi.packAcquisition = { releaseId: pending.packEntryQuote.releaseId,
-          record: pending, pending: false };
+        state.playerUi.packAcquisition = { releaseId: playerPackActionRelease(pending),
+          record: pending, pending: false, detach: pending.action === 'detachPack' };
         state.playerRecovery = null;
       }
       renderPlayer({ focusInfo: true });
       navigate('make');
       renderConnection();
-      await requestPlayerCanonicalPreview();
+      if (state.playerRecipeNeedsSave) {
+        const mutation = state.playerMutationRequest;
+        await persistLatestPlayerRecipe({ ticket: state.playerRecipeMutationTicket, request, mutation,
+          rootId: selectedRootId }).catch(error => {
+          if (playerMutationCurrent(request, mutation, selectedRootId)) {
+            presentPlayerError(error, 'The updated Player project could not be saved.');
+          }
+        });
+      } else await requestPlayerCanonicalPreview();
       if (state.destroyed || request !== state.playerRequest
         || state.playerSession?.rootId !== selectedRootId) return null;
       if (state.playerRenderRecord) await requestPlayerExportRender();
@@ -2901,7 +2929,7 @@ export function createOriginalProductApp({
     return null;
   }
 
-  function queuePlayerRecipeMutation(mutate, { after, afterCommit } = {}) {
+  function queuePlayerRecipeMutation(mutate, { after, afterCommit, readBefore = true } = {}) {
     if (!state.playerSession || !state.playerUi || !getPlayerSnapshot) {
       return Promise.resolve(null);
     }
@@ -2916,9 +2944,11 @@ export function createOriginalProductApp({
       const previousSession = structuredClone(state.playerSession);
       let controllerCommitted = false;
       try {
-        const before = await getPlayerSnapshot();
-        if (!playerMutationCurrent(request, mutation, rootId)) return null;
-        mergeExactPlayerSnapshot(before, rootId);
+        if (readBefore) {
+          const before = await getPlayerSnapshot();
+          if (!playerMutationCurrent(request, mutation, rootId)) return null;
+          mergeExactPlayerSnapshot(before, rootId);
+        }
         const changed = await mutate();
         if (!playerMutationCurrent(request, mutation, rootId)) return null;
         if (changed !== true) return persistLatestPlayerRecipe({ ticket, request, mutation, rootId });
@@ -3207,8 +3237,21 @@ export function createOriginalProductApp({
         throw new TypeError('The saved Player project hash does not match its exact content.');
       }
       if (!playerMutationCurrent(request, mutation, rootId)) return null;
+      const detachedReleaseIds = new Set();
+      const session = state.playerSession;
+      const currentLoadout = session.player.definitionContext?.currentLoadout;
+      if (getFinalizedPlayerPackDetaches && session.execution.packDetachEnabled === true && currentLoadout) {
+        const receipts = await getFinalizedPlayerPackDetaches({ rootId, since: record.updatedAt });
+        if (!playerMutationCurrent(request, mutation, rootId)) return null;
+        for (const receipt of receipts) {
+          if (receipt.loadoutId === currentLoadout.objectId && BigInt(receipt.revision) <= BigInt(currentLoadout.revision)
+            && !currentLoadout.layout.bindings.some(binding => binding.releaseId === receipt.releaseId)) {
+            detachedReleaseIds.add(receipt.releaseId);
+          }
+        }
+      }
       if (updatePlayerRecipe && getPlayerSnapshot) {
-        await updatePlayerRecipe({
+        await updatePlayerRecipe(detachedReleaseIds.size ? recipeAfterPackRemoval(record.session.recipe, session, detachedReleaseIds) : {
           selections: structuredClone(record.session.recipe.selections),
           colors: structuredClone(record.session.recipe.colors),
           outputKey: record.session.recipe.outputKey,
@@ -3219,7 +3262,7 @@ export function createOriginalProductApp({
       if (!playerMutationCurrent(request, mutation, rootId)) return null;
       state.playerProjectGeneration += 1;
       state.playerUi.profile = structuredClone(record.session.profile);
-      state.playerUi.enabledPackReleaseIds = [...record.session.enabledPackReleaseIds];
+      state.playerUi.enabledPackReleaseIds = record.session.enabledPackReleaseIds.filter(id => !detachedReleaseIds.has(id));
       state.playerUi.soul = playerSoulWithMakerDefaults(
         state.playerSession.player.document, structuredClone(record.session.soul ?? undefined),
       );
@@ -3232,6 +3275,7 @@ export function createOriginalProductApp({
       state.playerProjectBaseRevision = record.revision;
       state.playerProjectBaseHash = record.projectHash;
       state.playerProjectBaseWriterId = record.writerId;
+      state.playerRecipeNeedsSave = detachedReleaseIds.size > 0;
       if (walRecords.length) {
         presentPlayerProjectConflict(
           [record, ...walRecords],
@@ -4035,7 +4079,7 @@ export function createOriginalProductApp({
     }
   }
 
-  async function acquirePlayerPack(action, control) {
+  async function runPlayerPackAction(action, control) {
     if (packAcquisitionFlight) return packAcquisitionFlight;
     if (!preparePlayerAction || !executePlayerAction || !recoverPlayerAction || !getPlayerSnapshot) return null;
     const ui = state.playerUi;
@@ -4053,21 +4097,32 @@ export function createOriginalProductApp({
       return null;
     }
     const previous = ui.packAcquisition;
-    if (action !== 'player-acquire-expansion-v8'
+    const preparingDetach = action === 'player-detach-pack-v8';
+    const preparing = preparingDetach || action === 'player-acquire-expansion-v8';
+    const detach = preparingDetach || (!preparing && previous?.record?.action === 'detachPack');
+    const expectedAction = detach ? 'detachPack' : 'acquirePackAccess';
+    if (!preparing
       && (!previous?.record || previous.releaseId !== releaseId
         || previous.record.actionId !== control.dataset.actionId)) return null;
     const work = (async () => {
       try {
-        ui.packAcquisition = { releaseId, record: previous?.releaseId === releaseId ? previous.record : null, pending: true };
+        ui.packAcquisition = { releaseId, record: previous?.releaseId === releaseId ? previous.record : null, pending: true, detach };
         renderPlayer({ drawPreview: false });
         await state.playerMutationQueue;
         if (!current()) return null;
         let record;
         if (action === 'player-confirm-pack-v8') {
-          if (previous.record.status !== 'PREPARED' || !previous.record.packEntryQuote) return null;
+          if (previous.record.status !== 'PREPARED' || playerPackActionRelease(previous.record) !== releaseId) return null;
           record = await executePlayerAction(previous.record.actionId);
         } else if (action === 'player-recover-pack-v8') {
           record = await recoverPlayerAction(previous.record.actionId, { replayIfNotFound: false });
+        } else if (preparingDetach) {
+          const session = state.playerSession;
+          if (!updatePlayerRecipe || session.execution.packDetachEnabled !== true
+            || !session.player.definitionContext?.currentLoadout?.layout?.bindings?.some(row => row.releaseId === releaseId)) {
+            throw new TypeError('This exact Pack is no longer attached to the current Player loadout.');
+          }
+          record = await preparePlayerAction({ action: expectedAction, input: { releaseId } });
         } else {
           const snapshot = await getPlayerSnapshot();
           if (!current()) return null;
@@ -4087,13 +4142,31 @@ export function createOriginalProductApp({
             input: { releaseId, semanticPackId: choice.semanticPackId } });
         }
         if (!current()) return null;
-        if (record?.action !== 'acquirePackAccess' || record.rootId !== rootId
-          || record.packEntryQuote?.releaseId !== releaseId
-          || action !== 'player-acquire-expansion-v8' && record.actionId !== previous.record.actionId) {
+        if (record?.action !== expectedAction || record.rootId !== rootId
+          || playerPackActionRelease(record) !== releaseId
+          || !preparing && record.actionId !== previous.record.actionId) {
           throw new TypeError('The prepared Pack transaction does not match this request.');
         }
-        ui.packAcquisition = { releaseId, record, pending: false };
-        if (record.status === 'FINALIZED_SUCCESS') {
+        ui.packAcquisition = { releaseId, record, pending: false, detach };
+        if (record.status === 'FINALIZED_SUCCESS' && detach) {
+          await queuePlayerRecipeMutation(async () => {
+            const prior = state.playerSession.recipe;
+            const fresh = exactPlayerSession(await openPlayerSession({ rootId }), rootId);
+            if (!current()) return false;
+            const live = fresh.player.definitionContext?.currentLoadout;
+            const [output] = record.certificate?.evidence?.objects ?? [];
+            if (!live || live.objectId !== output?.objectId
+              || BigInt(live.revision) < BigInt(output.fields.revision)
+              || live.layout.bindings.some(row => row.releaseId === releaseId)) {
+              throw new TypeError('The updated loadout is not yet visible. Check the original transaction to refresh.');
+            }
+            await updatePlayerRecipe(recipeAfterPackRemoval(prior, fresh, new Set([releaseId])));
+            return true;
+          }, { readBefore: false, afterCommit: () => {
+            ui.enabledPackReleaseIds = ui.enabledPackReleaseIds.filter(id => id !== releaseId);
+          } });
+          if (!current()) return null;
+        } else if (record.status === 'FINALIZED_SUCCESS') {
           const snapshot = await getPlayerSnapshot();
           if (!current()) return null;
           mergeExactPlayerSnapshot(snapshot, rootId);
@@ -4111,7 +4184,7 @@ export function createOriginalProductApp({
       } catch (error) {
         if (current()) {
           ui.packAcquisition = { ...ui.packAcquisition, pending: false,
-            error: String(error?.message || 'Pack acquisition failed.') };
+            error: String(error?.message || 'The Pack action failed.') };
           renderPlayer({ drawPreview: false });
         }
         throw error;
@@ -4153,7 +4226,10 @@ export function createOriginalProductApp({
         const record = await recoverPlayerAction(recovery.record.actionId, { replayIfNotFound: false });
         if (!current()) return;
         if (record?.actionId !== recovery.record.actionId || record.rootId !== recovery.record.rootId
-          || record.action !== 'acquirePackAccess') throw new TypeError('Recovered Pack transaction identity changed.');
+          || record.action !== recovery.record.action
+          || playerPackActionRelease(record) !== playerPackActionRelease(recovery.record)) {
+          throw new TypeError('Recovered Pack transaction identity changed.');
+        }
         recovery.record = record;
         recovery.error = '';
       } catch (error) {
@@ -4188,9 +4264,9 @@ export function createOriginalProductApp({
     if (!view) return;
     if (action === 'player-copy-maker-link' || action === 'player-share-maker') {
       await shareCurrentPlayer(action);
-    } else if (['player-acquire-expansion-v8', 'player-confirm-pack-v8',
+    } else if (['player-acquire-expansion-v8', 'player-detach-pack-v8', 'player-confirm-pack-v8',
       'player-cancel-pack-v8', 'player-recover-pack-v8'].includes(action)) {
-      await acquirePlayerPack(action, control);
+      await runPlayerPackAction(action, control);
     } else if (action === 'player-expansion-v8') {
       const releaseId = String(control.value || '');
       const enable = control.checked === true;

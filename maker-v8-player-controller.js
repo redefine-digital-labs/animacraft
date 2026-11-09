@@ -50,6 +50,7 @@ export const MAKER_V8_PLAYER_ACTIONS = Object.freeze({
   ACQUIRE_BASE_ITEM: 'acquireBaseItem',
   ACQUIRE_PACK_ACCESS: 'acquirePackAccess',
   COMMIT_LOADOUT: 'commitLoadout',
+  DETACH_PACK: 'detachPack',
   COMPLETE_OUTPUT: 'completeOutput',
   MATERIALIZE_PHYSICAL: 'materializePhysical',
 });
@@ -120,6 +121,9 @@ const ACTION_TARGETS = Object.freeze({
     'runtime::runtime_seal_v8::select_protected_base_style_v8',
     'runtime::runtime_seal_v8::equip_protected_owned_base_style_v8',
   ]),
+  [MAKER_V8_PLAYER_ACTIONS.DETACH_PACK]: new Set([
+    'playerPackDetach::runtime_v8::detach_pack_definitions_v8',
+  ]),
   [MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT]: new Set([
     'runtime::runtime_v8::prove_attached_pack_definitions_v8',
     'runtime::runtime_v8::prove_base_selection_v8',
@@ -174,6 +178,7 @@ const ACTION_INPUT_FIELDS = Object.freeze({
     'releaseId', 'semanticPackId',
   ]),
   [MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT]: Object.freeze([]),
+  [MAKER_V8_PLAYER_ACTIONS.DETACH_PACK]: Object.freeze(['releaseId']),
   [MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT]: Object.freeze([
     'render', 'nativeSoul',
   ]),
@@ -832,6 +837,7 @@ function assertActionInput(action, input, recipe, document) {
     exactId(input.releaseId, 'action.input.releaseId');
     exactKey(input.semanticPackId, 'action.input.semanticPackId');
   }
+  if (action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) exactId(input.releaseId, 'action.input.releaseId');
   if (action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM) {
     exactKey(input.partKey, 'action.input.partKey');
     exactKey(input.itemKey, 'action.input.itemKey');
@@ -984,6 +990,9 @@ function normalizeTarget(target) {
 }
 
 function actionPackageRoles(action, runtime) {
+  if (action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) {
+    return new Map(runtime.playerPackDetach ? [[runtime.playerPackDetach.packageId, 'playerPackDetach']] : []);
+  }
   const packageRoles = new Map(Object.entries(runtime.roles)
     .map(([role, identity]) => [identity.callablePackageId, role]));
   if (action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT && runtime.nativeSoulIntegration) {
@@ -1072,7 +1081,9 @@ function assertBuiltTransaction(built, plan, runtime) {
       `${call.package}::${call.module}::${call.function}`,
     ));
   const plannedTargets = assertActionTargets(plan.action, plan.targets, runtime);
-  if (!sameCanonical(observedTargets, plannedTargets)) {
+  const singleDetach = plan.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK;
+  if (!sameCanonical(observedTargets, plannedTargets)
+    || singleDetach && (plannedTargets.length !== 1 || snapshot.commands.length !== 1)) {
     fail(
       'MAKER_V8_PLAYER_TRANSACTION_TARGET_DRIFT',
       'Built TransactionData Move calls differ from the compiler plan.',
@@ -1188,8 +1199,9 @@ function playerActionScope({ action, signer, playerIdentity, recipeCommitment, i
   // visual recipe. A color/style edit must not hide an uncertain paid acquisition
   // behind a second scope. Exact original recipe/plan/bytes remain in the record
   // and are revalidated before any signature; Complete remains recipe-specific.
-  const acquisition = [MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS,
-    MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS].includes(action);
+  const recipeIndependent = [MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS,
+    MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM, MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    MAKER_V8_PLAYER_ACTIONS.DETACH_PACK].includes(action);
   return hashValue({
     chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
     action,
@@ -1197,7 +1209,7 @@ function playerActionScope({ action, signer, playerIdentity, recipeCommitment, i
     rootId: playerIdentity.rootId,
     makerVersion: playerIdentity.makerVersion,
     rootContentCommitment: playerIdentity.rootContentCommitment,
-    recipeCommitment: acquisition ? null : recipeCommitment,
+    recipeCommitment: recipeIndependent ? null : recipeCommitment,
     input,
   });
 }
@@ -1353,6 +1365,12 @@ function actionView(record, recoveryState = null) {
     makerVersion: record.playerIdentity.makerVersion,
     recipeCommitment: record.loadout.recipeCommitment,
     transactionDigest: record.transaction.digest,
+    ...(record.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK ? {
+      releaseId: record.input.releaseId,
+      gasBudgetMist: String(TransactionDataBuilder.fromBytes(
+        canonicalTransactionBytes(record.transaction.bytes),
+      ).snapshot().gasData.budget),
+    } : {}),
     makerEntryQuote: record.plan.descriptor.expected?.makerEntryQuote == null
       ? null : clone(record.plan.descriptor.expected.makerEntryQuote),
     completePaymentQuote: record.plan.descriptor.expected?.completePaymentQuote == null
@@ -1518,6 +1536,7 @@ export function createMakerV8PlayerControllerV8({
     execution: freeze({
       ...gates,
       writeEnabled,
+      ...(runtime.playerPackDetach ? { packDetachEnabled: writeEnabled } : {}),
       disabledReason: writeEnabled
         ? null : 'Player chain actions are disabled until exact signing and broadcast gates are enabled.',
     }),
@@ -1706,6 +1725,7 @@ export function createMakerV8PlayerControllerV8({
       MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS,
       MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM,
       MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+      MAKER_V8_PLAYER_ACTIONS.DETACH_PACK,
     ].includes(action);
     if (protectedAction && !gates.allowProtectedContent
       && protectedRequired(player, recipe, context)) {
@@ -1851,8 +1871,9 @@ export function createMakerV8PlayerControllerV8({
       || player.evidence.contentCommitment !== record.playerIdentity.rootContentCommitment) {
       fail('MAKER_V8_PLAYER_ACTION_ROOT_DRIFT', 'Durable action belongs to another Root version.', 'CONTEXT');
     }
-    const recipe = normalizeRecipe(player.document, record.recipe, player);
-    const loadout = loadoutFor(player, recipe);
+    const detach = record.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK;
+    const recipe = detach ? record.recipe : normalizeRecipe(player.document, record.recipe, player);
+    const loadout = detach ? record.loadout : loadoutFor(player, recipe);
     if (!sameCanonical(loadout, record.loadout)) {
       fail('MAKER_V8_PLAYER_ACTION_RECIPE_DRIFT', 'Durable action Recipe/loadout drifted.', 'CONTEXT');
     }
@@ -2173,6 +2194,9 @@ export function createMakerV8PlayerControllerV8({
 
     async preparePlayerAction({ action, input = {} } = {}) {
       requireWrite();
+      if (action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK && !runtime.playerPackDetach) {
+        fail('MAKER_V8_PLAYER_PACK_DETACH_UNAVAILABLE', 'Pack removal requires a finalized Runtime upgrade.', 'GATE');
+      }
       if (state.status !== 'READY' || !state.player || !state.recipe || !state.loadout) {
         fail('MAKER_V8_PLAYER_NOT_READY', 'Load and validate one exact Player Recipe first.');
       }
@@ -2620,6 +2644,39 @@ export function createMakerV8PlayerControllerV8({
       // Discovery is read-only: do not require the Pack to remain purchasable,
       // query finality, sign, or replay while restoring the recovery UI.
       return actionView(record);
+    },
+
+    async getFinalizedPlayerPackDetaches(input = {}) {
+      if (!writeEnabled || !runtime.playerPackDetach) return [];
+      exactRecord(input, ['rootId', 'since'], 'finalizedPackDetach.input');
+      const rootId = exactId(input.rootId, 'finalizedPackDetach.rootId');
+      if (!Number.isSafeInteger(input.since) || input.since < 0) {
+        fail('MAKER_V8_PLAYER_PACK_DETACH_LOOKUP_INVALID', 'Pack removal lookup requires a saved project time.', 'PERSISTENCE');
+      }
+      requireMethod(persistence, 'listFinalizedPackDetachIds', 'persistence');
+      const { address: signer } = await exactChainAndAccount();
+      const ids = await persistence.listFinalizedPackDetachIds({ rootId, signer, since: input.since });
+      const records = await Promise.all(ids.map(readRecord));
+      const receipts = records.map(record => {
+        const outputs = record.certificate?.evidence?.objects;
+        if (record.action !== MAKER_V8_PLAYER_ACTIONS.DETACH_PACK || record.status !== 'FINALIZED_SUCCESS'
+          || record.plan.signer !== signer || record.playerIdentity.rootId !== rootId
+          || record.updatedAt < input.since || outputs?.length !== 1
+          || outputs[0].objectId !== record.plan.descriptor.expected.packDetach.objectId
+          || String(outputs[0].fields?.revision) !== record.plan.descriptor.expected.packDetach.transition.revision) {
+          fail('MAKER_V8_PLAYER_PACK_DETACH_LOOKUP_DRIFT', 'Pack removal receipt differs from the saved wallet or loadout.', 'RECOVERY');
+        }
+        return freeze({
+          releaseId: record.input.releaseId,
+          transactionDigest: record.transaction.digest,
+          loadoutId: outputs[0].objectId,
+          revision: String(outputs[0].fields.revision),
+        });
+      });
+      if ((await exactChainAndAccount()).address !== signer) {
+        fail('MAKER_V8_PLAYER_ACCOUNT_DRIFT', 'Wallet changed during Pack removal receipt lookup.', 'WALLET');
+      }
+      return freeze(receipts);
     },
 
     async readFinalizedCompletion({ rootId, signer, actionId }) {

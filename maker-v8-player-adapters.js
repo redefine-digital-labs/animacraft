@@ -84,7 +84,7 @@ const ACTION_STORE = 'actions';
 const ACTIVE_STORE = 'activeScopes';
 const ROOT_ACTIVE_STORE = 'activeRoots';
 const BUILD_STORE = 'transactionBuilds';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const TERMINAL_ACTION_STATUSES = new Set(['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'CANCELLED_UNSIGNED']);
 const MAX_TRANSACTION_BYTES = 128 * 1024;
 const MAX_RECORD_BYTES = 1024 * 1024;
@@ -459,18 +459,24 @@ function openDatabase(indexedDB, databaseName) {
     const request = indexedDB.open(databaseName, DATABASE_VERSION);
     request.onupgradeneeded = (event) => {
       const database = request.result;
-      if (event.oldVersion !== 0) {
-        request.transaction.abort();
-        return;
+      let actions;
+      if (event.oldVersion === 0) {
+        actions = database.createObjectStore(ACTION_STORE, { keyPath: 'actionId' });
+        actions.createIndex('byDigest', 'transaction.digest', { unique: true });
+        database.createObjectStore(ACTIVE_STORE, { keyPath: 'scopeKey' });
+        database.createObjectStore(ROOT_ACTIVE_STORE, { keyPath: 'rootScopeKey' });
+        const builds = database.createObjectStore(BUILD_STORE, { keyPath: 'descriptorSha256' });
+        builds.createIndex('byDigest', 'digest', { unique: true });
+      } else {
+        actions = request.transaction.objectStore(ACTION_STORE);
       }
-      const actions = database.createObjectStore(ACTION_STORE, { keyPath: 'actionId' });
-      actions.createIndex('byDigest', 'transaction.digest', { unique: true });
-      database.createObjectStore(ACTIVE_STORE, { keyPath: 'scopeKey' });
-      database.createObjectStore(ROOT_ACTIVE_STORE, { keyPath: 'rootScopeKey' });
-      const builds = database.createObjectStore(BUILD_STORE, { keyPath: 'descriptorSha256' });
-      builds.createIndex('byDigest', 'digest', { unique: true });
+      actions.createIndex('byRootActionStatus', ['playerIdentity.rootId', 'plan.signer', 'action', 'status']);
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const database = request.result;
+      database.onversionchange = () => database.close();
+      resolve(database);
+    };
     request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
     request.onblocked = () => reject(new Error('IndexedDB upgrade is blocked'));
   });
@@ -569,6 +575,15 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     const raw = await requestResult(transaction.objectStore(ACTION_STORE).index('byDigest').get(digest));
     await transactionDone(transaction);
     return raw === undefined ? null : clone(raw, 'stored Player action by digest');
+  }
+  async function listFinalizedPackDetachIds({ rootId, signer, since }) {
+    const key = [address(rootId, 'Pack removal Root'), address(signer, 'Pack removal signer'),
+      MAKER_V8_PLAYER_ACTIONS.DETACH_PACK, 'FINALIZED_SUCCESS'];
+    const db = await database;
+    const transaction = db.transaction(ACTION_STORE, 'readonly');
+    const records = await requestResult(transaction.objectStore(ACTION_STORE).index('byRootActionStatus').getAll(key));
+    await transactionDone(transaction);
+    return records.filter(record => record.updatedAt >= since).map(record => record.actionId);
   }
   async function create(recordInput) {
     await requirePersistentStorage();
@@ -734,6 +749,7 @@ export function createMakerV8PlayerPersistenceV8(indexedDB = globalThis.indexedD
     create,
     load,
     loadByDigest,
+    listFinalizedPackDetachIds,
     compareAndSwap,
     resolveActive,
     resolveRootActive,
@@ -954,7 +970,7 @@ export function makerV8PlayerRequiresMakerAccessV8(action, packAccessKind = null
   if (!Object.values(MAKER_V8_PLAYER_ACTIONS).includes(action)) {
     fail('MAKER_V8_PLAYER_ACTION_INVALID', 'Unknown Player action.');
   }
-  if (action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS) return false;
+  if ([MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS, MAKER_V8_PLAYER_ACTIONS.DETACH_PACK].includes(action)) return false;
   if (action !== MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS) return true;
   if (![0, 1, 2].includes(packAccessKind)) {
     fail('MAKER_V8_PLAYER_PACK_ACCESS_POLICY_INVALID', 'Pack access policy is not callable.');
@@ -1163,6 +1179,185 @@ export function assertMakerV8PlayerLoadoutLayoutV8(fields, expectedLayout) {
   return loadoutSelections({ fields: { ...fields, root_id: fields.rootId,
     attached_pack_definitions: fields.attachedPackDefinitions, definition_slots: fields.definitionSlots } },
   new Map(), 0, expectedLayout);
+}
+
+function detachLoadoutFields(raw) {
+  const field = (camel, snake) => raw[camel] ?? raw[snake];
+  return {
+    version: decimal(raw.version, 'Loadout.version'),
+    rootId: moveId(field('rootId', 'root_id'), 'Loadout.rootId'),
+    rootVersion: decimal(field('rootVersion', 'root_version'), 'Loadout.rootVersion'),
+    rootContentCommitment: hex(field('rootContentCommitment', 'root_content_commitment'), 'Loadout.rootContentCommitment'),
+    definitionRegistryId: moveId(field('definitionRegistryId', 'definition_registry_id'), 'Loadout.definitionRegistryId'),
+    packRegistryId: moveId(field('packRegistryId', 'pack_registry_id'), 'Loadout.packRegistryId'),
+    makerAccessPassId: moveId(field('makerAccessPassId', 'maker_access_pass_id'), 'Loadout.makerAccessPassId'),
+    makerAccessCommitment: hex(field('makerAccessCommitment', 'maker_access_commitment'), 'Loadout.makerAccessCommitment'),
+    holder: address(raw.holder, 'Loadout.holder'),
+    revision: decimal(raw.revision, 'Loadout.revision'),
+    attachedPackDefinitions: field('attachedPackDefinitions', 'attached_pack_definitions'),
+    definitionSlots: field('definitionSlots', 'definition_slots'),
+    selections: raw.selections,
+    selectionCount: decimal(field('selectionCount', 'selection_count'), 'Loadout.selectionCount'),
+    commitment: hex(raw.commitment, 'Loadout.commitment'),
+  };
+}
+
+function detachLoadoutState(fields, layout) {
+  const { attachedPackDefinitions, definitionSlots, selections: rawSelections, selectionCount, ...identity } = fields;
+  const selections = assertMakerV8PlayerLoadoutLayoutV8(fields, layout);
+  if (String(selections.filter(Boolean).length) !== selectionCount) {
+    fail('MAKER_V8_PLAYER_LOADOUT_LAYOUT_INVALID', 'Loadout selection count differs from its occupied slots.');
+  }
+  const rows = Array.isArray(rawSelections) ? rawSelections : rawSelections?.fields?.contents ?? rawSelections?.contents;
+  const slots = definitionSlots.map(raw => {
+    const slot = moveFields(raw, 'DefinitionSlot');
+    return {
+      sourceId: moveId(slot.source_definition_id, 'DefinitionSlot.source'),
+      partKey: moveText(slot.part_key, 'DefinitionSlot.partKey'),
+      profileCommitment: hex(slot.profile_commitment, 'DefinitionSlot.profileCommitment'),
+      start: Number(decimal(slot.start, 'DefinitionSlot.start')),
+      capacity: Number(decimal(slot.capacity, 'DefinitionSlot.capacity')),
+    };
+  });
+  return {
+    identity, slots,
+    selections: selections.map((selection, index) => {
+      if (selection === null) return null;
+      const raw = moveFields(moveOption(rows[index], 'Loadout selection'), 'Loadout selection');
+      const channel = moveOption(raw.color_channel_key, 'Selection color channel');
+      return {
+        ...selection,
+        trackKey: moveText(raw.layer_track_key, 'Selection track'),
+        colorChannelKey: channel === null ? null : moveText(channel, 'Selection color channel'),
+        assetBlobId: moveText(raw.asset_blob_id, 'Selection asset Blob ID'),
+        assetSha256: hex(raw.asset_sha256, 'Selection asset SHA-256'),
+        pricingCommitment: hex(raw.pricing_commitment, 'Selection pricing commitment'),
+      };
+    }),
+  };
+}
+
+export function assertMakerV8PlayerPackDetachReadbackV8(record, object) {
+  const { objectId, releaseId, transition } = record.plan.descriptor.expected.packDetach;
+  const observed = detachLoadoutState(detachLoadoutFields(object.fields), transition.layout);
+  const { commitment, ...identity } = observed.identity;
+  const { commitment: priorCommitment, ...priorIdentity } = transition.identity;
+  if (object.change !== 'mutated' || object.objectId !== objectId || releaseId !== record.input.releaseId
+    || object.owner?.kind !== 'AddressOwner' || object.owner.value !== record.plan.signer
+    || commitment === priorCommitment || !same(identity, { ...priorIdentity, revision: transition.revision })
+    || !same(observed.slots, transition.slots) || !same(observed.selections, transition.selections)) {
+    fail('MAKER_V8_PLAYER_PACK_DETACH_READBACK_DRIFT', 'Finalized Pack removal differs from the reviewed loadout transition.');
+  }
+  return true;
+}
+
+export function projectMakerV8PlayerPackDetachV8(raw, layout, releaseId) {
+  address(releaseId, 'Detached Release ID');
+  const { identity, slots, selections } = detachLoadoutState(detachLoadoutFields(raw), layout);
+  if (!layout.bindings.some(binding => binding.releaseId === releaseId)) {
+    fail('MAKER_V8_PLAYER_PACK_NOT_ATTACHED', 'This exact Pack is no longer attached to the Player loadout.');
+  }
+  const retainedSlots = [];
+  const retainedSelections = [];
+  for (const slot of slots) {
+    const keep = slot.sourceId !== releaseId;
+    if (keep) retainedSlots.push({ ...slot, start: retainedSelections.length });
+    for (let index = slot.start; index < slot.start + slot.capacity; index++) {
+      const selected = selections[index];
+      const remaining = selected?.sourceClass === 1 && selected.sourceDefinitionId === releaseId ? null : selected;
+      if (remaining && (!keep || (index !== retainedSelections.length && remaining.sourceClass !== 1))) {
+        fail('MAKER_V8_PLAYER_PACK_DETACH_LOCK_CONFLICT', 'Removing this Pack would shift an owned Item lock.');
+      }
+      if (keep) retainedSelections.push(remaining ? { ...remaining, selectionIndex: retainedSelections.length } : null);
+    }
+  }
+  return freeze({
+    identity,
+    revision: (BigInt(identity.revision) + 1n).toString(),
+    layout: {
+      bindings: layout.bindings.filter(binding => binding.releaseId !== releaseId),
+      profiles: layout.profiles.filter(profile => profile.releaseId !== releaseId),
+    },
+    slots: retainedSlots,
+    selections: retainedSelections,
+  });
+}
+
+async function attestPackDetachUpgrade(client, runtime, pkg) {
+  const pin = runtime.playerPackDetach;
+  const digest = pin.upgradeTransactionDigest;
+  let evidence;
+  try {
+    evidence = await client.getFinalizedTransactionEvidence({ digest });
+  } catch (error) {
+    if (!isMakerV8SuiGrpcNotFoundError(error, digest)) throw error;
+    evidence = await client.getArchivedPlayerTransactionEvidence({ digest });
+  }
+  const invalid = () => fail('MAKER_V8_PLAYER_PACK_DETACH_PACKAGE_DRIFT',
+    'Pack removal requires the finalized additive Runtime upgrade and its exact package output.');
+  if (evidence?.digest !== digest || evidence.effectsStatus?.success !== true
+    || !(evidence.transactionBcs instanceof Uint8Array)
+    || TransactionDataBuilder.getDigestFromBytes(evidence.transactionBcs) !== digest
+    || !/^(?:0|[1-9][0-9]*)$/.test(evidence.checkpoint ?? '')) invalid();
+  let transaction;
+  let effects;
+  try {
+    transaction = bcs.TransactionData.parse(evidence.transactionBcs).V1.kind.ProgrammableTransaction;
+    effects = bcs.TransactionEffects.parse(evidence.effectsBcs).V2;
+  } catch { invalid(); }
+  const [authorization, upgrade, commit] = transaction?.commands ?? [];
+  const authorize = authorization?.MoveCall;
+  const finish = commit?.MoveCall;
+  const cap = authorize?.arguments[0]?.Input;
+  const policy = transaction?.inputs[authorize?.arguments[1]?.Input]?.Pure?.bytes;
+  const framework = `0x${'2'.padStart(64, '0')}`;
+  if (transaction?.commands.length !== 3 || authorize?.package !== framework
+    || authorize.module !== 'package' || authorize.function !== 'authorize_upgrade'
+    || cap === undefined || policy !== toBase64(Uint8Array.of(128))
+    || upgrade?.Upgrade?.package !== runtime.roles.runtime.callablePackageId
+    || upgrade.Upgrade.ticket?.Result !== 0 || finish?.package !== framework
+    || finish.module !== 'package' || finish.function !== 'commit_upgrade'
+    || finish.arguments[0]?.Input !== cap || finish.arguments[1]?.Result !== 1
+    || effects?.status?.$kind !== 'Success' || effects.transactionDigest !== digest) invalid();
+  const writes = effects.changedObjects.filter(([objectId, change]) =>
+    objectId === pkg.objectId && change.idOperation?.$kind === 'Created');
+  const output = writes[0]?.[1].outputState?.PackageWrite;
+  if (writes.length !== 1 || output?.[0] !== String(pkg.version) || output[1] !== pkg.digest) invalid();
+}
+
+async function loadPackDetachState(client, runtime, request) {
+  const pin = runtime.playerPackDetach;
+  const current = request.player.definitionContext?.currentLoadout;
+  if (!pin || !current?.layout) {
+    fail('MAKER_V8_PLAYER_PACK_DETACH_UNAVAILABLE', 'Pack removal requires a finalized Runtime upgrade and an owned Player loadout.');
+  }
+  const [packageResult, makerLoadout] = await Promise.all([
+    client.getObject({ id: pin.packageId, options: { showBcs: true, showOwner: true } }),
+    readObject(client, current.objectId, playerTypes(runtime).makerLoadout, 'Player Pack removal loadout'),
+  ]);
+  const pkg = packageResult?.data;
+  const origin = runtime.roles.runtime.typeOriginPackageId;
+  if (pkg?.objectId !== pin.packageId || pkg.digest !== pin.packageDigest
+    || pkg.previousTransaction !== pin.upgradeTransactionDigest
+    || !Object.hasOwn(pkg.owner ?? {}, 'Immutable') || pkg.bcs?.dataType !== 'package'
+    || pkg.bcs.originalId !== null && pkg.bcs.originalId !== origin
+    || BigInt(decimal(pkg.version, 'Pack removal package version')) < 2n
+    || !pkg.bcs.typeOriginTable?.some(row => row.moduleName === 'runtime_v8'
+      && row.datatypeName === 'MakerLoadoutV8' && row.packageId === origin)) {
+    fail('MAKER_V8_PLAYER_PACK_DETACH_PACKAGE_DRIFT', 'Pack removal package does not match the finalized Runtime lineage.');
+  }
+  await attestPackDetachUpgrade(client, runtime, pkg);
+  const transition = projectMakerV8PlayerPackDetachV8(makerLoadout.fields, current.layout, request.input.releaseId);
+  const { identity } = transition;
+  if (makerLoadout.owner.kind !== 'ADDRESS' || makerLoadout.owner.address !== request.account.address
+    || identity.holder !== request.account.address || identity.version !== '8'
+    || identity.rootId !== request.player.rootId || identity.rootVersion !== request.player.makerVersion
+    || identity.rootContentCommitment !== request.player.evidence.contentCommitment
+    || identity.revision !== current.revision) {
+    fail('MAKER_V8_PLAYER_PACK_DETACH_LOADOUT_DRIFT', 'Pack removal requires the exact current loadout owned by the signing wallet.');
+  }
+  return { schemaVersion: MAKER_V8_PLAYER_ADAPTERS_SCHEMA, objects: { makerLoadout },
+    packDetach: { releaseId: request.input.releaseId, transition } };
 }
 
 function completePrice(mode, price, quota, ordinal, label) {
@@ -2210,6 +2405,7 @@ export function makerV8PlayerSelectionDependenciesV8(action, loadout, input = {}
     MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS,
     MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM,
     MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    MAKER_V8_PLAYER_ACTIONS.DETACH_PACK,
   ].includes(action);
   const selections = executesSelections ? loadout.selections : [];
   const usedPacks = executesSelections ? loadout.usedPacks : [];
@@ -2697,7 +2893,9 @@ export function createMakerV8PlayerCustodyAdapterV8({
   async function load(input, { newTransaction = true } = {}) {
     await pinnedMainnet(client);
     const attestedRuntime = await loadFreshRuntime();
-    const loadedState = await loadPlayerState({
+    const loadedState = input.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK
+      ? await loadPackDetachState(client, attestedRuntime, input)
+      : await loadPlayerState({
       client,
       runtime: attestedRuntime,
       ...input,
@@ -4085,6 +4283,14 @@ function expectedOwnedItemTransitions(state, intendedLoadout) {
 
 function expectedForAction(runtime, action, state, request) {
   const types = playerTypes(runtime);
+  if (action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) {
+    return freeze({
+      ownedOutputTypes: [types.makerLoadout],
+      expectedEventType: null,
+      ownedItemTransitions: { items: [] },
+      packDetach: { objectId: state.objects.makerLoadout.objectId, ...state.packDetach },
+    });
+  }
   const byAction = {
     [MAKER_V8_PLAYER_ACTIONS.ACQUIRE_MAKER_ACCESS]: [types.makerAccess],
     [MAKER_V8_PLAYER_ACTIONS.ACQUIRE_BASE_ITEM]: [types.ownedBaseItem],
@@ -4221,6 +4427,15 @@ async function compilePlayerTransaction(runtime, client, request) {
     acquirePackAccess(transaction, targets, runtime, state, request.input);
   } else if (request.action === MAKER_V8_PLAYER_ACTIONS.COMMIT_LOADOUT) {
     commitLoadout(transaction, targets, runtime, state, request.loadout);
+  } else if (request.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) {
+    const { releaseId, transition } = state.packDetach;
+    const target = `${runtime.playerPackDetach.packageId}::runtime_v8::detach_pack_definitions_v8`;
+    transaction.moveCall({ target, arguments: [
+      transactionObject(transaction, state.objects.makerLoadout, true),
+      transaction.pure.id(releaseId),
+      transaction.pure.u64(transition.identity.revision),
+    ] });
+    targets.push(target);
   } else if (request.action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT) {
     completeOutput(
       transaction,
@@ -5047,6 +5262,10 @@ function assertReadbackObject(record, type, object, all, types) {
       fail('MAKER_V8_PLAYER_BASE_ITEM_READBACK_DRIFT', 'Finalized owned Base Item differs from the exact Maker/Item authority.');
     }
   } else if (type === types.makerLoadout) {
+    if (record.action === MAKER_V8_PLAYER_ACTIONS.DETACH_PACK) {
+      assertMakerV8PlayerPackDetachReadbackV8(record, object);
+      return;
+    }
     const selections = assertMakerV8PlayerLoadoutLayoutV8(fields, record.plan.descriptor.expected.packDefinitionLayout);
     const observed = selections.filter(Boolean);
     if (String(fields.revision)
@@ -5642,7 +5861,7 @@ export function createMakerV8PlayerReadbackAdapterV8({
           objectId: change.objectId,
           version: String(change.version),
           digest: change.digest,
-          ...(packRecovery || record.action === MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT
+          ...(packRecovery || [MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT, MAKER_V8_PLAYER_ACTIONS.DETACH_PACK].includes(record.action)
             ? { owner: freeze(clone(object.owner, 'Player historical owner')) } : {}),
           fields: freeze(clone(object.fields, 'Player historical fields')),
         }));

@@ -964,6 +964,15 @@ function renderExpansionPacks(view) {
     if (!releases.has(key)) releases.set(key, []);
     releases.get(key).push(choice);
   });
+  const bindings = view.execution.packDetachEnabled === true
+    ? view.player.definitionContext?.currentLoadout?.layout?.bindings ?? [] : [];
+  const attached = new Set(bindings.map(binding => binding.releaseId));
+  for (const releaseId of attached) {
+    if (!releases.has(releaseId)) {
+      releases.set(releaseId, [{ label: `${tr(view, 'playerPackAttached')} · ${releaseId}`,
+        access: { accessible: false, availableForAcquire: false, canRetryRuntime: false } }]);
+    }
+  }
   const pendingRelease = view.packAcquisition?.releaseId;
   if (pendingRelease && !releases.has(pendingRelease)) {
     // A suspended/revoked Pack is not a catalog choice. Keep only its durable
@@ -986,7 +995,9 @@ function renderExpansionPacks(view) {
       reason: view.boundaryReason,
     } : access;
     const enabled = view.enabledPackReleaseIds.includes(releaseId);
-    const status = exactAccess.accessible
+    const status = attached.has(releaseId) && !exactAccess.accessible
+      ? tr(view, 'playerPackAttached')
+      : exactAccess.accessible
       ? tr(view, 'playerPackOwned')
       : exactAccess.canRetryRuntime
         ? tr(view, 'playerPackArtworkNeedsRetry')
@@ -1003,6 +1014,7 @@ function renderExpansionPacks(view) {
     const acquisition = view.packAcquisition?.releaseId === releaseId ? view.packAcquisition : null;
     if (acquisition) {
       const record = acquisition.record;
+      const detach = acquisition.detach === true || record?.action === 'detachPack';
       const quote = record?.packEntryQuote;
       const attributes = `data-release-id="${escapeHtml(releaseId)}" data-action-id="${escapeHtml(record?.actionId || '')}"`;
       const button = (action, label) => `<button type="button" data-action="${action}" ${attributes}${controlAttributes(view, action)}>${escapeHtml(tr(view, label))}</button>`;
@@ -1011,17 +1023,24 @@ function renderExpansionPacks(view) {
         : quote?.kind === 2 ? tr(view, 'playerPackIncluded') : tr(view, 'playerPackFree');
       control = `<div class="v4-player-commerce-error" role="status">
         ${acquisition.pending ? escapeHtml(tr(view, 'playerPurchasePending'))
-          : `${quote ? `<p>${escapeHtml(price)}</p><small>${escapeHtml(tr(view, 'playerPackEntryOnly'))}</small>` : ''}
+          : `${detach ? `<p>${escapeHtml(tr(view, 'playerPackDetachCopy'))}</p>${record?.gasBudgetMist
+            ? `<small>${escapeHtml(tr(view, 'publicationGas'))} ${escapeHtml(record.gasBudgetMist)}</small>` : ''}`
+            : quote ? `<p>${escapeHtml(price)}</p><small>${escapeHtml(tr(view, 'playerPackEntryOnly'))}</small>` : ''}
+            ${detach && record?.transactionDigest ? `<p style="overflow-wrap:anywhere">${escapeHtml(record.transactionDigest)}</p>` : ''}
             ${acquisition.error ? `<p>${escapeHtml(acquisition.error)}</p>` : ''}
             ${record && record.status !== 'PREPARED' && record.status !== 'FINALIZED_SUCCESS'
               ? `<p>${escapeHtml(record.status)}</p>` : ''}
-            ${record?.status === 'FINALIZED_SUCCESS' ? escapeHtml(tr(view, 'playerPackTransactionFinalized'))
-              : record?.status === 'PREPARED' && !acquisition.error && quote
-                ? button('player-confirm-pack-v8', 'playerPackConfirm')
+            ${record?.status === 'FINALIZED_SUCCESS' ? `${escapeHtml(tr(view, 'playerPackTransactionFinalized'))}
+              ${detach && acquisition.error ? button('player-recover-pack-v8', 'playerPackRecover') : ''}`
+              : record?.status === 'PREPARED' && !acquisition.error && (quote || detach)
+                ? button('player-confirm-pack-v8', detach ? 'playerPackDetachConfirm' : 'playerPackConfirm')
                 : record && !['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status)
                   ? button('player-recover-pack-v8', 'playerPackRecover') : ''}
             ${button('player-cancel-pack-v8', 'playerPackDismiss')}`}
       </div>`;
+    } else if (attached.has(releaseId)) {
+      const detach = 'player-detach-pack-v8';
+      control += `<button type="button" data-action="${detach}" data-release-id="${escapeHtml(releaseId)}"${controlAttributes(view, detach)}>${escapeHtml(tr(view, 'playerPackDetach'))}</button>`;
     }
     return `
       <article class="v4-player-expansion-card independent-v8 ${exactAccess.accessible ? 'accessible' : 'locked'} ${enabled ? 'enabled' : ''}" data-release-id="${escapeHtml(releaseId)}">
