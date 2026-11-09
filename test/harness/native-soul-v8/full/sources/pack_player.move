@@ -32,11 +32,12 @@ public fun ids_for_testing(ids: PackPlayerIds): (ID, ID, ID, ID, ID, ID) {
 public fun publish_pack_for_testing(
     scenario: &mut Scenario, active_ids: ActiveMakerIds,
 ): PublishedPackIds {
-    publish_pack_with_policy_for_testing(scenario, active_ids, runtime::access_free_v8(), 0)
+    publish_pack_with_policy_for_testing(scenario, active_ids, runtime::access_free_v8(), 0, 0)
 }
 
 public fun publish_pack_with_policy_for_testing(
-    scenario: &mut Scenario, active_ids: ActiveMakerIds, access_kind: u8, price_atomic: u64,
+    scenario: &mut Scenario, active_ids: ActiveMakerIds, access_kind: u8,
+    access_price_atomic: u64, complete_price_atomic: u64,
 ): PublishedPackIds {
     let holder = scenario.ctx().sender();
     let (root_id, base_id, _, admin_id) = active::maker_ids_for_testing(active_ids);
@@ -49,10 +50,12 @@ public fun publish_pack_with_policy_for_testing(
     let admission = scenario.take_from_sender_by_id<PackAdmissionAuthorityV8>(admission_id);
     let admin = scenario.take_from_sender_by_id<MakerAdminCapV8>(admin_id);
     let expected_styles = runtime::physical_pack_style_commitment_for_testing(&root);
+    let complete_mode = if (complete_price_atomic == 0) maker::complete_unlimited_free_v8()
+        else maker::complete_paid_every_time_v8();
     let (mut release, pack_admin, pack_treasury) = runtime::new_pack_release_v8(
         &root, &definitions, b"physical-pack".to_string(),
         b"physical-pack-manifest".to_string(), fixture_hash(75), fixture_hash(71),
-        access_kind, price_atomic, maker::complete_unlimited_free_v8(), 0, 0, 0,
+        access_kind, access_price_atomic, complete_mode, complete_price_atomic, 0, 0,
         1, expected_styles, scenario.ctx());
     runtime::append_unprotected_pack_style_v8(&mut release, &pack_admin,
         &definitions, &base, 0, runtime::new_pack_style_definition_sources_v8(1, 1, option::none()),

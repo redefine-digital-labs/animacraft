@@ -14,7 +14,7 @@ use animacraft_v8_core::protocol_config_v8::{Self as protocol, ProtocolConfigV8,
 use animacraft_v8_core::treasury_v8::{Self as treasury, MakerTreasuryV8, MakerAccessPassV8};
 use animacraft_v8_core::package_binding_v8::{ProductReleaseCatalogV8, FreshTupleReplacementBindingV2};
 use animacraft_v8_runtime::runtime_v8::{Self as runtime, RuntimeDefinitionRegistryV8,
-    PackRegistryV8, PackReleaseV8, PackPassV8, MakerLoadoutV8, OwnedBaseItemV8};
+    PackRegistryV8, PackReleaseV8, PackPassV8, PackTreasuryV8, MakerLoadoutV8, OwnedBaseItemV8};
 use animacraft_v8_runtime::runtime_binding_v8::RuntimePackageConfigV8;
 use animacraft_v8_output::output_v8::{Self as output, OutputRegistryV8, SoulRegistryV8,
     NativeSoulBindingV8, CompleteOutputV8, CompleteReceiptV8, OutputPackageConfigV8};
@@ -40,10 +40,10 @@ public struct NativeCompletionIds has copy, drop, store {
     kiosk: ID, personal_cap: ID, loadout: ID, owned_base: ID, access: ID,
 }
 public struct PackCompletionIds has copy, drop {
-    release: ID, pass: ID,
+    release: ID, pass: ID, treasury: ID, payment_atomic: u64,
 }
 public struct PackCompletionObjects {
-    release: PackReleaseV8<SUI>, pass: PackPassV8,
+    release: PackReleaseV8<SUI>, pass: PackPassV8, treasury: ID, payment_atomic: u64,
 }
 public fun market_ids(ids: MarketIds): (ID, ID, ID, ID, ID) {
     (ids.config, ids.admin, ids.registry, ids.kinds, ids.policy)
@@ -90,10 +90,12 @@ public fun mint_for_testing(
 public fun mint_with_pack_for_testing(
     scenario: &mut Scenario, protocol_id: ID, setup: SetupIds,
     maker_ids: MakerObjectIds, market_ids: MarketIds, system: &mut System,
-    pack_release_id: ID, pack_pass_id: ID,
+    pack_release_id: ID, pack_pass_id: ID, pack_treasury_id: ID, payment_atomic: u64,
 ): NativeCompletionIds {
     mint_using_player(scenario, protocol_id, setup, maker_ids, market_ids, system,
-        option::none(), false, option::some(PackCompletionIds { release: pack_release_id, pass: pack_pass_id }))
+        option::none(), false, option::some(PackCompletionIds {
+            release: pack_release_id, pass: pack_pass_id, treasury: pack_treasury_id, payment_atomic,
+        }))
 }
 
 /// Uses a protected output policy installed before activation; no sealed flag
@@ -179,7 +181,9 @@ fun mint_using_player(
         runtime::select_pack_style_v8(&mut loadout, &root, &definitions, &base, &packs,
             &release, &pass, &access, 0, option::none(), b"part".to_string(),
             b"pack-item".to_string(), b"pack-style".to_string(), option::none(), scenario.ctx());
-        option::some(PackCompletionObjects { release, pass })
+        option::some(PackCompletionObjects {
+            release, pass, treasury: ids.treasury, payment_atomic: ids.payment_atomic,
+        })
     } else {
         pack_ids.destroy_none();
         option::none()
@@ -191,7 +195,7 @@ fun mint_using_player(
     while (selections[selected_index].is_none()) selected_index = selected_index + 1;
     assert!(runtime::loadout_selection_count_v8(&loadout) == 1, 99);
     let proof = if (pack.is_some()) {
-        let PackCompletionObjects { release, pass } = pack.borrow();
+        let PackCompletionObjects { release, pass, .. } = pack.borrow();
         runtime::prove_pack_selection_v8(&loadout, &packs, release, pass,
             &root, &access, selected_index, scenario.ctx())
     } else {
@@ -213,12 +217,21 @@ fun mint_using_player(
         &root, &config, &mut maker_treasury, &mut protocol_treasury,
         sui::coin::zero<SUI>(scenario.ctx()), authorization, &loadout, scenario.ctx());
     if (pack.is_some()) {
-        let PackCompletionObjects { mut release, pass } = pack.destroy_some();
+        let PackCompletionObjects { mut release, pass, treasury, payment_atomic } = pack.destroy_some();
         let runtime_config = scenario.take_shared_by_id<RuntimePackageConfigV8>(runtime_config_id);
         let output_config = scenario.take_shared_by_id<OutputPackageConfigV8>(output_config_id);
-        output::append_free_pack_complete_v8(&mut session, &output_config, &output_registry,
-            &root, &catalog, &config, &replacement, &runtime_config, &mut release,
-            &packs, &pass, &loadout, scenario.ctx());
+        if (payment_atomic == 0) {
+            output::append_free_pack_complete_v8(&mut session, &output_config, &output_registry,
+                &root, &catalog, &config, &replacement, &runtime_config, &mut release,
+                &packs, &pass, &loadout, scenario.ctx());
+        } else {
+            let mut pack_treasury = scenario.take_shared_by_id<PackTreasuryV8<SUI>>(treasury);
+            let payment = sui::coin::mint_for_testing<SUI>(payment_atomic, scenario.ctx());
+            output::append_paid_pack_complete_v8(&mut session, &output_config, &output_registry,
+                &root, &catalog, &replacement, &runtime_config, &mut release, &packs, &pass,
+                &loadout, &mut pack_treasury, &config, &mut protocol_treasury, payment, scenario.ctx());
+            scenario::return_shared(pack_treasury);
+        };
         scenario::return_shared(runtime_config);
         scenario::return_shared(output_config);
         scenario::return_shared(release);
