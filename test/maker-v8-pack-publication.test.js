@@ -25,7 +25,7 @@ const SIGNER = id(9);
 const PACKAGE = id(77);
 const CHAIN = '35834a8a';
 
-function notFound(transactionDigest, checkpoint = 1, watermarkEpoch = '1') {
+function notFound(transactionDigest, checkpoint = 1, watermarkEpoch = '1', retention) {
   return {
     status: 'NOT_FOUND', digest: transactionDigest,
     epoch: null, effectsFingerprint: null, eventsDigest: null, error: null,
@@ -40,6 +40,7 @@ function notFound(transactionDigest, checkpoint = 1, watermarkEpoch = '1') {
       watermarkEpoch,
       watermarkCheckpointSequence: String(checkpoint),
       watermarkCheckpointDigest: digest(checkpoint + 20),
+      ...(retention === undefined ? {} : { retention }),
     },
   };
 }
@@ -331,8 +332,13 @@ test('Pack Sui retires an unsigned intent only after typed exact absence beyond 
   h.wallet.signExactTransaction = async () => { throw new Error('Wallet response lost'); };
   await assert.rejects(h.controller.requestSignature(ready.attemptId, { review }), /Wallet response lost/);
   const cold = h.reboot();
-  h.responses.push(notFound(review.digest, 3, '2'), notFound(review.digest, 4, '3'));
+  h.responses.push(notFound(review.digest, 3, '2'), notFound(review.digest, 4, '3'),
+    notFound(review.digest, 5, '3', {
+      startEpoch: '1', firstCheckpoint: '2', lowestAvailableCheckpoint: '1', observedCheckpoint: '6',
+    }));
   assert.equal((await cold.recoverOutcome(ready.attemptId)).current.outcome.digest, review.digest);
+  assert.equal((await cold.recoverOutcome(ready.attemptId)).current.outcome.digest, review.digest);
+  await assert.rejects(cold.prepareReview(ready.attemptId), { code: 'MAKER_V8_PACK_PUBLICATION_NOT_READY' });
   const retired = await cold.replayExact(ready.attemptId);
   assert.deepEqual(retired.current.outcome, { status: 'READY', retiredDigest: review.digest });
   assert.notEqual((await cold.prepareReview(ready.attemptId)).digest, review.digest);

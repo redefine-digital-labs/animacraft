@@ -4748,7 +4748,7 @@ export function createMakerV8PlayerRpcAdapterV8({
     schemaVersion: MAKER_V8_PLAYER_ADAPTERS_SCHEMA,
     getChainIdentifier,
     async queryTransaction(input) {
-      exact(input, ['digest'], 'Player transaction query');
+      exact(input, Object.hasOwn(input ?? {}, 'epochWindow') ? ['digest', 'epochWindow'] : ['digest'], 'Player transaction query');
       suiDigest(input.digest, 'transaction digest');
       await getChainIdentifier();
       const result = await rpc.queryTransaction(input);

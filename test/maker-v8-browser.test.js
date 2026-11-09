@@ -495,6 +495,23 @@ test('production transaction absence classifier is typed, watermarked, and reche
   assert.equal(absentClient.queries, 2);
 });
 
+test('expired query requests retention from the second exact NOT_FOUND after the watermark', async () => {
+  const first = await typedTransactionAbsentError();
+  const second = await typedTransactionAbsentError();
+  const client = queryClient([first, second]);
+  const retention = {
+    startEpoch: '100', firstCheckpoint: '800', lowestAvailableCheckpoint: '799', observedCheckpoint: '901',
+  };
+  client.getTransactionAbsenceRetention = async input => {
+    assert.deepEqual(input, { error: second, digest: suiDigest, startEpoch: '100', watermarkCheckpointSequence: '900' });
+    assert.equal(client.queries, 2);
+    return retention;
+  };
+  const result = await createMakerV8LiveDataSourceV8({ client, runtime: {} })
+    .queryTransaction({ digest: suiDigest, epochWindow: { start: '100', end: '101' } });
+  assert.deepEqual(result.absence.retention, retention);
+});
+
 function buildClient({ chainIds = [MAKER_V8_MAINNET_CHAIN_IDENTIFIER] } = {}) {
   let chainIndex = 0;
   let dryRuns = 0;

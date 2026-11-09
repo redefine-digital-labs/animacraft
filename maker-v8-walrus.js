@@ -4,7 +4,7 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase58, fromBase64, toBase64, normalizeStructTag } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
+import { makerV8AbsenceCoversEpochWindow, makerV8PublicationExpiration } from './maker-v8-publication-expiration.js';
 import { MakerV8DAppKitWalletError } from './maker-v8-dapp-kit-wallet.js';
 import { MakerV8BrowserError } from './maker-v8-browser.js';
 import { readMakerV8WalrusBatchObjectsV1, assertMakerV8WalrusBatchObjectsV1 } from './maker-v8-walrus-execution.js';
@@ -774,7 +774,7 @@ function unsignedStatus(stage) {
   return stage === 'REGISTER' ? 'ENCODED' : 'UPLOADED';
 }
 
-function expiredSigningIntent(record, absence) {
+function expiredSigningIntent(record, absence, validity) {
   let checkpointDigestValid = false;
   try { checkpointDigestValid = fromBase58(absence?.watermarkCheckpointDigest).length === 32; }
   catch { /* Absence must include a real checkpoint digest. */ }
@@ -788,8 +788,9 @@ function expiredSigningIntent(record, absence) {
     || !checkpointDigestValid) {
     fail('MAKER_V8_WALRUS_ABSENCE_INVALID', 'An uncertain signature requires typed absence for its exact Mainnet digest.', 'RECOVERY');
   }
-  const { ValidDuring: validity } = bcs.TransactionData.parse(fromBase64(record.transaction.bytes)).V1.expiration;
-  return BigInt(absence.watermarkEpoch) > BigInt(validity.maxEpoch);
+  return validity?.chain === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+    && BigInt(absence.watermarkEpoch) > BigInt(validity.maxEpoch)
+    && makerV8AbsenceCoversEpochWindow(absence, validity.minEpoch);
 }
 
 /**
@@ -1075,7 +1076,13 @@ export function createMakerV8WalrusPublisherV8({
   const settle = async (record) => {
     const signing = record.status.endsWith('_SIGNING');
     if (signing) await assertPinned();
-    const query = await rpc.queryTransaction({ digest: record.transaction.digest });
+    const validity = signing
+      ? bcs.TransactionData.parse(fromBase64(record.transaction.bytes)).V1.expiration.ValidDuring : null;
+    const epochWindow = validity?.chain === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+      ? { start: validity.minEpoch, end: validity.maxEpoch } : null;
+    const query = await rpc.queryTransaction({
+      digest: record.transaction.digest, ...(epochWindow === null ? {} : { epochWindow }),
+    });
     if (!plain(query) || query.digest !== record.transaction.digest) {
       fail('MAKER_V8_WALRUS_QUERY_INVALID', 'Walrus exact-digest query returned invalid evidence.', 'RECOVERY');
     }
@@ -1087,7 +1094,7 @@ export function createMakerV8WalrusPublisherV8({
     }
     if (query.status === 'NOT_FOUND') {
       if (signing) {
-        if (!expiredSigningIntent(record, query.absence)) return record;
+        if (!expiredSigningIntent(record, query.absence, validity)) return record;
         return save(record, {
           status: unsignedStatus(record.transaction.stage), transaction: null,
           error: { code: 'MAKER_V8_WALRUS_SIGNING_INTENT_EXPIRED',

@@ -397,17 +397,25 @@ test('a lost single-blob response permits a fresh review only after exact finali
   await assert.rejects(first.publisher.signReviewed(uploadId, review), /response lost/);
   const cold = harness(store, 200);
   cold.buildClient.core.getCurrentSystemState = async () => ({ systemState: { epoch: '12' } });
-  cold.queries.push(typedAbsence(review.digest, '12', { requestedDigest: GAS_DIGEST }), typedAbsence(review.digest, '12'));
+  cold.queries.push(typedAbsence(review.digest, '12', { requestedDigest: GAS_DIGEST }),
+    typedAbsence(review.digest, '12'), typedAbsence(review.digest, '12', {
+      retention: {
+        startEpoch: '10', firstCheckpoint: '50', lowestAvailableCheckpoint: '45', observedCheckpoint: '101',
+      },
+    }));
   const awaiting = await cold.publisher.load(uploadId);
   assert.equal(awaiting.status, 'RECOVERY_REQUIRED');
   assert.equal(await cold.publisher.prepareReview(uploadId), null);
   await assert.rejects(cold.publisher.resume(uploadId, awaiting), { code: 'MAKER_V8_WALRUS_ABSENCE_INVALID' });
+  const uncertain = await cold.publisher.resume(uploadId, awaiting);
+  assert.equal(uncertain.status, 'RECOVERY_REQUIRED');
+  assert.equal(await cold.publisher.prepareReview(uploadId), null);
   const ready = await cold.publisher.resume(uploadId, awaiting);
   assert.equal(ready.status, 'SIGNATURE_REQUIRED');
   assert.equal(ready.error.digest, review.digest);
   assert.notEqual((await cold.publisher.prepareReview(uploadId)).digest, review.digest);
   assert.deepEqual(cold.calls.filter(([name]) => ['query', 'sign', 'broadcast'].includes(name)), [
-    ['query', review.digest], ['query', review.digest],
+    ['query', review.digest], ['query', review.digest], ['query', review.digest],
   ]);
 });
 

@@ -1192,6 +1192,50 @@ test('only exact GetTransaction RpcError NOT_FOUND is digest-bound by the reques
   }
 });
 
+test('absence retention proves the exact validity start using the NOT_FOUND response metadata', async () => {
+  const fixture = fixtures();
+  const notFound = new RpcError('Transaction not found', 'NOT_FOUND');
+  notFound.serviceName = 'sui.rpc.v2.LedgerService';
+  notFound.methodName = 'GetTransaction';
+  notFound.meta = {
+    'x-sui-chain-id': MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
+    'x-sui-lowest-available-checkpoint': '75',
+    'x-sui-checkpoint-height': '101',
+  };
+  fixture.grpcClient.ledgerService.getTransaction = async () => { throw notFound; };
+  let epochCalls = 0;
+  let firstCheckpoint = 80n;
+  fixture.grpcClient.ledgerService.getEpoch = async request => {
+    epochCalls += 1;
+    assert.deepEqual(request, { epoch: 90n, readMask: { paths: ['epoch', 'first_checkpoint'] } });
+    return { response: GrpcTypes.GetEpochResponse.create({ epoch: { epoch: 90n, firstCheckpoint } }) };
+  };
+  const request = { error: notFound, digest: TX, startEpoch: '90', watermarkCheckpointSequence: '100' };
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention(request), null);
+  await assert.rejects(fixture.transport.getTransactionFinality({ digest: TX }), error => error === notFound);
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention({ ...request, digest: OTHER_DIGEST }), null);
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention({ ...request, watermarkCheckpointSequence: '102' }), null);
+  assert.equal(epochCalls, 0);
+  assert.deepEqual(await fixture.transport.getTransactionAbsenceRetention(request), {
+    startEpoch: '90', firstCheckpoint: '80', lowestAvailableCheckpoint: '75', observedCheckpoint: '101',
+  });
+  firstCheckpoint = 74n;
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention(request), null);
+  const epochMissing = new RpcError('Epoch not found', 'NOT_FOUND');
+  epochMissing.serviceName = 'sui.rpc.v2.LedgerService';
+  epochMissing.methodName = 'GetEpoch';
+  fixture.grpcClient.ledgerService.getEpoch = async () => { throw epochMissing; };
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention(request), null);
+  const unavailable = new RpcError('Ledger unavailable', 'UNAVAILABLE');
+  unavailable.serviceName = epochMissing.serviceName;
+  unavailable.methodName = epochMissing.methodName;
+  fixture.grpcClient.ledgerService.getEpoch = async () => { throw unavailable; };
+  await assert.rejects(fixture.transport.getTransactionAbsenceRetention(request), error => error === unavailable);
+  delete notFound.meta['x-sui-lowest-available-checkpoint'];
+  assert.equal(await fixture.transport.getTransactionAbsenceRetention(request), null);
+  assert.equal(epochCalls, 2);
+});
+
 test('Ledger finality and Core transaction reads correlate digest, epoch, status, and effects', async () => {
   const fixture = fixtures();
   const finality = await fixture.transport.getTransactionFinality({ digest: TX });

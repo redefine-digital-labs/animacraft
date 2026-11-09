@@ -1720,6 +1720,42 @@ export function createMakerV8SuiGrpcTransport({
     return normalizeMakerV8TransactionFinality(transaction, expectedDigest);
   };
 
+  const getTransactionAbsenceRetention = async ({
+    error, digest: expectedDigest, startEpoch, watermarkCheckpointSequence,
+  }) => {
+    if (!isMakerV8SuiGrpcNotFoundError(error, expectedDigest)) return null;
+    // Use the response that actually reported absence. A separate ServiceInfo
+    // request can be served by a node with different retention or sync state.
+    const metadata = error.meta;
+    const lowestAvailableCheckpoint = metadata?.['x-sui-lowest-available-checkpoint'];
+    const observedCheckpoint = metadata?.['x-sui-checkpoint-height'];
+    if (metadata?.['x-sui-chain-id'] !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
+      || typeof lowestAvailableCheckpoint !== 'string' || !UINT.test(lowestAvailableCheckpoint)
+      || typeof observedCheckpoint !== 'string' || !UINT.test(observedCheckpoint)
+      || BigInt(lowestAvailableCheckpoint) > BigInt(observedCheckpoint)
+      || BigInt(observedCheckpoint) < BigInt(watermarkCheckpointSequence)) return null;
+    const epoch = BigInt(decimal(startEpoch, 'transaction validity start epoch'));
+    let response;
+    try {
+      response = await unary(grpc.ledgerService.getEpoch({
+        epoch, readMask: { paths: ['epoch', 'first_checkpoint'] },
+      }), 'ledgerService.getEpoch(absence)', GrpcTypes.GetEpochResponse);
+    } catch (cause) {
+      if (cause instanceof RpcError && cause.code === 'NOT_FOUND'
+        && cause.serviceName === LEDGER_SERVICE && cause.methodName === 'GetEpoch') return null;
+      throw cause;
+    }
+    if (response.epoch?.epoch !== epoch) {
+      fail('MAKER_V8_SUI_GRPC_EPOCH_DRIFT', 'Ledger returned another transaction validity epoch.');
+    }
+    const firstCheckpoint = uint64(response.epoch.firstCheckpoint, 'epoch.firstCheckpoint');
+    if (BigInt(lowestAvailableCheckpoint) > firstCheckpoint
+      || firstCheckpoint > BigInt(watermarkCheckpointSequence)) return null;
+    return Object.freeze({
+      startEpoch, firstCheckpoint: firstCheckpoint.toString(), lowestAvailableCheckpoint, observedCheckpoint,
+    });
+  };
+
   const assertCoreTransactionResult = (
     result,
     expectedDigest,
@@ -1999,6 +2035,7 @@ export function createMakerV8SuiGrpcTransport({
     getHistoricalObject,
     getTransaction,
     getTransactionFinality,
+    getTransactionAbsenceRetention,
     getFinalizedTransactionEvidence,
     simulateTransaction,
     executeTransaction,

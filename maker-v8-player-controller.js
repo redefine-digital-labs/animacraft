@@ -1,4 +1,5 @@
 import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from './maker-v8-sui-grpc.js';
+import { makerV8AbsenceCoversEpochWindow } from './maker-v8-publication-expiration.js';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -1131,7 +1132,7 @@ function assertTransactionQuery(value, digest, label = 'actionRecord.query') {
   if (value.status === 'NOT_FOUND') {
     exactRecord(
       value.absence,
-      TYPED_ABSENCE_FIELDS,
+      Object.hasOwn(value.absence ?? {}, 'retention') ? [...TYPED_ABSENCE_FIELDS, 'retention'] : TYPED_ABSENCE_FIELDS,
       `${label}.absence`,
       'MAKER_V8_PLAYER_RECORD_INVALID',
     );
@@ -1147,7 +1148,9 @@ function assertTransactionQuery(value, digest, label = 'actionRecord.query') {
       || !/^(?:0|[1-9][0-9]*)$/.test(value.absence.watermarkEpoch)
       || !/^(?:0|[1-9][0-9]*)$/.test(value.absence.watermarkCheckpointSequence)
       || typeof value.absence.watermarkCheckpointDigest !== 'string'
-      || value.absence.watermarkCheckpointDigest.length < 20) {
+      || value.absence.watermarkCheckpointDigest.length < 20
+      || (Object.hasOwn(value.absence, 'retention')
+        && !makerV8AbsenceCoversEpochWindow(value.absence, value.absence.retention?.startEpoch))) {
       fail('MAKER_V8_PLAYER_ABSENCE_EVIDENCE_INVALID', 'Transaction absence proof is not the exact typed Mainnet double-query evidence.', 'RECOVERY');
     }
     return value;
@@ -1820,7 +1823,9 @@ export function createMakerV8PlayerControllerV8({
 
   const queryExact = async (record) => {
     try {
-      const query = await rpc.queryTransaction({ digest: record.transaction.digest });
+      const query = await rpc.queryTransaction({
+        digest: record.transaction.digest, epochWindow: record.transaction.build.epochWindow,
+      });
       assertJson(query, 'transactionQuery');
       return freeze(clone(assertTransactionQuery(
         query,
@@ -2438,15 +2443,17 @@ export function createMakerV8PlayerControllerV8({
         || !plain(record.signature)) {
         fail('MAKER_V8_PLAYER_RECOVERY_STATE_INVALID', 'Player action has no recoverable exact signed artifact.', 'RECOVERY');
       }
+      const terminal = ['FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(record.status);
       let query;
       try {
         query = await queryExact(record);
       } catch (error) {
-        record = await persistCas(record, {
-          status: 'OUTCOME_UNKNOWN', error: durableError(error),
-        });
+        if (!terminal) {
+          record = await persistCas(record, { status: 'OUTCOME_UNKNOWN', error: durableError(error) });
+        }
         throw error;
       }
+      if (query.status === 'NOT_FOUND' && terminal) return actionView(record, record.status);
       const finalized = await settleQuery(record, query);
       if (finalized) return actionView(finalized);
       if (!plain(query.absence)
@@ -2459,8 +2466,9 @@ export function createMakerV8PlayerControllerV8({
       }
       const expirationEpoch = BigInt(record.transaction.build.epochWindow.end);
       if (BigInt(query.absence.watermarkEpoch) > expirationEpoch) {
-        if (record.status === 'EXPIRED_NOT_FOUND') {
-          return actionView(record, 'EXPIRED_NOT_FOUND');
+        if (!makerV8AbsenceCoversEpochWindow(query.absence, record.transaction.build.epochWindow.start)) {
+          record = await persistCas(record, { status: 'OUTCOME_UNKNOWN', query, error: null });
+          return actionView(record, 'AWAITING_FINALITY');
         }
         const expired = new MakerV8PlayerControllerError(
           'MAKER_V8_PLAYER_TRANSACTION_EXPIRED',

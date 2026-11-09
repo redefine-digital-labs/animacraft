@@ -5,6 +5,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 
 import { MAKER_V8_PACK_PUBLICATION_CONTROLLER_SCHEMA } from './maker-v8-pack-controller.js';
 import { MAKER_V8_SUI_MAINNET_GENESIS_DIGEST } from './maker-v8-sui-grpc.js';
+import { makerV8AbsenceCoversEpochWindow } from './maker-v8-publication-expiration.js';
 
 export const MAKER_V8_PACK_PUBLICATION_SCHEMA =
   'animacraft.maker-v8-pack-publication.v1';
@@ -162,6 +163,7 @@ function assertGrpcAbsence(value, expectedDigest, expectedChain) {
     'schemaVersion', 'kind', 'grpcCode', 'grpcService', 'grpcMethod',
     'requestedDigest', 'chainIdentifier', 'watermarkEpoch',
     'watermarkCheckpointSequence', 'watermarkCheckpointDigest',
+    ...(Object.hasOwn(absence, 'retention') ? ['retention'] : []),
   ], 'typed gRPC transaction absence');
   if (absence.schemaVersion !== 'animacraft.sui-transaction-absence.v8'
     || absence.kind !== 'SUI_GRPC_TRANSACTION_NOT_FOUND'
@@ -175,6 +177,10 @@ function assertGrpcAbsence(value, expectedDigest, expectedChain) {
   decimal(absence.watermarkEpoch, 'absence.watermarkEpoch');
   decimal(absence.watermarkCheckpointSequence, 'absence.watermarkCheckpointSequence');
   suiDigest(absence.watermarkCheckpointDigest, 'absence.watermarkCheckpointDigest');
+  if (Object.hasOwn(absence, 'retention')
+    && !makerV8AbsenceCoversEpochWindow(absence, absence.retention?.startEpoch)) {
+    fail('MAKER_V8_PACK_PUBLICATION_ABSENCE_INVALID', 'Typed gRPC absence includes invalid retention evidence.');
+  }
   return freeze(absence);
 }
 
@@ -238,12 +244,18 @@ function transactionDataProof(value, expected) {
     validity: parsed.V1.expiration.ValidDuring ?? null });
 }
 
-function signingIntentExpired(plan, absence) {
+function signingIntentEpochWindow(plan, digest) {
   const { validity } = transactionDataProof(plan.current.fullTransaction, {
-    signer: plan.immutable.signer, kindBytes: plan.current.descriptor.kindBytes, digest: absence.requestedDigest,
+    signer: plan.immutable.signer, kindBytes: plan.current.descriptor.kindBytes, digest,
   });
   return validity?.chain === MAKER_V8_SUI_MAINNET_GENESIS_DIGEST
-    && BigInt(absence.watermarkEpoch) > BigInt(validity.maxEpoch);
+    ? { start: validity.minEpoch, end: validity.maxEpoch } : null;
+}
+
+function signingIntentExpired(plan, absence) {
+  const window = signingIntentEpochWindow(plan, absence.requestedDigest);
+  return window !== null && BigInt(absence.watermarkEpoch) > BigInt(window.end)
+    && makerV8AbsenceCoversEpochWindow(absence, window.start);
 }
 
 function assertDescriptor(value) {
@@ -877,7 +889,9 @@ export function createMakerV8PackPublicationControllerV8({
     if (!signing && plan.current.outcome.status !== 'OUTCOME_PENDING') return plan;
     let query;
     try {
-      query = await rpc.queryTransaction({ digest: plan.current.outcome.digest });
+      const { digest } = plan.current.outcome;
+      const epochWindow = signing ? signingIntentEpochWindow(plan, digest) : null;
+      query = await rpc.queryTransaction({ digest, ...(epochWindow === null ? {} : { epochWindow }) });
     } catch (error) {
       if (signing) throw error; // Keep the original unsigned intent recoverable.
       const at = clock(plan.updatedAt);

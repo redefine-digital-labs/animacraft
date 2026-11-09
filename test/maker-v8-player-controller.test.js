@@ -729,7 +729,7 @@ test('definition reads reject wallet A to B to A and preserve disconnected publi
   assert.equal(Object.hasOwn(publicRead.player, 'definitionContext'), false);
 });
 
-function notFound(digest, watermarkEpoch = '1') {
+function notFound(digest, watermarkEpoch = '1', retention) {
   return {
     status: 'NOT_FOUND', digest, epoch: null, effectsFingerprint: null,
     eventsDigest: null, error: null,
@@ -744,6 +744,7 @@ function notFound(digest, watermarkEpoch = '1') {
       watermarkEpoch,
       watermarkCheckpointSequence: '10',
       watermarkCheckpointDigest: '6'.repeat(44),
+      ...(retention === undefined ? {} : { retention }),
     },
   };
 }
@@ -1446,6 +1447,13 @@ test('NOT_FOUND beyond the signed epoch expires terminally without replay or rep
   current.controls.broadcastError = null;
   const digest = current.persistence.inspect(prepared.actionId).transaction.digest;
   current.controls.queryResults.push(notFound(digest, '102'));
+  const uncertain = await current.controller.recoverPlayerAction(prepared.actionId, { replayIfNotFound: true });
+  assert.equal(uncertain.status, 'OUTCOME_UNKNOWN');
+  assert.equal(uncertain.transactionDigest, digest);
+  assert.equal(current.calls.broadcast, 1);
+  current.controls.queryResults.push(notFound(digest, '102', {
+    startEpoch: '100', firstCheckpoint: '5', lowestAvailableCheckpoint: '2', observedCheckpoint: '11',
+  }));
   const expired = await current.controller.recoverPlayerAction(
     prepared.actionId,
     { replayIfNotFound: true },
@@ -1454,6 +1462,11 @@ test('NOT_FOUND beyond the signed epoch expires terminally without replay or rep
   assert.equal(current.calls.broadcast, 1);
   assert.equal(current.calls.sign, 1);
   assert.equal(current.persistence.inspect(prepared.actionId).status, 'EXPIRED_NOT_FOUND');
+  current.controls.queryResults.push(notFound(digest, '105'));
+  const reopened = await current.controller.recoverPlayerAction(prepared.actionId, { replayIfNotFound: true });
+  assert.equal(reopened.status, 'EXPIRED_NOT_FOUND');
+  assert.equal(reopened.revision, expired.revision);
+  assert.equal(current.calls.broadcast, 1);
 });
 
 test('finalized failure is terminal while readback failure remains visibly retryable and never rebroadcasts', async () => {

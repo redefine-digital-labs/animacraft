@@ -20,3 +20,19 @@ export function makerV8PublicationExpiration(epoch, crypto = globalThis.crypto) 
     nonce,
   } };
 }
+
+// Only a NOT_FOUND from a node that covered the full validity window can
+// retire the original digest. Older persisted absence proofs remain readable.
+export function makerV8AbsenceCoversEpochWindow(absence, startEpoch) {
+  const proof = absence?.retention;
+  const values = [startEpoch, absence?.watermarkCheckpointSequence, proof?.startEpoch,
+    proof?.firstCheckpoint, proof?.lowestAvailableCheckpoint, proof?.observedCheckpoint];
+  const canonical = value => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,19})$/.test(value)
+    && BigInt(value) <= 0xffff_ffff_ffff_ffffn;
+  return values.every(canonical)
+    && Object.keys(proof).length === 4
+    && proof.startEpoch === startEpoch
+    && BigInt(proof.lowestAvailableCheckpoint) <= BigInt(proof.firstCheckpoint)
+    && BigInt(proof.firstCheckpoint) <= BigInt(absence.watermarkCheckpointSequence)
+    && BigInt(absence.watermarkCheckpointSequence) <= BigInt(proof.observedCheckpoint);
+}

@@ -894,6 +894,7 @@ test('finalized failure and authoritative post-expiration absence are durable te
     });
     let executeCount = 0;
     let forgeAbsence = scenario === 'EXPIRED';
+    let retention = null;
     const wallet = {
       async getCurrentAccount() { return { address: signer, network: 'mainnet' }; },
       async verifyExactSignature(artifact) {
@@ -913,11 +914,13 @@ test('finalized failure and authoritative post-expiration absence are durable te
       core: { async executeTransaction() { executeCount += 1; } },
     };
     const rpc = {
-      async queryTransaction() {
+      async queryTransaction({ epochWindow }) {
+        assert.deepEqual(epochWindow, { start: '100', end: '101' });
         if (scenario === 'EXPIRED') {
           const result = absence(transactionDigest);
           result.absence.watermarkEpoch = '102';
           if (forgeAbsence) result.absence.grpcCode = 'INTERNAL';
+          if (retention) result.absence.retention = retention;
           return result;
         }
         return {
@@ -969,6 +972,14 @@ test('finalized failure and authoritative post-expiration absence are durable te
       assert.equal((await persistence.load(reservation.recoveryId)).status,
         MAKER_V8_LIFECYCLE_RECOVERY_STATUS.SIGNED_DURABLE);
       forgeAbsence = false;
+      const uncertain = await recovery.recoverExactTransaction({
+        recoveryId: reservation.recoveryId, digest: transactionDigest, signer, descriptor: built.descriptor,
+      });
+      assert.equal(uncertain.status, 'OUTCOME_UNKNOWN');
+      assert.equal((await persistence.load(reservation.recoveryId)).digest, transactionDigest);
+      retention = {
+        startEpoch: '100', firstCheckpoint: '800', lowestAvailableCheckpoint: '799', observedCheckpoint: '901',
+      };
     }
     await assert.rejects(
       recovery.recoverExactTransaction({

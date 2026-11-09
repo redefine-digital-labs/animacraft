@@ -1954,9 +1954,16 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
       });
     },
 
-    async queryTransaction({ digest: transactionDigest }) {
+    async queryTransaction({ digest: transactionDigest, epochWindow = null }) {
       await assertPinnedMainnet(client);
       digest(transactionDigest, 'transaction.digest');
+      if (epochWindow !== null) {
+        const start = decimal(epochWindow.start, 'transaction validity start epoch');
+        const end = decimal(epochWindow.end, 'transaction validity end epoch');
+        if (BigInt(end) < BigInt(start)) {
+          fail('MAKER_V8_BROWSER_VALIDITY_WINDOW_INVALID', 'Transaction validity window is reversed.', 'READBACK');
+        }
+      }
       const readExactDigest = async () => {
         if (typeof client?.getTransactionFinality !== 'function'
           || typeof client?.core?.getTransaction !== 'function') {
@@ -2022,6 +2029,8 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
           checkpoint?.sequenceNumber,
           'transaction absence checkpoint sequence',
         );
+        const watermarkEpoch = decimal(watermark?.epoch, 'transaction absence checkpoint epoch');
+        let retention = null;
         await assertPinnedMainnet(client);
         try {
           // The second exact-digest read occurs after the checkpoint watermark.
@@ -2030,6 +2039,12 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
           return await readExactDigest();
         } catch (error) {
           if (!isTypedTransactionNotFound(error, transactionDigest)) throw error;
+          if (epochWindow && BigInt(watermarkEpoch) > BigInt(epochWindow.end)
+            && typeof client.getTransactionAbsenceRetention === 'function') {
+            retention = await client.getTransactionAbsenceRetention({
+              error, digest: transactionDigest, startEpoch: epochWindow.start, watermarkCheckpointSequence,
+            });
+          }
         }
         await assertPinnedMainnet(client);
         return freeze({
@@ -2049,12 +2064,13 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
             grpcMethod: 'GetTransaction',
             requestedDigest: transactionDigest,
             chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
-            watermarkEpoch: decimal(watermark?.epoch, 'transaction absence checkpoint epoch'),
+            watermarkEpoch,
             watermarkCheckpointSequence,
             watermarkCheckpointDigest: digest(
               checkpoint?.digest,
               'transaction absence checkpoint digest',
             ),
+            ...(retention === null ? {} : { retention }),
           }),
         });
       }
