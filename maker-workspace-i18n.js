@@ -4021,6 +4021,31 @@ export function makerWorkspaceText(locale, key, variables = {}) {
   );
 }
 
+export function formatMakerWorkspaceUsdc(priceAtomic) {
+  const atomic = priceAtomic.padStart(7, '0');
+  const fraction = atomic.slice(-6).replace(/0+$/, '');
+  return `${atomic.slice(0, -6)}${fraction ? `.${fraction}` : ''} USDC`;
+}
+
+export function makerWorkspacePackCompleteSummary(locale, completion) {
+  const mode = completion?.mode;
+  const modeKey = {
+    UNLIMITED_FREE: completion?.totalCap === '0' ? 'completeUnlimitedFree' : 'accessFree',
+    FREE_QUOTA_THEN_PAID: 'completeQuotaThenPaid',
+    PAID_EVERY_TIME: 'completePaidEveryTime',
+    FREE_QUOTA_THEN_BLOCK: 'completeQuotaThenBlock',
+  }[mode];
+  if (!modeKey) return '';
+  const text = key => makerWorkspaceText(locale, key);
+  const terms = [text('completePolicy'), text(modeKey)];
+  if (completion.freeQuotaPerWallet !== '0') {
+    terms.push(`${text('freeCompleteQuota')} ${completion.freeQuotaPerWallet}`);
+  }
+  if (completion.priceAtomic !== '0') terms.push(formatMakerWorkspaceUsdc(completion.priceAtomic));
+  if (completion.totalCap !== '0') terms.push(`${text('globalCompleteCap')} ${completion.totalCap}`);
+  return terms.join(' · ');
+}
+
 Object.entries({
   en: 'This slot is full ({capacity}). Remove an Item before adding another.',
   zh: '此卡槽已满（容量 {capacity}）。请先移除一个组件，再添加。',

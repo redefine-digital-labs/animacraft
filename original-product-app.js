@@ -13,7 +13,7 @@ import {
 import { createDocsCenter } from './docs-center.js';
 import { makerV8PlayerPart, makerV8PlayerPartUiKey, makerV8PlayerColor } from './maker-v8-player-definition-resolution.js';
 import { makerV8PlayerColorEntry, makerV8PlayerColorControlKey, makerV8PlayerColorKey } from './maker-v8-player-colors.js';
-import { makerWorkspaceText } from './maker-workspace-i18n.js';
+import { formatMakerWorkspaceUsdc, makerWorkspacePackCompleteSummary, makerWorkspaceText } from './maker-workspace-i18n.js';
 import { renderMakerEditorShell } from './maker-editor-shell.js';
 import { createMakerPartListModel, renderMakerPartList } from './maker-definition-editor.js';
 import { renderSharedRuleTargetTree, renderDefinitionCombinationRuleControl } from './maker-definition-rule-control.js';
@@ -1662,12 +1662,12 @@ export function createOriginalProductApp({
     if (!catalog) return '';
     const text = key => makerWorkspaceText(state.locale, key);
     const rows = catalog.packs.map(pack => {
-      const atomic = pack.priceAtomic.padStart(7, '0');
-      const price = `${atomic.slice(0, -6)}.${atomic.slice(-6)}`.replace(/\.?0+$/, '');
-      const entry = pack.accessKind === 'PAID' ? `${price} USDC`
+      const entry = pack.accessKind === 'PAID' ? formatMakerWorkspaceUsdc(pack.priceAtomic)
         : text(pack.accessKind === 'FREE' ? 'accessFree' : 'accessIncludedCore');
+      const complete = makerWorkspacePackCompleteSummary(state.locale, pack.completion);
       return `<li data-public-pack-release="${escapeHtml(pack.releaseId)}">
-        <strong>${escapeHtml(pack.name)}</strong> <span>${escapeHtml(entry)}</span>
+        <strong>${escapeHtml(pack.name)}</strong> <span>${escapeHtml(text('packAccess'))} · ${escapeHtml(entry)}</span>
+        ${complete ? `<p data-pack-complete-terms>${escapeHtml(complete)}</p>` : ''}
         ${pack.summary ? `<p>${escapeHtml(pack.summary)}</p>` : ''}
       </li>`;
     }).join('');

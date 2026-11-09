@@ -1,5 +1,7 @@
 import {
   MAKER_WORKSPACE_LOCALES,
+  formatMakerWorkspaceUsdc,
+  makerWorkspacePackCompleteSummary,
   makerWorkspaceText,
 } from './maker-workspace-i18n.js';
 import {
@@ -973,7 +975,10 @@ function renderExpansionPacks(view) {
   }
   if (!releases.size) return '';
   const cards = [...releases.entries()].map(([releaseId, choices]) => {
-    const access = choices[0].access;
+    const { access, entry, completion } = choices[0];
+    const entryTerms = entry?.kind === 1 ? formatMakerWorkspaceUsdc(entry.priceAtomic)
+      : entry?.kind === 0 ? tr(view, 'accessFree') : entry?.kind === 2 ? tr(view, 'accessIncludedCore') : '';
+    const completeTerms = makerWorkspacePackCompleteSummary(view.locale, completion);
     const accessDrift = choices.some((choice) => (
       choice.access.accessible !== access.accessible
       || choice.access.availableForAcquire !== access.availableForAcquire
@@ -1025,7 +1030,10 @@ function renderExpansionPacks(view) {
     }
     return `
       <article class="v4-player-expansion-card independent-v8 ${exactAccess.accessible ? 'accessible' : 'locked'} ${enabled ? 'enabled' : ''}" data-release-id="${escapeHtml(releaseId)}">
-        <div><strong>${escapeHtml(choices[0].label)}</strong><small>${escapeHtml(status)}</small></div>
+        <div><strong>${escapeHtml(choices[0].label)}</strong><small>${escapeHtml(status)}</small>
+          ${entryTerms ? `<small>${escapeHtml(tr(view, 'packAccess'))} · ${escapeHtml(entryTerms)}</small>` : ''}
+          ${completeTerms ? `<small data-pack-complete-terms>${escapeHtml(completeTerms)}</small>` : ''}
+        </div>
         ${control}
       </article>`;
   }).join('');
