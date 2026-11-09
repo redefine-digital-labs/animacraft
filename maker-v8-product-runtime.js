@@ -30,6 +30,7 @@ import {
 import {
   MAKER_V8_PACK_ACCESS_KINDS, MAKER_V8_PACK_COMPLETE_MODES,
 } from './maker-v8-pack-controller.js';
+import { MAKER_V8_PACK_MANIFEST_UNAVAILABLE } from './maker-v8-player-pack-preferences.js';
 
 export const MAKER_V8_PRODUCT_RUNTIME_SCHEMA = 'animacraft.maker-v8-product-runtime.v1';
 export const MAKER_V8_PRODUCT_READ_ONLY_EXECUTION = Object.freeze({
@@ -40,6 +41,12 @@ export const MAKER_V8_PRODUCT_READ_ONLY_EXECUTION = Object.freeze({
 });
 
 const EXACT_ID = /^0x[0-9a-f]{64}$/;
+
+function loadoutSelection(raw) {
+  const unwrapped = raw?.fields ?? raw;
+  const selected = Array.isArray(unwrapped?.vec) ? unwrapped.vec[0] : unwrapped;
+  return selected?.fields ?? selected;
+}
 
 /** Local render lookup key only. Never replaces a stored asset ID, content
  * commitment, Blob identity or original-artwork proof. Bounded to 69 chars. */
@@ -571,6 +578,13 @@ export function createMakerV8ProductRuntime({
       const loadouts = owned.makerLoadouts ?? [];
       if (loadouts.length > 1) fail('MAKER_V8_PRODUCT_LOADOUT_AMBIGUOUS', 'Choose one exact Maker loadout before equipping Items.');
       const currentLoadout = loadouts[0] ?? null;
+      const usedPacks = new Set((currentLoadout?.packDefinitionLayout?.bindings ?? []).map(row => row.releaseId));
+      for (const raw of currentLoadout?.selections ?? []) {
+        const selection = loadoutSelection(raw);
+        if (Number(selection?.source_class) === 1) {
+          usedPacks.add(selection.source_definition_id?.id ?? selection.source_definition_id);
+        }
+      }
       const accessForItem = (item, admissionReason = '') => {
         let reason = admissionReason;
         let equippedInCurrentLoadout = false;
@@ -578,9 +592,7 @@ export function createMakerV8ProductRuntime({
         if (!Object.hasOwn(item, 'equipLock') || item.ownershipEpoch === undefined) reason ||= 'Item ownership or equip-lock state is unavailable.';
         else if (lock !== null) {
           const optional = currentLoadout?.selections?.[Number(lock.selectionIndex)];
-          const unwrapped = optional?.fields ?? optional;
-          const selected = Array.isArray(unwrapped?.vec) ? unwrapped.vec[0] : unwrapped;
-          const row = selected?.fields ?? selected;
+          const row = loadoutSelection(optional);
           const subject = row?.access_subject?.id ?? row?.access_subject;
           equippedInCurrentLoadout = Boolean(currentLoadout && lock.loadoutId === currentLoadout.objectId
             && String(row?.selection_index) === lock.selectionIndex && subject === item.objectId
@@ -625,7 +637,19 @@ export function createMakerV8ProductRuntime({
       const hasMakerAccess = (owned.makerAccessPasses ?? []).length > 0;
       for (const choice of packChoices.values()) {
         const { release } = choice;
-        const read = await loadPackManifest(release, context.root);
+        let read;
+        try {
+          read = await loadPackManifest(release, context.root);
+        } catch (error) {
+          if (choice.owned || usedPacks.has(release.objectId)
+            || !['ANIMACRAFT_WALRUS_READ_FAILED', 'MAKER_V8_PACK_MANIFEST_FETCH_FAILED'].includes(error?.code)) throw error;
+          diagnostics.push(freeze({
+            schemaVersion: MAKER_V8_CATALOG_DIAGNOSTIC_SCHEMA, severity: 'WARNING', layer: 'MANIFEST',
+            code: MAKER_V8_PACK_MANIFEST_UNAVAILABLE, message: 'Pack Manifest could not be read.',
+            rootId, makerKey: context.root.makerKey ?? null, details: { releaseId: release.objectId },
+          }));
+          continue;
+        }
         const styles = read.manifest.content.styles;
         let definitionCommitment = null;
         let styleReferences = null;

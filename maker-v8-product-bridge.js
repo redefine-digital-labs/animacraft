@@ -20,6 +20,7 @@ import {
   renderMakerV8PlayerRecipePngV8,
 } from './maker-v8-player-journey.js';
 import { makerV8PlayerRecipeCommitmentV8 } from './maker-v8-player-controller.js';
+import { hasOnlyUnavailablePackDiagnostics } from './maker-v8-player-pack-preferences.js';
 import { createMakerV8LocalPlayer } from './maker-v8-local-player.js';
 import { exactMakerV8ExportOptions, makerV8ExportSizes } from './maker-v8-render-core.js';
 import { makerV8DraftAuthorUpgrade } from './maker-v8-draft-store.js';
@@ -657,11 +658,10 @@ export function createMakerV8ProductBridge({
       || !Array.isArray(value.packStyles)
       || !Array.isArray(value.externalStyles)
       || !Array.isArray(value.certifiedAssets)
-      || !Array.isArray(value.diagnostics)
-      || value.diagnostics.length !== 0) {
+      || !hasOnlyUnavailablePackDiagnostics(value)) {
       fail(
         'MAKER_V8_PRODUCT_CONTEXTUAL_AUTHORITY_INVALID',
-        'Contextual choices lack one exact clean wallet and active Root authority.',
+        'Contextual choices lack one exact wallet and active Root authority.',
         'PLAYER',
       );
     }

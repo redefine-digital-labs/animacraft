@@ -643,6 +643,27 @@ test('controller loads signer-bound definitions and retained attachment layout w
   }
 });
 
+test('Player can read other choices during a Pack outage but cannot prepare that Pack entry', async () => {
+  const h = harness();
+  const rootId = h.player.rootId, releaseId = id(700);
+  const warning = { schemaVersion: 'animacraft.maker-v8-catalog-diagnostic.v1', severity: 'WARNING',
+    layer: 'MANIFEST', code: 'MAKER_V8_PRODUCT_PACK_MANIFEST_UNAVAILABLE', rootId,
+    details: { releaseId } };
+  const context = {
+    choices: { schemaVersion: 'animacraft.maker-v8-contextual-choices.v1', address: HOLDER, rootId,
+      baseEntitlements: [], packStyles: [], externalStyles: [], certifiedAssets: [], diagnostics: [warning] },
+    definitions: { schemaVersion: 'animacraft.maker-v8-player-definitions.v1', address: HOLDER, rootId,
+      packs: [], currentLoadout: null },
+  };
+  h.productRuntime.playerContext = { load: async () => context };
+  assert.equal((await h.controller.loadPlayer(rootId)).status, 'READY');
+  await assert.rejects(h.controller.preparePlayerAction({ action: MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS,
+    input: { releaseId, semanticPackId: 'moon-pack' } }), { code: 'MAKER_V8_PLAYER_PACK_MANIFEST_UNAVAILABLE' });
+  assert.equal(h.calls.compile + h.calls.custody + h.calls.sign + h.calls.broadcast, 0);
+  context.choices.packStyles = [{ releaseId }];
+  assert.equal((await h.controller.loadPlayer(rootId)).status, 'ERROR');
+});
+
 test('own-Part recipes allocate canonical new Packs and preserve unselected committed attachment slots', async () => {
   const h = harness({ enabled: false });
   const rootId = h.player.rootId;

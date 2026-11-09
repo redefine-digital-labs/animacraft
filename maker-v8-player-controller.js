@@ -19,6 +19,7 @@ import {
 import {
   MAKER_V8_PRODUCT_RUNTIME_SCHEMA,
 } from './maker-v8-product-runtime.js';
+import { hasOnlyUnavailablePackDiagnostics, makerV8UnavailablePackManifestIds } from './maker-v8-player-pack-preferences.js';
 import { MAKER_V8_CLOCK_OBJECT_ID, assertMakerV8Runtime } from './maker-v8-runtime.js';
 import { makerV8PlayerRecipeConstraintIssue } from './maker-v8-player-recipe-constraints.js';
 import { assertMakerV8NativeCompletionInputV8 } from './maker-v8-native-completion.js';
@@ -1595,12 +1596,14 @@ export function createMakerV8PlayerControllerV8({
           'externalStyles', 'certifiedAssets', 'diagnostics'], 'Player choices', 'MAKER_V8_PLAYER_DEFINITION_CONTEXT_INVALID');
         exactRecord(definitions, ['schemaVersion', 'address', 'rootId', 'packs', 'currentLoadout'],
           'Player definitions', 'MAKER_V8_PLAYER_DEFINITION_CONTEXT_INVALID');
+        const unavailablePacks = new Set(makerV8UnavailablePackManifestIds(choices));
         if (definitions.schemaVersion !== 'animacraft.maker-v8-player-definitions.v1'
           || definitions.address !== signer || definitions.rootId !== rootId || !Array.isArray(definitions.packs)
           || choices?.schemaVersion !== 'animacraft.maker-v8-contextual-choices.v1'
           || choices.address !== signer || choices.rootId !== rootId
           || !['baseEntitlements', 'packStyles', 'externalStyles', 'certifiedAssets'].every(key => Array.isArray(choices[key]))
-          || !Array.isArray(choices.diagnostics) || choices.diagnostics.length) {
+          || !hasOnlyUnavailablePackDiagnostics(choices)
+          || definitions.packs.some(row => unavailablePacks.has(row?.releaseId))) {
           fail('MAKER_V8_PLAYER_DEFINITION_CONTEXT_INVALID', 'Player definitions differ from the exact signer/Root choices.', 'READ');
         }
         if (definitions.currentLoadout !== null) {
@@ -1609,6 +1612,9 @@ export function createMakerV8PlayerControllerV8({
           exactId(current.objectId, 'Player current Loadout ID');
           exactDecimal(current.revision, 'Player current Loadout revision');
           makerV8PlayerSlotLayout({ rootId, parts: player.document.parts, packDefinitionLayout: current.layout });
+          if (current.layout?.bindings.some(row => unavailablePacks.has(row.releaseId))) {
+            fail('MAKER_V8_PLAYER_DEFINITION_CONTEXT_INVALID', 'Attached Pack definitions must remain readable.', 'READ');
+          }
         }
         return freeze({ ...clone(player), definitionContext: clone(definitions), contextualChoices: clone(choices) });
       } finally { if (typeof unsubscribe === 'function') unsubscribe(); }
@@ -1647,6 +1653,13 @@ export function createMakerV8PlayerControllerV8({
     return observed;
   };
 
+  const requireReadablePacks = (player, loadout, entryReleaseId = null) => {
+    const unavailable = new Set(makerV8UnavailablePackManifestIds(player.contextualChoices));
+    if (unavailable.has(entryReleaseId) || loadout.usedPacks.some(row => unavailable.has(row.releaseId))) {
+      fail('MAKER_V8_PLAYER_PACK_MANIFEST_UNAVAILABLE', 'A Pack used by this action could not be read.', 'READ', {}, true);
+    }
+  };
+
   const exactChainAndAccount = async () => {
     try {
       assertMainnetIdentifier(await rpc.getChainIdentifier());
@@ -1672,6 +1685,7 @@ export function createMakerV8PlayerControllerV8({
   };
 
   const liveContext = async ({ action, player, recipe, loadout, input, account }) => {
+    requireReadablePacks(player, loadout, action === MAKER_V8_PLAYER_ACTIONS.ACQUIRE_PACK_ACCESS ? input.releaseId : null);
     let context;
     try {
       context = await custody.loadPlayerContext({
@@ -2024,6 +2038,7 @@ export function createMakerV8PlayerControllerV8({
         assertCurrent();
         const player = samePlayer(snapshot.player, await readExact(snapshot.player.rootId));
         assertCurrent();
+        requireReadablePacks(player, loadout);
         const quote = await custody.quotePlayerCompletion({
           player: clone(player), recipe: clone(recipe), loadout: clone(loadout), account,
         });
@@ -2074,6 +2089,7 @@ export function createMakerV8PlayerControllerV8({
       const loadout = loadoutFor(state.player, recipe);
       const account = await exactChainAndAccount();
       const player = samePlayer(state.player, await readExact(state.player.rootId));
+      requireReadablePacks(player, loadout);
       const identity = await custody.resolveProtectedOutputIdentity({
         action: MAKER_V8_PLAYER_ACTIONS.COMPLETE_OUTPUT,
         player: clone(player),

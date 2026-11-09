@@ -19,7 +19,7 @@ import { createMakerPartListModel, renderMakerPartList } from './maker-definitio
 import { renderSharedRuleTargetTree, renderDefinitionCombinationRuleControl } from './maker-definition-rule-control.js';
 import { packAuthoringDocument, preparePackStructure, preparePackEdits } from './maker-v8-pack-authoring.js';
 import { toBase64 } from '@mysten/sui/utils';
-import { assertMakerV8EnabledPackReleaseIds } from './maker-v8-player-pack-preferences.js';
+import { assertMakerV8EnabledPackReleaseIds, makerV8UnavailablePackManifestIds } from './maker-v8-player-pack-preferences.js';
 import { createMakerV8LocalPlayerControls } from './maker-v8-local-player-controls.js';
 import { exactMakerV8ExportOptions, makerV8ExportSizes, MAKER_V8_BLEND_MODES } from './maker-v8-render-core.js';
 import { DOCS_CONTENT, DOCS_LOCALES } from './docs-center-content.js';
@@ -62,6 +62,7 @@ const EXACT_OBJECT_ID = /^0x[0-9a-f]{64}$/;
 const PLAYER_SESSION_SCHEMA = 'animacraft.maker-v8-player-session.v1';
 const PLAYER_RENDER_SCHEMA = 'animacraft.maker-v8-player-render.v1';
 const PLAYER_PROJECT_SCHEMA = 'animacraft.local-player-project.v8';
+const PLAYER_PROJECT_PACK_UNAVAILABLE = 'ANIMACRAFT_PLAYER_PROJECT_PACK_UNAVAILABLE';
 const PLAYER_PROJECT_STORE_SCHEMA = 'animacraft.maker-v8-player-project-store.v1';
 const PLAYER_PROJECT_STORAGE_PREFIX = 'animacraft:maker-v8-player-project:v1';
 const EXACT_SHA256 = /^[0-9a-f]{64}$/;
@@ -109,6 +110,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     partsLabel: 'Parts', itemsLabel: 'Items', royaltyPolicy: 'Royalty policy',
     viewMaker: 'View Maker', startMaking: 'Start making', connectToMake: 'Connect to make',
     loadingPublicPacks: 'Loading expansion packs…', publicPacksUnavailable: 'Some expansion packs could not be verified. Refresh the page to try again.',
+    playerSavedPackUnavailable: 'The saved Player project uses a Pack that cannot be read right now. Refresh the page to reopen it.',
     noMatchingMakers: 'No matching Makers found.',
     noPublishedMakers: 'No Makers have been published on-chain yet',
     noPublishedMakersCopy: 'Animacraft only lists Makers discovered from Sui and restored from certified Walrus assets. Be the first creator to publish one.',
@@ -171,6 +173,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     partsLabel: '部位', itemsLabel: '部件', royaltyPolicy: '版税政策',
     viewMaker: '查看模板', startMaking: '开始捏 OC', connectToMake: '连接钱包后开始',
     loadingPublicPacks: '正在读取扩展包…', publicPacksUnavailable: '部分扩展包暂时无法核验。请刷新页面重试。',
+    playerSavedPackUnavailable: '已保存的 Player 项目使用了暂时无法读取的扩展包。请刷新页面后重新打开。',
     noMatchingMakers: '没有找到匹配的模板。', noPublishedMakers: '链上还没有已发布的 Maker',
     noPublishedMakersCopy: 'Animacraft 只展示从 Sui 发现并由 Walrus 认证素材恢复的 Maker。成为第一位发布者。',
     createFirstMaker: '创建第一个 Maker', byCreator: '创作者：{creator}',
@@ -227,6 +230,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     partsLabel: 'パーツ', itemsLabel: 'アイテム', royaltyPolicy: 'ロイヤリティ方針',
     viewMaker: 'メーカーを見る', startMaking: 'OC を作る', connectToMake: '接続して作る',
     loadingPublicPacks: '拡張パックを読み込み中…', publicPacksUnavailable: '一部の拡張パックを確認できませんでした。ページを更新して再試行してください。',
+    playerSavedPackUnavailable: '保存済みの Player プロジェクトで使用しているパックを一時的に読み込めません。ページを更新してから開き直してください。',
     noMatchingMakers: '一致するメーカーがありません。',
     noPublishedMakers: 'オンチェーンに公開された Maker はまだありません',
     noPublishedMakersCopy: 'Animacraft は Sui で検出され、認証済み Walrus 素材から復元された Maker のみを表示します。最初のクリエイターになりましょう。',
@@ -285,6 +289,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     partsLabel: '파트', itemsLabel: '아이템', royaltyPolicy: '로열티 정책',
     viewMaker: '메이커 보기', startMaking: 'OC 만들기', connectToMake: '연결하고 만들기',
     loadingPublicPacks: '확장 팩을 불러오는 중…', publicPacksUnavailable: '일부 확장 팩을 확인하지 못했습니다. 페이지를 새로고침해 주세요.',
+    playerSavedPackUnavailable: '저장된 Player 프로젝트에 사용된 팩을 일시적으로 읽을 수 없습니다. 페이지를 새로고침한 후 다시 열어 주세요.',
     noMatchingMakers: '일치하는 메이커가 없습니다.',
     noPublishedMakers: '아직 온체인에 게시된 Maker가 없습니다',
     noPublishedMakersCopy: 'Animacraft는 Sui에서 발견되고 인증된 Walrus 에셋으로 복원된 Maker만 표시합니다. 첫 번째 크리에이터가 되어 보세요.',
@@ -343,6 +348,7 @@ const ORIGINAL_GLOBAL_I18N = Object.freeze({
     partsLabel: 'Bộ phận', itemsLabel: 'Vật phẩm', royaltyPolicy: 'Chính sách tiền bản quyền',
     viewMaker: 'Xem Maker', startMaking: 'Bắt đầu tạo OC', connectToMake: 'Kết nối để tạo',
     loadingPublicPacks: 'Đang tải các gói mở rộng…', publicPacksUnavailable: 'Không thể xác minh một số gói mở rộng. Hãy tải lại trang để thử lại.',
+    playerSavedPackUnavailable: 'Không thể đọc một gói đang được dùng trong dự án Player đã lưu. Hãy tải lại trang rồi mở lại dự án.',
     noMatchingMakers: 'Không tìm thấy Maker phù hợp.',
     noPublishedMakers: 'Chưa có Maker nào được đăng trên chuỗi',
     noPublishedMakersCopy: 'Animacraft chỉ hiển thị Maker được phát hiện từ Sui và khôi phục bằng tài sản Walrus đã chứng nhận. Hãy trở thành nhà sáng tạo đầu tiên.',
@@ -2334,6 +2340,8 @@ export function createOriginalProductApp({
     }));
     return projectMakerV8PlayerView(state.playerSession, {
       ...state.playerUi,
+      packCatalogNotice: makerV8UnavailablePackManifestIds(state.playerSession.player.contextualChoices).length
+        ? t('publicPacksUnavailable') : '',
       envelopeRecoveryAvailable: envelopeRecoveryByScope.has(envelopeRecoveryScope()),
       recoveryBranches,
       selectedRecoveryWriterId: state.playerUi.selectedRecoveryBranchId,
@@ -3207,6 +3215,11 @@ export function createOriginalProductApp({
         throw new TypeError('The saved Player project hash does not match its exact content.');
       }
       if (!playerMutationCurrent(request, mutation, rootId)) return null;
+      const unavailablePacks = new Set(makerV8UnavailablePackManifestIds(state.playerSession.player.contextualChoices));
+      if (record.session.enabledPackReleaseIds.some(id => unavailablePacks.has(id))
+        || record.session.recipe.colors?.some(row => unavailablePacks.has(row.releaseId))) {
+        throw Object.assign(new Error(t('playerSavedPackUnavailable')), { code: PLAYER_PROJECT_PACK_UNAVAILABLE });
+      }
       if (updatePlayerRecipe && getPlayerSnapshot) {
         await updatePlayerRecipe({
           selections: structuredClone(record.session.recipe.selections),
@@ -3240,6 +3253,7 @@ export function createOriginalProductApp({
       }
       return record;
     } catch (error) {
+      if (error?.code === PLAYER_PROJECT_PACK_UNAVAILABLE) throw error;
       if (playerMutationCurrent(request, mutation, rootId)) {
         const message = String(error?.message || 'The saved Player project could not be restored.');
         state.playerUi.completionIssues = [message];

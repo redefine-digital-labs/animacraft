@@ -4830,6 +4830,61 @@ test('Pack availability toggles persist independently of selection and reject in
   await app.destroy();
 });
 
+test('an unavailable Pack never replaces the saved Player selection with the default recipe', async () => {
+  const available = playerSessionWithPackChoice(ROOT_ONE);
+  const choice = available.player.contextualChoices.packStyles[0];
+  const unavailable = structuredClone(available);
+  unavailable.player.contextualChoices.packStyles = [];
+  unavailable.player.contextualChoices.diagnostics = [{
+    schemaVersion: 'animacraft.maker-v8-catalog-diagnostic.v1', severity: 'WARNING', layer: 'MANIFEST',
+    code: 'MAKER_V8_PRODUCT_PACK_MANIFEST_UNAVAILABLE', rootId: ROOT_ONE, details: { releaseId: choice.releaseId },
+  }];
+  const storageMap = new Map();
+  const setup = async session => {
+    const harness = browserHarness({
+      connection: { account: { address: `0x${'63'.repeat(32)}`, chains: ['sui:mainnet'] } },
+      templatesResult: { status: 'READY', makers: [certifiedMaker()], diagnostics: [] },
+      playerSessionResult: session, renderPlayerPreviewResult: canonicalPreview(), storageMap,
+    });
+    const app = createOriginalProductApp(harness);
+    await app.ready;
+    return { app, harness, mount: harness.doc.getElementById('makerV4PlayerMount') };
+  };
+  const withoutSavedPack = await setup(unavailable);
+  await withoutSavedPack.app.openPlayer(ROOT_ONE);
+  assert.match(withoutSavedPack.mount.innerHTML, /Some expansion packs could not be verified/);
+  assert.doesNotMatch(withoutSavedPack.mount.innerHTML, /data-action="player-acquire-expansion-v8"/);
+  await withoutSavedPack.app.destroy();
+
+  const availableHost = await setup(available);
+  await availableHost.app.openPlayer(ROOT_ONE);
+  const toggle = new FakeTarget(availableHost.harness.doc, { dataset: { action: 'player-expansion-v8' } });
+  toggle.parent = availableHost.mount;
+  toggle.value = choice.releaseId;
+  toggle.checked = true;
+  await waitForEvent(availableHost.mount.fire('change', { target: toggle }));
+  const item = new FakeTarget(availableHost.harness.doc, { dataset: { action: 'player-item', choiceId: choice.id } });
+  item.parent = availableHost.mount;
+  await waitForEvent(availableHost.mount.fire('click', { target: item }));
+  const key = [...storageMap.keys()].find(key => key.includes(ROOT_ONE) && !key.includes(':wal:'));
+  const saved = storageMap.get(key);
+  assert.ok(JSON.parse(saved).session.recipe.selections.some(row => row.releaseId === choice.releaseId));
+  await availableHost.app.destroy();
+
+  const blocked = await setup(unavailable);
+  await assert.rejects(blocked.app.openPlayer(ROOT_ONE), { code: 'ANIMACRAFT_PLAYER_PROJECT_PACK_UNAVAILABLE' });
+  assert.equal(blocked.app.getState().playerStatus, 'error');
+  assert.doesNotMatch(blocked.mount.innerHTML, /data-action="player-complete"/);
+  assert.equal(storageMap.get(key), saved);
+  await blocked.app.destroy();
+
+  const restored = await setup(available);
+  await restored.app.openPlayer(ROOT_ONE);
+  assert.ok((await restored.harness.bridge.getPlayerSnapshot()).recipe.selections.some(row => row.releaseId === choice.releaseId));
+  assert.equal(storageMap.get(key), saved);
+  await restored.app.destroy();
+});
+
 test('owned-Part picker events isolate same-name Root and two Pack slots for add, replace and remove', async () => {
   const session = playerSessionWithPackChoice(ROOT_ONE);
   session.player.document.parts[0].capacity = 1;
