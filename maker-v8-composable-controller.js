@@ -329,7 +329,11 @@ function moveOptionText(value, label) {
 }
 
 function hexVector(value, label) {
-  const vector = Array.isArray(value) ? value : value?.fields?.contents ?? value?.contents;
+  let vector = value?.fields?.contents ?? value?.contents ?? value;
+  if (typeof vector === 'string' && /^[A-Za-z0-9+/]{43}=$/.test(vector)) {
+    const bytes = fromBase64(vector);
+    if (bytes.length === 32 && toBase64(bytes) === vector) vector = [...bytes];
+  }
   if (!Array.isArray(vector) || vector.length !== 32
     || vector.some((entry) => !Number.isInteger(Number(entry)) || Number(entry) < 0 || Number(entry) > 255)) {
     fail('MAKER_V8_COMPOSABLE_HASH_INVALID', `${label} is not one Move vector<u8>[32].`, 'READBACK');
