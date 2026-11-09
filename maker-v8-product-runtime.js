@@ -27,6 +27,9 @@ import {
 import {
   createMakerV8PackManifestReadAdapterV8,
 } from './maker-v8-pack-transport.js';
+import {
+  MAKER_V8_PACK_ACCESS_KINDS, MAKER_V8_PACK_COMPLETE_MODES,
+} from './maker-v8-pack-controller.js';
 
 export const MAKER_V8_PRODUCT_RUNTIME_SCHEMA = 'animacraft.maker-v8-product-runtime.v1';
 export const MAKER_V8_PRODUCT_READ_ONLY_EXECUTION = Object.freeze({
@@ -498,11 +501,11 @@ export function createMakerV8ProductRuntime({
       fail('MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT', 'Public Pack choice lacks its exact ACTIVE admission or entry policy.');
     }
   };
-  const loadPackManifest = (release, root) => {
+  const loadPackManifest = async (release, root) => {
     if (!packManifests) {
       fail('MAKER_V8_PRODUCT_PACK_MANIFEST_READER_REQUIRED', 'Pack choices require the certified Pack Manifest reader.');
     }
-    return packManifests.load({
+    const read = await packManifests.load({
       blobId: release.manifestBlobId,
       sha256: release.manifestSha256,
       rootId: root.objectId,
@@ -511,6 +514,22 @@ export function createMakerV8ProductRuntime({
       semanticPackId: release.semanticPackId,
       contentCommitment: release.contentCommitment,
     });
+    const { access, completion, styles } = read.manifest.content;
+    const mode = MAKER_V8_PACK_COMPLETE_MODES.indexOf(completion.mode);
+    const fields = release.fields;
+    if (access.kind !== MAKER_V8_PACK_ACCESS_KINDS[release.entry.kind] || access.priceAtomic !== release.entry.priceAtomic
+      || mode < 0 || String(fields?.complete_mode) !== String(mode)
+      || String(fields?.complete_price_atomic) !== completion.priceAtomic
+      || String(fields?.complete_free_quota_per_wallet) !== completion.freeQuotaPerWallet
+      || String(fields?.complete_total_cap) !== completion.totalCap) {
+      fail('MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT', 'Certified Pack entry or Complete terms differ from the ACTIVE Release.',
+        { releaseId: release.objectId });
+    }
+    if (String(styles.length) !== release.expectedStyleCount) {
+      fail('MAKER_V8_PRODUCT_PACK_STYLE_COUNT_DRIFT', 'Pack Manifest Style count differs from the ACTIVE Release.',
+        { releaseId: release.objectId, expected: release.expectedStyleCount, observed: styles.length });
+    }
+    return read;
   };
   const publicPacks = freeze({
     async list({ rootId } = {}) {
@@ -525,13 +544,8 @@ export function createMakerV8ProductRuntime({
         seen.add(release.objectId);
         try {
           const { manifest: { content } } = await loadPackManifest(release, root);
-          const accessKind = ['FREE', 'PAID', 'INCLUDED_WITH_MAKER'][release.entry.kind];
-          if (content.access.kind !== accessKind || content.access.priceAtomic !== release.entry.priceAtomic
-            || String(content.styles.length) !== release.expectedStyleCount) {
-            fail('MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT', 'Certified Pack terms or Style count differ from the ACTIVE Release.');
-          }
           packs.push(freeze({ releaseId: release.objectId, name: content.metadata.name,
-            summary: content.metadata.summary, accessKind, priceAtomic: release.entry.priceAtomic }));
+            summary: content.metadata.summary, accessKind: content.access.kind, priceAtomic: release.entry.priceAtomic }));
         } catch {
           unavailableCount += 1;
         }
@@ -643,13 +657,6 @@ export function createMakerV8ProductRuntime({
             contentCommitment: release.contentCommitment, definitionCommitment,
             document: structuredClone(authoring.document), styleReferences: structuredClone(styleReferences),
             ownedParts: structuredClone(compiled.ownedParts), rules: structuredClone(compiled.rules) });
-        }
-        if (String(styles.length) !== release.expectedStyleCount) {
-          fail(
-            'MAKER_V8_PRODUCT_PACK_STYLE_COUNT_DRIFT',
-            'Pack Manifest Style count differs from the ACTIVE Release.',
-            { releaseId: release.objectId, expected: release.expectedStyleCount, observed: styles.length },
-          );
         }
         for (const style of styles) {
           const authoredDocument = read.manifest.content.authoring?.document;
