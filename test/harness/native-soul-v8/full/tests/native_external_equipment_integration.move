@@ -119,7 +119,7 @@ fun run_external_equipment_case(case: u8) {
     let external_author = @0xB22;
     let mut scenario = scenario::begin(holder);
     let (protocol_id, setup, mut system) = bootstrap::initialize_for_testing(&mut scenario);
-    let maker = if (case >= 4) active::new_active_sparse_parts_for_testing(
+    let maker = if (case == 4 || case == 5) active::new_active_sparse_parts_for_testing(
         &mut scenario, protocol_id, setup, &mut system)
         else active::new_active_maker_for_testing(&mut scenario, protocol_id, setup, &mut system);
     let market = complete::initialize_market_for_testing(&mut scenario);
@@ -185,7 +185,7 @@ fun run_external_equipment_case(case: u8) {
     assert!(first_equipment != second_equipment, 99);
     let ids = ExternalCaseIds { protocol: protocol_id, maker, first, second,
         product: product_id, item: item_id, first_equipment, second_equipment, original_item,
-        target_selection_index: if (case >= 4) option::some(if (case == 5) 2 else 1) else option::none() };
+        target_selection_index: if (case == 4 || case == 5) option::some(if (case == 5) 2 else 1) else option::none() };
     scenario::return_shared(root);
     scenario::return_shared(definitions);
     scenario::return_shared(packs);
@@ -213,6 +213,13 @@ fun run_external_equipment_case(case: u8) {
     scenario.return_to_sender(item);
     return_context(&scenario, context);
     scenario.next_tx(holder);
+
+    if (case >= 6) {
+        run_wardrobe_external(&mut scenario, ids, case);
+        std::unit_test::destroy(system);
+        scenario.end();
+        return
+    };
 
     // Reload the first Soul's actual lock, then attempt independent operations.
     let context = take_context(&scenario, ids);
@@ -287,6 +294,68 @@ fun run_external_equipment_case(case: u8) {
 
 fun fixture_hash(byte: u8): vector<u8> { vector::tabulate!(32, |_| byte) }
 
+fun run_wardrobe_external(s: &mut Scenario, ids: ExternalCaseIds, case: u8) {
+    let (_, state_id, _, _, _) = complete::native_ids(ids.first);
+    let (_, _, _, admin_id) = active::maker_ids_for_testing(ids.maker);
+    let (_, _, admission_id, _, _, _, _, _, _) = active::companion_ids_for_testing(ids.maker);
+    let context = take_context(s, ids);
+    let state = s.take_shared_by_id<SoulState>(state_id);
+    let mut e = s.take_shared_by_id<MakerLoadoutV8>(ids.first_equipment);
+    let item = s.take_from_sender_by_id<OwnedExternalItemV8>(ids.item);
+    let update = equipment::begin_update_v8(&state, &mut e, &context.protocol, 1, s.ctx());
+    runtime::migrate_soul_wardrobe_v1(&mut e, &update, s.ctx());
+    runtime::deposit_soul_wardrobe_external_v1(&mut e, &update, &context.product, item, 0, s.ctx());
+    equipment::finish_update_v8(&mut e, &context.definitions, &context.base, vector[], update);
+    let selection = std::bcs::to_bytes(runtime::loadout_selection_v8(&e, 0));
+    ts_return_equipment(state, e);
+    return_context(s, context);
+    s.next_tx(@0xA11);
+
+    let mut context = take_context(s, ids);
+    let admin = s.take_from_sender_by_id<MakerAdminCapV8>(admin_id);
+    let admission = s.take_from_sender_by_id<PackAdmissionAuthorityV8>(admission_id);
+    let registry_revision = runtime::pack_registry_revision_v8(&context.packs);
+    if (case != 8) {
+        let ExternalContext { packs, definitions, root, .. } = &mut context;
+        runtime::revoke_external_product_v8(packs, &admission, definitions,
+            root, &admin, ids.product, registry_revision, s.ctx());
+    };
+    s.return_to_sender(admin); s.return_to_sender(admission);
+    let state = s.take_shared_by_id<SoulState>(state_id);
+    let mut e = s.take_shared_by_id<MakerLoadoutV8>(ids.first_equipment);
+    let update = equipment::begin_update_v8(&state, &mut e, &context.protocol, 2, s.ctx());
+    let (mut item, obligation) = runtime::receive_soul_wardrobe_external_v1(&mut e, &update,
+        scenario::receiving_ticket_by_id(ids.item), 1, s.ctx());
+    let proof = runtime::prove_external_selection_v8(&e, &context.packs, &context.product,
+        &item, &context.root, &context.access, 0, s.ctx());
+    std::unit_test::destroy(proof);
+    assert!(std::bcs::to_bytes(runtime::loadout_selection_v8(&e, 0)) == selection, 99);
+    if (case == 7 || case == 8) {
+        equipment::unequip_external_v8(&update, &mut e, &mut item, 2, s.ctx());
+        if (case == 7) {
+            equipment::equip_external_v8(&update, &mut e, &mut item, &context.root, &context.definitions,
+                &context.packs, &context.product, &context.access, 3, option::none(), s.ctx());
+            abort 99
+        };
+        let mut other = runtime::create_maker_loadout_v8(&context.root, &context.definitions,
+            &context.packs, &context.access, s.ctx());
+        runtime::equip_external_style_v8(&mut other, &mut item, &context.root, &context.definitions,
+            &context.packs, &context.product, &context.access, 0, option::none(), s.ctx());
+        runtime::return_soul_wardrobe_external_v1(&mut e, &update, item, obligation, s.ctx());
+        abort 99
+    };
+    runtime::return_soul_wardrobe_external_v1(&mut e, &update, item, obligation, s.ctx());
+    equipment::finish_update_v8(&mut e, &context.definitions, &context.base, vector[], update);
+    ts_return_equipment(state, e);
+    return_context(s, context);
+    s.next_tx(@0xA11);
+}
+
+fun ts_return_equipment(state: SoulState, equipment: MakerLoadoutV8) {
+    scenario::return_shared(state);
+    scenario::return_shared(equipment);
+}
+
 #[test]
 fun actual_external_instance_moves_between_two_native_souls_after_unlock() { run_external_equipment_case(0); }
 
@@ -304,3 +373,12 @@ fun actual_external_instance_sparse_slot_lock_survives_reload_and_soul_transfer_
 
 #[test, expected_failure(abort_code = 13, location = animacraft_v8_runtime::runtime_v8)]
 fun actual_external_instance_rejects_target_outside_part_capacity() { run_external_equipment_case(5); }
+
+#[test]
+fun wardrobe_revoked_external_retains_same_item_lock_and_read_proof() { run_external_equipment_case(6); }
+
+#[test, expected_failure(abort_code = 15, location = animacraft_v8_runtime::runtime_v8)]
+fun wardrobe_revoked_external_cannot_reinstall_after_explicit_removal() { run_external_equipment_case(7); }
+
+#[test, expected_failure(abort_code = 241, location = animacraft_v8_runtime::runtime_v8)]
+fun wardrobe_external_received_item_cannot_return_locked_to_another_player() { run_external_equipment_case(8); }

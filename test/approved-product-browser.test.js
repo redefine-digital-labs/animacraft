@@ -1361,7 +1361,12 @@ async function installRecursiveBrowserFirewall(browser, {
       // target is paused and therefore runs before its first document script.
       record.preloadInstalled = true;
     }
-    if (!embeddedServiceWorkerPreload) {
+    // A paused document target can wait for resume before evaluating JavaScript.
+    // Its registered new-document hook installs the same guard before scripts,
+    // and the CDP network firewall below is installed before that resume.
+    const deferredDocumentPreload = waitingForDebugger === true
+      && ['page', 'iframe'].includes(record.type) && record.preloadInstalled;
+    if (!embeddedServiceWorkerPreload && !deferredDocumentPreload) {
       try {
         await protectedSend('Runtime.evaluate', {
           expression: preloadSource,

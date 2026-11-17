@@ -101,6 +101,21 @@ export function appendSoulPackPurchaseV1(transaction, quote, payment) {
   });
 }
 
+/** The Maker owner enables the existing registry before production writes. */
+export function appendSoulPackRegistryMigrationV1(transaction, input) {
+  check(input.network === 'mainnet', 'Expected Sui mainnet');
+  check(typeof input.expectedRevision === 'string' && /^(0|[1-9][0-9]*)$/.test(input.expectedRevision),
+    'Invalid registry revision');
+  check(typeof input.paymentCoinType === 'string' && normalizeStructTag(input.paymentCoinType), 'Invalid payment coin type');
+  return transaction.moveCall({
+    target: `${id(input.runtimePackageId)}::runtime_v8::enable_soul_pack_registry_v1`,
+    typeArguments: [input.paymentCoinType],
+    arguments: [input.packRegistryId, input.admissionAuthorityId, input.definitionsId, input.rootId, input.makerAdminId]
+      .map(value => transaction.object(id(value)))
+      .concat([transaction.pure.u64(input.expectedRevision)]),
+  });
+}
+
 /** The final receipt supplies the exact Soul, State and equipment to continue. */
 export function soulPackPurchaseContinuationV1({ origin, soulId, releaseId }) {
   const url = new URL(`/packs/${id(releaseId)}`, origin);

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -47,7 +48,7 @@ test('auxiliary execution cannot fall back to a different PATH binary or unknown
 });
 
 test('CLI rejects an unapproved executable before inspecting source roots or allocating a graph', () => {
-  const result = spawnSync(process.execPath, [new URL('../../../scripts/native-soul-test-graph.mjs', import.meta.url).pathname,
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../../../scripts/native-soul-test-graph.mjs', import.meta.url)),
     '--sui', process.execPath, '--check', 'release-gates'], { encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unapproved Sui toolchain/);

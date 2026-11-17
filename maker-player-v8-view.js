@@ -1,4 +1,3 @@
-import { soulPackPurchaseContinuationV1 } from './maker-v8-soul-pack.js';
 import {
   MAKER_WORKSPACE_LOCALES,
   makerWorkspaceText,
@@ -1170,8 +1169,7 @@ function renderExportModal(view) {
   const soulPackLinks = view.completedSoul?.matchesProject && /^0x[0-9a-f]{64}$/.test(view.completedSoul.soulId)
     ? [...new Map(view.contextualChoices.filter(choice => choice.requiresSoul
       && /^0x[0-9a-f]{64}$/.test(choice.releaseId)).map(choice => [choice.releaseId, choice])).values()]
-      .map(choice => `<a href="${escapeHtml(soulPackPurchaseContinuationV1({ origin: 'https://www.soulidity.ai',
-        soulId: view.completedSoul.soulId, releaseId: choice.releaseId }))}">${escapeHtml(tr(view, 'playerBuyPackForSoul'))} · ${escapeHtml(choice.label)}</a>`).join('')
+      .map(choice => `<a href="${escapeHtml(`https://www.soulidity.ai/packs/${choice.releaseId}?soul=${view.completedSoul.soulId}`)}">${escapeHtml(tr(view, 'playerBuyPackForSoul'))} · ${escapeHtml(choice.label)}</a>`).join('')
     : '';
   const receiptDetails = receipt ? `<dl style="overflow-wrap: anywhere"><dt>Soul ID</dt><dd>${escapeHtml(receipt.soulId)}</dd><dt>Transaction digest</dt><dd>${escapeHtml(receipt.transactionDigest)}</dd></dl>` : '';
   return `

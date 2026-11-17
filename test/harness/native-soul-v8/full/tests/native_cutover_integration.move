@@ -97,7 +97,7 @@ fun run_cutover(mode: u8) {
             &collection_policy, &mut seller_kiosk, &seller_cap, b"Native collection gap".to_string(),
             b"Current restriction, not accepted product behavior".to_string(), b"walrus://fixture".to_string(),
             9_500, true, option::some(2), option::none(), scenario.ctx());
-        collection::add_soul(&mut collection, &mut state, scenario.ctx());
+        collection::add_soul_for_testing(&mut collection, &mut state, scenario.ctx());
         assert!(soul::collection_id(&state).is_some(), 99);
         let _listing = market::list_animacraft_v8_soul_fixed_price(&config, &registry, &provenance,
             &mut seller_kiosk, &seller_cap, &mut state, PRICE, scenario.ctx());

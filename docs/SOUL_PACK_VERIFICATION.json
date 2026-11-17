@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "scope": "local source and VM verification for Soul-scoped Pack",
+  "targetDomain": "https://www.soulidity.ai",
+  "chainWrites": 0,
+  "animacraftBaseline": "3ad32ba400f457932be7b6908b2fc2e79162c459",
+  "runtimeSha256": "89ce3337fe5f434f6c431eb455133c5adbea909d2d0d5bd298b4a1c8c00921ea",
+  "sdkSha256": "5a640fe615171730f7730b7343e9826882c449be59eecdffde515556b856174b",
+  "nativeSource": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/output/soul-pack-p1-final-20261117/move/soulidity",
+  "graph": "/private/var/folders/lp/3fqfk6s130b700vkp35ysndh0000gn/T/native-soul-v8-graph-kBhQJ5/graph.json",
+  "tests": {
+    "nativeIntegration": {
+      "passed": 202,
+      "failed": 0
+    },
+    "runtime": {
+      "passed": 251,
+      "failed": 0
+    },
+    "sdk": {
+      "passed": 14,
+      "failed": 0
+    },
+    "runner": {
+      "passed": 27,
+      "failed": 0
+    },
+    "chromium": {
+      "passed": 5,
+      "failed": 0,
+      "interfaceMatrix": 36
+    }
+  },
+  "fullCheck": {
+    "command": "npm run check",
+    "pairedSourceRequired": true,
+    "passed": 4593,
+    "failed": 0,
+    "skipped": 10,
+    "syntax": "passed",
+    "productionBuild": "passed",
+    "sourceScanFiles": 783,
+    "distScanArtifacts": 8
+  },
+  "deployment": "awaiting paired release and holder-signed on-chain upgrades",
+  "checkedAtUtc": "2026-11-17T18:10:36.386371+00:00",
+  "nativeSourceManifestSha256": "f5d0128a85d64f110c40cd795e50bb369899825845dd48076ba850216dadf1cf",
+  "evidenceDirectory": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/output/soul-pack-evidence/final",
+  "runtimeSource": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/move/animacraft_v8_runtime/sources/runtime_v8.move",
+  "sdkSource": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/maker-v8-soul-pack.js",
+  "canonicalFixture": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/test/fixtures/soul-pack-v1.json"
+}

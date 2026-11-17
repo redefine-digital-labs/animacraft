@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -24,7 +25,7 @@ process.exit(1);
 `);
     await chmod(binary, 0o755);
     const runner = new URL(`../../../move/animacraft_v8_${role}/scripts/run_adversarial_probes.mjs`, import.meta.url);
-    const result = spawnSync(process.execPath, [runner.pathname], {
+    const result = spawnSync(process.execPath, [fileURLToPath(runner)], {
       env: { ...process.env, PATH: `${directory}${delimiter}${process.env.PATH ?? ''}` },
       encoding: 'utf8', timeout: 10000,
     });

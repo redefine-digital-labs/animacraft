@@ -30,6 +30,525 @@ use sui::table::{Self as table, Table};
 use sui::transfer::Receiving;
 
 const VERSION: u64 = 8;
+const EWardrobeRevision: u64 = 240;
+const EWardrobeCustody: u64 = 241;
+const EWardrobeDelivery: u64 = 242;
+
+/// Stored at the original equipment-layout key. Legacy code requires bool at
+/// that key, so migration closes its update/close entry points on this object.
+public struct SoulWardrobeV1 has store {
+    version: u64,
+    revision: u64,
+    assets: vector<SoulWardrobeAssetV1>,
+    listing_commitment: Option<vector<u8>>,
+    showcase_owner: Option<address>,
+    showcase_epoch: u64,
+}
+
+public struct SoulWardrobeAssetV1 has copy, drop, store {
+    item_id: ID,
+    asset_class: u8,
+    equipped: bool,
+    withdrawable: bool,
+}
+
+public struct SoulWardrobeCustodyKeyV1 has copy, drop, store {}
+public struct SoulWardrobeOperationKeyV1 has copy, drop, store {}
+public struct SoulWardrobeCustodyV1 has store, drop {
+    equipment_id: ID,
+    soul_id: ID,
+}
+public struct SoulWardrobeOperationV1 has store, drop {
+    equipment_id: ID,
+    holder: address,
+}
+
+/// A received child must be returned or explicitly withdrawn in this PTB.
+/// No caller can drop, store, copy or forge this obligation.
+public struct SoulWardrobeReturnV1 {
+    equipment_id: ID,
+    item_id: ID,
+    asset_class: u8,
+}
+
+public struct SoulWardrobeReadReturnV1 {
+    equipment_id: ID,
+    item_id: ID,
+    item_sha256: vector<u8>,
+    delivery_commitment: vector<u8>,
+}
+
+public struct SoulWardrobeManifestV1 has copy, drop {
+    domain: vector<u8>,
+    soul_id: ID,
+    soul_state_id: ID,
+    equipment_id: ID,
+    equipment_revision: u64,
+    equipment_commitment: vector<u8>,
+    inventory_revision: u64,
+    assets: vector<SoulWardrobeAssetV1>,
+    pack_pass_ids: vector<ID>,
+}
+
+public struct SoulWardrobeChangedV1 has copy, drop {
+    equipment_id: ID,
+    inventory_revision: u64,
+    item_id: ID,
+    asset_class: u8,
+    in_wardrobe: bool,
+    equipped: bool,
+}
+
+public fun has_soul_wardrobe_v1(equipment: &MakerLoadoutV8): bool {
+    df::exists_with_type<SoulEquipmentLayoutKeyV8, SoulWardrobeV1>(&equipment.id, SoulEquipmentLayoutKeyV8 {})
+}
+
+fun soul_wardrobe_v1(equipment: &MakerLoadoutV8): &SoulWardrobeV1 {
+    let result: &SoulWardrobeV1 = df::borrow(&equipment.id, SoulEquipmentLayoutKeyV8 {});
+    assert!(result.version == 1, EInvalidBinding);
+    result
+}
+
+fun soul_wardrobe_mut_v1(equipment: &mut MakerLoadoutV8): &mut SoulWardrobeV1 {
+    let result: &mut SoulWardrobeV1 = df::borrow_mut(&mut equipment.id, SoulEquipmentLayoutKeyV8 {});
+    assert!(result.version == 1, EInvalidBinding);
+    result
+}
+
+public fun soul_wardrobe_revision_v1(equipment: &MakerLoadoutV8): u64 {
+    soul_wardrobe_v1(equipment).revision
+}
+
+public fun soul_wardrobe_is_listed_v1(equipment: &MakerLoadoutV8): bool {
+    has_soul_wardrobe_v1(equipment) && soul_wardrobe_v1(equipment).listing_commitment.is_some()
+}
+
+public fun soul_wardrobe_assets_v1(equipment: &MakerLoadoutV8): vector<SoulWardrobeAssetV1> {
+    soul_wardrobe_v1(equipment).assets
+}
+
+public fun soul_wardrobe_asset_id_v1(asset: &SoulWardrobeAssetV1): ID { asset.item_id }
+public fun soul_wardrobe_asset_class_v1(asset: &SoulWardrobeAssetV1): u8 { asset.asset_class }
+public fun soul_wardrobe_asset_equipped_v1(asset: &SoulWardrobeAssetV1): bool { asset.equipped }
+public fun soul_wardrobe_asset_withdrawable_v1(asset: &SoulWardrobeAssetV1): bool { asset.withdrawable }
+
+public fun migrate_soul_wardrobe_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8, ctx: &TxContext,
+) {
+    assert_soul_equipment_update_v8(equipment, update, ctx);
+    let _: bool = df::remove(&mut equipment.id, SoulEquipmentLayoutKeyV8 {});
+    df::add(&mut equipment.id, SoulEquipmentLayoutKeyV8 {}, SoulWardrobeV1 {
+        version: 1, revision: 0, assets: vector[], listing_commitment: option::none(),
+        showcase_owner: option::none(), showcase_epoch: update.binding.ownership_epoch,
+    });
+}
+
+fun assert_wardrobe_revision_v1(
+    equipment: &MakerLoadoutV8, update: &SoulEquipmentUpdateV8, revision: u64, ctx: &TxContext,
+) {
+    assert_soul_equipment_update_v8(equipment, update, ctx);
+    let inventory = soul_wardrobe_v1(equipment);
+    assert!(inventory.revision == revision, EWardrobeRevision);
+    assert!(inventory.listing_commitment.is_none(), EEquipLocked);
+}
+
+fun wardrobe_asset_index_v1(equipment: &MakerLoadoutV8, item_id: ID, asset_class: u8): u64 {
+    let assets = &soul_wardrobe_v1(equipment).assets;
+    let mut i = 0;
+    while (i < assets.length()) {
+        if (assets[i].item_id == item_id) {
+            assert!(assets[i].asset_class == asset_class, EWardrobeCustody);
+            return i
+        };
+        i = i + 1;
+    };
+    abort EWardrobeCustody
+}
+
+fun wardrobe_operation_holder_v1(uid: &UID, holder: address): bool {
+    if (!df::exists_with_type<SoulWardrobeOperationKeyV1, SoulWardrobeOperationV1>(uid, SoulWardrobeOperationKeyV1 {})) return false;
+    let operation: &SoulWardrobeOperationV1 = df::borrow(uid, SoulWardrobeOperationKeyV1 {});
+    operation.holder == holder
+}
+
+fun assert_wardrobe_selection_custody_v1(equipment: &MakerLoadoutV8, assetized_base: bool) {
+    let assets = &soul_wardrobe_v1(equipment).assets;
+    equipment.selections.do_ref!(|row| {
+        if (row.is_some()) {
+            let selection = row.borrow();
+            if (selection.source_class == SOURCE_EXTERNAL || (selection.source_class == SOURCE_BASE && assetized_base)) {
+                let mut found = false;
+                assets.do_ref!(|asset| {
+                    if (asset.item_id == selection.access_subject && asset.equipped) found = true;
+                });
+                assert!(found, EWardrobeCustody);
+            };
+        };
+    });
+}
+
+fun add_wardrobe_asset_v1(
+    equipment: &mut MakerLoadoutV8, item_id: ID, asset_class: u8, equipped: bool, withdrawable: bool,
+) {
+    let inventory = soul_wardrobe_mut_v1(equipment);
+    assert!(inventory.assets.length() < MAX_LOADOUT_SELECTIONS, EInvalidPolicy);
+    assert!(!inventory.assets.any!(|row| row.item_id == item_id), EDuplicate);
+    inventory.assets.push_back(SoulWardrobeAssetV1 { item_id, asset_class, equipped, withdrawable });
+    inventory.revision = inventory.revision + 1;
+    event::emit(SoulWardrobeChangedV1 { equipment_id: object::id(equipment),
+        inventory_revision: soul_wardrobe_v1(equipment).revision, item_id, asset_class, in_wardrobe: true, equipped });
+}
+
+/// Logical Base holder becomes the instance ID, a stable custody anchor. The
+/// actual object owner is equipment ID. Distinct copies cannot collide with a
+/// buyer's wallet's one-per-holder Base issuance record.
+public fun deposit_soul_wardrobe_base_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    packs: &mut PackRegistryV8, definitions: &RuntimeDefinitionRegistryV8,
+    mut item: OwnedBaseItemV8, revision: u64, ctx: &TxContext,
+) {
+    assert_wardrobe_revision_v1(equipment, update, revision, ctx);
+    assert!(item.holder == ctx.sender() && item.version == VERSION, EWrongHolder);
+    assert_owned_base_item_registry(&item, packs, definitions);
+    assert_owned_base_item_record(&item, packs);
+    assert!(equipment.root_id == item.root_id && equipment.root_version == item.root_version
+        && equipment.root_content_commitment == item.root_content_commitment
+        && equipment.pack_registry_id == object::id(packs), EInvalidBinding);
+    let item_id = object::id(&item);
+    let old = packs.base_item_owners.remove(BaseItemHolderKeyV8 {
+        part_key: item.part_key, item_key: item.item_key, holder: item.holder,
+    });
+    assert!(old.item_id == item_id && old.ownership_epoch == item.ownership_epoch, EInvalidBinding);
+    item.holder = item_id.to_address();
+    item.ownership_epoch = item.ownership_epoch + 1;
+    packs.base_item_owners.add(BaseItemHolderKeyV8 {
+        part_key: item.part_key, item_key: item.item_key, holder: item.holder,
+    }, BaseItemOwnershipRecordV8 { item_id, ownership_epoch: item.ownership_epoch });
+    packs.wardrobe_revision = packs.wardrobe_revision + 1;
+    if (item.equip_lock.is_some()) {
+        let lock = item.equip_lock.borrow();
+        assert!(lock.loadout_id == object::id(equipment), EEquipLocked);
+        let commitment = owned_base_item_commitment(&item);
+        let selection = equipment.selections[lock.selection_index].borrow_mut();
+        assert!(selection.access_subject == item_id && selection.source_class == SOURCE_BASE, ENotEquipped);
+        selection.source_epoch = item.ownership_epoch;
+        selection.pricing_commitment = commitment;
+    };
+    let equipped = item.equip_lock.is_some();
+    let withdrawable = item.transferable;
+    df::add(&mut item.id, SoulWardrobeCustodyKeyV1 {}, SoulWardrobeCustodyV1 {
+        equipment_id: object::id(equipment), soul_id: update.binding.soul_id,
+    });
+    add_wardrobe_asset_v1(equipment, item_id, 1, equipped, withdrawable);
+    equipment.revision = equipment.revision + 1;
+    recompute_loadout(equipment);
+    transfer::transfer(item, object::id(equipment).to_address());
+}
+
+public fun deposit_soul_wardrobe_external_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    product: &ExternalItemProductV8, mut item: OwnedExternalItemV8,
+    revision: u64, ctx: &TxContext,
+) {
+    assert_wardrobe_revision_v1(equipment, update, revision, ctx);
+    assert!(item.holder == ctx.sender() && item.version == VERSION, EWrongHolder);
+    assert!(item.product_id == object::id(product) && product.version == VERSION
+        && item.product_content_commitment == product.content_commitment
+        && equipment.root_id == product.root_id && equipment.root_version == product.root_version
+        && equipment.root_content_commitment == product.root_content_commitment, EInvalidBinding);
+    let item_id = object::id(&item);
+    item.holder = item_id.to_address();
+    item.ownership_epoch = item.ownership_epoch + 1;
+    if (item.equip_lock.is_some()) {
+        let lock = item.equip_lock.borrow();
+        assert!(lock.loadout_id == object::id(equipment), EEquipLocked);
+        let selection = equipment.selections[lock.selection_index].borrow_mut();
+        assert!(selection.access_subject == item_id && selection.source_class == SOURCE_EXTERNAL, ENotEquipped);
+        selection.source_epoch = item.ownership_epoch;
+    };
+    let equipped = item.equip_lock.is_some();
+    let withdrawable = item.transferable;
+    df::add(&mut item.id, SoulWardrobeCustodyKeyV1 {}, SoulWardrobeCustodyV1 {
+        equipment_id: object::id(equipment), soul_id: update.binding.soul_id,
+    });
+    add_wardrobe_asset_v1(equipment, item_id, 2, equipped, withdrawable);
+    equipment.revision = equipment.revision + 1;
+    recompute_loadout(equipment);
+    transfer::transfer(item, object::id(equipment).to_address());
+}
+
+fun open_wardrobe_item_v1(
+    equipment: &MakerLoadoutV8, soul_id: ID, item: &mut UID,
+    asset_class: u8, ctx: &TxContext,
+): SoulWardrobeReturnV1 {
+    let item_id = item.to_inner();
+    let _ = wardrobe_asset_index_v1(equipment, item_id, asset_class);
+    let custody: &SoulWardrobeCustodyV1 = df::borrow(item, SoulWardrobeCustodyKeyV1 {});
+    assert!(custody.equipment_id == object::id(equipment) && custody.soul_id == soul_id, EWardrobeCustody);
+    df::add(item, SoulWardrobeOperationKeyV1 {}, SoulWardrobeOperationV1 {
+        equipment_id: object::id(equipment), holder: ctx.sender(),
+    });
+    SoulWardrobeReturnV1 { equipment_id: object::id(equipment), item_id, asset_class }
+}
+
+public fun receive_soul_wardrobe_base_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    receiving: Receiving<OwnedBaseItemV8>, revision: u64, ctx: &TxContext,
+): (OwnedBaseItemV8, SoulWardrobeReturnV1) {
+    assert_wardrobe_revision_v1(equipment, update, revision, ctx);
+    let mut item = transfer::receive(&mut equipment.id, receiving);
+    let obligation = open_wardrobe_item_v1(equipment, update.binding.soul_id, &mut item.id, 1, ctx);
+    (item, obligation)
+}
+
+public fun receive_soul_wardrobe_external_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    receiving: Receiving<OwnedExternalItemV8>, revision: u64, ctx: &TxContext,
+): (OwnedExternalItemV8, SoulWardrobeReturnV1) {
+    assert_wardrobe_revision_v1(equipment, update, revision, ctx);
+    let mut item = transfer::receive(&mut equipment.id, receiving);
+    let obligation = open_wardrobe_item_v1(equipment, update.binding.soul_id, &mut item.id, 2, ctx);
+    (item, obligation)
+}
+
+fun finish_wardrobe_item_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8, item: &mut UID,
+    obligation: SoulWardrobeReturnV1, asset_class: u8, equipped: bool, withdraw: bool, ctx: &TxContext,
+) {
+    assert_soul_equipment_update_v8(equipment, update, ctx);
+    let SoulWardrobeReturnV1 { equipment_id, item_id, asset_class: expected_class } = obligation;
+    assert!(equipment_id == object::id(equipment) && item_id == item.to_inner() && expected_class == asset_class, EWardrobeCustody);
+    let operation: SoulWardrobeOperationV1 = df::remove(item, SoulWardrobeOperationKeyV1 {});
+    assert!(operation.equipment_id == equipment_id && operation.holder == ctx.sender(), EWrongHolder);
+    let index = wardrobe_asset_index_v1(equipment, item_id, asset_class);
+    let inventory = soul_wardrobe_mut_v1(equipment);
+    assert!(inventory.listing_commitment.is_none(), EEquipLocked);
+    if (withdraw) {
+        assert!(!equipped && inventory.assets[index].withdrawable, EEquipLocked);
+        let _ = inventory.assets.remove(index);
+        let custody: SoulWardrobeCustodyV1 = df::remove(item, SoulWardrobeCustodyKeyV1 {});
+        assert!(custody.equipment_id == equipment_id && custody.soul_id == update.binding.soul_id, EWardrobeCustody);
+    } else inventory.assets[index].equipped = equipped;
+    inventory.revision = inventory.revision + 1;
+    event::emit(SoulWardrobeChangedV1 { equipment_id, inventory_revision: inventory.revision,
+        item_id, asset_class, in_wardrobe: !withdraw, equipped });
+}
+
+public fun return_soul_wardrobe_base_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    mut item: OwnedBaseItemV8, obligation: SoulWardrobeReturnV1, ctx: &TxContext,
+) {
+    assert_wardrobe_item_lock_v1(equipment, object::id(&item), &item.equip_lock, item.ownership_epoch, SOURCE_BASE);
+    let equipped = item.equip_lock.is_some();
+    finish_wardrobe_item_v1(equipment, update, &mut item.id, obligation, 1, equipped, false, ctx);
+    transfer::transfer(item, object::id(equipment).to_address());
+}
+
+public fun return_soul_wardrobe_external_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    mut item: OwnedExternalItemV8, obligation: SoulWardrobeReturnV1, ctx: &TxContext,
+) {
+    assert_wardrobe_item_lock_v1(equipment, object::id(&item), &item.equip_lock, item.ownership_epoch, SOURCE_EXTERNAL);
+    let equipped = item.equip_lock.is_some();
+    finish_wardrobe_item_v1(equipment, update, &mut item.id, obligation, 2, equipped, false, ctx);
+    transfer::transfer(item, object::id(equipment).to_address());
+}
+
+fun assert_wardrobe_item_lock_v1(
+    equipment: &MakerLoadoutV8, item_id: ID, lock: &Option<EquipLockV8>,
+    ownership_epoch: u64, source_class: u8,
+) {
+    if (lock.is_some()) {
+        let lock = lock.borrow();
+        assert!(lock.loadout_id == object::id(equipment), EWardrobeCustody);
+        let selection = equipment.selections[lock.selection_index].borrow();
+        assert!(selection.access_subject == item_id && selection.source_epoch == ownership_epoch
+            && selection.source_class == source_class, EWardrobeCustody);
+    };
+}
+
+public fun withdraw_soul_wardrobe_base_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8, packs: &mut PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8, mut item: OwnedBaseItemV8,
+    obligation: SoulWardrobeReturnV1, ctx: &TxContext,
+) {
+    let equipped = item.equip_lock.is_some();
+    finish_wardrobe_item_v1(equipment, update, &mut item.id, obligation, 1, equipped, true, ctx);
+    rotate_owned_base_item_holder(packs, definitions, &mut item, ctx.sender());
+    equipment.revision = equipment.revision + 1;
+    recompute_loadout(equipment);
+    transfer::transfer(item, ctx.sender());
+}
+
+public fun withdraw_soul_wardrobe_external_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    mut item: OwnedExternalItemV8, obligation: SoulWardrobeReturnV1, ctx: &TxContext,
+) {
+    let equipped = item.equip_lock.is_some();
+    finish_wardrobe_item_v1(equipment, update, &mut item.id, obligation, 2, equipped, true, ctx);
+    item.holder = ctx.sender();
+    item.ownership_epoch = item.ownership_epoch + 1;
+    equipment.revision = equipment.revision + 1;
+    recompute_loadout(equipment);
+    transfer::transfer(item, ctx.sender());
+}
+
+public fun soul_wardrobe_manifest_v1(equipment: &MakerLoadoutV8): SoulWardrobeManifestV1 {
+    let binding = soul_equipment_binding_v8(equipment);
+    let inventory = soul_wardrobe_v1(equipment);
+    let mut pack_pass_ids = vector[];
+    soul_pack_entitlements_v1(equipment).do_ref!(|entitlement| {
+        pack_pass_ids.push_back(soul_pack_entitlement_pass_v1(entitlement));
+    });
+    SoulWardrobeManifestV1 {
+        domain: b"animacraft-v8/soul-wardrobe/delivery-v1",
+        soul_id: binding.soul_id, soul_state_id: binding.soul_state_id,
+        equipment_id: object::id(equipment), equipment_revision: equipment.revision,
+        equipment_commitment: equipment.commitment, inventory_revision: inventory.revision,
+        assets: inventory.assets, pack_pass_ids,
+    }
+}
+
+/// Read access retains the native binding and permits listed-owner reads. The
+/// obligation requires byte-identical Item and wardrobe state on return.
+public fun receive_soul_wardrobe_base_read_v1<W: drop>(
+    equipment: &mut MakerLoadoutV8, protocol: &ProtocolConfigV8, witness: W,
+    receiving: Receiving<OwnedBaseItemV8>, ctx: &TxContext,
+): (OwnedBaseItemV8, SoulWardrobeReadReturnV1) {
+    assert_soul_equipment_read_v8(equipment, protocol, witness, ctx);
+    let soul_id = soul_equipment_soul_id_v8(equipment);
+    let delivery_commitment = soul_wardrobe_delivery_commitment_v1(equipment);
+    let mut item = transfer::receive(&mut equipment.id, receiving);
+    let item_id = object::id(&item);
+    let item_sha256 = hash::sha2_256(bcs::to_bytes(&item));
+    let opened = open_wardrobe_item_v1(equipment, soul_id, &mut item.id, 1, ctx);
+    let SoulWardrobeReturnV1 { equipment_id, item_id: opened_id, asset_class } = opened;
+    assert!(opened_id == item_id && asset_class == 1, EWardrobeCustody);
+    (item, SoulWardrobeReadReturnV1 { equipment_id, item_id, item_sha256, delivery_commitment })
+}
+
+public fun return_soul_wardrobe_base_read_v1(
+    equipment: &mut MakerLoadoutV8, mut item: OwnedBaseItemV8,
+    obligation: SoulWardrobeReadReturnV1, ctx: &TxContext,
+) {
+    let SoulWardrobeReadReturnV1 { equipment_id, item_id, item_sha256, delivery_commitment } = obligation;
+    assert!(equipment_id == object::id(equipment) && item_id == object::id(&item), EWardrobeCustody);
+    assert!(hash::sha2_256(bcs::to_bytes(&item)) == item_sha256
+        && soul_wardrobe_delivery_commitment_v1(equipment) == delivery_commitment, EWardrobeDelivery);
+    let operation: SoulWardrobeOperationV1 = df::remove(&mut item.id, SoulWardrobeOperationKeyV1 {});
+    assert!(operation.equipment_id == equipment_id && operation.holder == ctx.sender(), EWrongHolder);
+    transfer::transfer(item, equipment_id.to_address());
+}
+
+public fun soul_wardrobe_delivery_commitment_v1(equipment: &MakerLoadoutV8): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(&soul_wardrobe_manifest_v1(equipment)))
+}
+
+public fun freeze_soul_wardrobe_v1<W: drop>(
+    equipment: &mut MakerLoadoutV8, protocol: &ProtocolConfigV8,
+    definitions: &RuntimeDefinitionRegistryV8, witness: W,
+    expected_manifest: vector<u8>, ctx: &TxContext,
+) {
+    assert_soul_equipment_read_v8(equipment, protocol, witness, ctx);
+    assert!(equipment.definition_registry_id == object::id(definitions), EInvalidBinding);
+    assert_wardrobe_selection_custody_v1(equipment, definitions.item_assetization);
+    assert!(soul_wardrobe_delivery_commitment_v1(equipment) == expected_manifest, EWardrobeDelivery);
+    let inventory = soul_wardrobe_mut_v1(equipment);
+    assert!(inventory.listing_commitment.is_none(), EEquipLocked);
+    inventory.listing_commitment = option::some(expected_manifest);
+}
+
+public fun unfreeze_soul_wardrobe_v1<W: drop>(
+    equipment: &mut MakerLoadoutV8, protocol: &ProtocolConfigV8,
+    witness: W, expected_manifest: vector<u8>, ctx: &TxContext,
+) {
+    assert_soul_equipment_read_v8(equipment, protocol, witness, ctx);
+    let inventory = soul_wardrobe_mut_v1(equipment);
+    assert!(inventory.listing_commitment == option::some(expected_manifest), EWardrobeDelivery);
+    inventory.listing_commitment = option::none();
+    inventory.showcase_owner = option::none();
+}
+
+/// The native market creates the installed owner-witness type from its
+/// validated listed SoulState. No source admission is re-evaluated on delivery.
+public fun transfer_soul_wardrobe_v1<W: drop>(
+    equipment: &mut MakerLoadoutV8, protocol: &ProtocolConfigV8,
+    seller_witness: W, expected_manifest: vector<u8>, ctx: &TxContext,
+) {
+    native_binding::assert_owner_witness_v8<W>(protocol);
+    let binding = *soul_equipment_binding_v8(equipment);
+    assert!(binding.protocol_config_id == object::id(protocol), EInvalidBinding);
+    assert_soul_equipment_claim(&seller_witness, &binding);
+    let _ = seller_witness;
+    assert!(ctx.sender() != binding.holder, EInvalidRecipient);
+    assert!(soul_wardrobe_delivery_commitment_v1(equipment) == expected_manifest, EWardrobeDelivery);
+    let inventory = soul_wardrobe_mut_v1(equipment);
+    assert!(inventory.listing_commitment == option::some(expected_manifest), EWardrobeDelivery);
+    inventory.listing_commitment = option::none();
+    inventory.showcase_owner = option::none();
+    inventory.showcase_epoch = binding.ownership_epoch + 1;
+    let current: &mut SoulEquipmentBindingV8 = df::borrow_mut(&mut equipment.id, SoulEquipmentKeyV8 {});
+    current.holder = ctx.sender();
+    current.ownership_epoch = binding.ownership_epoch + 1;
+    equipment.holder = ctx.sender();
+    emit_soul_equipment_changed(equipment, soul_equipment_binding_v8(equipment));
+}
+
+public fun refresh_soul_wardrobe_maker_access_v1<PaymentCoin>(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    root: &MakerRootV8<PaymentCoin>, access: &MakerAccessPassV8, ctx: &TxContext,
+) {
+    assert_soul_equipment_update_v8(equipment, update, ctx);
+    core_treasury::assert_maker_access_pass_v8(root, access, ctx.sender());
+    assert_root_compatibility(equipment.root_id, equipment.root_version, &equipment.root_content_commitment, root);
+    let previous_pass = equipment.maker_access_pass_id;
+    let previous_commitment = equipment.maker_access_commitment;
+    let new_pass = object::id(access);
+    let new_commitment = maker_access_entitlement_commitment_v8(access);
+    equipment.selections.do_mut!(|row| {
+        if (row.is_some()) {
+            let selection = row.borrow_mut();
+            if (selection.source_class == SOURCE_BASE && selection.access_subject == previous_pass) {
+                assert!(selection.pricing_commitment == previous_commitment, EInvalidProof);
+                selection.access_subject = new_pass;
+                selection.pricing_commitment = new_commitment;
+            };
+        };
+    });
+    equipment.maker_access_pass_id = object::id(access);
+    equipment.maker_access_commitment = new_commitment;
+    equipment.revision = equipment.revision + 1;
+    recompute_loadout(equipment);
+}
+
+public fun set_soul_wardrobe_showcase_v1(
+    equipment: &mut MakerLoadoutV8, update: &SoulEquipmentUpdateV8,
+    enabled: bool, ctx: &TxContext,
+) {
+    assert_soul_equipment_update_v8(equipment, update, ctx);
+    let inventory = soul_wardrobe_mut_v1(equipment);
+    inventory.showcase_owner = if (enabled) option::some(ctx.sender()) else option::none();
+    inventory.showcase_epoch = update.binding.ownership_epoch;
+}
+
+public fun set_soul_wardrobe_showcase_owner_v1<W: drop>(
+    equipment: &mut MakerLoadoutV8, protocol: &ProtocolConfigV8,
+    witness: W, enabled: bool, ctx: &TxContext,
+) {
+    assert_soul_equipment_read_v8(equipment, protocol, witness, ctx);
+    let epoch = soul_equipment_binding_v8(equipment).ownership_epoch;
+    let inventory = soul_wardrobe_mut_v1(equipment);
+    inventory.showcase_owner = if (enabled) option::some(ctx.sender()) else option::none();
+    inventory.showcase_epoch = epoch;
+}
+
+public fun soul_wardrobe_showcase_enabled_v1(equipment: &MakerLoadoutV8): bool {
+    let inventory = soul_wardrobe_v1(equipment);
+    let binding = soul_equipment_binding_v8(equipment);
+    inventory.listing_commitment.is_some()
+        && inventory.showcase_owner == option::some(binding.holder)
+        && inventory.showcase_epoch == binding.ownership_epoch
+}
 const HASH_LENGTH: u64 = 32;
 const MAX_KEY_BYTES: u64 = 128;
 const MAX_LOCATOR_BYTES: u64 = 512;
@@ -1390,7 +1909,7 @@ public fun new_runtime_registries_v8<PaymentCoin>(
     };
     let packs = PackRegistryV8 {
         id: pack_uid,
-        version: VERSION,
+        version: SOUL_PACK_REGISTRY_VERSION,
         root_id,
         root_version,
         root_content_commitment,
@@ -1999,7 +2518,8 @@ public fun admit_pack_release_v8<PaymentCoin>(
         release_id,
         previous_lifecycle: PACK_SEALED,
         lifecycle: release.lifecycle,
-    });    if (migrated_registry) {
+    });
+    if (migrated_registry) {
         event::emit(SoulPackRegistryEnabledV1 { root_id: registry.root_id,
             registry_id: object::id(registry), previous_version: VERSION, version: SOUL_PACK_REGISTRY_VERSION });
     };
@@ -2105,6 +2625,25 @@ public fun purchase_pack_pass_v8<PaymentCoin>(
 }
 
 
+/// Existing Maker owners close the legacy admission path before enabling new
+/// paid publication. This preserves the registry identity and all old receipts.
+public fun enable_soul_pack_registry_v1<PaymentCoin>(
+    registry: &mut PackRegistryV8, authority: &PackAdmissionAuthorityV8,
+    definitions: &RuntimeDefinitionRegistryV8, root: &MakerRootV8<PaymentCoin>,
+    maker_admin: &MakerAdminCapV8, expected_revision: u64, ctx: &TxContext,
+) {
+    maker::assert_admin_v8(root, maker_admin);
+    assert!(maker::root_owner_v8(root) == ctx.sender(), EWrongControl);
+    assert_pack_registry_identity(registry, definitions, root);
+    assert_authority_identity(authority, registry, root);
+    assert!(registry.revision == expected_revision, EStaleRevision);
+    if (registry.version == SOUL_PACK_REGISTRY_VERSION) return;
+    registry.version = SOUL_PACK_REGISTRY_VERSION;
+    registry.revision = registry.revision + 1;
+    event::emit(SoulPackRegistryEnabledV1 { root_id: registry.root_id,
+        registry_id: object::id(registry), previous_version: VERSION, version: SOUL_PACK_REGISTRY_VERSION });
+}
+
 public fun pack_registry_schema_v1(registry: &PackRegistryV8): u64 { registry.version }
 
 public fun pack_requires_soul_v1<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): bool {
@@ -2167,6 +2706,7 @@ fun assert_soul_pack_purchase_target<PaymentCoin>(
     equipment: &MakerLoadoutV8, release: &PackReleaseV8<PaymentCoin>,
     registry: &PackRegistryV8, root: &MakerRootV8<PaymentCoin>, config: &ProtocolConfigV8,
 ) {
+    assert!(!soul_wardrobe_is_listed_v1(equipment), EEquipLocked);
     maker::assert_current_protocol_config_v8(root, config);
     assert_root_compatibility(equipment.root_id, equipment.root_version, &equipment.root_content_commitment, root);
     assert_root_compatibility(release.root_id, release.root_version, &release.root_content_commitment, root);
@@ -2187,11 +2727,33 @@ public fun migrate_pack_pass_to_soul_v1<PaymentCoin, W: drop>(
     let legacy_id = object::id(&legacy);
     let pass_id = issue_soul_pack_pass_v1(equipment, release, config, legacy.holder,
         legacy.paid_atomic, legacy.issued_at_ms, option::some(legacy_id), ctx);
+    rebind_migrated_pack_selections_v1(equipment, object::id(release), legacy_id, pass_id);
     let PackPassV8 { id, version: _, release_id: _, root_id: _, root_version: _,
         root_content_commitment: _, release_content_commitment: _, holder: _,
         paid_atomic: _, issued_at_ms: _, commitment: _ } = legacy;
     id.delete();
     pass_id
+}
+
+fun rebind_migrated_pack_selections_v1(
+    equipment: &mut MakerLoadoutV8, release_id: ID, legacy_pass_id: ID, pass_id: ID,
+) {
+    let mut changed = false;
+    equipment.selections.do_mut!(|row| {
+        if (row.is_some()) {
+            let selection = row.borrow_mut();
+            if (selection.source_class == SOURCE_PACK && selection.source_definition_id == release_id
+                && selection.access_subject == legacy_pass_id) {
+                selection.access_subject = pass_id;
+                changed = true;
+            };
+        };
+    });
+    if (changed) {
+        equipment.revision = equipment.revision + 1;
+        recompute_loadout(equipment);
+        emit_soul_equipment_changed(equipment, soul_equipment_binding_v8(equipment));
+    };
 }
 
 fun issue_soul_pack_pass_v1<PaymentCoin>(
@@ -2246,6 +2808,8 @@ public fun soul_pack_entitlement_pass_v1(entitlement: &SoulPackEntitlementV1): I
 
 public fun soul_pack_pass_soul_id_v1(pass: &SoulPackPassV1): ID { pass.soul_id }
 public fun soul_pack_pass_state_id_v1(pass: &SoulPackPassV1): ID { pass.soul_state_id }
+public fun soul_pack_pass_paid_atomic_v1(pass: &SoulPackPassV1): u64 { pass.paid_atomic }
+public fun soul_pack_pass_legacy_id_v1(pass: &SoulPackPassV1): Option<ID> { pass.legacy_pass_id }
 public fun soul_pack_pass_release_id_v1(pass: &SoulPackPassV1): ID { pass.release_id }
 
 public fun assert_soul_pack_pass_v1<PaymentCoin>(
@@ -3582,6 +4146,7 @@ public fun is_soul_equipment_v8(loadout: &MakerLoadoutV8): bool {
 
 fun has_equipment_layout(loadout: &MakerLoadoutV8): bool {
     df::exists_with_type<SoulEquipmentLayoutKeyV8, bool>(&loadout.id, SoulEquipmentLayoutKeyV8 {})
+        || has_soul_wardrobe_v1(loadout)
 }
 
 fun loadout_part_capacity(loadout: &MakerLoadoutV8, profile: &PartProfileV8): u64 {
@@ -3648,6 +4213,9 @@ public fun begin_soul_equipment_update_v8<W: drop>(
     expected_revision: u64, witness: W, ctx: &TxContext,
 ): SoulEquipmentUpdateV8 {
     assert!(has_equipment_layout(loadout), EInvalidBinding);
+    if (has_soul_wardrobe_v1(loadout)) {
+        assert!(soul_wardrobe_v1(loadout).listing_commitment.is_none(), EEquipLocked);
+    };
     native_binding::assert_owner_witness_v8<W>(protocol);
     let binding = *soul_equipment_binding_v8(loadout);
     assert!(binding.protocol_config_id == object::id(protocol), EInvalidBinding);
@@ -3696,6 +4264,7 @@ public fun finish_soul_equipment_update_v8(
         EInvalidBinding);
     let _ = consume_pack_definition_proofs(loadout, definitions, pack_proofs, false);
     assert_loadout_visibility(loadout, base_registry);
+    if (has_soul_wardrobe_v1(loadout)) assert_wardrobe_selection_custody_v1(loadout, definitions.item_assetization);
     let SoulEquipmentUpdateV8 { loadout_id: _, binding } = update;
     df::add(&mut loadout.id, SoulEquipmentKeyV8 {}, binding);
     emit_soul_equipment_changed(loadout, &binding);
@@ -4600,7 +5169,14 @@ public fun prove_external_selection_v8<PaymentCoin>(
     assert!(loadout.holder == ctx.sender(), EWrongHolder);
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert!(object::id(packs) == loadout.pack_registry_id, EInvalidBinding);
-    assert_external_access(packs, product, item, ctx.sender());
+    if (has_soul_wardrobe_v1(loadout) && wardrobe_operation_holder_v1(&item.id, ctx.sender())) {
+        // Reading this exact locked instance does not authorize new issuance or
+        // installation after revocation. The receive obligation holds custody.
+        assert_external_identity_v1(packs, product, item);
+        let custody: &SoulWardrobeCustodyV1 = df::borrow(&item.id, SoulWardrobeCustodyKeyV1 {});
+        assert!(custody.equipment_id == object::id(loadout), EWardrobeCustody);
+        let _ = wardrobe_asset_index_v1(loadout, object::id(item), 2);
+    } else assert_external_access(packs, product, item, ctx.sender());
     let lock = item.equip_lock.borrow();
     assert!(lock.loadout_id == object::id(loadout), ENotEquipped);
     assert!(lock.selection_index == selection_index, ENotEquipped);
@@ -5011,17 +5587,25 @@ fun assert_external_access(
     holder: address,
 ) {
     assert!(product.lifecycle == PRODUCT_ACTIVE, EInvalidLifecycle);
+    assert_external_identity_v1(registry, product, item);
+    let record = registry.external_admissions.borrow(object::id(product));
+    assert!(record.admission_state == ADMISSION_ACTIVE, EAdmissionDenied);
+    assert!(item.holder == holder || wardrobe_operation_holder_v1(&item.id, holder), EWrongHolder);
+}
+
+fun assert_external_identity_v1(
+    registry: &PackRegistryV8, product: &ExternalItemProductV8, item: &OwnedExternalItemV8,
+) {
+    assert!(product.version == VERSION && item.version == VERSION, EInvalidBinding);
     assert!(product.root_id == registry.root_id, EInvalidBinding);
     assert!(product.root_version == registry.root_version, EInvalidBinding);
     assert!(product.root_content_commitment == registry.root_content_commitment, EInvalidBinding);
     let record = registry.external_admissions.borrow(object::id(product));
-    assert!(record.admission_state == ADMISSION_ACTIVE, EAdmissionDenied);
     assert!(record.compatibility_commitment == product.compatibility_commitment, EAdmissionDenied);
     assert!(record.product_content_commitment == product.content_commitment, EAdmissionDenied);
     assert!(item.product_id == object::id(product), EInvalidBinding);
     assert!(item.product_content_commitment == product.content_commitment, EInvalidBinding);
     assert!(item.asset_content_commitment == product.asset_content_commitment, EInvalidBinding);
-    assert!(item.holder == holder, EWrongHolder);
 }
 
 fun new_pack_pass<PaymentCoin>(
@@ -5995,12 +6579,12 @@ fun assert_product_control(
 
 fun assert_owned_holder(item: &OwnedExternalItemV8, ctx: &TxContext) {
     assert!(item.version == VERSION, EInvalidBinding);
-    assert!(item.holder == ctx.sender(), EWrongHolder);
+    assert!(item.holder == ctx.sender() || wardrobe_operation_holder_v1(&item.id, ctx.sender()), EWrongHolder);
 }
 
 fun assert_owned_base_holder(item: &OwnedBaseItemV8, ctx: &TxContext) {
     assert!(item.version == VERSION, EInvalidBinding);
-    assert!(item.holder == ctx.sender(), EWrongHolder);
+    assert!(item.holder == ctx.sender() || wardrobe_operation_holder_v1(&item.id, ctx.sender()), EWrongHolder);
 }
 
 fun assert_owned_base_item_registry(
@@ -8074,6 +8658,7 @@ fun pack_definition_public_producer_case(case: u8) {
     let mut release = test_pack_release(&mut ctx);
     release.root_id = loadout.root_id; release.root_version = loadout.root_version;
     release.root_content_commitment = loadout.root_content_commitment; release.lifecycle = PACK_DRAFT;
+    release.access_kind = ACCESS_FREE; release.access_price_atomic = 0;
     let cap_uid = object::new(&mut ctx); release.admin_cap_id = cap_uid.to_inner();
     let cap = PackAdminCapV8 { id: cap_uid, version: VERSION, release_id: object::id(&release), owner: ctx.sender(), control_epoch: 0 };
     let rows = base::new_pack_definition_rows_v2(release.semantic_pack_id, vector[], vector[], vector[], vector[], vector[]);
@@ -9490,6 +10075,10 @@ fun soul_pack_scope_case(case: u8) {
     equipment.root_content_commitment = release.root_content_commitment;
     let pass_id = issue_soul_pack_pass_v1(&mut equipment, &mut release, &config,
         @0xA11, 100, 1, option::none(), sc.ctx());
+    let issued = event::events_by_type<SoulPackPassIssuedV1>();
+    assert!(issued.length() == 1 && issued[0].pass_id == pass_id
+        && issued[0].soul_id == soul_equipment_soul_id_v8(&equipment)
+        && issued[0].buyer == @0xA11 && issued[0].paid_atomic == 100, 103);
     if (case == 1) {
         issue_soul_pack_pass_v1(&mut equipment, &mut release, &config,
             @0xA11, 100, 2, option::none(), sc.ctx());
@@ -9637,10 +10226,6 @@ public(package) fun new_soul_pack_entitlement_witness_v1<PaymentCoin, W: drop>(
     }
 }
 
-public fun soul_pack_pass_paid_atomic_v1(pass: &SoulPackPassV1): u64 { pass.paid_atomic }
-
-public fun soul_pack_pass_legacy_id_v1(pass: &SoulPackPassV1): Option<ID> { pass.legacy_pass_id }
-
 #[test]
 fun soul_pack_pass_commitment_matches_sdk_fixture() {
     let mut ctx = tx_context::dummy();
@@ -9660,4 +10245,29 @@ fun soul_pack_pass_commitment_matches_sdk_fixture() {
 public fun legacy_pack_schema_for_testing<PaymentCoin>(release: &mut PackReleaseV8<PaymentCoin>) {
     let _: bool = df::remove(&mut release.id, SoulPackPolicyKeyV1 {});
     release.lifecycle = PACK_ACTIVE;
+}
+
+#[test]
+fun soul_pack_explicit_migration_keeps_existing_selection_with_new_receipt() {
+    let mut ctx = tx_context::new_from_hint(@0xA11, 1109, 0, 0, 0);
+    let (mut equipment, config, admin) = equipment_fixture(&mut ctx);
+    let release_id = object::id_from_address(@0x71);
+    let old_id = object::id_from_address(@0x72);
+    let new_id = object::id_from_address(@0x73);
+    let mut selection = test_selection(0, b"style".to_string(), SOURCE_PACK, release_id);
+    selection.access_subject = old_id;
+    install_selection(&mut equipment, 0, selection);
+    let original = *equipment.selections[0].borrow();
+    rebind_migrated_pack_selections_v1(&mut equipment, release_id, old_id, new_id);
+    let migrated = *equipment.selections[0].borrow();
+    assert!(migrated.access_subject == new_id && migrated.style_key == original.style_key
+        && migrated.asset_content_commitment == original.asset_content_commitment
+        && equipment.selection_count == 1 && equipment.revision == 2, 100);
+    destroy_test_loadout(equipment);
+    protocol::destroy_protocol_for_testing(config, admin);
+}
+
+#[test_only]
+public fun legacy_pack_registry_schema_for_testing(registry: &mut PackRegistryV8) {
+    registry.version = VERSION;
 }

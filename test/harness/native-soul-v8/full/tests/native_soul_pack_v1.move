@@ -3,13 +3,13 @@ module native_soul_v8_graph::native_soul_pack_v1;
 
 use native_soul_v8_graph::{bootstrap, active_maker as active,
     native_completion as complete, pack_player};
-use animacraft_v8_core::maker_v8::MakerRootV8;
+use animacraft_v8_core::maker_v8::{MakerRootV8, MakerAdminCapV8};
 use animacraft_v8_core::protocol_config_v8::{Self as protocol, ProtocolConfigV8, ProtocolTreasuryV8};
 use animacraft_v8_core::treasury_v8::MakerAccessPassV8;
 use animacraft_v8_core::base_registry_v8::BaseDefinitionRegistryV8;
 use animacraft_v8_output::output_v8::NativeSoulBindingV8;
 use animacraft_v8_runtime::runtime_v8::{Self as runtime, MakerLoadoutV8,
-    RuntimeDefinitionRegistryV8, PackRegistryV8, PackReleaseV8, PackTreasuryV8, SoulPackPassV1};
+    RuntimeDefinitionRegistryV8, PackRegistryV8, PackAdmissionAuthorityV8, PackReleaseV8, PackTreasuryV8, SoulPackPassV1};
 use soulidity::soul::{Self as soul, SoulState};
 use soulidity::animacraft_equipment_adapter_v8 as equipment;
 use soulidity::animacraft_pack_adapter_v1 as packs;
@@ -27,8 +27,27 @@ fun run_case(case: u8) {
     let published = pack_player::publish_pack_with_policy_for_testing(
         &mut sc, maker, runtime::access_paid_v8(), PRICE);
     let (release_id, _, treasury_id) = pack_player::published_ids_for_testing(published);
-    let (root_id, base_id, _, _) = active::maker_ids_for_testing(maker);
-    let (definitions_id, registry_id, _, _, _, _, _, _, _) = active::companion_ids_for_testing(maker);
+    let (root_id, base_id, _, maker_admin_id) = active::maker_ids_for_testing(maker);
+    let (definitions_id, registry_id, authority_id, _, _, _, _, _, _) = active::companion_ids_for_testing(maker);
+    if (case == 8) {
+        let mut registry = sc.take_shared_by_id<PackRegistryV8>(registry_id);
+        let definitions = sc.take_shared_by_id<RuntimeDefinitionRegistryV8>(definitions_id);
+        let root = sc.take_shared_by_id<MakerRootV8<SUI>>(root_id);
+        let authority = sc.take_from_sender_by_id<PackAdmissionAuthorityV8>(authority_id);
+        let admin = sc.take_from_sender_by_id<MakerAdminCapV8>(maker_admin_id);
+        runtime::legacy_pack_registry_schema_for_testing(&mut registry);
+        let before = runtime::pack_registry_revision_v8(&registry);
+        runtime::enable_soul_pack_registry_v1(&mut registry, &authority, &definitions, &root, &admin, before, sc.ctx());
+        assert!(runtime::pack_registry_schema_v1(&registry) == 9
+            && runtime::pack_registry_revision_v8(&registry) == before + 1, 105);
+        runtime::enable_soul_pack_registry_v1(&mut registry, &authority, &definitions, &root, &admin, before + 1, sc.ctx());
+        assert!(runtime::pack_registry_revision_v8(&registry) == before + 1, 106);
+        scenario::return_shared(registry);
+        scenario::return_shared(definitions);
+        scenario::return_shared(root);
+        sc.return_to_sender(authority);
+        sc.return_to_sender(admin);
+    };
     sc.next_tx(holder);
     let completed = complete::mint_for_testing(&mut sc, protocol_id, setup,
         active::maker_objects_for_testing(maker), market, &mut system);
@@ -153,3 +172,6 @@ fun new_paid_release_rejects_wallet_only_purchase() { run_case(5); }
 
 #[test]
 fun explicit_legacy_pass_migration_preserves_payment_without_a_second_coin() { run_case(6); }
+
+#[test]
+fun existing_registry_migration_is_explicit_and_idempotent_before_new_publication() { run_case(8); }

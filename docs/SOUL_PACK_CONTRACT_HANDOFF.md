@@ -33,7 +33,7 @@ buyer, paid_atomic, issued_at_ms, legacy_pass_id, commitment
 
 ## 旧入口门禁与历史兼容
 
-首次通过本候选准入付费 Pack 时，已获 Maker admin 校验的同一交易将 PackRegistry schema 8 迁移到 9，并追加 `SoulPackRegistryEnabledV1` 事件。原三条 seal/admission/active 事件顺序保持。当前 Runtime 接受 registry 8/9。
+新建 PackRegistry 直接使用 schema 9。既有 Maker 由持有人调用 enable_soul_pack_registry_v1，在新购买和发布写开关开启前将同一 registry 从 8 显式迁移到 9。该操作核对 Maker admin、准入 authority、精确谱系及 revision。付费准入仍可原子完成尚未迁移 registry 的 8→9，并追加 `SoulPackRegistryEnabledV1` 事件。原三条 seal/admission/active 事件顺序保持。当前 Runtime 接受 registry 8/9。
 
 当前准入的付费 Release 附带 SoulPackPolicyKeyV1，active 为 5，paused 为 6。旧 callable 的 paid purchase/attach/proof 使用 active 2 校验，旧 resume 使用 paused 3 校验。旧准入使用 registry schema 8 校验，迁移后拒绝其新发行路径。
 
@@ -70,3 +70,13 @@ Player 公开发现可显示 active 5 的 Pack。当前配方的购买入口提�
 先前全量 JS 首跑发现两项缺少显式配套源码路径，以及一次 Chromium OOPIF 保护探针超时。配套路径已指定并复跑。原始上层 Move harness 与旧 native ABI 的两处不匹配由合约主责修复并保留用例。本线新增 `npm run move:test:soul-pack -- --soulidity-root <paired-root> --sui <approved-binary>` 可重现本轮真实原生创建与购买回归。
 
 正式发布需共同冻结完整前端、SDK、Runtime 与 Native 候选，校验旧类型兼容、type origins、真实 UpgradeCap 与精确升级模拟。升级和有价交易的具体费用随精确报文审核，签名由获授权持有人执行。官网写开关及两个真钱包验收由正式工程、发布和独立验收继续完成。
+
+## 最终本地验收
+
+- `npm run check` 通过。4593 项通过，0 项失败，10 项跳过，语法检查、构建、783 个交付源码文件和 8 个生产制品扫描均通过。
+- 真实 P1 六参数 grant 谱系的完整上层 Move harness 202 项通过。Runtime 251 项通过。
+- 单独 SDK 14 项、测试运行器 27 项通过。真实 Chromium 5 项通过，界面矩阵 36 个场景通过。
+- Runtime SHA-256 为 `89ce3337fe5f434f6c431eb455133c5adbea909d2d0d5bd298b4a1c8c00921ea`。
+- SDK SHA-256 为 `5a640fe615171730f7730b7343e9826882c449be59eecdffde515556b856174b`。
+
+结构化记录在 `docs/SOUL_PACK_VERIFICATION.json`。完整日志、图和公共链只读证据在 `output/soul-pack-evidence/final`。正式域名切换、新升级回执、管理员 registry 迁移、Pack 发布和双真钱包验收由正式工程与发布主责接续。

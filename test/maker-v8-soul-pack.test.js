@@ -5,7 +5,7 @@ import { ObjectError } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 import { deriveDynamicFieldID } from '@mysten/sui/utils';
 import { SoulPackPassV1Bcs, SoulPackAccessKeyV1Bcs, soulPackPassCommitmentV1,
-  readSoulPackPassV1, appendSoulPackPurchaseV1, soulPackPurchaseContinuationV1 } from '../maker-v8-soul-pack.js';
+  readSoulPackPassV1, appendSoulPackPurchaseV1, appendSoulPackRegistryMigrationV1, soulPackPurchaseContinuationV1 } from '../maker-v8-soul-pack.js';
 
 const id = n => `0x${n.toString(16).padStart(64, '0')}`;
 const rootHash = Array(32).fill(7);
@@ -101,4 +101,14 @@ test('Player continues purchase with the completed exact Soul ID', () => {
   const url = new URL(soulPackPurchaseContinuationV1({ origin: 'https://www.soulidity.ai', soulId: id(3), releaseId: id(2) }));
   assert.equal(url.pathname, `/packs/${id(2)}`);
   assert.equal(url.searchParams.get('soul'), id(3));
+});
+
+test('the registry migration builder uses only the Maker authority and exact revision', () => {
+  const tx = new Transaction();
+  appendSoulPackRegistryMigrationV1(tx, { network: 'mainnet', runtimePackageId: id(1),
+    packRegistryId: id(2), admissionAuthorityId: id(3), definitionsId: id(4), rootId: id(5),
+    makerAdminId: id(6), expectedRevision: '1', paymentCoinType: '0x2::sui::SUI' });
+  const call = tx.getData().commands[0].MoveCall;
+  assert.equal(call.function, 'enable_soul_pack_registry_v1');
+  assert.equal(call.arguments.length, 6);
 });
