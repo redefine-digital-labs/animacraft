@@ -48,5 +48,21 @@
   "evidenceDirectory": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/output/soul-pack-evidence/final",
   "runtimeSource": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/move/animacraft_v8_runtime/sources/runtime_v8.move",
   "sdkSource": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/maker-v8-soul-pack.js",
-  "canonicalFixture": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/test/fixtures/soul-pack-v1.json"
+  "canonicalFixture": "/Users/naoernue/Documents/ChatGPT/soulidity minimac/local-refactor/user-journey-delivery-20261017/animacraft-soul-bound-pack-20261117/test/fixtures/soul-pack-v1.json",
+  "protectedSoulPackApproval": {
+    "entry": "release_v8::seal_approve_equipped_soul_pack_v1",
+    "explicitParameters": 23,
+    "releaseSourceSha256": "57fec4a9c1d0529195fb8cef83dc353f9e01f39ad2f55021cca6094b96176813",
+    "releaseCompilation": "passed",
+    "sourceRegression": {
+      "passed": 1,
+      "failed": 0
+    },
+    "nativeRegression": {
+      "passed": 202,
+      "failed": 0
+    },
+    "graph": "/private/var/folders/lp/3fqfk6s130b700vkp35ysndh0000gn/T/native-soul-v8-graph-hBV7mi/graph.json",
+    "mainnetDecryptReceipt": "pending"
+  }
 }

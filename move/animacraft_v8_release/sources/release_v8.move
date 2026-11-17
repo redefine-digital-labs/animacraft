@@ -779,6 +779,28 @@ entry fun seal_approve_equipped_pack_v8<PaymentCoin>(
     seal::consume_pack_decrypt_proof_v8(id, seal_registry, seal_policy, root, proof, ctx);
 }
 
+entry fun seal_approve_equipped_soul_pack_v1<PaymentCoin>(
+    id: vector<u8>, release_config: &ReleasePackageConfigV8,
+    state: &SoulState, protocol: &ProtocolConfigV8,
+    loadout: &MakerLoadoutV8, packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, pass: &runtime::SoulPackPassV1,
+    catalog: &ProductReleaseCatalogV8, root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8, seal_registry: &SealRegistryV8,
+    seal_policy: &SealPolicyConfigV8, selection_index: u64,
+    part_key: String, item_key: String, style_key: String,
+    asset_content_commitment: vector<u8>, ciphertext_blob_id: String,
+    ciphertext_sha256: vector<u8>, ciphertext_blob_commitment: vector<u8>,
+    certification_commitment: vector<u8>, seal_id: vector<u8>, ctx: &TxContext,
+) {
+    assert_read_seal_binding(root, catalog, release_config, seal_registry, seal_policy);
+    let proof = soulidity::animacraft_pack_adapter_v1::certify_protected_soul_pack_entitlement_v1(
+        state, loadout, packs, release, pass, catalog, root, maker_access, seal_registry,
+        seal_policy, selection_index, part_key, item_key, style_key,
+        asset_content_commitment, ciphertext_blob_id, ciphertext_sha256,
+        ciphertext_blob_commitment, certification_commitment, seal_id, protocol, ctx);
+    seal::consume_pack_decrypt_proof_v8(id, seal_registry, seal_policy, root, proof, ctx);
+}
+
 fun assert_read_seal_binding<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>, catalog: &ProductReleaseCatalogV8,
     release_config: &ReleasePackageConfigV8, seal_registry: &SealRegistryV8,

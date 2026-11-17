@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "module": "release_v8",
+  "function": "seal_approve_equipped_soul_pack_v1",
+  "typeParameters": [
+    "PaymentCoin"
+  ],
+  "explicitParameters": [
+    {
+      "name": "id",
+      "type": "vector<u8>"
+    },
+    {
+      "name": "release_config",
+      "type": "&ReleasePackageConfigV8"
+    },
+    {
+      "name": "state",
+      "type": "&SoulState"
+    },
+    {
+      "name": "protocol",
+      "type": "&ProtocolConfigV8"
+    },
+    {
+      "name": "loadout",
+      "type": "&MakerLoadoutV8"
+    },
+    {
+      "name": "packs",
+      "type": "&PackRegistryV8"
+    },
+    {
+      "name": "release",
+      "type": "&PackReleaseV8<PaymentCoin>"
+    },
+    {
+      "name": "pass",
+      "type": "&runtime::SoulPackPassV1"
+    },
+    {
+      "name": "catalog",
+      "type": "&ProductReleaseCatalogV8"
+    },
+    {
+      "name": "root",
+      "type": "&MakerRootV8<PaymentCoin>"
+    },
+    {
+      "name": "maker_access",
+      "type": "&MakerAccessPassV8"
+    },
+    {
+      "name": "seal_registry",
+      "type": "&SealRegistryV8"
+    },
+    {
+      "name": "seal_policy",
+      "type": "&SealPolicyConfigV8"
+    },
+    {
+      "name": "selection_index",
+      "type": "u64"
+    },
+    {
+      "name": "part_key",
+      "type": "String"
+    },
+    {
+      "name": "item_key",
+      "type": "String"
+    },
+    {
+      "name": "style_key",
+      "type": "String"
+    },
+    {
+      "name": "asset_content_commitment",
+      "type": "vector<u8>"
+    },
+    {
+      "name": "ciphertext_blob_id",
+      "type": "String"
+    },
+    {
+      "name": "ciphertext_sha256",
+      "type": "vector<u8>"
+    },
+    {
+      "name": "ciphertext_blob_commitment",
+      "type": "vector<u8>"
+    },
+    {
+      "name": "certification_commitment",
+      "type": "vector<u8>"
+    },
+    {
+      "name": "seal_id",
+      "type": "vector<u8>"
+    }
+  ],
+  "txContextInjected": true,
+  "passType": "<new Runtime type origin>::runtime_v8::SoulPackPassV1",
+  "approvalKind": "soulPack",
+  "status": "Release entry compiled; 202 native regression cases passed; mainnet decrypt receipt pending",
+  "releaseSourceSha256": "57fec4a9c1d0529195fb8cef83dc353f9e01f39ad2f55021cca6094b96176813"
+}

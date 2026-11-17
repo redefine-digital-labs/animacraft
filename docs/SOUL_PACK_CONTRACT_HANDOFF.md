@@ -80,3 +80,7 @@ Player 公开发现可显示 active 5 的 Pack。当前配方的购买入口提�
 - SDK SHA-256 为 `5a640fe615171730f7730b7343e9826882c449be59eecdffde515556b856174b`。
 
 结构化记录在 `docs/SOUL_PACK_VERIFICATION.json`。完整日志、图和公共链只读证据在 `output/soul-pack-evidence/final`。正式域名切换、新升级回执、管理员 registry 迁移、Pack 发布和双真钱包验收由正式工程与发布主责接续。
+
+## 受保护 Pack 的追加批准入口
+
+`release_v8::seal_approve_equipped_soul_pack_v1` 已补齐。沿原 equipped Pack 顺序使用 23 个显式参数，Pass 使用 SoulPackPassV1。原生当前持有人证明在同一 entry 内取得并交给 Seal consume。精确 ABI 在 `docs/SOUL_PACK_SEAL_APPROVAL_V1.json`。Release 编译、202 项原生回归和一项专项入口回归通过。真实主网解密回执待升级部署后的独立验收。
