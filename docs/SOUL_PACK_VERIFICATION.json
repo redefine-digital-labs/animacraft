@@ -64,5 +64,41 @@
     },
     "graph": "/private/var/folders/lp/3fqfk6s130b700vkp35ysndh0000gn/T/native-soul-v8-graph-hBV7mi/graph.json",
     "mainnetDecryptReceipt": "pending"
+  },
+  "postHandoffM01": {
+    "review": "M01",
+    "productionSourceSha256": "89ce3337fe5f434f6c431eb455133c5adbea909d2d0d5bd298b4a1c8c00921ea",
+    "testExtendedSourceSha256": "7e116bf9a52da12bb1b092566293a44517b4c2c98ad0c76531c9e50ba5d15cca",
+    "productionSourceIsExactPrefix": true,
+    "additionalTestOnlyBytes": 5825,
+    "runtimeTests": {
+      "passed": 254,
+      "failed": 0
+    },
+    "nativeRegression": {
+      "passed": 202,
+      "failed": 0
+    },
+    "caseNames": [
+      "wardrobe_maker_access_buyer_cannot_reuse_seller_pass",
+      "wardrobe_maker_access_buyer_refresh_preserves_style_and_proves_read",
+      "wardrobe_maker_access_old_selection_requires_explicit_buyer_refresh"
+    ],
+    "runtimePackageDigestHex": "a10a6642847123b88a70b9f2b3719889cf6d771b914caf869555f2477dcb7325",
+    "strictSimulation": {
+      "checksEnabled": true,
+      "success": true,
+      "digest": "rp4x4JG3GSdxD95ypGbwjZyS2UAxGPVWr5BDDfSboSg",
+      "buildSha256": "d32ca33de2a839d790e03ba09ba7173f3fe8308eee425cdf63052af5293a4efd",
+      "gasBudgetMist": "1500000000",
+      "simulatedNetGasMist": "779562963",
+      "gasMode": "address-balance",
+      "walletSignature": false,
+      "submitted": false,
+      "generatedAt": "2026-11-17T18:11:40.454Z",
+      "reviewFile": "/Users/naoernue/Documents/ChatGPT/soulidity \u5408\u7ea6/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul/runtime-upgrade-unsigned-review.json",
+      "simulationFile": "/Users/naoernue/Documents/ChatGPT/soulidity \u5408\u7ea6/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul/runtime-upgrade-simulation.json"
+    },
+    "evidenceDirectory": "/Users/naoernue/Documents/ChatGPT/soulidity \u5408\u7ea6/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul"
   }
 }

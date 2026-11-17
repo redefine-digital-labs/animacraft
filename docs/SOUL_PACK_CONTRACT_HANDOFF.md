@@ -84,3 +84,9 @@ Player 公开发现可显示 active 5 的 Pack。当前配方的购买入口提�
 ## 受保护 Pack 的追加批准入口
 
 `release_v8::seal_approve_equipped_soul_pack_v1` 已补齐。沿原 equipped Pack 顺序使用 23 个显式参数，Pass 使用 SoulPackPassV1。原生当前持有人证明在同一 entry 内取得并交给 Seal consume。精确 ABI 在 `docs/SOUL_PACK_SEAL_APPROVAL_V1.json`。Release 编译、202 项原生回归和一项专项入口回归通过。真实主网解密回执待升级部署后的独立验收。
+
+## M01 交割后 Maker 资格复验
+
+合约主责在冻结 Runtime 原字节尾部追加三个 test-only 用例。新持有人刷新为自己的 Maker Pass 后，原非资产化 Base 样式及读证明通过。沿用卖家 Pass 和未刷新旧选择的路径均拒绝。Runtime 254 项、原生回归 202 项通过。追加测试后的源码 SHA 为 `7e116bf9a52da12bb1b092566293a44517b4c2c98ad0c76531c9e50ba5d15cca`，冻结生产源码仍按本交接的 `89ce3337…00921ea` 识别。
+
+Runtime 原 UpgradeCap 的严格模拟已成功，checksEnabled 为 true。该模拟净 gas 为 779562963 MIST，预算上限为 1500000000 MIST，使用原钱包 address balance。待签摘要为 `rp4x4JG3GSdxD95ypGbwjZyS2UAxGPVWr5BDDfSboSg`，记录时尚未签名或提交。精确报文、构建哈希和证据路径在结构化交接的 postHandoffM01 字段。
