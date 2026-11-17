@@ -78,6 +78,9 @@ const PACK_SEALED: u8 = 1;
 const PACK_ACTIVE: u8 = 2;
 const PACK_PAUSED: u8 = 3;
 const PACK_ARCHIVED: u8 = 4;
+const PACK_SOUL_ACTIVE: u8 = 5;
+const PACK_SOUL_PAUSED: u8 = 6;
+const SOUL_PACK_REGISTRY_VERSION: u64 = 9;
 
 const PRODUCT_ACTIVE: u8 = 0;
 const PRODUCT_PAUSED: u8 = 1;
@@ -600,6 +603,45 @@ public struct PackPassV8 has key {
     paid_atomic: u64,
     issued_at_ms: u64,
     commitment: vector<u8>,
+}
+
+/// Immutable entitlement for one already-created native Soul. The original
+/// purchaser remains receipt data while authorization follows live Soul custody.
+public struct SoulPackPassV1 has key {
+    id: UID,
+    version: u64,
+    protocol_config_id: ID,
+    soul_id: ID,
+    soul_state_id: ID,
+    release_id: ID,
+    root_id: ID,
+    root_version: u64,
+    root_content_commitment: vector<u8>,
+    release_content_commitment: vector<u8>,
+    buyer: address,
+    paid_atomic: u64,
+    issued_at_ms: u64,
+    legacy_pass_id: Option<ID>,
+    commitment: vector<u8>,
+}
+
+public struct SoulPackRegistryEnabledV1 has copy, drop {
+    root_id: ID, registry_id: ID, previous_version: u64, version: u64,
+}
+public struct SoulPackPolicyKeyV1 has copy, drop, store {}
+public struct SoulPackAccessKeyV1 has copy, drop, store { soul_id: ID }
+public struct SoulPackEntitlementsKeyV1 has copy, drop, store {}
+public struct SoulPackEntitlementV1 has copy, drop, store { release_id: ID, pass_id: ID }
+public struct SoulPackPassIssuedV1 has copy, drop {
+    pass_id: ID, soul_id: ID, soul_state_id: ID, release_id: ID,
+    buyer: address, paid_atomic: u64, legacy_pass_id: Option<ID>, commitment: vector<u8>,
+}
+
+public struct SoulPackPassCommitmentV1 has drop {
+    domain: vector<u8>, version: u64, protocol_config_id: ID, soul_id: ID, soul_state_id: ID,
+    release_id: ID, root_id: ID, root_version: u64,
+    root_content_commitment: vector<u8>, release_content_commitment: vector<u8>,
+    buyer: address, paid_atomic: u64, issued_at_ms: u64, legacy_pass_id: Option<ID>,
 }
 
 /// No-ability line item consumed by Output. Policy counters are incremented
@@ -1628,7 +1670,7 @@ public fun new_pack_release_v8<PaymentCoin>(
     let treasury_uid = object::new(ctx);
     let treasury_id = treasury_uid.to_inner();
     let root_content_commitment = *maker::root_content_commitment_v8(root);
-    let release = PackReleaseV8<PaymentCoin> {
+    let mut release = PackReleaseV8<PaymentCoin> {
         id: release_uid,
         version: VERSION,
         root_id: maker::root_id_v8(root),
@@ -1677,6 +1719,9 @@ public fun new_pack_release_v8<PaymentCoin>(
         revenue: balance::zero(),
         total_collected: 0,
         total_withdrawn: 0,
+    };
+    if (access_kind == ACCESS_PAID) {
+        df::add(&mut release.id, SoulPackPolicyKeyV1 {}, true);
     };
     (release, cap, treasury)
 }
@@ -1927,6 +1972,11 @@ public fun admit_pack_release_v8<PaymentCoin>(
     let release_id = object::id(release);
     assert!(!registry.releases.contains(release_id), EAlreadyAdmitted);
     assert!(!registry.semantic_releases.contains(release.semantic_pack_id), EAlreadyAdmitted);
+    let migrated_registry = release.access_kind == ACCESS_PAID && registry.version == VERSION;
+    if (release.access_kind == ACCESS_PAID) {
+        registry.version = SOUL_PACK_REGISTRY_VERSION;
+        if (!pack_requires_soul_v1(release)) df::add(&mut release.id, SoulPackPolicyKeyV1 {}, true);
+    };
     registry.revision = registry.revision + 1;
     registry.release_count = registry.release_count + 1;
     registry.releases.add(release_id, PackAdmissionRecordV8 {
@@ -1937,7 +1987,7 @@ public fun admit_pack_release_v8<PaymentCoin>(
         admission_state: ADMISSION_ACTIVE,
     });
     registry.semantic_releases.add(release.semantic_pack_id, release_id);
-    release.lifecycle = PACK_ACTIVE;
+    release.lifecycle = pack_active_lifecycle_v1(release);
     event::emit(PackRegistryRevisionAdvancedV8 {
         root_id: registry.root_id,
         previous_revision: expected_revision,
@@ -1948,8 +1998,11 @@ public fun admit_pack_release_v8<PaymentCoin>(
     event::emit(PackLifecycleChangedV8 {
         release_id,
         previous_lifecycle: PACK_SEALED,
-        lifecycle: PACK_ACTIVE,
-    });
+        lifecycle: release.lifecycle,
+    });    if (migrated_registry) {
+        event::emit(SoulPackRegistryEnabledV1 { root_id: registry.root_id,
+            registry_id: object::id(registry), previous_version: VERSION, version: SOUL_PACK_REGISTRY_VERSION });
+    };
 }
 
 public fun revoke_pack_admission_v8<PaymentCoin>(
@@ -1984,8 +2037,9 @@ public fun pause_pack_release_v8<PaymentCoin>(
     release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8, ctx: &TxContext,
 ) {
     assert_pack_write(release, cap, ctx);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
-    set_pack_lifecycle(release, PACK_PAUSED);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
+    let lifecycle = if (pack_requires_soul_v1(release)) PACK_SOUL_PAUSED else PACK_PAUSED;
+    set_pack_lifecycle(release, lifecycle);
 }
 
 public fun resume_pack_release_v8<PaymentCoin>(
@@ -1993,16 +2047,17 @@ public fun resume_pack_release_v8<PaymentCoin>(
     registry: &PackRegistryV8, ctx: &TxContext,
 ) {
     assert_pack_write(release, cap, ctx);
-    assert!(release.lifecycle == PACK_PAUSED, EInvalidLifecycle);
+    assert!((release.lifecycle == PACK_PAUSED || release.lifecycle == PACK_SOUL_PAUSED), EInvalidLifecycle);
     assert_active_pack_admission(registry, release);
-    set_pack_lifecycle(release, PACK_ACTIVE);
+    let lifecycle = pack_active_lifecycle_v1(release);
+    set_pack_lifecycle(release, lifecycle);
 }
 
 public fun archive_pack_release_v8<PaymentCoin>(
     release: &mut PackReleaseV8<PaymentCoin>, cap: &PackAdminCapV8, ctx: &TxContext,
 ) {
     assert_pack_write(release, cap, ctx);
-    assert!(release.lifecycle == PACK_ACTIVE || release.lifecycle == PACK_PAUSED, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release) || (release.lifecycle == PACK_PAUSED || release.lifecycle == PACK_SOUL_PAUSED), EInvalidLifecycle);
     set_pack_lifecycle(release, PACK_ARCHIVED);
 }
 
@@ -2013,7 +2068,7 @@ public fun issue_free_pack_pass_v8<PaymentCoin>(
     ctx: &mut TxContext,
 ): PackPassV8 {
     assert_active_pack_admission(registry, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert!(release.access_kind == ACCESS_FREE, EInvalidPolicy);
     new_pack_pass(release, 0, clock.timestamp_ms(), ctx)
 }
@@ -2032,17 +2087,44 @@ public fun purchase_pack_pass_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     config: &ProtocolConfigV8,
     protocol_treasury: &mut ProtocolTreasuryV8<PaymentCoin>,
-    mut payment: Coin<PaymentCoin>,
+    payment: Coin<PaymentCoin>,
     clock: &Clock,
     ctx: &mut TxContext,
 ): PackPassV8 {
+    assert!(!pack_requires_soul_v1(release), EInvalidPolicy);
     assert_active_pack_admission(registry, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert!(release.access_kind == ACCESS_PAID, EInvalidPolicy);
     assert_root_compatibility(release.root_id, release.root_version,
         &release.root_content_commitment, root);
     maker::assert_current_protocol_config_v8(root, config);
     assert_treasury(release, treasury);
+    let gross = settle_soul_pack_payment_v1(release, treasury, root, config,
+        protocol_treasury, payment, ctx);
+    new_pack_pass(release, gross, clock.timestamp_ms(), ctx)
+}
+
+
+public fun pack_registry_schema_v1(registry: &PackRegistryV8): u64 { registry.version }
+
+public fun pack_requires_soul_v1<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): bool {
+    df::exists_with_type<SoulPackPolicyKeyV1, bool>(&release.id, SoulPackPolicyKeyV1 {})
+}
+
+fun pack_active_lifecycle_v1<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): u8 {
+    if (pack_requires_soul_v1(release)) PACK_SOUL_ACTIVE else PACK_ACTIVE
+}
+
+public fun pack_release_is_active_v1<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): bool {
+    release.lifecycle == pack_active_lifecycle_v1(release)
+}
+
+fun settle_soul_pack_payment_v1<PaymentCoin>(
+    release: &PackReleaseV8<PaymentCoin>, treasury: &mut PackTreasuryV8<PaymentCoin>,
+    root: &MakerRootV8<PaymentCoin>, config: &ProtocolConfigV8,
+    protocol_treasury: &mut ProtocolTreasuryV8<PaymentCoin>, mut payment: Coin<PaymentCoin>,
+    ctx: &mut TxContext,
+): u64 {
     let gross = release.access_price_atomic;
     assert!(gross > 0 && coin::value(&payment) == gross, EWrongPayment);
     let economics = maker::root_economics_v8(root);
@@ -2054,7 +2136,182 @@ public fun purchase_pack_pass_v8<PaymentCoin>(
     };
     assert!(coin::value(&payment) == gross - protocol_atomic, EWrongPayment);
     deposit_pack_revenue_v8(release, treasury, payment);
-    new_pack_pass(release, gross, clock.timestamp_ms(), ctx)
+    gross
+}
+
+/// Native adapter proves the existing equipment's live owner and provenance.
+/// The Soul identity comes exclusively from that verified equipment binding.
+public fun purchase_soul_pack_pass_v1<PaymentCoin, W: drop>(
+    equipment: &mut MakerLoadoutV8, release: &mut PackReleaseV8<PaymentCoin>,
+    registry: &PackRegistryV8, treasury: &mut PackTreasuryV8<PaymentCoin>,
+    root: &MakerRootV8<PaymentCoin>, config: &ProtocolConfigV8,
+    protocol_treasury: &mut ProtocolTreasuryV8<PaymentCoin>, payment: Coin<PaymentCoin>,
+    expected_price: u64, expires_at_ms: u64, witness: W, clock: &Clock, ctx: &mut TxContext,
+): ID {
+    assert_soul_equipment_read_v8(equipment, config, witness, ctx);
+    assert_soul_pack_purchase_target(equipment, release, registry, root, config);
+    assert_active_pack_admission(registry, release);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
+    assert!(pack_requires_soul_v1(release), EInvalidPolicy);
+    assert!(release.access_price_atomic == expected_price, EWrongPayment);
+    assert!(clock.timestamp_ms() <= expires_at_ms, EInvalidProof);
+    let soul_id = soul_equipment_soul_id_v8(equipment);
+    assert!(!df::exists(&release.id, SoulPackAccessKeyV1 { soul_id }), EPackAccessAlreadyIssued);
+    assert_treasury(release, treasury);
+    let gross = settle_soul_pack_payment_v1(release, treasury, root, config, protocol_treasury, payment, ctx);
+    issue_soul_pack_pass_v1(equipment, release, config, ctx.sender(), gross,
+        clock.timestamp_ms(), option::none(), ctx)
+}
+
+fun assert_soul_pack_purchase_target<PaymentCoin>(
+    equipment: &MakerLoadoutV8, release: &PackReleaseV8<PaymentCoin>,
+    registry: &PackRegistryV8, root: &MakerRootV8<PaymentCoin>, config: &ProtocolConfigV8,
+) {
+    maker::assert_current_protocol_config_v8(root, config);
+    assert_root_compatibility(equipment.root_id, equipment.root_version, &equipment.root_content_commitment, root);
+    assert_root_compatibility(release.root_id, release.root_version, &release.root_content_commitment, root);
+    assert!(object::id(registry) == equipment.pack_registry_id, EInvalidBinding);
+    assert!(release.access_kind == ACCESS_PAID, EInvalidPolicy);
+}
+
+/// Explicit one-time conversion consumes the original wallet Pass and preserves
+/// its paid amount, timestamp, buyer and ID in the new receipt and event.
+public fun migrate_pack_pass_to_soul_v1<PaymentCoin, W: drop>(
+    legacy: PackPassV8, equipment: &mut MakerLoadoutV8, release: &mut PackReleaseV8<PaymentCoin>,
+    registry: &PackRegistryV8, root: &MakerRootV8<PaymentCoin>, config: &ProtocolConfigV8,
+    witness: W, ctx: &mut TxContext,
+): ID {
+    assert_soul_equipment_read_v8(equipment, config, witness, ctx);
+    assert_soul_pack_purchase_target(equipment, release, registry, root, config);
+    assert_pack_pass(release, &legacy, ctx.sender());
+    let legacy_id = object::id(&legacy);
+    let pass_id = issue_soul_pack_pass_v1(equipment, release, config, legacy.holder,
+        legacy.paid_atomic, legacy.issued_at_ms, option::some(legacy_id), ctx);
+    let PackPassV8 { id, version: _, release_id: _, root_id: _, root_version: _,
+        root_content_commitment: _, release_content_commitment: _, holder: _,
+        paid_atomic: _, issued_at_ms: _, commitment: _ } = legacy;
+    id.delete();
+    pass_id
+}
+
+fun issue_soul_pack_pass_v1<PaymentCoin>(
+    equipment: &mut MakerLoadoutV8, release: &mut PackReleaseV8<PaymentCoin>, config: &ProtocolConfigV8,
+    buyer: address, paid_atomic: u64, issued_at_ms: u64, legacy_pass_id: Option<ID>, ctx: &mut TxContext,
+): ID {
+    let soul_id = soul_equipment_soul_id_v8(equipment);
+    let key = SoulPackAccessKeyV1 { soul_id };
+    assert!(!df::exists(&release.id, key), EPackAccessAlreadyIssued);
+    let pass = SoulPackPassV1 {
+        id: object::new(ctx), version: 1, protocol_config_id: object::id(config), soul_id,
+        soul_state_id: soul_equipment_state_id_v8(equipment), release_id: object::id(release),
+        root_id: release.root_id, root_version: release.root_version,
+        root_content_commitment: release.root_content_commitment,
+        release_content_commitment: release.content_commitment, buyer, paid_atomic, issued_at_ms,
+        legacy_pass_id, commitment: vector[],
+    };
+    let mut pass = pass;
+    pass.commitment = soul_pack_pass_commitment_v1(&pass);
+    let id = object::id(&pass);
+    df::add(&mut release.id, key, id);
+    release.pass_count = release.pass_count + 1;
+    if (!df::exists(&equipment.id, SoulPackEntitlementsKeyV1 {})) {
+        df::add(&mut equipment.id, SoulPackEntitlementsKeyV1 {}, vector<SoulPackEntitlementV1>[]);
+    };
+    let entitlements: &mut vector<SoulPackEntitlementV1> = df::borrow_mut(&mut equipment.id, SoulPackEntitlementsKeyV1 {});
+    assert!(entitlements.length() < MAX_PACK_STYLES, EInvalidCount);
+    entitlements.push_back(SoulPackEntitlementV1 { release_id: object::id(release), pass_id: id });
+    event::emit(SoulPackPassIssuedV1 { pass_id: id, soul_id, soul_state_id: pass.soul_state_id,
+        release_id: pass.release_id, buyer, paid_atomic, legacy_pass_id, commitment: pass.commitment });
+    transfer::share_object(pass);
+    id
+}
+
+public fun soul_pack_pass_commitment_v1(pass: &SoulPackPassV1): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(&SoulPackPassCommitmentV1 {
+        domain: b"animacraft/runtime/soul-pack-pass/v1", version: pass.version,
+        protocol_config_id: pass.protocol_config_id, soul_id: pass.soul_id, soul_state_id: pass.soul_state_id,
+        release_id: pass.release_id, root_id: pass.root_id, root_version: pass.root_version,
+        root_content_commitment: pass.root_content_commitment, release_content_commitment: pass.release_content_commitment,
+        buyer: pass.buyer, paid_atomic: pass.paid_atomic, issued_at_ms: pass.issued_at_ms, legacy_pass_id: pass.legacy_pass_id,
+    }))
+}
+
+public fun soul_pack_entitlements_v1(equipment: &MakerLoadoutV8): vector<SoulPackEntitlementV1> {
+    if (df::exists_with_type<SoulPackEntitlementsKeyV1, vector<SoulPackEntitlementV1>>(&equipment.id, SoulPackEntitlementsKeyV1 {})) {
+        *df::borrow(&equipment.id, SoulPackEntitlementsKeyV1 {})
+    } else vector[]
+}
+public fun soul_pack_entitlement_release_v1(entitlement: &SoulPackEntitlementV1): ID { entitlement.release_id }
+public fun soul_pack_entitlement_pass_v1(entitlement: &SoulPackEntitlementV1): ID { entitlement.pass_id }
+
+public fun soul_pack_pass_soul_id_v1(pass: &SoulPackPassV1): ID { pass.soul_id }
+public fun soul_pack_pass_state_id_v1(pass: &SoulPackPassV1): ID { pass.soul_state_id }
+public fun soul_pack_pass_release_id_v1(pass: &SoulPackPassV1): ID { pass.release_id }
+
+public fun assert_soul_pack_pass_v1<PaymentCoin>(
+    update: &SoulEquipmentUpdateV8, equipment: &MakerLoadoutV8,
+    release: &PackReleaseV8<PaymentCoin>, pass: &SoulPackPassV1, ctx: &TxContext,
+) {
+    assert_soul_equipment_update_v8(equipment, update, ctx);
+    assert_soul_pack_binding_v1(equipment, &update.binding, release, pass);
+}
+
+fun assert_soul_pack_binding_v1<PaymentCoin>(
+    equipment: &MakerLoadoutV8, binding: &SoulEquipmentBindingV8,
+    release: &PackReleaseV8<PaymentCoin>, pass: &SoulPackPassV1,
+) {
+    assert!(pass.version == 1 && pass.soul_id == binding.soul_id
+        && pass.soul_state_id == binding.soul_state_id && pass.protocol_config_id == binding.protocol_config_id,
+        EPassMissing);
+    assert!(pass.root_id == equipment.root_id && pass.root_version == equipment.root_version
+        && pass.root_content_commitment == equipment.root_content_commitment, EPassMissing);
+    assert!(pass.release_id == object::id(release) && pass.root_id == release.root_id
+        && pass.root_version == release.root_version && pass.root_content_commitment == release.root_content_commitment
+        && pass.release_content_commitment == release.content_commitment, EPassMissing);
+    let key = SoulPackAccessKeyV1 { soul_id: binding.soul_id };
+    assert!(df::exists_with_type<SoulPackAccessKeyV1, ID>(&release.id, key)
+        && *df::borrow<SoulPackAccessKeyV1, ID>(&release.id, key) == object::id(pass), EPassMissing);
+    assert!(pass.commitment == soul_pack_pass_commitment_v1(pass), EInvalidCommitment);
+}
+
+public fun assert_soul_pack_read_v1<PaymentCoin, W: drop>(
+    equipment: &MakerLoadoutV8, release: &PackReleaseV8<PaymentCoin>, pass: &SoulPackPassV1,
+    config: &ProtocolConfigV8, witness: W, ctx: &TxContext,
+) {
+    assert_soul_equipment_read_v8(equipment, config, witness, ctx);
+    assert_soul_pack_binding_v1(equipment, soul_equipment_binding_v8(equipment), release, pass);
+}
+
+public fun attach_soul_pack_definitions_v1<PaymentCoin>(
+    update: &SoulEquipmentUpdateV8, equipment: &mut MakerLoadoutV8,
+    root: &MakerRootV8<PaymentCoin>, definitions: &RuntimeDefinitionRegistryV8, packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, pass: &SoulPackPassV1,
+    maker_access: &MakerAccessPassV8, expected_revision: u64, ctx: &TxContext,
+) {
+    assert_soul_pack_pass_v1(update, equipment, release, pass, ctx);
+    assert_loadout_write(equipment, root, definitions, packs, expected_revision, ctx);
+    assert_loadout_maker_access(equipment, root, maker_access, ctx);
+    assert_active_pack_admission(packs, release);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
+    let profiles = pack_part_profiles_v8(definitions, release);
+    append_pack_definition_slots(equipment, object::id(release), pack_definitions_v8(release).commitment, &profiles);
+}
+
+public fun select_soul_pack_style_v1<PaymentCoin>(
+    update: &SoulEquipmentUpdateV8, equipment: &mut MakerLoadoutV8,
+    root: &MakerRootV8<PaymentCoin>, definitions: &RuntimeDefinitionRegistryV8,
+    base_registry: &BaseDefinitionRegistryV8, packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, pass: &SoulPackPassV1, maker_access: &MakerAccessPassV8,
+    expected_revision: u64, target_selection_index: Option<u64>, part_key: String,
+    item_key: String, style_key: String, swatch_key: Option<String>, ctx: &TxContext,
+) {
+    assert_soul_pack_pass_v1(update, equipment, release, pass, ctx);
+    assert_loadout_write(equipment, root, definitions, packs, expected_revision, ctx);
+    assert_loadout_maker_access(equipment, root, maker_access, ctx);
+    assert_active_pack_admission(packs, release);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
+    install_pack_selection_v1(equipment, root, definitions, base_registry, release,
+        object::id(pass), target_selection_index, part_key, item_key, style_key, swatch_key);
 }
 
 /// INCLUDED_WITH_MAKER is authorized only by Core's exact non-transferable
@@ -2068,7 +2325,7 @@ public fun issue_included_pack_pass_v8<PaymentCoin>(
     ctx: &mut TxContext,
 ): PackPassV8 {
     assert_active_pack_admission(registry, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert!(release.access_kind == ACCESS_INCLUDED_WITH_MAKER, EInvalidPolicy);
     assert_root_compatibility(release.root_id, release.root_version,
         &release.root_content_commitment, root);
@@ -2099,7 +2356,7 @@ public fun new_physical_pack_policy_witness_v8<
 ): RuntimePhysicalPackPolicyWitnessV8 {
     assert_physical_caller(root, physical_authority, protocol_config, catalog, replacement, packs);
     assert_active_pack_admission(packs, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_pack_control(release, pack_admin, ctx);
     assert_treasury(release, pack_treasury);
     let style = release.styles.borrow(PackStyleKeyV8 {
@@ -2166,7 +2423,7 @@ public fun new_physical_pack_access_witness_v8<
 ): RuntimePhysicalPackAccessWitnessV8 {
     assert_physical_caller(root, physical_authority, protocol_config, catalog, replacement, packs);
     assert_active_pack_admission(packs, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_treasury(release, pack_treasury);
     assert_pack_pass(release, pass, ctx.sender());
     assert!(loadout.version == VERSION, EInvalidBinding);
@@ -2328,7 +2585,7 @@ public(package) fun authorize_pack_complete_line_v8<PaymentCoin>(
     ctx: &TxContext,
 ): PackCompleteLineV8 {
     assert_active_pack_admission(registry, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_pack_pass(release, pass, ctx.sender());
     assert!(authorization.loadout_id == object::id(loadout), EInvalidProof);
     assert!(authorization.loadout_revision == loadout.revision, EInvalidProof);
@@ -3740,7 +3997,7 @@ public fun attach_pack_definitions_v8<PaymentCoin>(
     assert_loadout_write(loadout, root, definitions, packs, expected_revision, ctx);
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert_active_pack_admission(packs, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_pack_pass(release, pass, ctx.sender());
     let profiles = pack_part_profiles_v8(definitions, release);
     append_pack_definition_slots(loadout, object::id(release),
@@ -3796,8 +4053,18 @@ public fun select_pack_style_v8<PaymentCoin>(
     assert_loadout_write(loadout, root, definitions, packs, expected_revision, ctx);
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert_active_pack_admission(packs, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_pack_pass(release, pass, ctx.sender());
+    install_pack_selection_v1(loadout, root, definitions, base_registry, release,
+        object::id(pass), target_selection_index, part_key, item_key, style_key, swatch_key);
+}
+
+fun install_pack_selection_v1<PaymentCoin>(
+    loadout: &mut MakerLoadoutV8, root: &MakerRootV8<PaymentCoin>,
+    definitions: &RuntimeDefinitionRegistryV8, base_registry: &BaseDefinitionRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>, pass_id: ID, target_selection_index: Option<u64>,
+    part_key: String, item_key: String, style_key: String, swatch_key: Option<String>,
+) {
     let style = release.styles.borrow(PackStyleKeyV8 { part_key, item_key, style_key });
     assert_pack_definition_attachment(loadout, release);
     assert_definition_binding(definitions, root, base_registry);
@@ -3820,7 +4087,7 @@ public fun select_pack_style_v8<PaymentCoin>(
         source_class: SOURCE_PACK,
         source_definition_id: object::id(release),
         source_semantic_id: release.semantic_pack_id,
-        access_subject: object::id(pass),
+        access_subject: pass_id,
         // Pack ownership/control changes never revoke holder compatibility.
         source_epoch: 0,
         pricing_commitment,
@@ -4214,7 +4481,7 @@ public fun prove_pack_selection_v8<PaymentCoin>(
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert!(object::id(packs) == loadout.pack_registry_id, EInvalidBinding);
     assert_active_pack_admission(packs, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_pack_pass(release, pass, ctx.sender());
     let selection = loadout.selections.borrow(selection_index).borrow();
     assert!(selection.source_class == SOURCE_PACK, EInvalidProof);
@@ -4250,7 +4517,7 @@ public(package) fun prove_protected_pack_selection_after_seal_v8<PaymentCoin>(
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert!(object::id(packs) == loadout.pack_registry_id, EInvalidBinding);
     assert_active_pack_admission(packs, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_pack_pass(release, pass, ctx.sender());
     let selection = loadout.selections.borrow(selection_index).borrow();
     assert!(selection.source_class == SOURCE_PACK, EInvalidProof);
@@ -4288,7 +4555,7 @@ public(package) fun new_pack_entitlement_witness_v8<PaymentCoin>(
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert!(object::id(packs) == loadout.pack_registry_id, EInvalidBinding);
     assert_active_pack_admission(packs, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_pack_pass(release, pass, ctx.sender());
     let selection = loadout.selections.borrow(selection_index).borrow();
     assert!(selection.source_class == SOURCE_PACK, EInvalidProof);
@@ -5106,7 +5373,7 @@ fun assert_physical_caller<
         companion::pack_registry_id_v2(registry_ids) == object::id(packs),
         EInvalidBinding,
     );
-    assert!(packs.version == VERSION, EInvalidBinding);
+    assert!(packs.version == VERSION || packs.version == SOUL_PACK_REGISTRY_VERSION, EInvalidBinding);
     maker::assert_root_identity_v8(
         root,
         packs.root_id,
@@ -5238,7 +5505,7 @@ fun assert_pack_registry_identity<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ) {
     assert_definition_identity(definitions, root);
-    assert!(packs.version == VERSION, EInvalidBinding);
+    assert!(packs.version == VERSION || packs.version == SOUL_PACK_REGISTRY_VERSION, EInvalidBinding);
     assert!(packs.root_id == definitions.root_id, EInvalidBinding);
     assert!(packs.root_version == definitions.root_version, EInvalidBinding);
     assert!(packs.root_content_commitment == definitions.root_content_commitment, EInvalidBinding);
@@ -5515,7 +5782,7 @@ public fun prove_attached_pack_definitions_v8<PaymentCoin>(
     assert_loadout_maker_access(loadout, root, maker_access, ctx);
     assert!(object::id(packs) == loadout.pack_registry_id, EInvalidBinding);
     assert_active_pack_admission(packs, release);
-    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert!(pack_release_is_active_v1(release), EInvalidLifecycle);
     assert_pack_pass(release, pass, ctx.sender());
     validate_attached_pack_definitions_internal(loadout, definitions, base_registry, release, binding_index, true, ctx);
     new_pack_definition_proof(loadout, definitions, release, binding_index, true)
@@ -5801,6 +6068,7 @@ fun owned_base_item_commitment(item: &OwnedBaseItemV8): vector<u8> {
 fun assert_pack_pass<PaymentCoin>(
     release: &PackReleaseV8<PaymentCoin>, pass: &PackPassV8, holder: address,
 ) {
+    assert!(!pack_requires_soul_v1(release), EPassMissing);
     assert!(pass.version == VERSION, EPassMissing);
     assert!(pass.release_id == object::id(release), EPassMissing);
     assert!(pass.root_id == release.root_id, EPassMissing);
@@ -9210,4 +9478,186 @@ fun destroy_test_owned_item(item: OwnedExternalItemV8) {
         transferable: _, equip_lock: _,
     } = item;
     id.delete();
+}
+
+#[test_only]
+fun soul_pack_scope_case(case: u8) {
+    let mut sc = sui::test_scenario::begin(@0xA11);
+    let (mut equipment, config, admin) = equipment_fixture(sc.ctx());
+    let mut release = test_pack_release(sc.ctx());
+    equipment.root_id = release.root_id;
+    equipment.root_version = release.root_version;
+    equipment.root_content_commitment = release.root_content_commitment;
+    let pass_id = issue_soul_pack_pass_v1(&mut equipment, &mut release, &config,
+        @0xA11, 100, 1, option::none(), sc.ctx());
+    if (case == 1) {
+        issue_soul_pack_pass_v1(&mut equipment, &mut release, &config,
+            @0xA11, 100, 2, option::none(), sc.ctx());
+    };
+    sc.next_tx(if (case == 5 || case == 6) @0xB22 else @0xA11);
+    let pass = sc.take_shared_by_id<SoulPackPassV1>(pass_id);
+    let before = bcs::to_bytes(&pass);
+    if (case == 2) df::borrow_mut<SoulEquipmentKeyV8, SoulEquipmentBindingV8>(&mut equipment.id,
+        SoulEquipmentKeyV8 {}).soul_id = object::id_from_address(@0x99);
+    if (case == 3) df::borrow_mut<SoulEquipmentKeyV8, SoulEquipmentBindingV8>(&mut equipment.id,
+        SoulEquipmentKeyV8 {}).soul_state_id = object::id_from_address(@0x99);
+    if (case == 4) equipment.root_version = equipment.root_version + 1;
+    if (case == 5) {
+        let binding: &mut SoulEquipmentBindingV8 = df::borrow_mut(&mut equipment.id, SoulEquipmentKeyV8 {});
+        binding.holder = @0xB22;
+        binding.ownership_epoch = 3;
+        equipment.holder = @0xB22;
+    };
+    let binding = *soul_equipment_binding_v8(&equipment);
+    let witness = animacraft_v8_core::animacraft_v8_binding::owner_for_testing(
+        binding.soul_id, binding.soul_state_id, sc.ctx().sender(),
+        if (case == 7) binding.ownership_epoch + 1 else binding.ownership_epoch);
+    assert_soul_pack_read_v1(&equipment, &release, &pass, &config, witness, sc.ctx());
+    assert!(bcs::to_bytes(&pass) == before && object::id(&pass) == pass_id
+        && pass.buyer == @0xA11, 100);
+    let entitlement = soul_pack_entitlements_v1(&equipment)[0];
+    assert!(entitlement.pass_id == pass_id && entitlement.release_id == object::id(&release), 101);
+    sui::test_scenario::return_shared(pass);
+    let _: vector<SoulPackEntitlementV1> = df::remove(&mut equipment.id, SoulPackEntitlementsKeyV1 {});
+    let _: ID = df::remove(&mut release.id, SoulPackAccessKeyV1 { soul_id: object::id_from_address(@0x42) });
+    destroy_test_loadout(equipment);
+    destroy_test_pack_release(release);
+    protocol::destroy_protocol_for_testing(config, admin);
+    sc.end();
+}
+
+#[test]
+fun soul_pack_pass_preserves_exact_soul_and_receipt() { soul_pack_scope_case(0); }
+#[test, expected_failure(abort_code = EPackAccessAlreadyIssued)]
+fun soul_pack_duplicate_target_is_rejected() { soul_pack_scope_case(1); }
+#[test, expected_failure(abort_code = EPassMissing)]
+fun soul_pack_same_wallet_second_soul_cannot_borrow_pass() { soul_pack_scope_case(2); }
+#[test, expected_failure(abort_code = EPassMissing)]
+fun soul_pack_wrong_state_cannot_borrow_pass() { soul_pack_scope_case(3); }
+#[test, expected_failure(abort_code = EPassMissing)]
+fun soul_pack_wrong_maker_version_cannot_borrow_pass() { soul_pack_scope_case(4); }
+#[test]
+fun soul_pack_same_pass_survives_live_owner_rotation() { soul_pack_scope_case(5); }
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_pack_wrong_wallet_is_rejected() { soul_pack_scope_case(6); }
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun soul_pack_stale_owner_epoch_is_rejected() { soul_pack_scope_case(7); }
+
+#[test]
+fun soul_pack_lifecycle_excludes_old_runtime_purchase_and_resume() {
+    let mut ctx = tx_context::dummy();
+    let mut release = test_pack_release(&mut ctx);
+    df::add(&mut release.id, SoulPackPolicyKeyV1 {}, true);
+    release.lifecycle = pack_active_lifecycle_v1(&release);
+    assert!(release.lifecycle == PACK_SOUL_ACTIVE && release.lifecycle != PACK_ACTIVE, 100);
+    set_pack_lifecycle(&mut release, PACK_SOUL_PAUSED);
+    assert!(release.lifecycle != PACK_PAUSED, 101);
+    let active = pack_active_lifecycle_v1(&release);
+    set_pack_lifecycle(&mut release, active);
+    assert!(pack_release_is_active_v1(&release), 102);
+    let _: bool = df::remove(&mut release.id, SoulPackPolicyKeyV1 {});
+    destroy_test_pack_release(release);
+}
+
+
+/// Readback certifies the already-installed exact row after live owner checks.
+public fun prove_soul_pack_selection_v1<PaymentCoin, W: drop>(
+    loadout: &MakerLoadoutV8,
+    packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>,
+    pass: &SoulPackPassV1,
+    root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8,
+    selection_index: u64,
+    protocol: &ProtocolConfigV8, witness: W, ctx: &TxContext,
+): SelectionAccessProofV8 {
+    assert_soul_pack_read_v1(loadout, release, pass, protocol, witness, ctx);
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert!(object::id(packs) == loadout.pack_registry_id, EInvalidBinding);
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    assert!(selection.source_class == SOURCE_PACK, EInvalidProof);
+    assert!(selection.source_definition_id == object::id(release), EInvalidProof);
+    assert!(&selection.source_semantic_id == &release.semantic_pack_id, EInvalidProof);
+    assert!(selection.access_subject == object::id(pass), EInvalidProof);
+    assert!(selection.source_epoch == 0, EInvalidProof);
+    assert!(selection.pricing_commitment == pack_pricing_commitment(release), EInvalidProof);
+    assert_pack_definition_attachment(loadout, release);
+    let style = release.styles.borrow(PackStyleKeyV8 {
+        part_key: selection.part_key,
+        item_key: selection.item_key,
+        style_key: selection.style_key,
+    });
+    assert!(style.asset_content_commitment == selection.asset_content_commitment, EInvalidProof);
+    assert!(style.layer_track_key == selection.layer_track_key, EInvalidProof);
+    assert!(!style.protected, ENotReady);
+    new_selection_proof(loadout, selection, release.content_commitment)
+}
+
+public(package) fun new_soul_pack_entitlement_witness_v1<PaymentCoin, W: drop>(
+    loadout: &MakerLoadoutV8,
+    packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>,
+    pass: &SoulPackPassV1,
+    root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8,
+    selection_index: u64,
+    seal_binding_commitment: vector<u8>,
+    protocol: &ProtocolConfigV8, witness: W, ctx: &TxContext,
+): RuntimePackEntitlementWitnessV8 {
+    assert_soul_pack_read_v1(loadout, release, pass, protocol, witness, ctx);
+    assert_loadout_maker_access(loadout, root, maker_access, ctx);
+    assert!(object::id(packs) == loadout.pack_registry_id, EInvalidBinding);
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    assert!(selection.source_class == SOURCE_PACK, EInvalidProof);
+    assert!(selection.source_definition_id == object::id(release), EInvalidProof);
+    assert!(&selection.source_semantic_id == &release.semantic_pack_id, EInvalidProof);
+    assert!(selection.access_subject == object::id(pass), EInvalidProof);
+    assert!(selection.protected, EInvalidProof);
+    assert!(selection.source_epoch == 0, EInvalidProof);
+    assert!(selection.pricing_commitment == pack_pricing_commitment(release), EInvalidProof);
+    assert!(selection.seal_binding_commitment == seal_binding_commitment, EInvalidProof);
+    let style = release.styles.borrow(PackStyleKeyV8 {
+        part_key: selection.part_key,
+        item_key: selection.item_key,
+        style_key: selection.style_key,
+    });
+    assert!(style.protected, EInvalidProof);
+    assert!(style.seal_binding_commitment == seal_binding_commitment, EInvalidProof);
+    assert!(style.asset_content_commitment == selection.asset_content_commitment, EInvalidProof);
+    RuntimePackEntitlementWitnessV8 {
+        loadout_id: object::id(loadout),
+        loadout_revision: loadout.revision,
+        selection_index,
+        holder: ctx.sender(),
+        pack_release_id: object::id(release),
+        pack_content_commitment: release.content_commitment,
+        pack_pass_id: object::id(pass),
+        pack_pass_commitment: pass.commitment,
+        asset_content_commitment: selection.asset_content_commitment,
+    }
+}
+
+public fun soul_pack_pass_paid_atomic_v1(pass: &SoulPackPassV1): u64 { pass.paid_atomic }
+
+public fun soul_pack_pass_legacy_id_v1(pass: &SoulPackPassV1): Option<ID> { pass.legacy_pass_id }
+
+#[test]
+fun soul_pack_pass_commitment_matches_sdk_fixture() {
+    let mut ctx = tx_context::dummy();
+    let pass = SoulPackPassV1 {
+        id: object::new(&mut ctx), version: 1,
+        protocol_config_id: object::id_from_address(@0x5), soul_id: object::id_from_address(@0x3),
+        soul_state_id: object::id_from_address(@0x4), release_id: object::id_from_address(@0x2),
+        root_id: object::id_from_address(@0x6), root_version: 2,
+        root_content_commitment: test_hash(7), release_content_commitment: test_hash(8),
+        buyer: @0xa, paid_atomic: 1000, issued_at_ms: 700, legacy_pass_id: option::none(), commitment: vector[],
+    };
+    assert!(soul_pack_pass_commitment_v1(&pass) == x"1d0b45ce7898537af266d9901408dc0491d546821667dbc0cb17e329d5c9b764", 100);
+    std::unit_test::destroy(pass);
+}
+
+#[test_only]
+public fun legacy_pack_schema_for_testing<PaymentCoin>(release: &mut PackReleaseV8<PaymentCoin>) {
+    let _: bool = df::remove(&mut release.id, SoulPackPolicyKeyV1 {});
+    release.lifecycle = PACK_ACTIVE;
 }

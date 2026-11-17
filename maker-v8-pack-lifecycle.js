@@ -242,6 +242,8 @@ function currentObject(response, expectedType, expectedId, label) {
 }
 
 function lifecycleName(code) {
+  if (Number(code) === 5) return 'ACTIVE';
+  if (Number(code) === 6) return 'PAUSED';
   return Object.keys(MAKER_V8_PACK_LIFECYCLE_STATES)
     .find((name) => MAKER_V8_PACK_LIFECYCLE_STATES[name] === Number(code)) ?? null;
 }
@@ -809,7 +811,10 @@ export function createMakerV8PackLifecycleReadbackV8({
     if (['PAUSE', 'RESUME', 'ARCHIVE'].includes(request.action)) {
       const raw = changedRef(response, request.pack.releaseId, types.packRelease, 'PackRelease');
       const release = await historical(client, raw, types.packRelease, artifact.digest, 'PackRelease');
-      const expectedCode = MAKER_V8_PACK_LIFECYCLE_STATES[ACTIONS[request.action].to];
+      const sourceCode = Number(decimal(field(request.inputs.release.fields, 'lifecycle', 'pre PackRelease'), 'pre PackRelease.lifecycle'));
+      const soulScoped = [5, 6].includes(sourceCode);
+      const expectedCode = soulScoped && request.action === 'PAUSE' ? 6
+        : soulScoped && request.action === 'RESUME' ? 5 : MAKER_V8_PACK_LIFECYCLE_STATES[ACTIONS[request.action].to];
       if (canonicalFields(release.parsed, { lifecycle: field(request.inputs.release.fields, 'lifecycle', 'pre PackRelease') })
           !== canonicalFields(request.inputs.release.fields)
         || Number(decimal(field(release.parsed, 'lifecycle', 'post PackRelease'), 'post PackRelease.lifecycle')) !== expectedCode) {
@@ -820,7 +825,7 @@ export function createMakerV8PackLifecycleReadbackV8({
       }
       const observed = eventFields(response.events[0], request, runtime);
       if (observed.releaseId !== request.pack.releaseId
-        || observed.previousLifecycle !== MAKER_V8_PACK_LIFECYCLE_STATES[request.pack.sourceLifecycle]
+        || observed.previousLifecycle !== sourceCode
         || observed.lifecycle !== expectedCode) {
         fail('MAKER_V8_PACK_LIFECYCLE_EVENT_DRIFT', 'Pack lifecycle event differs from the authorized transition.', 'READBACK');
       }

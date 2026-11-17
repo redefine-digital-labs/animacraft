@@ -760,3 +760,18 @@ test('application singleton is stable and refuses silent reconfiguration', () =>
     (error) => error.code === 'MAKER_V8_PRODUCT_SINGLETON_RECONFIGURE_FORBIDDEN',
   );
 });
+
+test('a Soul-scoped paid Pack is discoverable and waits until native Complete for purchase', async () => {
+  const f = publicPackFixture(1);
+  f.release.lifecycle = 5;
+  const { options, calls } = harness({ publicPacks: [f.release], packManifestAdapter: f.packManifestAdapter,
+    ownedInventory: { packPasses: [], makerAccessPasses: [] } });
+  const product = createMakerV8ProductRuntime(options);
+  assert.equal((await product.publicPacks.list({ rootId })).packs[0].releaseId, f.release.objectId);
+  const choice = (await product.choices.load({ address: objectId(902), rootId })).packStyles[0];
+  assert.equal(choice.requiresSoul, true);
+  assert.equal(choice.access.availableForAcquire, false);
+  assert.equal(choice.access.accessible, false);
+  assert.match(choice.access.reason, /compatible Soul/);
+  assert.equal(calls.asset, 0);
+});

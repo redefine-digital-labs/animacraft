@@ -2230,7 +2230,7 @@ export async function discoverMakerV8PackReleases(rpc, runtimeInput, rootInput, 
     const registry = parsedObject(response, makerV8ChainTypes(runtime).packRegistry, observedNetwork, 'PackRegistryV8');
     exactRootInventoryBinding(registry, rootInput, 'PackRegistryV8');
     if (registry.objectId !== registryId || registry.owner.kind !== 'shared'
-      || decimal(registry.fields.version, 'Pack registry version') !== 8n
+      || ![8n, 9n].includes(decimal(registry.fields.version, 'Pack registry version'))
       || id(registry.fields.definition_registry_id, 'Pack definition registry') !== rootInput.binding.runtimeDefinitionRegistryId
       || id(registry.fields.admission_authority_id, 'Pack admission authority') !== rootInput.binding.packAdmissionAuthorityId
       || hash(registry.fields.admission_policy_commitment, 'Pack admission policy')

@@ -1,3 +1,4 @@
+import { soulPackPurchaseContinuationV1 } from './maker-v8-soul-pack.js';
 import {
   MAKER_WORKSPACE_LOCALES,
   makerWorkspaceText,
@@ -1166,6 +1167,12 @@ function renderExportModal(view) {
     && (view.mode === 'LOCAL_DRAFT' || view.export.completionConfirmed);
   const canComplete = view.export.state === 'ready' && view.completeReady && !view.completionConfirmation;
   const receipt = view.pendingHandoffReceipt ?? view.completedSoul;
+  const soulPackLinks = view.completedSoul?.matchesProject && /^0x[0-9a-f]{64}$/.test(view.completedSoul.soulId)
+    ? [...new Map(view.contextualChoices.filter(choice => choice.requiresSoul
+      && /^0x[0-9a-f]{64}$/.test(choice.releaseId)).map(choice => [choice.releaseId, choice])).values()]
+      .map(choice => `<a href="${escapeHtml(soulPackPurchaseContinuationV1({ origin: 'https://www.soulidity.ai',
+        soulId: view.completedSoul.soulId, releaseId: choice.releaseId }))}">${escapeHtml(tr(view, 'playerBuyPackForSoul'))} · ${escapeHtml(choice.label)}</a>`).join('')
+    : '';
   const receiptDetails = receipt ? `<dl style="overflow-wrap: anywhere"><dt>Soul ID</dt><dd>${escapeHtml(receipt.soulId)}</dd><dt>Transaction digest</dt><dd>${escapeHtml(receipt.transactionDigest)}</dd></dl>` : '';
   return `
     <div class="v4-modal-backdrop v4-player-export-backdrop" data-action="close-player-export-backdrop">
@@ -1183,6 +1190,7 @@ function renderExportModal(view) {
           </aside>
         </div>
         ${view.completedSoul && !view.completionConfirmation ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.completedSoul.matchesProject ? tr(view, 'playerCompletionConfirmed') : tr(view, 'playerStepRecoveredOtherDraft'))}</p>${receiptDetails}<button type="button" data-action="player-open-completed-soul" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-open-completed-soul', '', view.completedSoul.handoffUrl ? '' : view.boundaryReason)}>${escapeHtml(tr(view, 'playerStepOpenSoul'))}</button><button type="button" data-action="player-start-new-completion" data-completed-action-id="${escapeHtml(view.completedSoul.actionId)}"${controlAttributes(view, 'player-start-new-completion')}>${escapeHtml(tr(view, 'playerStepStartAnother'))}</button></section>` : ''}
+        ${soulPackLinks && !view.completionConfirmation ? `<section class="v4-player-export-status">${soulPackLinks}</section>` : ''}
         ${view.pendingHandoffReceipt && !view.completedSoul && !view.completionConfirmation
           ? `<section class="v4-player-export-status" role="status"><p>${escapeHtml(view.pendingHandoffReceipt.message)}</p>${receiptDetails}</section>` : ''}
         ${renderReceiptLookup(view)}

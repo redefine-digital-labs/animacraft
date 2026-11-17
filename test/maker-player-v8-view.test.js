@@ -1478,3 +1478,23 @@ test('four-file batch confirmation distinguishes registration and certification 
     assert.match(html, new RegExp(`data-action="player-confirm-complete"[^>]*disabled[^>]*>${makerWorkspaceText(locale, 'completeOc')}</button>`));
   }
 });
+
+test('a matching native Complete opens Soul-scoped Pack purchase for the exact resulting Soul', () => {
+  const session = sessionFixture();
+  const choice = session.player.contextualChoices.packStyles[0];
+  choice.requiresSoul = true;
+  choice.owned = false;
+  choice.access = { accessible: false, canEquip: false, availableForAcquire: false };
+  const soulId = `0x${'71'.repeat(32)}`;
+  for (const matchesProject of [true, false]) {
+    const view = projectMakerV8PlayerView(session, fullState({ export: { open: true },
+      completedSoul: { soulId, actionId: 'completion-1', transactionDigest: 'original-digest',
+        matchesProject, handoffUrl: `https://www.soulidity.ai/my-souls/${soulId}` },
+    }));
+    const html = renderApprovedMakerV8Player(view);
+    if (matchesProject) {
+      assert.ok(html.includes(`https://www.soulidity.ai/packs/${choice.releaseId}?soul=${soulId}`));
+      assert.ok(html.includes('Buy Pack for this Soul'));
+    } else assert.ok(!html.includes(`/packs/${choice.releaseId}?soul=`));
+  }
+});

@@ -425,3 +425,67 @@ fun snapshot_commitment(snapshot: &ProtectedAssetSnapshotV8): vector<u8> {
         *seal::snapshot_seal_id_v8(snapshot),
     )
 }
+
+
+public fun certify_protected_soul_pack_entitlement_v1<PaymentCoin, W: drop>(
+    loadout: &MakerLoadoutV8,
+    packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>,
+    pass: &runtime::SoulPackPassV1,
+    catalog: &ProductReleaseCatalogV8,
+    root: &MakerRootV8<PaymentCoin>,
+    maker_access: &MakerAccessPassV8,
+    seal_registry: &SealRegistryV8,
+    seal_policy: &SealPolicyConfigV8,
+    selection_index: u64,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    asset_content_commitment: vector<u8>,
+    ciphertext_blob_id: String,
+    ciphertext_sha256: vector<u8>,
+    ciphertext_blob_commitment: vector<u8>,
+    certification_commitment: vector<u8>,
+    seal_id: vector<u8>,
+    protocol: &animacraft_v8_core::protocol_config_v8::ProtocolConfigV8, witness: W,
+    ctx: &sui::tx_context::TxContext,
+): PackDecryptProofV8 {
+    core_treasury::assert_maker_access_pass_v8(root, maker_access, ctx.sender());
+    let scope_key = runtime::pack_seal_scope_key_v8(
+        *runtime::pack_release_semantic_id_v8(release));
+    let asset_key = runtime::style_seal_asset_key_v8(part_key, item_key, style_key);
+    let snapshot = seal::protected_asset_snapshot_v8(
+        seal_registry, seal_policy, root, seal::scope_pack_v8(), scope_key,
+        *runtime::pack_release_content_commitment_v8(release), asset_key,
+        asset_content_commitment, ciphertext_blob_id, ciphertext_sha256,
+        ciphertext_blob_commitment, certification_commitment, seal_id,
+    );
+    let witness = runtime::new_soul_pack_entitlement_witness_v1(
+        loadout, packs, release, pass, root, maker_access, selection_index,
+        snapshot_commitment(&snapshot), protocol, witness, ctx);
+    let (witness, proof) = seal::certify_pack_entitlement_v8<
+        PaymentCoin, RuntimeOriginalMarkerV8, RuntimePackEntitlementWitnessV8,
+    >(
+        witness, catalog, root, ctx.sender(),
+        sui::object::id(maker_access),
+        runtime::maker_access_entitlement_commitment_v8(maker_access),
+        sui::object::id(pass),
+        runtime::soul_pack_pass_commitment_v1(pass), sui::object::id(release),
+        *runtime::pack_release_content_commitment_v8(release),
+        *seal::snapshot_scope_key_v8(&snapshot),
+        *seal::snapshot_asset_key_v8(&snapshot),
+        *seal::snapshot_seal_id_v8(&snapshot),
+    );
+    let (_, loadout_revision, returned_index, holder, returned_release_id,
+        returned_release_commitment, returned_pass_id, returned_pass_commitment,
+        _) = runtime::consume_pack_entitlement_witness(witness);
+    assert!(loadout_revision == runtime::loadout_revision_v8(loadout), EInvalidWitness);
+    assert!(returned_index == selection_index, EInvalidWitness);
+    assert!(holder == ctx.sender(), EInvalidWitness);
+    assert!(returned_release_id == sui::object::id(release), EInvalidWitness);
+    assert!(returned_release_commitment ==
+        *runtime::pack_release_content_commitment_v8(release), EInvalidWitness);
+    assert!(returned_pass_id == sui::object::id(pass), EInvalidWitness);
+    assert!(returned_pass_commitment == runtime::soul_pack_pass_commitment_v1(pass), EInvalidWitness);
+    proof
+}

@@ -22,19 +22,14 @@ fun free_entry_and_complete_reuse_exact_pass() {
     run_policy(runtime::access_free_v8(), false);
 }
 
-#[test]
-fun paid_entry_splits_revenue_once_and_complete_reuses_pass() {
+#[test, expected_failure(abort_code = 10, location = runtime)]
+fun wallet_paid_entry_requires_a_completed_soul() {
     run_policy(runtime::access_paid_v8(), false);
 }
 
 #[test]
 fun included_entry_uses_existing_maker_access_and_complete_reuses_pass() {
     run_policy(runtime::access_included_with_maker_v8(), false);
-}
-
-#[test, expected_failure(abort_code = 34, location = animacraft_v8_runtime::runtime_v8)]
-fun second_paid_entry_is_rejected() {
-    run_policy(runtime::access_paid_v8(), true);
 }
 
 fun claim_maker_access(scenario: &mut Scenario, root_id: ID, treasury_id: ID) {

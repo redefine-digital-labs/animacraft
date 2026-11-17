@@ -25,7 +25,8 @@
     "move:release-gates": "node scripts/native-soul-test-graph.mjs --check release-gates",
     "move:seal-cap:quick": "node test/harness/animacraft_v8_seal_cap_harness/scripts/verify_reproducibility.mjs",
     "move:seal-cap:harness": "npm run move:seal-cap:quick",
-    "move:seal-cap:localnet": "node test/harness/animacraft_v8_seal_cap_harness/scripts/run_localnet_replay.mjs"
+    "move:seal-cap:localnet": "node test/harness/animacraft_v8_seal_cap_harness/scripts/run_localnet_replay.mjs",
+    "move:test:soul-pack": "node scripts/test-soul-pack-native-v1.mjs"
   },
   "dependencies": {
     "@mysten/dapp-kit-core": "1.6.4",

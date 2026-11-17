@@ -4036,3 +4036,11 @@ Object.entries({
   ko: '저장된 서명 거래를 계속 진행 중…',
   vi: 'Đang tiếp tục giao dịch đã ký và lưu…',
 }).forEach(([locale, text]) => { dictionaries[locale].publicationContinuingSigned = text; });
+
+Object.entries({
+  en: 'Buy Pack for this Soul',
+  zh: '为这只 Soul 购买 Pack',
+  ja: 'この Soul 用に Pack を購入',
+  ko: '이 Soul용 Pack 구매',
+  vi: 'Mua Pack cho Soul này',
+}).forEach(([locale, text]) => { dictionaries[locale].playerBuyPackForSoul = text; });

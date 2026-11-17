@@ -274,7 +274,7 @@ function inspectNativeGraphToolchain(sui) {
   return version.stdout.trim();
 }
 
-export async function runNativeGraphCheck(graph, check, { sui = 'sui' } = {}) {
+export async function runNativeGraphCheck(graph, check, { sui = 'sui', timeoutMs = 120000 } = {}) {
   const auxiliary = /^(probes|size):(.+)$/.exec(check);
   let executable = sui;
   let command;
@@ -292,7 +292,7 @@ export async function runNativeGraphCheck(graph, check, { sui = 'sui' } = {}) {
   await verifyNativeTestGraph(graph);
   const version = inspectNativeGraphToolchain(sui);
   const result = spawnSync(executable, command, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-    timeout: auxiliary ? 600000 : 120000,
+    timeout: auxiliary ? 600000 : timeoutMs,
     env: auxiliary ? { ...process.env, PATH: `${dirname(sui)}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}` } : process.env });
   await verifyNativeTestGraph(graph);
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;

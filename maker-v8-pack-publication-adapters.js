@@ -489,7 +489,7 @@ function validateRelease(object, compiled, descriptor, expectedLifecycle) {
       !== compiled.transport.manifest.sha256
     || hash(field(fields, 'contentCommitment', 'PackRelease'), 'PackRelease.contentCommitment')
       !== compiled.contentCommitment
-    || Number(decimal(field(fields, 'lifecycle', 'PackRelease'), 'PackRelease.lifecycle')) !== expectedLifecycle
+    || ![].concat(expectedLifecycle).includes(Number(decimal(field(fields, 'lifecycle', 'PackRelease'), 'PackRelease.lifecycle')))
     || decimal(field(fields, 'expectedStyleCount', 'PackRelease'), 'PackRelease.expectedStyleCount')
       !== String(document.styles.length)
     || decimal(field(fields, 'observedStyleCount', 'PackRelease'), 'PackRelease.observedStyleCount')
@@ -715,7 +715,7 @@ export function createMakerV8PackReadbackV8({
         release = await historical(history, releaseRef, types.packRelease, artifact.digest, 'PackRelease');
         admin = predecessor.adminCap;
         treasury = predecessor.treasury;
-        validateRelease(release, compiled, descriptor, descriptor.stage === 'FINALIZE' ? 2 : 0);
+        validateRelease(release, compiled, descriptor, descriptor.stage === 'FINALIZE' ? (compiled.accessKind === 1 ? [2, 5] : 2) : 0);
         if (descriptor.stage === 'FINALIZE') {
           const registryRef = outputChange(
             response, types.packRegistry, 'PackRegistry', compiled.inputs.packRegistry.objectId,
@@ -723,8 +723,20 @@ export function createMakerV8PackReadbackV8({
           const registry = await historical(history, registryRef, types.packRegistry, artifact.digest, 'PackRegistry');
           packRegistryRevision = decimal(field(registry.parsed, 'revision', 'PackRegistry'), 'PackRegistry.revision');
           const expectedRevision = (BigInt(compiled.document.admission.expectedPackRegistryRevision) + 1n).toString();
-          if (packRegistryRevision !== expectedRevision || response.events.length !== 3) {
+          const migratedRegistry = response.events.length === 4 && compiled.accessKind === 1;
+          if (packRegistryRevision !== expectedRevision || (!migratedRegistry && response.events.length !== 3)) {
             fail('MAKER_V8_PACK_READBACK_ADMISSION_DRIFT', 'Pack admission revision or event count differs from the exact compiler boundary.');
+          }
+          if (migratedRegistry) {
+            const migration = eventFields(response.events[3], `${runtimeOriginal}::runtime_v8::SoulPackRegistryEnabledV1`,
+              compiled.signer, 'Pack registry migration');
+            if (moveId(field(migration, 'rootId', 'migration'), 'migration.rootId') !== compiled.document.bindings.root.objectRef.objectId
+              || moveId(field(migration, 'registryId', 'migration'), 'migration.registryId') !== compiled.inputs.packRegistry.objectId
+              || decimal(field(migration, 'previousVersion', 'migration'), 'migration.previousVersion') !== '8'
+              || decimal(field(migration, 'version', 'migration'), 'migration.version') !== '9'
+              || decimal(field(registry.parsed, 'version', 'PackRegistry'), 'PackRegistry.version') !== '9') {
+              fail('MAKER_V8_PACK_READBACK_ADMISSION_DRIFT', 'Pack registry migration differs from its exact receipt.');
+            }
           }
           const sealed = eventFields(
             response.events[0], `${runtimeOriginal}::runtime_v8::PackLifecycleChangedV8`,
@@ -750,7 +762,7 @@ export function createMakerV8PackReadbackV8({
             || decimal(field(admitted, 'operation', 'admission event'), 'admission event.operation') !== '0'
             || moveId(field(active, 'releaseId', 'active event'), 'active event.releaseId') !== release.objectId
             || decimal(field(active, 'previousLifecycle', 'active event'), 'active event.previousLifecycle') !== '1'
-            || decimal(field(active, 'lifecycle', 'active event'), 'active event.lifecycle') !== '2') {
+            || decimal(field(active, 'lifecycle', 'active event'), 'active event.lifecycle') !== decimal(field(release.parsed, 'lifecycle', 'PackRelease'), 'PackRelease.lifecycle')) {
             fail('MAKER_V8_PACK_READBACK_EVENT_DRIFT', 'Pack seal/admission/activation events differ from exact state.');
           }
         } else {

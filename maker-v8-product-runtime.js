@@ -489,7 +489,7 @@ export function createMakerV8ProductRuntime({
   };
   const assertPublicPackEntry = (release, rootId, seen) => {
     const entry = release?.entry;
-    if (!release || !EXACT_ID.test(release.objectId) || release.rootId !== rootId || release.lifecycle !== 2
+    if (!release || !EXACT_ID.test(release.objectId) || release.rootId !== rootId || !(release.lifecycle === 2 || (release.lifecycle === 5 && release.entry?.kind === 1))
       || release.admission?.admissionState !== 0 || seen.has(release.objectId)
       || ![0, 1, 2].includes(entry?.kind) || !/^(?:0|[1-9][0-9]*)$/.test(entry?.priceAtomic)
       || BigInt(entry.priceAtomic) > 1_000_000_000_000n
@@ -690,6 +690,7 @@ export function createMakerV8ProductRuntime({
           }
           packStyles.push(freeze({
             source: 'PACK',
+            requiresSoul: release.lifecycle === 5,
             id: `pack:${release.objectId}:${style.partKey}:${style.itemKey}:${style.styleKey}`,
             label: `${read.manifest.content.metadata.name} · ${style.styleKey}`,
             partKey: style.partKey,
@@ -711,8 +712,10 @@ export function createMakerV8ProductRuntime({
             owned: choice.owned,
             access: freeze({
               accessible: choice.owned, canEquip: choice.owned,
-              availableForAcquire: !choice.owned && (release.entry.kind !== 2 || hasMakerAccess),
-              reason: choice.owned ? '' : release.entry.kind === 2
+              availableForAcquire: !choice.owned && release.lifecycle !== 5 && (release.entry.kind !== 2 || hasMakerAccess),
+              reason: choice.owned ? '' : release.lifecycle === 5
+                ? 'Create or receive a compatible Soul, then purchase this Pack for that Soul.'
+                : release.entry.kind === 2
                 ? hasMakerAccess ? 'Included with Maker access; claim this Pack before choosing its Styles.'
                   : 'This included Pack requires the exact MakerAccess entitlement before it can be claimed.'
                 : release.entry.kind === 0 ? 'Claim this free Pack before choosing its Styles.'
