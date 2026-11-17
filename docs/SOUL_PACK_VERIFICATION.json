@@ -88,17 +88,25 @@
     "strictSimulation": {
       "checksEnabled": true,
       "success": true,
-      "digest": "rp4x4JG3GSdxD95ypGbwjZyS2UAxGPVWr5BDDfSboSg",
+      "digest": "3abybBsxmMa9yrmCnPkoakoH3wm6mXzcufgqjyiaeSL8",
+      "transactionSha256": "0f1c05eeaeeb32f2dd38481995519986f3bb1f4d572f4794b638f091a66eeaa4",
       "buildSha256": "d32ca33de2a839d790e03ba09ba7173f3fe8308eee425cdf63052af5293a4efd",
-      "gasBudgetMist": "1500000000",
+      "gasBudgetMist": "900000000",
       "simulatedNetGasMist": "779562963",
       "gasMode": "address-balance",
       "walletSignature": false,
       "submitted": false,
-      "generatedAt": "2026-11-17T18:11:40.454Z",
-      "reviewFile": "/Users/naoernue/Documents/ChatGPT/soulidity \u5408\u7ea6/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul/runtime-upgrade-unsigned-review.json",
-      "simulationFile": "/Users/naoernue/Documents/ChatGPT/soulidity \u5408\u7ea6/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul/runtime-upgrade-simulation.json"
+      "generatedAt": "2026-11-17T18:18:33.445Z",
+      "reviewFile": "/Users/naoernue/Documents/ChatGPT/soulidity 合约/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul/runtime-upgrade-900m-unsigned-review.json",
+      "simulationFile": "/Users/naoernue/Documents/ChatGPT/soulidity 合约/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul/runtime-upgrade-900m-simulation.json",
+      "bcsIndependentlyDecoded": true,
+      "commandCount": 3
     },
-    "evidenceDirectory": "/Users/naoernue/Documents/ChatGPT/soulidity \u5408\u7ea6/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul"
+    "evidenceDirectory": "/Users/naoernue/Documents/ChatGPT/soulidity 合约/release/contract-journey/contract-verification/pack-soul-candidate-20261117/evidence/pack-soul",
+    "supersededSigningPacket": {
+      "digest": "rp4x4JG3GSdxD95ypGbwjZyS2UAxGPVWr5BDDfSboSg",
+      "gasBudgetMist": "1500000000",
+      "status": "superseded_by_900m_review"
+    }
   }
 }
