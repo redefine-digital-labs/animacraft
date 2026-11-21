@@ -2118,7 +2118,7 @@ function tableId(value, label) {
   );
 }
 
-async function readActivePackAdmission(rpc, runtime, registry, release) {
+async function readOwnedPackAdmission(rpc, runtime, registry, release) {
   if (typeof rpc?.getDynamicField !== 'function') {
     fail('config', 'MAKER_V8_RPC_INVALID', 'Pack access projection requires the official gRPC dynamic-field point reader.');
   }
@@ -2152,12 +2152,12 @@ async function readActivePackAdmission(rpc, runtime, registry, release) {
     || text(parsed.semantic_pack_id, 'PackAdmissionRecordV8.semantic_pack_id') !== release.semanticPackId
     || hash(parsed.release_content_commitment, 'PackAdmissionRecordV8.release_content_commitment')
       !== release.contentCommitment
-    || Number(decimal(parsed.admission_state, 'PackAdmissionRecordV8.admission_state')) !== 0) {
-    fail('readback', 'MAKER_V8_PACK_ADMISSION_DRIFT', 'Pack admission differs from the exact active Release.');
+    || ![0, 1].includes(parsed.admission_state)) {
+    fail('readback', 'MAKER_V8_PACK_ADMISSION_DRIFT', 'Pack admission differs from the exact owned Release.');
   }
   return freeze({
     admittedRevision: decimal(parsed.admitted_revision, 'PackAdmissionRecordV8.admitted_revision').toString(),
-    admissionState: 0,
+    admissionState: parsed.admission_state,
   });
 }
 
@@ -2531,10 +2531,10 @@ export async function listOwnedMakerV8Inventory(rpc, runtimeInput, walletAddress
       const release = parsePackReleaseAccess(
         relatedObjects.get(pass.releaseId), runtime, rootInput, pass,
       );
-      if (release.lifecycle !== 2) {
-        fail('readback', 'MAKER_V8_PACK_RELEASE_INACTIVE', 'PackPass references a non-active Pack Release.');
+      if (![2, 3, 4].includes(release.lifecycle)) {
+        fail('readback', 'MAKER_V8_PACK_RELEASE_INACTIVE', 'PackPass requires a Release that reached activation.');
       }
-      const admission = await readActivePackAdmission(rpc, runtime, packRegistry, release);
+      const admission = await readOwnedPackAdmission(rpc, runtime, packRegistry, release);
       return freeze({ ...pass, release, admission });
     }));
   }

@@ -591,22 +591,25 @@ export function createMakerV8ProductRuntime({
       }
       for (const pass of owned.packPasses ?? []) {
         const release = pass.release;
+        const admissionState = pass.admission?.admissionState;
+        const active = release?.lifecycle === 2 && admissionState === 0;
         const publicChoice = packChoices.get(pass.releaseId);
-        if (!release || release.rootId !== rootId || release.lifecycle !== 2
+        if (!release || release.rootId !== rootId || ![2, 3, 4].includes(release.lifecycle)
           || pass.releaseId !== release.objectId
           || pass.releaseContentCommitment !== release.contentCommitment
-          || pass.admission?.admissionState !== 0 || !publicChoice
-          || release.contentCommitment !== publicChoice.release.contentCommitment
-          || release.manifestBlobId !== publicChoice.release.manifestBlobId
-          || release.manifestSha256 !== publicChoice.release.manifestSha256
-          || JSON.stringify(release.entry) !== JSON.stringify(publicChoice.release.entry)) {
+          || ![0, 1].includes(admissionState)
+          || Boolean(publicChoice) !== active
+          || (publicChoice && (release.contentCommitment !== publicChoice.release.contentCommitment
+            || release.manifestBlobId !== publicChoice.release.manifestBlobId
+            || release.manifestSha256 !== publicChoice.release.manifestSha256
+            || JSON.stringify(release.entry) !== JSON.stringify(publicChoice.release.entry)))) {
           fail(
             'MAKER_V8_PRODUCT_PACK_CHOICE_DRIFT',
-            'PackPass differs from its exact ACTIVE admitted Release.',
+            'PackPass differs from its certified Release or active Pack discovery.',
             { releaseId: pass.releaseId ?? null },
           );
         }
-        publicChoice.owned = true;
+        if (publicChoice) publicChoice.owned = true;
       }
       const hasMakerAccess = (owned.makerAccessPasses ?? []).length > 0;
       for (const choice of packChoices.values()) {
