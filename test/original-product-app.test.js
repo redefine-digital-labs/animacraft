@@ -6538,7 +6538,8 @@ test('Version history explicitly reviews and signs archive, cold-recovers it, th
   harness.bridge.listMakerLineage = async () => [{ rootId, makerVersion: 1, lifecycle, ownerAddress: address, successorRootId: null }];
   harness.bridge.prepareLifecycleAction = async input => { prepares++; assert.equal(input.action, 'ARCHIVE');
     assert.equal(input.draftId, 'approved-maker'); assert.equal(input.expectedRevision, 1);
-    return { built: { action: 'ARCHIVE', descriptor: { sender: address } }, digest: 'exact-archive', bytes: 'AA==' }; };
+    return { built: { action: 'ARCHIVE', descriptor: { sender: address, preState: { root: { objectId: rootId } } } },
+      digest: 'exact-archive', bytes: 'AA==' }; };
   harness.bridge.requestLifecycleSignature = async prepared => { signs++; assert.equal(prepared.digest, 'exact-archive'); return {}; };
   harness.bridge.recoverLifecycleAction = async input => { recoveries++; assert.deepEqual(input, { action: 'ARCHIVE', rootId }); lifecycle = 'ARCHIVED'; };
   harness.bridge.createSuccessorDraft = async input => { creates++; assert.equal(input.expectedRevision, 1);
@@ -6563,6 +6564,90 @@ test('Version history explicitly reviews and signs archive, cold-recovers it, th
   await action('chain-archive-recover'); assert.equal(signs, 1); assert.equal(recoveries, 1);
   await action('chain-successor'); assert.equal(creates, 1);
   assert.equal(app.getState().draftId, 'maker-successor-test');
+  app.destroy();
+});
+
+test('published Maker controls review pause, resume, and archived treasury recovery by exact Root', async () => {
+  const address = `0x${'78'.repeat(32)}`;
+  const rootId = `0x${'45'.repeat(32)}`;
+  const treasuryId = `0x${'46'.repeat(32)}`;
+  const successorId = `0x${'47'.repeat(32)}`;
+  const harness = browserHarness({ initialUrl: 'https://animacraft.soulidity.ai/#creator',
+    connection: { account: { address, chains: ['sui:mainnet'] } } });
+  let lifecycle = 'ACTIVE', successorRootId = null, balance = '900', withdrawn = '0', unknown = true, drift = false;
+  const prepared = [], signed = [], recovered = [];
+  harness.bridge.listMakerLineage = async () => [{ rootId, makerVersion: 1, lifecycle, ownerAddress: address, successorRootId }];
+  harness.bridge.getLifecycleSnapshot = async input => {
+    assert.deepEqual(input, { rootId });
+    return { schemaVersion: 'animacraft.product-lifecycle-snapshot.v1', rootId, makerVersion: '1', lifecycle,
+      wallet: { address, network: 'mainnet' }, paymentCoinType: '0x1::usdc::USDC',
+      treasury: { objectId: treasuryId, balanceAtomic: balance, totalCollectedAtomic: '900', totalWithdrawnAtomic: withdrawn } };
+  };
+  harness.bridge.prepareLifecycleAction = async input => {
+    prepared.push(input);
+    const args = input.action === 'WITHDRAW_MAKER_REVENUE'
+      ? [null, null, { objectId: treasuryId }, { value: input.amountAtomic }, { value: drift ? successorId : input.recipient }] : [];
+    return { built: { action: input.action, descriptor: { sender: address, preState: { root: { objectId: rootId } }, arguments: args } },
+      digest: `exact-${input.action}`, bytes: 'AA==' };
+  };
+  harness.bridge.requestLifecycleSignature = async review => {
+    signed.push(review.digest);
+    if (review.digest === 'exact-PAUSE') throw new Error('Wallet result is unknown');
+  };
+  harness.bridge.recoverLifecycleAction = async input => {
+    assert.equal(input.rootId, rootId);
+    recovered.push(input.action);
+    const digest = `exact-${input.action}`;
+    if (input.action === 'PAUSE' && unknown) { unknown = false; return { status: 'OUTCOME_UNKNOWN', digest }; }
+    if (input.action === 'PAUSE') lifecycle = 'PAUSED';
+    if (input.action === 'RESUME') lifecycle = 'ACTIVE';
+    if (input.action === 'WITHDRAW_MAKER_REVENUE') { balance = '0'; withdrawn = '900'; }
+    return { status: 'FINALIZED_SUCCESS', digest };
+  };
+  const oldSubscribe = harness.bridge.subscribe;
+  harness.bridge.subscribe = fn => oldSubscribe(value => fn({ ...value,
+    publication: { signingEnabled: true, broadcastEnabled: true } }));
+  const app = createOriginalProductApp(harness);
+  await app.ready; await app.openDraft('approved-maker');
+  const mount = harness.doc.getElementById('makerV4CreatorMount');
+  const action = async name => {
+    const target = new FakeTarget(harness.doc, { dataset: { action: name, chainRoot: rootId } });
+    target.parent = mount; await waitForEvent(mount.fire('click', { target })); await settle();
+  };
+  await action('manage-lifecycle');
+  assert.match(harness.doc.getElementById('makerLifecycleManagerActions').innerHTML, /Manage published versions and revenue/);
+  await action('open-version-history');
+  assert.match(mount.innerHTML, /Available 900 · Collected 900 · Withdrawn 0 · USDC atomic units/);
+  await action('chain-resume-review'); assert.equal(prepared.length, 0);
+  await action('chain-pause-review'); assert.deepEqual(prepared, [{ action: 'PAUSE', rootId }]);
+  assert.match(mount.innerHTML, /Transaction digest exact-PAUSE/); assert.deepEqual(signed, []);
+  await action('chain-resume-sign'); assert.deepEqual(signed, []);
+  await action('chain-pause-sign'); assert.deepEqual(signed, ['exact-PAUSE']);
+  assert.match(mount.innerHTML, /Wallet result is unknown · Transaction digest exact-PAUSE/);
+  await action('close-version-history'); await action('open-version-history');
+  await action('chain-pause-recover'); assert.match(mount.innerHTML, /Still checking exact-PAUSE/);
+  await action('chain-pause-recover'); assert.match(mount.innerHTML, /Chain version 1 · PAUSED/);
+  await action('chain-resume-review'); assert.deepEqual(prepared.at(-1), { action: 'RESUME', rootId });
+  await action('chain-resume-sign'); await action('chain-resume-recover');
+  assert.match(mount.innerHTML, /Chain version 1 · ACTIVE/);
+
+  lifecycle = 'ARCHIVED'; successorRootId = successorId;
+  await action('close-version-history'); await action('open-version-history');
+  assert.match(mount.innerHTML, /data-action="chain-successor"[^>]+disabled/);
+  drift = true;
+  await action('chain-withdraw-review');
+  assert.match(mount.innerHTML, /Lifecycle review identity is invalid/);
+  await action('chain-withdraw-sign');
+  assert.deepEqual(signed, ['exact-PAUSE', 'exact-RESUME']);
+  drift = false;
+  await action('chain-withdraw-review');
+  assert.deepEqual(prepared.at(-1), { action: 'WITHDRAW_MAKER_REVENUE', rootId, amountAtomic: '900', recipient: address });
+  assert.match(mount.innerHTML, new RegExp(`Withdraw 900 atomic USDC to ${address}`));
+  await action('chain-withdraw-sign'); await action('chain-withdraw-recover');
+  assert.deepEqual(signed, ['exact-PAUSE', 'exact-RESUME', 'exact-WITHDRAW_MAKER_REVENUE']);
+  assert.deepEqual(recovered, ['PAUSE', 'PAUSE', 'RESUME', 'WITHDRAW_MAKER_REVENUE']);
+  assert.match(mount.innerHTML, /Available 0 · Collected 900 · Withdrawn 900 · USDC atomic units/);
+  assert.match(mount.innerHTML, /data-action="chain-withdraw-review"[^>]+disabled/);
   app.destroy();
 });
 

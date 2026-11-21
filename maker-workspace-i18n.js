@@ -3849,6 +3849,18 @@ export function makerPublicationStageText(locale, stage) {
   const index = publicationStages.indexOf(stage);
   return index < 0 ? String(stage ?? '') : (publicationStageLabels[locale] || publicationStageLabels.en)[index];
 }
+const creatorLifecycleKeys = ["chainManageActions","chainPauseReview","chainResumeReview","chainWithdrawReview","chainLifecycleSign","chainRecoverAction","chainLifecycleDigest","chainLifecyclePreparing","chainLifecycleReady","chainLifecycleSaved","chainLifecyclePending","chainLifecycleConfirmed","chainTreasuryAmounts","chainTreasuryUnavailable","chainWithdrawalDetails"];
+const creatorLifecycleCopy = {
+  en: ["Manage published versions and revenue","Pause new authorizations","Resume new authorizations","Withdraw to my wallet","Confirm reviewed transaction in wallet","Recover a saved transaction","Transaction digest","Preparing the exact transaction for review.","Review the exact action before opening your wallet.","Signature saved for {digest}. Use recovery to continue the saved transaction.","Still checking {digest}. Use recovery to check this transaction again.","Confirmed on Sui · {digest}","Available {balance} · Collected {collected} · Withdrawn {withdrawn} · {coin} atomic units","Treasury could not be verified for this version.","Withdraw {amount} atomic {coin} to {recipient}"],
+  zh: ["管理已发布版本和收益","暂停新授权","恢复新授权","提取到我的钱包","在钱包确认已审阅的交易","恢复已保存的交易","交易摘要","正在准备确切交易供审阅。","请先审阅确切操作，再打开钱包。","已保存 {digest} 的签名。请恢复并继续这笔交易。","仍在核查 {digest}。请通过恢复再次查询这笔交易。","已在 Sui 确认 · {digest}","可提 {balance} · 累计收入 {collected} · 累计已提 {withdrawn} · {coin} 最小单位","暂时无法核验该版本的金库。","向 {recipient} 提取 {amount} 个 {coin} 最小单位"],
+  ja: ["公開版と収益を管理","新規承認を一時停止","新規承認を再開","自分のウォレットへ引き出す","確認した取引をウォレットで承認","保存済み取引を復旧","取引ダイジェスト","確認用の取引を準備中です。","ウォレットを開く前に対象の操作を確認します。","{digest} の署名を保存しました。復旧から保存済み取引を続行します。","{digest} を確認中です。復旧からもう一度照会できます。","Sui で確定 · {digest}","引出可能 {balance} · 累計収益 {collected} · 累計引出 {withdrawn} · {coin} 最小単位","この版の金庫を確認できませんでした。","{amount} 最小単位の {coin} を {recipient} に引き出す"],
+  ko: ["게시 버전과 수익 관리","새 권한 부여 일시 중지","새 권한 부여 재개","내 지갑으로 인출","검토한 거래를 지갑에서 확인","저장된 거래 복구","거래 다이제스트","검토할 거래를 준비하고 있습니다.","지갑을 열기 전에 정확한 작업을 검토하세요.","{digest}의 서명이 저장되었습니다. 복구에서 저장된 거래를 계속하세요.","{digest} 확인 중입니다. 복구에서 이 거래를 다시 조회하세요.","Sui에서 확정 · {digest}","인출 가능 {balance} · 누적 수익 {collected} · 누적 인출 {withdrawn} · {coin} 최소 단위","이 버전의 금고를 검증할 수 없습니다.","{amount} 최소 단위의 {coin}을 {recipient}로 인출"],
+  vi: ["Quản lý phiên bản đã xuất bản và doanh thu","Tạm dừng cấp quyền mới","Tiếp tục cấp quyền mới","Rút về ví của tôi","Xác nhận giao dịch đã kiểm tra trong ví","Khôi phục giao dịch đã lưu","Mã giao dịch","Đang chuẩn bị đúng giao dịch để kiểm tra.","Kiểm tra thao tác trước khi mở ví.","Đã lưu chữ ký cho {digest}. Dùng khôi phục để tiếp tục giao dịch đã lưu.","Đang kiểm tra {digest}. Dùng khôi phục để tra lại giao dịch này.","Đã xác nhận trên Sui · {digest}","Có thể rút {balance} · Đã thu {collected} · Đã rút {withdrawn} · đơn vị nhỏ nhất của {coin}","Chưa thể xác minh kho bạc của phiên bản này.","Rút {amount} đơn vị nhỏ nhất của {coin} về {recipient}"],
+};
+for (const [locale, values] of Object.entries(creatorLifecycleCopy)) {
+  creatorLifecycleKeys.forEach((key, index) => { dictionaries[locale][key] = values[index]; });
+}
+
 const chainVersionCopy = {
   chainHistory: ['Published chain versions', '已发布的链上版本'],
   chainCopy: ['Local snapshots do not publish changes. A new chain version requires an explicitly archived predecessor.', '本地保存不会发布修改。新链上版本必须以前一版本已明确归档为前提。'],

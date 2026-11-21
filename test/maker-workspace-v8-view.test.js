@@ -18,7 +18,9 @@ test('chain version history distinguishes local snapshots and explicit archive i
   for (const locale of ['en', 'zh']) {
     const view = projectMakerV8WorkspaceView(document, { locale, versionHistoryOpen: true,
       versionHistoryStatus: 'ready', versionEntries: [{ revision: 41 }],
-      chainVersions: [{ rootId: `0x${'12'.repeat(32)}`, makerVersion: 1, lifecycle: 'ACTIVE', canManage: true }],
+      chainVersions: [{ rootId: `0x${'12'.repeat(32)}`, makerVersion: 1, lifecycle: 'ACTIVE',
+        canManage: true, lifecycleAvailable: true, successorRootId: null }],
+      publicationBroadcastEnabled: true,
       chainVersionStatus: makerWorkspaceDictionary(locale).chainArchiveImpact }, { default: true });
     const html = renderApprovedMakerV8Workspace(view);
     assert.match(html, /chain-archive-review/); assert.match(html, /chain-archive-recover/);
